@@ -157,6 +157,11 @@ unsigned int Random::getRaw()
     return m_seed;
 }
 
+// Core/System.cpp owns the retail tick counter (ds:0x8AC0D68). The runtime-pair harness does not
+// link that platform-heavy TU, while PointPhysicsNode.cpp names the counter from the opt-in
+// grenade_trace::log diagnostic (GrenadeTrace.h, [TEMP]), which these checks never arm.
+namespace WorldPref { unsigned int mTickCount = 0; }
+
 namespace world {
 
 ClassManager* classManager = 0;
