@@ -1,59 +1,52 @@
 // Flash rasterizer for menu frames, textures, masks, glyphs and credits.
 // [INFERRED] source placement. ModuleGeom publishes the singleton on core event (10,1)
 // and removes it on (10,2); beginFrame/endFrame bracket the menu's presentation.
-// Font lookup guards remain until FontRenderer/FontSystem are available and verified
-// through their draw paths. [RETIRE-WHEN: RW-80]
+// Text goes through the FontRenderer batch (GeomMisc/FontSystem/SwiffFont.cpp), flushed at the
+// shipped sites. The font wrapper behind the font slots is still a chosen layout. [RETIRE-WHEN: RW-80]
 // Missing ServerLogoManager fails texture loading. VideoTarget owns movie texture reset handling.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Compiler-typed native table entries.
+#include "../../RendDX9Abi/NativeVtable.h"
+#include "../Menu/ISwiffRender.h"
+#endif
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../Core/EventManager.h"
+#include "../Core/SettingsRepostitory.h"
+#include "../Core/StringUtil.h"
 #include "../../RendDX9Abi/PluginEntry.h"
-#include "../../RendDX9Abi/Vc71Map.h"
 #include "../../RendDX9Abi/EngineFile.h"
-#include "../../RendDX9Abi/D3dxEffect.h"
 #include "../RendDX9/RendDX9Base.h"
+#include "../RendMisc/IRenderer.h"
+#include "../Menu/ISwiffRender.h"
 #include "../RendDX9/ShaderParameter.h"
-#if BF2_PLUGIN_ABI_NATIVE
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 // RW-266: the host interfaces this file dispatches into, typed in this flavour - the
 // SwiffHost, the Swiff player and the server-logo manager (see hostSlot's wrappers below).
 #include "../Menu/ISwiffHost.h"
 #include "../Menu/ISwiffPlayer.h"
 #include "../Menu/ServerLogoManager.h"
-#endif
 
+#include <map>
 #include <new>
+#include <set>
 #include <stddef.h>
 #include <stdlib.h>     // [TEMP] atoi for the BF2_RENDDX9_SWIFFLOG stream-tracer gate
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
-// The four D3DX entry points the texture loader and the upload slots use. Undecorated exports from
-// d3dx9_25.dll, bridged the same way Effect.cpp bridges D3DXCreateEffect.
-extern "C" long __stdcall D3DXCreateTexture(void* device, unsigned int w, unsigned int h,
-                                            unsigned int mipLevels, unsigned long usage,
-                                            unsigned int format, unsigned int pool, void** outTex);
-extern "C" long __stdcall D3DXLoadSurfaceFromMemory(void* destSurface, const void* destPalette,
-                                                    const void* destRect, const void* srcMemory,
-                                                    unsigned int srcFormat, unsigned int srcPitch,
-                                                    const void* srcPalette, const void* srcRect,
-                                                    unsigned long filter, unsigned long colorKey);
-extern "C" long __stdcall D3DXGetImageInfoFromFileInMemory(const void* data, unsigned int size,
-                                                           void* outInfo);
-extern "C" long __stdcall D3DXCreateTextureFromFileInMemory(void* device, const void* data,
-                                                            unsigned int size, void** outTex);
-extern "C" void* __stdcall D3DXMatrixMultiply(float* out, const float* a, const float* b);
-#pragma comment(linker, "/alternatename:_D3DXCreateTexture@32=_D3DXCreateTexture")
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromMemory@40=_D3DXLoadSurfaceFromMemory")
-#pragma comment(linker, "/alternatename:_D3DXGetImageInfoFromFileInMemory@12=_D3DXGetImageInfoFromFileInMemory")
-#pragma comment(linker, "/alternatename:_D3DXCreateTextureFromFileInMemory@16=_D3DXCreateTextureFromFileInMemory")
-#pragma comment(linker, "/alternatename:_D3DXMatrixMultiply@12=_D3DXMatrixMultiply")
+#include <vector>
+#include "../Platform/MsvcRand.h"   // [CHOSEN, not recovered] MSVCR71 rand/srand (RAND_MAX 0x7FFF)
+#if !defined(_MSC_VER)
+#include "../Platform/X87Compat.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -63,9 +56,12 @@ namespace dx9rend {
 extern void* g_shaderManager;                                       // dword_1023B97C
 extern void* g_stateManager;                                        // dword_1023B984
 extern void* g_deviceCaps;                                          // dword_1023B980
+namespace Ra { extern unsigned char g_anyEffectCompiled; }          // byte_1023D950
+extern void* g_rendererBase;
+unsigned int* deviceCapsCopyDriverVersion(unsigned int* out);
 void* shaderManagerGetEffect(void*, const char*);
 class Effect;
-void* effectGetShaderParameter(Effect*, const vc71::string&);
+void* effectGetShaderParameter(Effect*, const std::string&);
 void* effectFindTechniqueRecord(void* effect, const char* name);
 void  effectSetTechniqueRecord(void* effect, void* record);
 unsigned int effectBegin(void* effect);
@@ -113,24 +109,29 @@ void* createSwiffFont(const char* name, int size, const wchar_t* initialText);
 // inline text buffer. These typed seams set the real named members instead. Defined in SwiffFont.cpp.
 void swiffFontConfigure(void* font, float boxWidth, int align);
 void swiffFontSetScrollIndex(void* font, int value);
+void swiffFontRefreshWindow(void* font);
+void swiffFontDelete(void* font);               // the wrapper's destructor + engine free
+
+// The FontRenderer operations this file calls on the +1036 singleton (SwiffFont.cpp): init
+// 0x100A1240, begin 0x100A1470, flush 0x100A15A0, unlock 0x100A1720, endFrame 0x100A1500,
+// teardown 0x100A18A0.
+void fontRendererInit(void* fontRenderer);
+void fontRendererBegin(void* fontRenderer);
+void fontRendererFlush(void* fontRenderer);
+void fontRendererUnlock(void* fontRenderer);
+void fontRendererEndFrame(void* fontRenderer);
+void fontRendererTeardown(void* fontRenderer);
 
 // MenuRend/Video.cpp - the Bink movie seams the '?' fill uses. Declared at namespace-geom scope so
 // they link to Video.cpp's external definitions.
-void* videoCreateAndOpen(const char* path);     // createInstanceByName("dice.hfe.geom.Video") + vslot +0x18 open
+bool  videoOpen(void* video, const char* path);
 void  videoDoFrame(void* video);                // vslot +0x20
+bool  videoPathEquals(void* video, const std::string& name);   // vslot +0x24 == name
 void* videoFrameD3DTexture(void* video);        // vslot +0x1C getFrame -> the VideoTarget's texture
+void* videoAcquireFrame(void* video);
+void* videoTargetD3DTexture(void* target);
 
 namespace {
-
-// One-time boundary notes - same shape as BF2Render.cpp's noteOnce.
-void noteOnce(unsigned bit, const char* msg)
-{
-    static unsigned s_noted = 0;
-    if (s_noted & (1u << bit))
-        return;
-    s_noted |= (1u << bit);
-    ::renddx9abi::logf("%s", msg);
-}
 
 // __thiscall dispatch on host-owned objects (SwiffHost, EventManager, files, fonts, videos).
 template <typename Fn>
@@ -147,19 +148,23 @@ typedef void          (__thiscall* HostVoidIntFn)(void*, int);
 typedef void          (__thiscall* HostVoidFn)(void*);
 typedef void          (__thiscall* HostRectFn)(void*, int*);
 
+// Releases a Video through its virtual slot +0x08 (the only raw-slot release site for Video objects
+// that are not owned by a texture record).
+static inline void videoReleaseObject(void* video)
+{
+    void** vv = *reinterpret_cast<void***>(video);
+    reinterpret_cast<HostIntFn>(vv[2])(video);
+}
+
 
 // RW-266: SwiffHost adapters use typed calls natively and fixed slots in plugin builds.
 // [UNRESOLVED] role names follow ISwiffHost.
 
-#if BF2_PLUGIN_ABI_NATIVE
 inline ui::ISwiffHost* swiffHostOf(void* host)
 {
     return static_cast<ui::ISwiffHost*>(static_cast<IBase*>(host));
 }
 #define SWIFFHOST_CALL(typedCall, rawCall) return typedCall
-#else
-#define SWIFFHOST_CALL(typedCall, rawCall) return rawCall
-#endif
 inline void hostRequestRestartMenu(void* h)                                     // +0x264, 612
 { SWIFFHOST_CALL(swiffHostOf(h)->requestRestartMenu(), hostSlot<HostVoidFn>(h, 612)(h)); }
 inline void hostSetFlagE80(void* h, int v)                                      // +0x274, 628
@@ -198,7 +203,6 @@ inline void hostGetRect(void* h, int* out)                                      
 
 void paramSetValue(void* p, const void* data, unsigned int count)
 {
-    if (!p) return;
     static_cast<dx9rend::ShaderParameter*>(p)->setValue(data, count);
 }
 void paramRelease(void* p)
@@ -208,7 +212,6 @@ void paramRelease(void* p)
 }
 void* paramGetHandle(void* p)     // vslot +0x0C, sub_10021190: `return m_handle`
 {
-    if (!p) return 0;
     return static_cast<dx9rend::ShaderParameter*>(p)->getD3DXParam();
 }
 
@@ -217,21 +220,20 @@ typedef int (__stdcall* SmSetRenderStateFn)(void*, unsigned int, unsigned int);
 void smSetRenderState(unsigned int state, unsigned int value)
 {
     void* sm = ::dice::hfe::dx9rend::g_stateManager;
-    if (!sm) return;
     void** vtbl = *reinterpret_cast<void***>(sm);
     reinterpret_cast<SmSetRenderStateFn>(vtbl[28 / 4])(sm, state, value);   // COM slot 7
 }
 
-// fx->SetTexture(handle, tex) / fx->CommitChanges() - raw D3DX, as the shipped bodies call them.
+// fx->SetTexture(handle, tex) / fx->CommitChanges() on the effect's D3DX interface, as the shipped
+// bodies call them.
 void fxSetTexture(void* fx, void* handle, void* texture)
 {
-    if (!fx) return;
-    ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxSetTextureFn>(fx, 0xD0)(fx, handle, texture);
+    static_cast<ID3DXEffect*>(fx)->SetTexture(::renddx9abi::d3dxHandle(handle),
+                                              static_cast<IDirect3DBaseTexture9*>(texture));
 }
 void fxCommitChanges(void* fx)
 {
-    if (!fx) return;
-    ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxCommitChangesFn>(fx, 0x104)(fx);
+    static_cast<ID3DXEffect*>(fx)->CommitChanges();
 }
 
 
@@ -259,6 +261,38 @@ struct SwiffStyle
     unsigned char hasAdditive;    // +76  any add component > 1.0 (the texture setter computes it)
     unsigned char pad4D[3];
     float         width;          // +80  ctor 1.0; lineStyleWidth stores the raw dword here
+
+    // PE 0x101520E0 (this = the style, retn 4): latch a solid color without the cxform transform.
+    // Unreachable in 1.50: no code or data references.
+    void setSolid(unsigned int packedRgba)
+    {
+        mode = 1;
+        ::memcpy(rgba, &packedRgba, 4);
+    }
+
+    // PE 0x10152100 (retn 4): store the width dword at +0x50. Shipped quirk: when the old width is
+    // below 1.0 the body first stores 1.0f and then the argument over it; both arms end with the
+    // argument (sr_lineStyleWidth carries the inlined copy). Unreachable in 1.50: no code or data references.
+    void setWidth(unsigned int widthAsDword)
+    {
+        ::memcpy(&width, &widthAsDword, 4);
+    }
+
+    // PE 0x10152130 (retn 0x18, the only caller is sr_setTexture): id, dims, matrix, wrap/clamp, cxform
+    // snapshot.
+    void setTexture(int texIdArg, int w, int h, const float* matrix, int clamp, const float* currentCxform)
+    {
+        texId = texIdArg;
+        texH  = h;
+        mode  = (clamp != 0) + 2;
+        rgba[0] = 0xFF; rgba[1] = 0xFF; rgba[2] = 0xFF; rgba[3] = 0xFF;
+        texW  = w;
+        for (int i = 0; i < 6; ++i)
+            texMatrix[i] = matrix[i];
+        ::memcpy(cxform, currentCxform, 32);
+        hasAdditive = (cxform[1] > 1.0f || cxform[3] > 1.0f
+                       || cxform[5] > 1.0f || cxform[7] > 1.0f) ? 1 : 0;
+    }
 };
 static_assert(sizeof(SwiffStyle) == 84, "five 84-byte style blocks at +128..+547");
 
@@ -269,41 +303,35 @@ struct SwiffTextureRecord            // ctor sub_101BEFA0, init sub_101BF000
 {
     int           id;               // +0
     IUnknown*     texture;          // +4   IDirect3DBaseTexture9*, AddRef'd by init
-    void*         video;            // +8   dice.hfe.geom.Video for '?' movie fills (withheld)
-    vc71::string  name;             // +12..39
+    void*         video;            // +8   dice.hfe.geom.Video for '?' movie fills
+    std::string  name;             // +12..39
     int           refCount;         // +40  ctor 1; every successful lookup addRefs
     unsigned int  width;            // +44
     unsigned int  height;           // +48
 };
-static_assert(sizeof(SwiffTextureRecord) == 52, "sub_1005F320(0x34) sizes the record");
 
+// The id-indexed record vector (sub_101B9AD0 constructs it empty); a freed slot holds null.
 struct SwiffTextureRegistry
 {
-    unsigned int         pad0;      // +0   never read by any recovered body
-    SwiffTextureRecord** first;     // +4
-    SwiffTextureRecord** last;      // +8
-    SwiffTextureRecord** end;       // +12
+    std::vector<SwiffTextureRecord*> slots;
 
-    // sub_101B9AD0 - the 14-byte ctor: null the three vector fields.
-    void construct() { first = 0; last = 0; end = 0; }
-
-    unsigned int capacity() const { return first ? (unsigned int)(end - first) : 0; }
-    unsigned int count()    const { return first ? (unsigned int)(last - first) : 0; }
+    unsigned int count() const { return static_cast<unsigned int>(slots.size()); }
 
     // sub_101B99C0 - find by name, case-insensitive, skipping freed slots.
-    SwiffTextureRecord* findByName(const vc71::string& name) const
+    SwiffTextureRecord* findByName(const std::string& name) const
     {
         for (unsigned int i = 0; i < count(); ++i)
-            if (first[i] && _stricmp(first[i]->name.c_str(), name.c_str()) == 0)
-                return first[i];
+            if (slots[i] && _stricmp(slots[i]->name.c_str(), name.c_str()) == 0)
+                return slots[i];
         return 0;
     }
 
-    // sub_101B9AB0 - by id; -1 and out-of-range yield null.
+    // PE 0x101B9AB0 (also 0x101B9A40, a second copy of the same body with no caller in 1.50):
+    // by id; -1 yields null, every other id must index the vector.
     SwiffTextureRecord* byId(int id) const
     {
         if (id == -1) return 0;
-        return first[id];            // the shipped body does not range-check either
+        return slots[id];            // the shipped body does not range-check either
     }
 
     // sub_101B9B90 - insert into the first free slot, else append (sub_101BA410 grows).
@@ -311,37 +339,16 @@ struct SwiffTextureRegistry
     {
         for (unsigned int i = 0; i < count(); ++i)
         {
-            if (!first[i])
+            if (!slots[i])
             {
-                first[i] = rec;
+                slots[i] = rec;
                 return i;
             }
         }
-        if (first && last < end)
-        {
-            *last++ = rec;
-        }
-        else
-        {
-            const unsigned int oldCount = count();
-            const unsigned int newCap   = capacity() ? capacity() * 2 : 8;
-            SwiffTextureRecord** grown  = static_cast<SwiffTextureRecord**>(
-                ::renddx9abi::engineAlloc(newCap * sizeof(void*)));
-            if (!grown)
-                return (unsigned int)-1;
-            for (unsigned int i = 0; i < oldCount; ++i)
-                grown[i] = first[i];
-            if (first)
-                ::renddx9abi::engineFree(first);
-            first = grown;
-            last  = grown + oldCount;
-            end   = grown + newCap;
-            *last++ = rec;
-        }
+        slots.push_back(rec);
         return count() - 1;
     }
 };
-static_assert(sizeof(SwiffTextureRegistry) == 16, "four dwords at +884..+899");
 
 // sub_101BEFA0 - the record constructor.
 SwiffTextureRecord* recordConstruct(void* storage)
@@ -350,14 +357,14 @@ SwiffTextureRecord* recordConstruct(void* storage)
     rec->id      = 0;
     rec->texture = 0;
     rec->video   = 0;
-    new (&rec->name) vc71::string();
+    new (&rec->name) std::string();
     rec->refCount = 1;
     return rec;
 }
 
 // sub_101BF000 - init: id, texture (AddRef'd), name, dims. The info-pointer argument the file arm
 // passes is unused in the shipped body too.
-void recordInit(SwiffTextureRecord* rec, int id, IUnknown* texture, const char* name,
+void recordInit(SwiffTextureRecord* rec, int id, IUnknown* texture, const std::string& name,
                 unsigned int w, unsigned int h)
 {
     rec->id      = id;
@@ -369,9 +376,13 @@ void recordInit(SwiffTextureRecord* rec, int id, IUnknown* texture, const char* 
     rec->height  = h;
 }
 
-// sub_101BF040 / sub_101BF060 - addRef, and release-with-destroy-at-zero.
+// sub_101BF040 - addRef.
 void recordAddRef(SwiffTextureRecord* rec) { ++rec->refCount; }
 
+// PE 0x101BF050 (thiscall, `retn 4`) - the movie-fill Video, stored at +8 after init.
+void recordSetVideo(SwiffTextureRecord* rec, void* video) { rec->video = video; }
+
+// PE 0x101BF060. Release and destroy at zero.
 int recordRelease(SwiffTextureRecord* rec)
 {
     const int remaining = --rec->refCount;
@@ -383,7 +394,7 @@ int recordRelease(SwiffTextureRecord* rec)
             void** vtbl = *reinterpret_cast<void***>(rec->video);
             reinterpret_cast<HostIntFn>(vtbl[2])(rec->video);       // vslot +0x08 release
         }
-        rec->name.~string();
+        rec->name.~basic_string();
         ::renddx9abi::engineFree(rec);
         return 0;
     }
@@ -399,43 +410,67 @@ void recordDispose(SwiffTextureRecord* rec)
         void** vtbl = *reinterpret_cast<void***>(rec->video);
         reinterpret_cast<HostIntFn>(vtbl[2])(rec->video);
     }
-    rec->name.~string();
+    rec->name.~basic_string();
 }
 
-// sub_101B9AE0 + sub_101B9B60 - clear all records, then free the array.
-void registryDestroy(SwiffTextureRegistry& reg)
+// PE 0x101B9AE0. Dispose and free every live record, then free the slot array.
+void registryClear(SwiffTextureRegistry& reg)
 {
     for (unsigned int i = 0; i < reg.count(); ++i)
     {
-        if (reg.first[i])
+        if (reg.slots[i])
         {
-            recordDispose(reg.first[i]);
-            ::renddx9abi::engineFree(reg.first[i]);
-            reg.first[i] = 0;
+            recordDispose(reg.slots[i]);
+            ::renddx9abi::engineFree(reg.slots[i]);
+            reg.slots[i] = 0;
         }
     }
-    if (reg.first)
-        ::renddx9abi::engineFree(reg.first);
-    reg.first = 0; reg.last = 0; reg.end = 0;
+    // [CHOSEN, not recovered] Keep native container storage empty after cleanup.
+    // PE 0x101B9B49 writes EBX into its three storage words; when the final slot
+    // was nonnull EBX is its freed record, and 0x101B9B68 can free it again.
+    // Preserve the existing native omission of that invalid storage/double free.
+    reg.slots.~vector();
+    new (&reg.slots) std::vector<SwiffTextureRecord*>();
+}
+
+// PE 0x101B9B60. Clear all records (registryClear), then free the array a second time and zero its
+// three storage words; the native omission above covers that second free.
+void registryDestroy(SwiffTextureRegistry& reg)
+{
+    registryClear(reg);
+}
+
+// PE 0x101B94E0 (thiscall, retn 4; neither the receiver nor the stack argument is read). Asks the
+// host class manager (ds:0x10244A94, vslot +0x48) to unregister the singleton named "SwiffRender".
+// Its only retail references are the two exception funnels of the vector copy at PE 0x101B9520 /
+// 0x101B95C0, which call it once per element; [INFERRED] name, [UNRESOLVED] why that funnel reaches it.
+void swiffRenderUnregisterSingleton()
+{
+    ::dice::hfe::classManager->unregisterSingleton(renddx9abi::HostString("SwiffRender"));
 }
 
 
+// PE 0x101D67F0 initializes global 0x1026741C from "images/blank.png".
+// Its only other users are the two loader concatenations and its destruction.
+const std::string kSwiffFallbackName("images/blank.png");
+
 // Caches GSModDirectory on first use, defaulting to "No Current Mod".
-vc71::string& modDirectory()
+std::string& modDirectory()
 {
-    static vc71::string s_dir;
+    static std::string s_dir;
     static bool         s_read = false;    // byte_1023B170 ships as 1 = "needs reading"
     if (!s_read)
     {
-        ::dice::hfe::dx9rend::readStringSetting("GSModDirectory", s_dir);
-        if (s_dir.c_str()[0] == '\0')
-            s_dir = "No Current Mod";      // the shipped default string
+        const std::string fallback("No Current Mod");
+        const std::string key("GSModDirectory");
+        s_dir = ::dice::hfe::settings->stringGet(key, fallback);
         s_read = true;
     }
     return s_dir;
 }
 
-int registryGetOrLoad(SwiffTextureRegistry& reg, const vc71::string& name,
+// PE 0x101B9C30. Resolve menu paths, load through the mounted filesystem, and cache the record.
+int registryGetOrLoad(SwiffTextureRegistry& reg, const std::string& name,
                       unsigned int* outW, unsigned int* outH, int skipCache)
 {
     if (!skipCache)
@@ -450,159 +485,141 @@ int registryGetOrLoad(SwiffTextureRegistry& reg, const vc71::string& name,
         }
     }
 
+    modDirectory();
     void* device = ::dice::hfe::dx9rend::renderDevice();
-    if (!device)
-        return -1;
+    IDirect3DTexture9* texture = 0;
+    std::string prefix("");
+    std::string path("");
+    const std::string::size_type http = name.find("http://");
+    ::renddx9abi::EngineStream stream;
 
-    vc71::string path;
-    const char*  raw   = name.c_str();
-    const bool   empty = (raw[0] == '\0');
-
-    if (!empty && ::strstr(raw, "http://") != 0)    // the shipped uses find() - anywhere, not prefix
+    if (name == "")
     {
-        // The server-logo arm: ServerLogoManager (a host-side singleton) maps the URL onto its
-        // "@HOME@\LogoCache\" download. Guarded here because nothing in this image registers it -
-        // the shipped build dereferences the resolution unchecked.
-        void* logoMgr = 0;
-        if (::dice::hfe::classManager)
-            logoMgr = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("ServerLogoManager"));
-        if (!logoMgr)
-        {
-            noteOnce(0, "[FRONTIER] SwiffRender texture loader: an http:// logo was requested and "
-                        "the ServerLogoManager singleton is absent - returning -1 (the shipped "
-                        "build dereferences it unchecked)");
-            return -1;
-        }
+        prefix = "Menu/External/FlashMenu/";
+        path = prefix + kSwiffFallbackName;
+    }
+    else if (http != std::string::npos)
+    {
+        // The server-logo arm (0x101B9DBA): the host's ServerLogoManager singleton maps the URL onto
+        // its "@HOME@\LogoCache\" download. Neither the class manager nor the singleton is tested.
+        void* logoMgr =
+            ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("ServerLogoManager"));
         // Convert registry VC7.1 keys to the host string type before calling the singleton.
-#if BF2_PLUGIN_ABI_NATIVE
         // RW-266: typed in this flavour - IServerLogoManager slot 8 (+0x20 download)
         // and slot 6 (+0x18 parseUrl), and HostString IS the host's std::string here.
         IServerLogoManager* const logos =
             static_cast<IServerLogoManager*>(static_cast<IBase*>(logoMgr));
-        const renddx9abi::HostString url(raw);
-        if (!logos->download(url))                                           // +0x20 download
+        if (!logos->download(name))                                          // +0x20 download
             return -1;
         renddx9abi::HostString dir, file;
-        logos->parseUrl(url, dir, file);                                     // +0x18 parseUrl
-#else
-        typedef unsigned char (__thiscall* LogoHasFn)(void*, const renddx9abi::HostString&);
-        typedef void (__thiscall* LogoPathFn)(void*, const renddx9abi::HostString&,
-                                              renddx9abi::HostString&, renddx9abi::HostString&);
-        void** lv = *reinterpret_cast<void***>(logoMgr);
-        const renddx9abi::HostString url(raw);
-        if (!reinterpret_cast<LogoHasFn>(lv[32 / 4])(logoMgr, url))          // +0x20 download
-            return -1;
-        renddx9abi::HostString dir, file;
-        reinterpret_cast<LogoPathFn>(lv[24 / 4])(logoMgr, url, dir, file);   // +0x18 parseUrl
-#endif
+        logos->parseUrl(name, dir, file);                                    // +0x18 parseUrl
         path  = "@HOME@\\LogoCache\\";
-        path += dir.c_str();
-        path += file.c_str();
+        path += dir;
+        path += file;
     }
-    else if (!empty && raw[0] == '@')
+    else if (name.c_str()[0] == '@')
     {
-        path  = modDirectory();
-        path += "/";
-        path += raw + 1;
-        ::renddx9abi::EngineFileData probe = ::renddx9abi::readEngineFile(path.c_str());
-        if (!probe.data)
+        prefix = modDirectory();
+        path = prefix + std::string(name.c_str() + 1);
+        // Shipped defect: a successful probe is discarded without releasing it.
+        if (!::dice::hfe::fileManager->open(path, static_cast<renddx9abi::HostFileMode>(2),
+                                           static_cast<renddx9abi::HostFileAccess>(0), 0))
         {
-            path  = "mods/bf2/";
-            path += raw + 1;
+            prefix = "mods/bf2";
+            path = prefix + std::string(name.c_str() + 1);
+            if (!::dice::hfe::fileManager->open(path, static_cast<renddx9abi::HostFileMode>(2),
+                                               static_cast<renddx9abi::HostFileAccess>(0), 0))
+                return -1;
         }
-        else
-        {
-            ::renddx9abi::freeEngineFile(probe);
-        }
     }
-    else if (!empty && raw[0] == '$')
+    else if (name.c_str()[0] == '$')
     {
-        path = raw + 1;
+        path = std::string(name.c_str() + 1);
     }
-    else if (!empty && raw[0] == '#')
+    else if (name.c_str()[0] == '#')
     {
-        path  = "@ROOT@/";
-        path += raw + 1;
+        prefix = "@ROOT@/";
+        path = prefix + std::string(name.c_str() + 1);
     }
-    else if (!empty && raw[0] == '?')
+    else if (name.c_str()[0] == '?')
     {
         // Movie fills try the active mod, then base BF2. A successful Video owns playback;
         // the fill retains a fixed 256x256 authoring size regardless of movie dimensions.
-        path  = modDirectory();
-        path += "/Movies/";
-        path += raw + 1;
+        prefix = modDirectory() + "/Movies/";
+        path = prefix + std::string(name.c_str() + 1);
         ::renddx9abi::EngineStream probe;
-        if (!probe.open(path))
+        if (!probe.open(path, 2, 0, 0))
         {
-            path  = "mods/bf2/Movies/";
-            path += raw + 1;
-            if (!probe.open(path))
+            prefix = "mods/bf2/Movies/";
+            path = prefix + std::string(name.c_str() + 1);
+            if (!probe.open(path, 2, 0, 0))
                 return -1;
         }
-        void* video = videoCreateAndOpen(path.c_str());
-        if (!video)
+        // [CHOSEN, not recovered] Use the rebuilt ClassManager's typed overload;
+        // its native virtual order differs from the PE's by-value-name slot +0x2C.
+        void* video = reinterpret_cast<ClassManager*>(::dice::hfe::classManager)->createInstance(
+            std::string("dice.hfe.geom.Video"), 0xB801DD04u, 0);
+        if (video && !videoOpen(video, path.c_str()))
         {
-            ::renddx9abi::logf("SwiffRender '?' movie fill: \"%s\" exists for the FileManager but "
-                               "Video::open refused it - returning -1, no movie", path.c_str());
-            return -1;                                            // ~EngineStream releases the probe
-        }
-        probe.close();
-        void* storage = ::renddx9abi::engineAlloc(sizeof(SwiffTextureRecord));
-        if (!storage)
-        {
-            void** vv = *reinterpret_cast<void***>(video);
-            reinterpret_cast<HostIntFn>(vv[2])(video);            // vslot +0x08 release
+            videoReleaseObject(video);
+            probe.close();
             return -1;
         }
-        SwiffTextureRecord* rec = recordConstruct(storage);
+        probe.close();
+        *outW = 256u;
+        *outH = 256u;
+        void* storage = ::renddx9abi::engineAlloc(sizeof(SwiffTextureRecord));
+        SwiffTextureRecord* rec = storage ? recordConstruct(storage) : 0;
         const unsigned int  id  = reg.insert(rec);
-        recordInit(rec, (int)id, 0, name.c_str(), 256u, 256u);
-        rec->video = video;
-        recordAddRef(rec);                                        // the caller's reference
-        if (outW) *outW = 256u;
-        if (outH) *outH = 256u;
+        recordInit(rec, (int)id, 0, name, 256u, 256u);
+        recordSetVideo(rec, video);
         return rec->id;
     }
     else
     {
-        path  = "Menu/External/FlashMenu/";
-        path += raw;
+        prefix = "Menu/External/FlashMenu/";
+        path = prefix + name;
     }
 
-    ::renddx9abi::EngineFileData file = ::renddx9abi::readEngineFile(path.c_str());
-    if (!file.data)
+    if (!stream.open(path, 2, 0, 0))
     {
         // The shipped retry: whatever the routing produced, fall back to the FlashMenu directory.
-        path  = "Menu/External/FlashMenu/";
-        path += raw;
-        file = ::renddx9abi::readEngineFile(path.c_str());
-        if (!file.data)
+        prefix = "Menu/External/FlashMenu/";
+        path = prefix + kSwiffFallbackName;
+        if (!stream.open(path, 2, 0, 0))
             return -1;
     }
 
-    // D3DXIMAGE_INFO: Width at +0, Height at +4 (the caller reads only those two).
-    unsigned int info[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    D3DXGetImageInfoFromFileInMemory(file.data, file.size, info);
-
-    void* texture = 0;
-    const long hr = D3DXCreateTextureFromFileInMemory(device, file.data, file.size, &texture);
-    ::renddx9abi::freeEngineFile(file);
-    if (hr < 0 || !texture)
-        return -1;
-
-    // Report dimensions from image metadata, not the surface descriptor.
-    *outW = info[0];
-    *outH = info[1];
-
-    void* storage = ::renddx9abi::engineAlloc(sizeof(SwiffTextureRecord));
-    if (!storage)
+    const unsigned int size = static_cast<unsigned int>(stream.getSize());
+    void* bytes = ::renddx9abi::engineAlloc(size);
+    const unsigned int read = stream.read(bytes, size);
+    stream.close();
+    D3DXIMAGE_INFO info;
+    D3DXGetImageInfoFromFileInMemory(bytes, read, &info);
+    const HRESULT hr = D3DXCreateTextureFromFileInMemory(static_cast<IDirect3DDevice9*>(device),
+                                                         bytes, read, &texture);
+    if (hr != 0)
     {
-        static_cast<IUnknown*>(texture)->Release();
+        if (bytes) ::renddx9abi::engineFree(bytes);
         return -1;
     }
-    SwiffTextureRecord* rec = recordConstruct(storage);
+    if (bytes) ::renddx9abi::engineFree(bytes);
+    IDirect3DSurface9* surface = 0;
+    texture->GetSurfaceLevel(0, &surface);
+    D3DSURFACE_DESC desc;
+    surface->GetDesc(&desc);
+    surface->Release();
+
+    // Report dimensions from image metadata, not the surface descriptor.
+    *outW = info.Width;
+    *outH = info.Height;
+
+    void* storage = ::renddx9abi::engineAlloc(sizeof(SwiffTextureRecord));
+    SwiffTextureRecord* rec = storage ? recordConstruct(storage) : 0;
+    const unsigned int height = *outH;
+    const unsigned int width = *outW;
     const unsigned int  id  = reg.insert(rec);
-    recordInit(rec, (int)id, static_cast<IUnknown*>(texture), name.c_str(), info[0], info[1]);
+    recordInit(rec, (int)id, static_cast<IUnknown*>(texture), name, width, height);
     static_cast<IUnknown*>(texture)->Release();     // the record now owns the reference
     recordAddRef(rec);                              // the caller's reference, as on a cache hit
     return rec->id;
@@ -627,63 +644,45 @@ bool registryReleaseId(SwiffTextureRegistry& reg, int id)
 {
     if (id == -1)
         return false;
-    SwiffTextureRecord* rec = reg.first[id];
+    SwiffTextureRecord* rec = reg.slots[id];
     if (!rec)
         return false;
     if (!recordRelease(rec))
-        reg.first[id] = 0;
+        reg.slots[id] = 0;
     return true;
 }
 
 
 // Forty falling credits names, recycled from bottom to top.
-// Font creation is withheld (RW-80); rows without fonts are skipped.
+// Fonts use the existing native wrapper layout (RW-80).
 
 struct CreditsRain
 {
     struct Point { void* font; float y; };
     Point         points[40];       // +0..319   (ctor zeroes only the font slots)
     unsigned int  pad320;           // +320      untouched by the ctor
-    void**        first;            // +324
-    void**        last;             // +328
-    void**        end;              // +332
+    std::vector<void*> fonts;       // +324      the round-robin font list
     unsigned char inited;           // +336
     unsigned char pad[3];
 };
-static_assert(sizeof(CreditsRain) == 340, "SwiffRender_init allocates 340 for it");
 
 void creditsRainPush(CreditsRain* r, void* font)
 {
-    if (r->first && r->last < r->end)
-    {
-        *r->last++ = font;
-        return;
-    }
-    const unsigned int oldCount = r->first ? (unsigned int)(r->last - r->first) : 0;
-    const unsigned int newCap   = r->first ? (unsigned int)(r->end - r->first) * 2 : 8;
-    void** grown = static_cast<void**>(::renddx9abi::engineAlloc(newCap * sizeof(void*)));
-    if (!grown)
-        return;
-    for (unsigned int i = 0; i < oldCount; ++i)
-        grown[i] = r->first[i];
-    if (r->first)
-        ::renddx9abi::engineFree(r->first);
-    r->first = grown;
-    r->last  = grown + oldCount;
-    r->end   = grown + newCap;
-    *r->last++ = font;
+    r->fonts.push_back(font);
 }
 
 
-// THE object - 0x460 = 1120 bytes, RefFactory alloc. Every offset below is the one the shipped
-// bodies dereference; the static_asserts hold the layout.
-
-struct StringVec
+// One entry of the fonts vector at +956: a name and the object shutdown releases (+28 in the
+// image). Nothing in this build creates one until RW-80 retires.
+struct SwiffFontEntry
 {
-    vc71::string* first;
-    vc71::string* last;
-    vc71::string* end;
+    std::string name;              // +0
+    void*        object;            // +28
 };
+
+
+// THE object - 0x460 = 1120 bytes in the image, RefFactory alloc. The offsets beside the members
+// are the shipped ones; the members from the registry on are native containers.
 
 struct SwiffRender
 {
@@ -738,25 +737,23 @@ struct SwiffRender
     int                 statMin;          // +880   ctor 1000
     SwiffTextureRegistry registry;        // +884
     int                 u900;             // +900   untouched by every recovered body
-    StringVec           strings904;       // +904   dtor-destroyed; no recovered writer
+    std::vector<std::string> strings904; // +904   dtor-destroyed; no recovered writer
     unsigned char       savedViewport[24];// +916   D3DVIEWPORT9, beginDisplay saves / endDisplay restores
     void*               lastVerts;        // +940   drawVertices' latches
     unsigned int        lastCount;        // +944
     unsigned char       stencilRef;       // +948   ctor 1; beginMask increments, wraps 255 -> 1
     unsigned char       pad949[3];
     int                 u952;             // +952   untouched
-    void**              fontsFirst;       // +956   {name-string owner objects} - torn down in shutdown
-    void**              fontsLast;        // +960
-    void**              fontsEnd;         // +964
+    std::vector<SwiffFontEntry*> fonts;   // +956   torn down in shutdown
     void*               released968;      // +968   shutdown releases both if set
     void*               released972;      // +972
-    int                 u976;             // +976   ctor 0
+    void*               currentVideo;     // +976   ctor 0; selectVideo stores the Video it plays [INFERRED] name
     int                 u980;             // +980   ctor 0
-    vc71::map_layout    texTechniqueMap;  // +984   texture name -> technique-table index
+    std::map<std::string, int> texTechniqueMap;   // +984   texture name -> technique-table index
     void*               techRecord[9];    // +996   {0, TS0, TS1, TS2, TS3, Shape, Wrap, Clamp, Line}
     void*               swiffHost;        // +1032
-    void*               fontRenderer;     // +1036  null in this build (RW-80)
-    vc71::set_layout    fontSet;          // +1040  keyed by font pointer (slot 27's erase target)
+    void*               fontRenderer;     // +1036  the FontRenderer singleton
+    std::set<void*>     fontSet;          // +1040  keyed by font pointer (slot 27's erase target)
     int                 u1052;            // +1052  untouched
     unsigned char       fontsDisabled;    // +1056  init 0; ECCore (11,3) sets it
     unsigned char       b1057;            // +1057  ctor 0
@@ -767,13 +764,98 @@ struct SwiffRender
     int                 vpW;              // +1092  beginDisplay's viewport w/h latch
     int                 vpH;              // +1096
     int                 u1100;            // +1100  untouched
-    vc71::string*       creditsFirst;     // +1104  the credits image-name list (slots 61..64)
-    vc71::string*       creditsLast;      // +1108
-    vc71::string*       creditsEnd;       // +1112
+    std::vector<std::string> credits;    // +1104  the credits image-name list (slots 61..64)
     int                 u1116;            // +1116  untouched
+
+    // PE 0x101525F0: unlock the current ring buffer when it is locked. Unreachable in 1.50: no code or
+    // data references (ringAdvance and flushStrip carry the same unlock inline).
+    void unlockRing()
+    {
+        if (locked)
+        {
+            ::dice::hfe::dx9rend::vertexBufferUnlock(vb[vbIndex]);
+            locked = 0;
+        }
+    }
+
+    // PE 0x10152DF0: make the Video named `path` the current one (+976, currentVideo). The two cached Video objects
+    // are released968 / released972 (+968 / +972): a hit replays doFrame on it; a miss releases the first,
+    // shifts the second down, creates a new Video, opens it and, on success, plays a frame.
+    // Unreachable in 1.50: no code or data references.
+    // Shipped: the open call receives the std::string reference where Video::open reads a char*, and a
+    // failed open releases the new Video without clearing +972. [CHOSEN, not recovered] The native
+    // build passes path.c_str() and clears +972 and a null createInstance result (the image reads a
+    // string object as a path, dereferences the null and frees the object twice at shutdown); those
+    // are memory-safety omissions.
+    void selectVideo(const std::string& path)
+    {
+        for (int i = 0; i < 2; ++i)
+        {
+            void* const cached = i == 0 ? released968 : released972;
+            if (cached && videoPathEquals(cached, path))
+            {
+                videoDoFrame(cached);                                           // vslot +0x20
+                currentVideo = cached;
+                return;
+            }
+        }
+        if (released968)
+        {
+            videoReleaseObject(released968);                                    // vslot +0x08
+        }
+        released968 = released972;
+        void* const video = reinterpret_cast<ClassManager*>(::dice::hfe::classManager)->createInstance(
+            std::string("dice.hfe.geom.Video"), 0xB801DD04u, 0);
+        released972 = video;
+        if (!video)
+            return;
+        if (!videoOpen(video, path.c_str()))                                   // vslot +0x18
+        {
+            videoReleaseObject(video);                                          // vslot +0x08
+            released972 = 0;
+            return;
+        }
+        videoDoFrame(video);
+        currentVideo = video;
+    }
+
+    // PE 0x10153320 (no this, retn 0xC): out = the 2x3 matrix {m0 m1 m2 / m3 m4 m5} applied to the point.
+    // Each component is summed in x87 registers and narrowed once, at the store. Unreachable in 1.50: no
+    // code or data references.
+    static void transformPoint(float* out, const float* matrix, const float* point)
+    {
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] Native equivalent of the unspilled FMUL/FADDP/FADD sequences.
+        const float x = bf2x87::store(bf2x87::add(bf2x87::add(
+            bf2x87::mul(bf2x87::wide(matrix[1]), bf2x87::wide(point[1])),
+            bf2x87::mul(bf2x87::wide(matrix[0]), bf2x87::wide(point[0]))), bf2x87::wide(matrix[2])));
+        const float y = bf2x87::store(bf2x87::add(bf2x87::add(
+            bf2x87::mul(bf2x87::wide(matrix[4]), bf2x87::wide(point[1])),
+            bf2x87::mul(bf2x87::wide(matrix[3]), bf2x87::wide(point[0]))), bf2x87::wide(matrix[5])));
+#else
+        const float x = matrix[1] * point[1] + matrix[0] * point[0] + matrix[2];
+        const float y = matrix[4] * point[1] + matrix[3] * point[0] + matrix[5];
+#endif
+        out[0] = x;
+        out[1] = y;
+    }
+
+    // PE 0x10153BE0: the entry of `fonts` whose name equals `name` case-insensitively, or null. Unreachable in
+    // 1.50: no code or data references.
+    SwiffFontEntry* findFont(const std::string& name) const
+    {
+        for (std::size_t i = 0; i < fonts.size(); ++i)
+        {
+            if (_stricmp(fonts[i]->name.c_str(), name.c_str()) == 0)
+                return fonts[i];
+        }
+        return 0;
+    }
 };
 
-static_assert(sizeof(SwiffRender) == 0x460, "RefFactory_geom_SwiffRender allocates 0x460");
+// The retail x86 layout. Every access is by member name, the two listener subobjects are found
+// with offsetof and the object is allocated with sizeof, so x64 keeps its own offsets.
+#if defined(_M_IX86)
 static_assert(offsetof(SwiffRender, decl)           == 52,   "decl at +52");
 static_assert(offsetof(SwiffRender, vb)             == 68,   "the VB ring at +68");
 static_assert(offsetof(SwiffRender, effect)         == 100,  "the effect at +100");
@@ -783,15 +865,7 @@ static_assert(offsetof(SwiffRender, mtxRemap)       == 552,  "the remap matrix a
 static_assert(offsetof(SwiffRender, cxform)         == 744,  "the cxform at +744");
 static_assert(offsetof(SwiffRender, mtxCurrent)     == 776,  "the current transform at +776");
 static_assert(offsetof(SwiffRender, registry)       == 884,  "the registry at +884 (lea +374h)");
-static_assert(offsetof(SwiffRender, savedViewport)  == 916,  "the saved viewport at +916");
-static_assert(offsetof(SwiffRender, texTechniqueMap) == 984, "the technique map at +984 (+3D8h)");
-static_assert(offsetof(SwiffRender, techRecord)     == 996,  "the technique table at +996");
-static_assert(offsetof(SwiffRender, swiffHost)      == 1032, "SwiffHost at +1032");
-static_assert(offsetof(SwiffRender, fontRenderer)   == 1036, "FontRenderer at +1036");
-static_assert(offsetof(SwiffRender, fontsDisabled)  == 1056, "the fonts-disabled byte at +1056");
-static_assert(offsetof(SwiffRender, stats)          == 1060, "the frame stats at +1060");
-static_assert(offsetof(SwiffRender, trail)          == 1088, "the credits rain at +1088");
-static_assert(offsetof(SwiffRender, creditsFirst)   == 1104, "the credits names at +1104");
+#endif
 
 // The SwiffHost gate nearly every draw body opens with: vslot +632, "is the host busy/suppressed".
 bool hostSuppressed(SwiffRender* s)
@@ -799,6 +873,111 @@ bool hostSuppressed(SwiffRender* s)
     if (!s->swiffHost)
         return false;
     return hostGetFlagE80OrNotE81(s->swiffHost);
+}
+
+// PE 0x101B8F70. The returned slot is read after updating the host's index.
+void** creditsRainNext(CreditsRain* rain)
+{
+    void* host = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
+    const int index = hostGetIntF14(host);
+    // [CHOSEN, not recovered] Preserve the existing empty-list omission of the
+    // null dereference in PE 0x101B9037 / 0x101B91DD.
+    void** result = rain->fonts.empty() ? 0 : &rain->fonts[index];
+    unsigned int next = static_cast<unsigned int>(index) + 1u;
+    if (next >= rain->fonts.size())
+        next = 0;
+    hostSetIntF14(host, static_cast<int>(next));
+    return result;
+}
+
+// PE 0x101B8ED0. Looks the SwiffRender singleton up and drops the answer.
+// unreachable in 1.50: no code or data references. [INFERRED] name.
+void swiffRenderLookupDiscarded()
+{
+    ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffRender"));
+}
+
+// PE 0x101B9200. Zeroes the forty glyph font slots (the y slots stay uninitialised, as shipped), the
+// font vector (constructed empty) and the inited byte; the word at +320 is untouched.
+CreditsRain* creditsRainConstruct(void* storage)
+{
+    CreditsRain* const rain = new (storage) CreditsRain;
+    for (int i = 0; i < 40; ++i)
+        rain->points[i].font = 0;
+    rain->inited = 0;
+    return rain;
+}
+
+// PE 0x101B8F00. Releases every non-null rain font through the SwiffRender singleton's slot 27
+// (+0x6C); the vector and the scroller are the caller's to destroy and free.
+void creditsRainReleaseFonts(CreditsRain* r)
+{
+    ui::ISwiffRender* renderer = static_cast<ui::ISwiffRender*>(
+        ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffRender")));
+    for (unsigned int i = 0; i < r->fonts.size(); ++i)
+    {
+        if (r->fonts[i])
+            renderer->releaseFontHandle(r->fonts[i]);
+    }
+}
+
+// PE 0x101B8FF0. Reseeds the forty rows: font from creditsRainNext, y from 15360 in steps of 400,
+// then the SwiffHost reseed flag (+0xF18) is cleared and the inited byte set.
+void creditsRainReseed(CreditsRain* rain)
+{
+    void* resetHost = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
+    float y = 15360.0f;
+    for (int i = 0; i < 40; ++i)
+    {
+        void** font = creditsRainNext(rain);
+        rain->points[i].y = y;
+        y += 400.0f;
+        // [CHOSEN, not recovered] retail dereferences the slot unguarded (PE 0x101B9037); an empty
+        // font list answers null here instead of faulting (memory-safety exception).
+        rain->points[i].font = font ? *font : 0;
+    }
+    hostSetFlagF18(resetHost, 0);
+    rain->inited = 1;
+}
+
+// PE 0x101B9070. Scroll and draw the forty credits rows.
+void creditsRainUpdate(CreditsRain* rain, float dt)
+{
+    void* host = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
+    ui::ISwiffRender* renderer = static_cast<ui::ISwiffRender*>(
+        ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffRender")));
+    if (hostGetFlagF18(host))
+    {
+        creditsRainReseed(rain);                                     // PE 0x101B8FF0
+        return;
+    }
+    if (rain->inited)
+    {
+        dt = 0.0f;
+        rain->inited = 0;
+    }
+    for (int i = 0; i < 40; ++i)
+    {
+        const float matrix[6] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, rain->points[i].y };
+        renderer->drawGlyphBitmap(rain->points[i].font, matrix, ~0u, 0);
+        const float speed = hostGetFloatF0C(host);
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] The speed call's x87 result/product is not
+        // narrowed before the subtraction and final row-position store.
+        rain->points[i].y = bf2x87::store(bf2x87::sub(bf2x87::wide(rain->points[i].y),
+            bf2x87::mul(bf2x87::wide(speed), bf2x87::wide(dt))));
+#else
+        rain->points[i].y -= speed * dt;
+#endif
+    }
+    if (rain->points[0].y < -400.0f)
+    {
+        for (int i = 0; i < 39; ++i)
+            rain->points[i] = rain->points[i + 1];
+        void** font = creditsRainNext(rain);
+        rain->points[39].font = font ? *font : 0;
+        rain->points[39].y = rain->points[38].y + 400.0f;
+    }
 }
 
 
@@ -834,25 +1013,33 @@ static bool sstVerbose() { return g_sst.framesToLog > 0 && g_sst.verbose; }
 #define SST(...) do { if (sstVerbose()) ::renddx9abi::logf(__VA_ARGS__); } while (0)
 
 
-// sub_101531B0 - apply the cxform to four color bytes, clamped 0..255, packed little-endian
+// PE 0x101531B0 - apply the cxform to four color bytes, clamped 0..255, packed little-endian
 // r,g,b,a (so the dword reads 0xAABBGGRR in memory order r at +0).
-
 unsigned int applyCxform(const float* cx, const unsigned char* rgba)
 {
     unsigned int out = 0;
     for (int i = 0; i < 4; ++i)
     {
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] Retain the unspilled upper comparison, then
+        // reload the single-precision spill for the lower comparison/conversion.
+        const bf2x87::Real value = bf2x87::add(bf2x87::mul(
+            bf2x87::wide(rgba[i]), bf2x87::wide(cx[2 * i])), bf2x87::wide(cx[2 * i + 1]));
+        float v = bf2x87::store(value);
+        if (bf2x87::notLess(value, bf2x87::wide(255))) v = 255.0f;
+        else if (!(v > 0.0f)) v = 0.0f;
+#else
         float v = (float)rgba[i] * cx[2 * i] + cx[2 * i + 1];
-        if (v >= 255.0f) v = 255.0f;
-        else if (v <= 0.0f) v = 0.0f;
+        if (!(v < 255.0f)) v = 255.0f;
+        else if (!(v > 0.0f)) v = 0.0f;
+#endif
         out |= ((unsigned int)(unsigned char)(unsigned __int64)v) << (8 * i);
     }
     return out;
 }
 
 
-// sub_10153140 - advance the VB ring: unlock, next of three, cursor 0, lock discard.
-
+// PE 0x10153140 - advance the VB ring: unlock, next of three, cursor 0, lock discard.
 float* ringAdvance(SwiffRender* s)
 {
     using namespace ::dice::hfe::dx9rend;
@@ -875,9 +1062,22 @@ float* ringAdvance(SwiffRender* s)
 void applyStyleState(SwiffRender* s, SwiffStyle* style);
 void flushStrip(SwiffRender* s);
 
+float transformCoordinate(double x, double y, const float* matrix, int column)
+{
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Native equivalent of the unspilled FMUL/FADDP/FADD
+    // sequence at PE 0x10154D34 and 0x101547DF, narrowed only at FSTP.
+    return bf2x87::store(bf2x87::add(bf2x87::add(
+        bf2x87::mul(bf2x87::wide(y), bf2x87::wide(matrix[4 + column])),
+        bf2x87::mul(bf2x87::wide(x), bf2x87::wide(matrix[column]))),
+        bf2x87::wide(matrix[12 + column])));
+#else
+    return (float)(y * matrix[4 + column] + x * matrix[column] + matrix[12 + column]);
+#endif
+}
 
-// sub_10153D00 - bind the technique, diffuse/texgen parameters, and texture for one style block.
 
+// PE 0x10153D00 - bind the technique, diffuse/texgen parameters, and texture for one style block.
 void applyStyleState(SwiffRender* s, SwiffStyle* style)
 {
     using namespace ::dice::hfe::dx9rend;
@@ -903,20 +1103,22 @@ void applyStyleState(SwiffRender* s, SwiffStyle* style)
         s->solidColor[1] = diffuse[1];
         s->solidColor[2] = diffuse[2];
         s->solidColor[3] = diffuse[3];
-        paramSetValue(s->paramDiffuse, diffuse, 0);
-        fxSetTexture(effectD3dxHandle(s->effect), paramGetHandle(s->paramTexture), 0);
+        void* fx = effectD3dxHandle(s->effect);
+        void* handle = paramGetHandle(s->paramTexture);
+        fxSetTexture(fx, handle, 0);
         return;
     }
 
     if (style->mode == 2 || style->mode == 3)
     {
         // Textured: alpha-blend states, the cxform-derived diffuse, the texgen rows, the texture.
+        const bool additive = style->hasAdditive != 0;
         smSetRenderState(27, 1);     // D3DRS_ALPHABLENDENABLE
         smSetRenderState(19, 5);     // D3DRS_SRCBLEND  = srcalpha
         smSetRenderState(20, 6);     // D3DRS_DESTBLEND = invsrcalpha
 
         float diffuse[4];
-        if (style->hasAdditive)
+        if (additive)
         {
             diffuse[0] = style->cxform[1] * 0.0039215689f;   // the ADD components / 255
             diffuse[1] = style->cxform[3] * 0.0039215689f;
@@ -932,17 +1134,24 @@ void applyStyleState(SwiffRender* s, SwiffStyle* style)
         }
         paramSetValue(s->paramDiffuse, diffuse, 0);
 
-        const float invW = 1.0f / (float)style->texW;
-        const float invH = 1.0f / (float)style->texH;
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] FILD reads signed dimensions; reciprocals
+        // remain in x87 registers until each texgen product is stored.
+        const bf2x87::Real invW = bf2x87::div(bf2x87::wide(1), bf2x87::wide(style->texW));
+        const bf2x87::Real invH = bf2x87::div(bf2x87::wide(1), bf2x87::wide(style->texH));
+#else
+        const double invW = 1.0 / style->texW;
+        const double invH = 1.0 / style->texH;
+#endif
         float texGenS[4], texGenT[4];
-        texGenS[0] = invW * style->texMatrix[0];
-        texGenS[1] = invW * style->texMatrix[1];
+        texGenS[0] = static_cast<float>(invW * style->texMatrix[0]);
+        texGenS[1] = static_cast<float>(invW * style->texMatrix[1]);
         texGenS[2] = 0.0f;
-        texGenS[3] = invW * style->texMatrix[2];
-        texGenT[0] = invH * style->texMatrix[3];
-        texGenT[1] = invH * style->texMatrix[4];
+        texGenS[3] = static_cast<float>(invW * style->texMatrix[2]);
+        texGenT[0] = static_cast<float>(invH * style->texMatrix[3]);
+        texGenT[1] = static_cast<float>(invH * style->texMatrix[4]);
         texGenT[2] = 0.0f;
-        texGenT[3] = invH * style->texMatrix[5];
+        texGenT[3] = static_cast<float>(invH * style->texMatrix[5]);
         paramSetValue(s->paramTexGenS, texGenS, 0);
         paramSetValue(s->paramTexGenT, texGenT, 0);
 
@@ -951,15 +1160,12 @@ void applyStyleState(SwiffRender* s, SwiffStyle* style)
             SwiffTextureRecord* rec = s->registry.byId(style->texId);
 
             // The per-texture technique override map: name -> index into techRecord[].
-            if (rec)
+            const std::map<std::string, int>::const_iterator node =
+                s->texTechniqueMap.find(rec->name);
+            if (node != s->texTechniqueMap.end())
             {
-                vc71::map_node* node = vc71::mapFind(s->texTechniqueMap, rec->name.c_str());
-                if (node)
-                {
-                    const unsigned int idx =
-                        (unsigned int)vc71::mapNodeValue(node);
-                    effectSetTechniqueRecord(s->effect, s->techRecord[idx]);
-                }
+                const unsigned int idx = static_cast<unsigned int>(node->second);
+                effectSetTechniqueRecord(s->effect, s->techRecord[idx]);
             }
 
             void* d3dTexture = 0;
@@ -970,15 +1176,19 @@ void applyStyleState(SwiffRender* s, SwiffStyle* style)
                     // The movie-fill arm: advance the Bink movie one frame (BinkWait-gated,
                     // so it only decodes when the clock says it is time) and bind the VideoTarget's
                     // D3D texture, which the frame was copied into.
+                    void* frame = videoAcquireFrame(rec->video);
+                    d3dTexture = videoTargetD3DTexture(frame);
                     videoDoFrame(rec->video);
-                    d3dTexture = videoFrameD3DTexture(rec->video);
+                    static_cast<IBase*>(frame)->release();
                 }
                 else
                 {
                     d3dTexture = rec->texture;
                 }
             }
-            fxSetTexture(effectD3dxHandle(s->effect), paramGetHandle(s->paramTexture), d3dTexture);
+            void* fx = effectD3dxHandle(s->effect);
+            void* handle = paramGetHandle(s->paramTexture);
+            fxSetTexture(fx, handle, d3dTexture);
             s->currentTexture = d3dTexture;
         }
     }
@@ -988,6 +1198,7 @@ void applyStyleState(SwiffRender* s, SwiffStyle* style)
 // sub_10154220 - flush the accumulated strip: apply the latched style, unlock, bind stream + decl,
 // effect begin -> per-pass DrawPrimitive(trianglestrip, cursor-2), end, ring re-lock.
 
+// PE 0x10154220
 void flushStrip(SwiffRender* s)
 {
     using namespace ::dice::hfe::dx9rend;
@@ -996,8 +1207,11 @@ void flushStrip(SwiffRender* s)
 
     applyStyleState(s, &s->style[3]);          // the flush latch at +380
 
-    vertexBufferUnlock(s->vb[s->vbIndex]);
-    s->locked = 0;
+    if (s->locked)                             // PE 0x10154240: the unlock is conditional on the lock flag
+    {
+        vertexBufferUnlock(s->vb[s->vbIndex]);
+        s->locked = 0;
+    }
     vertexBufferBindStream(s->vb[s->vbIndex], 0);
     vertexDeclarationBind(s->decl);
 
@@ -1016,9 +1230,8 @@ void flushStrip(SwiffRender* s)
 }
 
 
-// sub_10154A20 - the textured/solid fill collector: flush, then re-fill the ring with the
+// PE 0x10154A20 - the textured/solid fill collector: flush, then re-fill the ring with the
 // tesselated triangle vertices and flush again under the latched fill style.
-
 void collectFill(SwiffRender* s, const short* verts, unsigned int count)
 {
     if (!s->swiffHost || hostSuppressed(s))
@@ -1036,29 +1249,39 @@ void collectFill(SwiffRender* s, const short* verts, unsigned int count)
     // Convert latched color-transform floats directly to integers.
     // The additive pass uses RGB offsets and opaque alpha; the plain pass uses multipliers.
     unsigned char r, g, b, a;
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] FISTP's masked-invalid result is 0x80000000;
+    // native float-to-int casts would otherwise be undefined outside int range.
+    const auto colorByte = [](float value) {
+        return static_cast<unsigned char>(bf2x87::toIntTruncate(bf2x87::wide(value)));
+    };
+#else
+    const auto colorByte = [](float value) { return static_cast<unsigned char>(static_cast<int>(value)); };
+#endif
     if (s->style[3].hasAdditive)
     {
-        r = (unsigned char)(int)s->style[3].cxform[1];
-        g = (unsigned char)(int)s->style[3].cxform[3];
-        b = (unsigned char)(int)s->style[3].cxform[5];
+        r = colorByte(s->style[3].cxform[1]);
+        g = colorByte(s->style[3].cxform[3]);
+        b = colorByte(s->style[3].cxform[5]);
         a = 255;
         z = 0.0f;
     }
     else
     {
-        r = (unsigned char)(int)s->style[3].cxform[0];
-        g = (unsigned char)(int)s->style[3].cxform[2];
-        b = (unsigned char)(int)s->style[3].cxform[4];
-        a = (unsigned char)(int)s->style[3].cxform[6];
+        r = colorByte(s->style[3].cxform[0]);
+        g = colorByte(s->style[3].cxform[2]);
+        b = colorByte(s->style[3].cxform[4]);
+        a = colorByte(s->style[3].cxform[6]);
     }
     const unsigned int color =
         ((unsigned int)b) | ((((((unsigned int)a << 8) | r) << 8) | g) << 8);
 
     float* v = base;
-    for (unsigned int i = 0; i < count; ++i)
+    const int coordinateCount = static_cast<int>(count * 2u);
+    for (int i = 0; i < coordinateCount; i += 2)
     {
-        v[0] = (float)verts[2 * i]     - 0.5f;
-        v[1] = (float)verts[2 * i + 1] - 0.5f;
+        v[0] = (float)verts[i]     - 0.5f;
+        v[1] = (float)verts[i + 1] - 0.5f;
         v[2] = z;
         *reinterpret_cast<unsigned int*>(v + 3) = color;
         v += 4;
@@ -1071,18 +1294,19 @@ void collectFill(SwiffRender* s, const short* verts, unsigned int count)
 // The 67 primary slots. Shims are __fastcall(self, edx, ...) == __thiscall at the call site.
 
 
-void __fastcall sr_addRef(void* self, void*)
+void RD9_THUNK sr_addRef(void* self RD9_THUNK_EDX)
 {
     ++static_cast<SwiffRender*>(self)->refCount;
 }
-int __fastcall sr_getRef(void* self, void*)
+int RD9_THUNK sr_getRef(void* self RD9_THUNK_EDX)
 {
     return static_cast<SwiffRender*>(self)->refCount;
 }
 
 void swiffRenderDestroy(SwiffRender* s);       // the dtor, below
 
-int __fastcall sr_release(void* self, void*)
+// PE 0x10155C70
+int RD9_THUNK sr_release(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     const int remaining = --s->refCount;
@@ -1094,104 +1318,128 @@ int __fastcall sr_release(void* self, void*)
     return remaining;
 }
 
-void* __fastcall sr_queryInterfaceById(void* self, void*, unsigned int iid)
+// PE 0x10155C30
+void* RD9_THUNK sr_queryInterfaceById(void* self RD9_THUNK_EDX, unsigned int iid)
 {
     if (iid == 1u || iid == IID_ISwiffRender)
         return self;
     return 0;
 }
 
-int  __fastcall sr_init(void* self, void*);            // 0x10152200, below
-int  __fastcall sr_shutdown(void* self, void*);        // 0x10153FE0, below
+int  RD9_THUNK sr_init(void* self RD9_THUNK_EDX);            // 0x10152200, below
+int  RD9_THUNK sr_shutdown(void* self RD9_THUNK_EDX);        // 0x10153FE0, below
 
-int __fastcall sr_slot6(void*, void*)
+int RD9_THUNK sr_slot6(void* RD9_THUNK_EDX)
 {
     return -1;
 }
 
-// upload an A8 alpha image (font glyph pages). D3DFMT_A8 == 28.
-int __fastcall sr_uploadAlpha(void* self, void*, unsigned int w, unsigned int h, const void* data)
+// PE 0x101528E0. Upload an A8 alpha image (font glyph pages). D3DFMT_A8 == 28.
+int RD9_THUNK sr_uploadAlpha(void* self RD9_THUNK_EDX, unsigned int w, unsigned int h, const void* data)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     void* device = ::dice::hfe::dx9rend::renderDevice();
-    if (!device)
+    IDirect3DTexture9* tex = 0;
+    if (D3DXCreateTexture(static_cast<IDirect3DDevice9*>(device), w, h, 1, 0, D3DFMT_A8,
+                          D3DPOOL_MANAGED, &tex) != 0)
         return -1;
-    void* tex = 0;
-    if (D3DXCreateTexture(device, w, h, 1, 0, 28, 1, &tex) < 0)
-        return -1;
-    IDirect3DTexture9* t = static_cast<IDirect3DTexture9*>(tex);
+    IDirect3DTexture9* t = tex;
     IDirect3DSurface9* surface = 0;
     t->GetSurfaceLevel(0, &surface);
     RECT rect = { 0, 0, (LONG)w, (LONG)h };
-    if (D3DXLoadSurfaceFromMemory(surface, 0, 0, data, 28, w, 0, &rect, 0xFFFFFFFF, 0) < 0)
+    if (D3DXLoadSurfaceFromMemory(surface, 0, 0, data, D3DFMT_A8, w, 0, &rect, 0xFFFFFFFF, 0) != 0)
     {
-        if (surface) surface->Release();
-        t->Release();
+        // Shipped defect: the acquired surface reference leaks on refusal.
+        if (t) t->Release();
         return -1;
     }
     if (surface)
         surface->Release();
+    t->GetLevelCount();                         // descriptor's discarded mip-count query
     const int id = registryRegisterUploaded(s->registry, t);
     t->Release();
     return id;
 }
 
-int __fastcall sr_slot8(void*, void*, int)
+// 0x101529D0: `or eax,-1; ret 4`. Its one argument is SwiffPlayer's image::rgb* (0x10005B56).
+#if !defined(_MSC_VER)
+int RD9_THUNK sr_slot8(void* RD9_THUNK_EDX, void*)   // [CHOSEN, not recovered] native pointer width
+#else
+int RD9_THUNK sr_slot8(void* RD9_THUNK_EDX, int)
+#endif
 {
     return -1;
 }
 
-// upload an RGBA image: swap R<->B in place, load as A8R8G8B8 (21), register.
-// The descriptor: {data, width, height, pitch}.
-int __fastcall sr_uploadRgba(void* self, void*, unsigned int* desc)
+// Slot 9's descriptor: the gameswf image::image_base SwiffPlayer hands over (base/image.h),
+// {data, width, height, pitch}. The interface spells it unsigned int*; the fields are read by
+// name because the data pointer is pointer-sized on x64.
+struct SwiffRgbaImage
+{
+    unsigned char* data;            // +0
+    unsigned int   width;           // +4
+    unsigned int   height;          // +8
+    unsigned int   pitch;           // +12
+};
+#if defined(_M_IX86)
+static_assert(sizeof(SwiffRgbaImage) == 16 && offsetof(SwiffRgbaImage, pitch) == 12,
+              "the x86 descriptor is four dwords");
+#endif
+
+// PE 0x101529E0. Upload an RGBA image: swap R<->B in place, load as A8R8G8B8 (21), register.
+int RD9_THUNK sr_uploadRgba(void* self RD9_THUNK_EDX, unsigned int* desc)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
+    const SwiffRgbaImage* const image = reinterpret_cast<const SwiffRgbaImage*>(desc);
     void* device = ::dice::hfe::dx9rend::renderDevice();
-    if (!device)
+    IDirect3DTexture9* tex = 0;
+    if (D3DXCreateTexture(static_cast<IDirect3DDevice9*>(device), image->width, image->height, 1, 0,
+                          D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex) != 0)
         return -1;
-    void* tex = 0;
-    if (D3DXCreateTexture(device, desc[1], desc[2], 1, 0, 21, 1, &tex) < 0)
-        return -1;
-    IDirect3DTexture9* t = static_cast<IDirect3DTexture9*>(tex);
+    IDirect3DTexture9* t = tex;
     IDirect3DSurface9* surface = 0;
     t->GetSurfaceLevel(0, &surface);
 
-    unsigned char* row = reinterpret_cast<unsigned char*>(desc[0]);
-    for (unsigned int y = 0; y < desc[2]; ++y)
+    RECT rect = { 0, 0, (LONG)image->width, (LONG)image->height };
+    unsigned char* row = image->data;
+    for (int y = 0; y < static_cast<int>(image->height); ++y)
     {
         unsigned char* px = row;
-        for (unsigned int x = 0; x < desc[1]; ++x, px += 4)
+        for (int x = 0; x < static_cast<int>(image->width); ++x, px += 4)
         {
             const unsigned char tmp = px[0];
             px[0] = px[2];
             px[2] = tmp;
         }
-        row += desc[3];
+        row += image->pitch;
     }
 
-    RECT rect = { 0, 0, (LONG)desc[1], (LONG)desc[2] };
-    if (D3DXLoadSurfaceFromMemory(surface, 0, 0, reinterpret_cast<void*>(desc[0]), 21, desc[3],
-                                  0, &rect, 0xFFFFFFFF, 0) < 0)
+    if (D3DXLoadSurfaceFromMemory(surface, 0, 0, image->data,
+                                  D3DFMT_A8R8G8B8, image->pitch, 0, &rect, 0xFFFFFFFF, 0) != 0)
     {
-        if (surface) surface->Release();
-        t->Release();
+        // Shipped defect: the acquired surface reference leaks on refusal.
+        if (t) t->Release();
         return -1;
     }
     if (surface)
         surface->Release();
+    t->GetLevelCount();                         // descriptor's discarded mip-count query
     const int id = registryRegisterUploaded(s->registry, t);
     t->Release();
     return id;
 }
 
-// load by name through the routing loader. Note the raw char* argument.
-int __fastcall sr_loadTexture(void* self, void*, const char* name,
+// PE 0x10152B30. Load by name through the routing loader. Note the raw char* argument.
+int RD9_THUNK sr_loadTexture(void* self RD9_THUNK_EDX, const char* name,
                               unsigned int* outW, unsigned int* outH)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     unsigned int w = 0, h = 0;
-    vc71::string key(name);
-    const int id = registryGetOrLoad(s->registry, key, &w, &h, 0);
+    int id;
+    {
+        std::string key(name);
+        id = registryGetOrLoad(s->registry, key, &w, &h, 0);
+    }
     *outW = w;
     *outH = h;
     if (sstEnabled())   // [TEMP] tracer
@@ -1199,14 +1447,14 @@ int __fastcall sr_loadTexture(void* self, void*, const char* name,
     return id;
 }
 
-int __fastcall sr_releaseTexture(void* self, void*, int id)
+int RD9_THUNK sr_releaseTexture(void* self RD9_THUNK_EDX, int id)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     return registryReleaseId(s->registry, id) ? 1 : 0;
 }
 
-// beginDisplay. Nine stack arguments; the first is unused in the shipped body too.
-void __fastcall sr_beginDisplay(void* self, void*, int bgUnused, int vpX, int vpY,
+// PE 0x101534B0. Nine stack arguments; the first is unused in the shipped body too.
+void RD9_THUNK sr_beginDisplay(void* self RD9_THUNK_EDX, int bgUnused, int vpX, int vpY,
                                 int vpWidth, int vpHeight, float xMin, float xMax,
                                 float yMin, float yMax)
 {
@@ -1236,17 +1484,32 @@ void __fastcall sr_beginDisplay(void* self, void*, int bgUnused, int vpX, int vp
     device->GetViewport(reinterpret_cast<D3DVIEWPORT9*>(s->savedViewport));
     s->stencilRef = 1;
 
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Preserve the retail FILD precision and explicit
+    // single-precision spills on native processors.
+    using namespace bf2x87;
+    const float invMovieW = store(div(wide(1), wide(s->movieWidth)));
+    const float invMovieH = store(div(wide(1), wide(static_cast<unsigned int>(s->movieHeight))));
+#else
     const float invMovieW = 1.0f / (float)s->movieWidth;
     double movieH = (double)s->movieHeight;
     if (s->movieHeight < 0)
-        movieH += 4294967300.0;                 // the shipped signed-wrap correction, verbatim
+        movieH += 4294967296.0;                 // exact 0x4F800000 correction
     const float invMovieH = (float)(1.0 / movieH);
+#endif
 
     D3DVIEWPORT9 vp;
+#if !defined(_MSC_VER)
+    vp.X      = (DWORD)toIntTruncate(mul(wide(vpX), wide(s->scaleX)));
+    vp.Y      = (DWORD)toIntTruncate(mul(wide(vpY), wide(s->scaleY)));
+    vp.Width  = (DWORD)toIntTruncate(mul(wide(vpWidth), wide(s->scaleX)));
+    vp.Height = (DWORD)toIntTruncate(mul(wide(vpHeight), wide(s->scaleY)));
+#else
     vp.X      = (DWORD)(int)((float)vpX * s->scaleX);
     vp.Y      = (DWORD)(int)((float)vpY * s->scaleY);
     vp.Width  = (DWORD)(int)((float)vpWidth * s->scaleX);
     vp.Height = (DWORD)(int)((float)vpHeight * s->scaleY);
+#endif
     vp.MinZ   = 0.0f;
     vp.MaxZ   = 1.0f;
     device->SetViewport(&vp);
@@ -1255,35 +1518,72 @@ void __fastcall sr_beginDisplay(void* self, void*, int bgUnused, int vpX, int vp
     ::memset(s->mtxOrthoTwips, 0, sizeof(s->mtxOrthoTwips));
     s->mtxOrthoTwips[10] = 1.0f;
     s->mtxOrthoTwips[15] = 1.0f;
+#if !defined(_MSC_VER)
+    const Real width = sub(wide(xMax), wide(xMin));
+    const Real height = sub(wide(yMax), wide(yMin));
+    s->mtxOrthoTwips[0]  = store(div(wide(2), width));
+    s->mtxOrthoTwips[5]  = store(div(wide(-2), height));
+    s->mtxOrthoTwips[12] = store(-div(add(wide(xMin), wide(xMax)), width));
+    s->mtxOrthoTwips[13] = store(div(add(wide(yMin), wide(yMax)), height));
+#else
     s->mtxOrthoTwips[0]  = 2.0f / (xMax - xMin);
     s->mtxOrthoTwips[5]  = -2.0f / (yMax - yMin);
     s->mtxOrthoTwips[12] = -((xMin + xMax) / (xMax - xMin));
     s->mtxOrthoTwips[13] = (yMin + yMax) / (yMax - yMin);
+#endif
 
     // M680: the same bounds in pixels (twips x 0.05).
+#if !defined(_MSC_VER)
+    const Real pxMinX = mul(wide(xMin), wide(0.05f));
+    const Real pxMaxX = mul(wide(xMax), wide(0.05f));
+    const float pxMaxY = store(mul(wide(yMax), wide(0.05f)));
+    const float pxMinY = store(mul(wide(yMin), wide(0.05f)));
+    const Real pxWidth = sub(pxMaxX, pxMinX);
+    const float pxHeight = store(sub(wide(pxMaxY), wide(pxMinY)));
+#else
     const float pxMinX = xMin * 0.050000001f, pxMaxX = xMax * 0.050000001f;
     const float pxMinY = yMin * 0.050000001f, pxMaxY = yMax * 0.050000001f;
+#endif
     ::memset(s->mtxOrthoPixels, 0, sizeof(s->mtxOrthoPixels));
     s->mtxOrthoPixels[10] = 1.0f;
     s->mtxOrthoPixels[15] = 1.0f;
+#if !defined(_MSC_VER)
+    s->mtxOrthoPixels[0]  = store(div(wide(2), pxWidth));
+    s->mtxOrthoPixels[5]  = store(div(wide(-2), wide(pxHeight)));
+    s->mtxOrthoPixels[12] = store(-div(add(pxMinX, pxMaxX), pxWidth));
+    s->mtxOrthoPixels[13] = store(div(add(wide(pxMinY), wide(pxMaxY)), wide(pxHeight)));
+#else
     s->mtxOrthoPixels[0]  = 2.0f / (pxMaxX - pxMinX);
     s->mtxOrthoPixels[5]  = -2.0f / (pxMaxY - pxMinY);
     s->mtxOrthoPixels[12] = -((pxMinX + pxMaxX) / (pxMaxX - pxMinX));
     s->mtxOrthoPixels[13] = (pxMinY + pxMaxY) / (pxMaxY - pxMinY);
+#endif
 
     // M552: the movie-space -> viewport-subrect NDC remap.
     ::memset(s->mtxRemap, 0, sizeof(s->mtxRemap));
     s->mtxRemap[10] = 1.0f;
     s->mtxRemap[15] = 1.0f;
+#if !defined(_MSC_VER)
+    const Real remapY = mul(wide(static_cast<float>(vpHeight)), wide(invMovieH));
+    s->mtxRemap[0]  = store(mul(wide(static_cast<float>(vpWidth)), wide(invMovieW)));
+    s->mtxRemap[5]  = store(remapY);
+    s->mtxRemap[12] = store(sub(mul(add(add(wide(static_cast<float>(vpX)),
+        wide(static_cast<float>(vpX))), wide(static_cast<float>(vpWidth))), wide(invMovieW)), wide(1)));
+    const Real remapVpY = mul(wide(static_cast<float>(vpY)), wide(invMovieH));
+    s->mtxRemap[13] = store(sub(sub(wide(1), add(remapVpY, remapVpY)), remapY));
+#else
     s->mtxRemap[0]  = (float)vpWidth * invMovieW;
     s->mtxRemap[5]  = (float)vpHeight * invMovieH;
     s->mtxRemap[12] = ((float)vpX + (float)vpX + (float)vpWidth) * invMovieW - 1.0f;
     s->mtxRemap[13] = 1.0f
         - ((float)vpY * invMovieH + (float)vpY * invMovieH)
         - (float)vpHeight * invMovieH;
+#endif
 
     float combined[16];
-    D3DXMatrixMultiply(combined, s->mtxOrthoTwips, s->mtxRemap);
+    D3DXMatrixMultiply(reinterpret_cast<D3DXMATRIX*>(combined),
+                       reinterpret_cast<const D3DXMATRIX*>(s->mtxOrthoTwips),
+                       reinterpret_cast<const D3DXMATRIX*>(s->mtxRemap));
     paramSetValue(s->paramTransform, combined, 0);
 
     // The eleven state pairs, in the shipped order.
@@ -1312,16 +1612,12 @@ void __fastcall sr_beginDisplay(void* self, void*, int bgUnused, int vpX, int vp
 
     ringAdvance(s);
 
-    if (s->fontRenderer)
-    {
-        // sub_100A1470 - the FontRenderer's per-display begin. Withheld with the class.
-        noteOnce(2, "[FRONTIER] SwiffRender::beginDisplay: the FontRenderer begin "
-                    "(sub_100A1470) is withheld with the FontRenderer class");
-    }
+    // 0x101539E5: the FontRenderer starts a new run (sub_100A1470); the pointer is not tested.
+    fontRendererBegin(s->fontRenderer);
 }
 
-// endDisplay: flush, credits rain under a scissor, viewport restore, texture unbind.
-void __fastcall sr_endDisplay(void* self, void*)
+// PE 0x101544F0. Flush, credits rain under a scissor, viewport restore, texture unbind.
+void RD9_THUNK sr_endDisplay(void* self RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -1344,96 +1640,33 @@ void __fastcall sr_endDisplay(void* self, void*)
 
     IDirect3DDevice9* device = static_cast<IDirect3DDevice9*>(renderDevice());
     flushStrip(s);
-    // sub_100A15A0 - the FontRenderer flush. Withheld with the class (RW-80).
+    fontRendererFlush(s->fontRenderer);                 // 0x10154538
 
-    if (s->trail && s->swiffHost
-        && hostGetFlagF10(s->swiffHost))
+    if (s->trail && hostGetFlagF10(s->swiffHost))
     {
         // The credits window: host vslot +840 fills the rect, scaled and scissored, then the rain
         // draws inside it with D3DRS_SCISSORTESTENABLE (174).
         int hostRect[4] = { 0, 0, 0, 0 };
         hostGetRect(s->swiffHost, hostRect);
         RECT sc;
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] FILD/FISTP retains integer input precision.
+        sc.left   = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::wide(hostRect[0]), bf2x87::wide(s->scaleX)));
+        sc.top    = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::wide(hostRect[1]), bf2x87::wide(s->scaleY)));
+        sc.bottom = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::wide(hostRect[3]), bf2x87::wide(s->scaleY)));
+        sc.right  = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::wide(hostRect[2]), bf2x87::wide(s->scaleX)));
+#else
         sc.left   = (LONG)((float)hostRect[0] * s->scaleX);
         sc.top    = (LONG)((float)hostRect[1] * s->scaleY);
         sc.right  = (LONG)((float)hostRect[2] * s->scaleX);
         sc.bottom = (LONG)((float)hostRect[3] * s->scaleY);
+#endif
         device->SetScissorRect(&sc);
         device->SetRenderState(D3DRS_SCISSORTESTENABLE, 1);
 
-        // sub_101B9070 - the rain update+draw, dt from updateTime.
-        {
-            CreditsRain* r = s->trail;
-            if (s->swiffHost && hostGetFlagF18(s->swiffHost))
-            {
-                // restart requested: re-seed the forty rows from the font list
-                float y = 15360.0f;
-                for (int i = 0; i < 40; ++i)
-                {
-                    void* font = 0;
-                    // sub_101B8F70 - the round-robin next font
-                    if (r->first && r->last != r->first)
-                    {
-                        const int idx = hostGetIntF14(s->swiffHost);
-                        const unsigned int n = (unsigned int)(r->last - r->first);
-                        font = r->first[idx];
-                        unsigned int nextIdx = (unsigned int)idx + 1;
-                        if (nextIdx >= n)
-                            nextIdx = 0;
-                        hostSetIntF14(s->swiffHost, (int)nextIdx);
-                    }
-                    r->points[i].font = font;
-                    r->points[i].y    = y;
-                    y += 400.0f;
-                }
-                hostSetFlagF18(s->swiffHost, 0);
-                r->inited = 1;
-            }
-            else
-            {
-                float dt = s->trailDt;
-                if (r->inited)
-                {
-                    dt = 0.0f;
-                    r->inited = 0;
-                }
-                const float speed = hostGetFloatF0C(s->swiffHost);
-                for (int i = 0; i < 40; ++i)
-                {
-                    if (r->points[i].font)
-                    {
-                        float m[6] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, r->points[i].y };
-                        // ISwiffRender slot 30, exactly as the shipped rain calls it virtually
-                        void** vtbl = s->vtPrimary;
-                        typedef void (__fastcall* DrawGlyphFn)(void*, void*, void*, const float*,
-                                                               int, int);
-                        reinterpret_cast<DrawGlyphFn>(vtbl[30])(s, 0, r->points[i].font, m, -1, 0);
-                    }
-                    r->points[i].y -= speed * dt;
-                }
-                if (r->points[0].y < -400.0f)
-                {
-                    // scroll the window ONE row (the shipped 13 six-dword strides shift the 80
-                    // dwords by two) and refill the tail from the round-robin rotation
-                    for (int i = 0; i < 39; ++i)
-                        r->points[i] = r->points[i + 1];
-                    void* font = 0;
-                    if (r->first && r->last != r->first)
-                    {
-                        const int idx = hostGetIntF14(s->swiffHost);
-                        const unsigned int n = (unsigned int)(r->last - r->first);
-                        font = r->first[idx];
-                        unsigned int nextIdx = (unsigned int)idx + 1;
-                        if (nextIdx >= n)
-                            nextIdx = 0;
-                        hostSetIntF14(s->swiffHost, (int)nextIdx);
-                    }
-                    r->points[39].font = font;
-                    r->points[39].y    = r->points[38].y + 400.0f;
-                }
-            }
-        }
+        creditsRainUpdate(s->trail, s->trailDt);
 
+        fontRendererFlush(s->fontRenderer);             // 0x10154617, the rain's names
         device->SetRenderState(D3DRS_SCISSORTESTENABLE, 0);
     }
     ++s->stats[3];      // +1072
@@ -1443,20 +1676,23 @@ void __fastcall sr_endDisplay(void* self, void*)
         vertexBufferUnlock(s->vb[s->vbIndex]);
         s->locked = 0;
     }
-    // sub_100A1720 + sub_100A1500 - the FontRenderer end/reset pair. Withheld (RW-80).
+    fontRendererUnlock(s->fontRenderer);                // 0x10154655
+    fontRendererEndFrame(s->fontRenderer);              // 0x10154660
 
     device->SetViewport(reinterpret_cast<D3DVIEWPORT9*>(s->savedViewport));
 
     if (s->effect)
     {
-        fxSetTexture(effectD3dxHandle(s->effect), paramGetHandle(s->paramTexture), 0);
+        void* fx = effectD3dxHandle(s->effect);
+        void* handle = paramGetHandle(s->paramTexture);
+        fxSetTexture(fx, handle, 0);
         fxCommitChanges(effectD3dxHandle(s->effect));
     }
     stateManagerPop();
 }
 
-// setTransform: SWF 2x3 -> 4x4, x M616 x M552, latched and pushed to transform.
-void __fastcall sr_setTransform(void* self, void*, const float* m2x3)
+// PE 0x10152C10. SWF 2x3 -> 4x4, x M616 x M552, latched and pushed to transform.
+void RD9_THUNK sr_setTransform(void* self RD9_THUNK_EDX, const float* m2x3)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (sstEnabled())   // [TEMP] tracer
@@ -1477,18 +1713,24 @@ void __fastcall sr_setTransform(void* self, void*, const float* m2x3)
     local[15] = 1.0f;
 
     float step[16], combined[16];
-    D3DXMatrixMultiply(step, local, s->mtxOrthoTwips);
-    D3DXMatrixMultiply(combined, step, s->mtxRemap);
+    D3DXMatrixMultiply(reinterpret_cast<D3DXMATRIX*>(step),
+                       reinterpret_cast<const D3DXMATRIX*>(local),
+                       reinterpret_cast<const D3DXMATRIX*>(s->mtxOrthoTwips));
+    D3DXMatrixMultiply(reinterpret_cast<D3DXMATRIX*>(combined),
+                       reinterpret_cast<const D3DXMATRIX*>(step),
+                       reinterpret_cast<const D3DXMATRIX*>(s->mtxRemap));
     ::memcpy(s->mtxCurrent, combined, sizeof(combined));
     paramSetValue(s->paramTransform, combined, 0);
 }
 
-void __fastcall sr_setCxform(void* self, void*, const float* cx)
+// PE 0x10152D00
+void RD9_THUNK sr_setCxform(void* self RD9_THUNK_EDX, const float* cx)
 {
     ::memcpy(static_cast<SwiffRender*>(self)->cxform, cx, 32);
 }
 
-int __fastcall sr_recordStat(void* self, void*, int value)
+// PE 0x10153A00
+int RD9_THUNK sr_recordStat(void* self RD9_THUNK_EDX, int value)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     s->statPrev = s->statCur;
@@ -1498,9 +1740,9 @@ int __fastcall sr_recordStat(void* self, void*, int value)
     return value;
 }
 
-// drawVertices: the solid arm accumulates a stitched triangle strip; the textured
+// PE 0x10154BF0. The solid arm accumulates a stitched triangle strip; the textured
 // arm routes through the fill collector; an inactive fill style just flushes.
-void __fastcall sr_drawVertices(void* self, void*, const short* verts, unsigned int count)
+void RD9_THUNK sr_drawVertices(void* self RD9_THUNK_EDX, const short* verts, unsigned int count)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (sstEnabled())   // [TEMP] tracer
@@ -1527,7 +1769,7 @@ void __fastcall sr_drawVertices(void* self, void*, const short* verts, unsigned 
         return;
     }
 
-    // sub_100A15A0 - the FontRenderer flush precedes geometry. Withheld (RW-80).
+    fontRendererFlush(s->fontRenderer);                 // 0x10154C4D, before geometry
 
     if (fill->mode == 2 || fill->mode == 3)
     {
@@ -1555,7 +1797,9 @@ void __fastcall sr_drawVertices(void* self, void*, const short* verts, unsigned 
     if (!v)
         return;
 
-    double x = 0.0, y = 0.0;
+    float countBits;
+    ::memcpy(&countBits, &count, sizeof(countBits));
+    double x = countBits, y = countBits;
     if (s->vbCursor)
     {
         // Two stitch vertices bridge the previous strip tail to the new head. The z of every
@@ -1566,30 +1810,31 @@ void __fastcall sr_drawVertices(void* self, void*, const short* verts, unsigned 
         v += 4;
         x = (double)verts[0] - 0.5;
         y = (double)verts[1] - 0.5;
-        v[0] = (float)(y * s->mtxCurrent[4] + x * s->mtxCurrent[0] + s->mtxCurrent[12]);
-        v[1] = (float)(y * s->mtxCurrent[5] + x * s->mtxCurrent[1] + s->mtxCurrent[13]);
+        v[0] = transformCoordinate(x, y, s->mtxCurrent, 0);
+        v[1] = transformCoordinate(x, y, s->mtxCurrent, 1);
         *reinterpret_cast<unsigned int*>(v + 3) = color;
         v += 4;
         s->vbCursor += 2;
     }
     s->vbCursor += count;
 
-    for (unsigned int i = 0; i < count; ++i)
+    const int coordinateCount = static_cast<int>(count * 2u);
+    for (int i = 0; i < coordinateCount; i += 2)
     {
-        x = (double)verts[2 * i]     - 0.5;
-        y = (double)verts[2 * i + 1] - 0.5;
-        v[0] = (float)(y * s->mtxCurrent[4] + x * s->mtxCurrent[0] + s->mtxCurrent[12]);
-        v[1] = (float)(y * s->mtxCurrent[5] + x * s->mtxCurrent[1] + s->mtxCurrent[13]);
+        x = (double)verts[i]     - 0.5;
+        y = (double)verts[i + 1] - 0.5;
+        v[0] = transformCoordinate(x, y, s->mtxCurrent, 0);
+        v[1] = transformCoordinate(x, y, s->mtxCurrent, 1);
         *reinterpret_cast<unsigned int*>(v + 3) = color;
         v += 4;
     }
-    s->lastX = (float)(y * s->mtxCurrent[4] + x * s->mtxCurrent[0] + s->mtxCurrent[12]);
-    s->lastY = (float)(y * s->mtxCurrent[5] + x * s->mtxCurrent[1] + s->mtxCurrent[13]);
+    s->lastX = transformCoordinate(x, y, s->mtxCurrent, 0);
+    s->lastY = transformCoordinate(x, y, s->mtxCurrent, 1);
 }
 
-// the line-strip draw: line style + "Line" technique, transformed into the static
+// PE 0x101546D0. Line style + "Line" technique, transformed into the static
 // scratch (unk_1025E9E0's role), drawn per pass with DrawPrimitiveUP(linestrip).
-void __fastcall sr_drawLineStrip(void* self, void*, const short* verts, unsigned int count)
+void RD9_THUNK sr_drawLineStrip(void* self RD9_THUNK_EDX, const short* verts, unsigned int count)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -1620,23 +1865,25 @@ void __fastcall sr_drawLineStrip(void* self, void*, const short* verts, unsigned
     diffuse[3] = (float)s->style[2].rgba[3] * 0.0039215689f;
     paramSetValue(s->paramDiffuse, diffuse, 0);
 
-    // unk_1025E9E0's stand-in. [CHOSEN] the shipped static's extent is unread; ours is sized to
+    // unk_1025E9E0's stand-in. [CHOSEN, not recovered] PE 0x101547B0 has no
+    // bounds check; keep the existing native omission of its possible overrun.
+    // The shipped static's extent is unread; ours is sized to
     // the ring convention (10002 vertices) and the count is clamped to it rather than overrun.
     static float scratch[3 * 0x2712];
     if (count > 0x2712)
         count = 0x2712;
+    const unsigned int passes = effectBegin(s->effect);
     float* v = scratch;
     for (unsigned int i = 0; i < count; ++i)
     {
         const double x = (double)verts[2 * i]     - 0.5;
         const double y = (double)verts[2 * i + 1] - 0.5;
-        v[0] = (float)(y * s->mtxCurrent[4] + x * s->mtxCurrent[0] + s->mtxCurrent[12]);
-        v[1] = (float)(y * s->mtxCurrent[5] + x * s->mtxCurrent[1] + s->mtxCurrent[13]);
+        v[0] = transformCoordinate(x, y, s->mtxCurrent, 0);
+        v[1] = transformCoordinate(x, y, s->mtxCurrent, 1);
         v[2] = 0.0f;
         v += 3;
     }
 
-    const unsigned int passes = effectBegin(s->effect);
     for (unsigned int i = 0; i < passes; ++i)
     {
         effectBeginPass(s->effect, i);
@@ -1646,15 +1893,16 @@ void __fastcall sr_drawLineStrip(void* self, void*, const short* verts, unsigned
     effectEnd(s->effect);
 }
 
-int __fastcall sr_fillStyleDisable(void* self, void*, int index)
+// PE 0x10152D20
+int RD9_THUNK sr_fillStyleDisable(void* self RD9_THUNK_EDX, int index)
 {
     SST("[swiff]   fillStyleDisable side=%d", index);   // [TEMP] tracer
     static_cast<SwiffRender*>(self)->style[index].mode = 0;
     return 0;
 }
 
-// solid fill: cxform-transform the color, mode 1.
-void __fastcall sr_fillStyleColor(void* self, void*, int index, unsigned int rgba)
+// PE 0x10153A50. Solid fill: cxform-transform the color, mode 1.
+void RD9_THUNK sr_fillStyleColor(void* self RD9_THUNK_EDX, int index, unsigned int rgba)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     const unsigned int transformed =
@@ -1669,23 +1917,13 @@ void __fastcall sr_fillStyleColor(void* self, void*, int index, unsigned int rgb
     }
 }
 
-// 0x10152D50 / sub_10152130 - textured fill: id, dims, matrix, wrap/clamp, cxform snapshot.
-void __fastcall sr_setTexture(void* self, void*, int index, int texId, int w, int h,
+// PE 0x10152D50 - slot: the style block (indexed by the 84-byte stride) takes the texture with the
+// current cxform (this + 0x2E8).
+void RD9_THUNK sr_setTexture(void* self RD9_THUNK_EDX, int index, int texId, int w, int h,
                               const float* matrix, int clamp)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    SwiffStyle* style = &s->style[index];
-    style->texId = texId;
-    style->texH  = h;
-    style->mode  = (clamp != 0) + 2;
-    style->rgba[0] = 0xFF; style->rgba[1] = 0xFF; style->rgba[2] = 0xFF; style->rgba[3] = 0xFF;
-    style->texW  = w;
-    for (int i = 0; i < 6; ++i)
-        style->texMatrix[i] = matrix[i];
-    ::memcpy(style->cxform, s->cxform, 32);
-    style->hasAdditive =
-        (style->cxform[1] > 1.0f || style->cxform[3] > 1.0f
-         || style->cxform[5] > 1.0f || style->cxform[7] > 1.0f) ? 1 : 0;
+    s->style[index].setTexture(texId, w, h, matrix, clamp, s->cxform);
     if (sstEnabled())   // [TEMP] tracer
     {
         ++g_sst.nTex;
@@ -1694,14 +1932,14 @@ void __fastcall sr_setTexture(void* self, void*, int index, int texId, int w, in
     }
 }
 
-void __fastcall sr_lineStyleDisable(void* self, void*)
+void RD9_THUNK sr_lineStyleDisable(void* self RD9_THUNK_EDX)
 {
     SST("[swiff]   lineStyleDisable");   // [TEMP] tracer
     static_cast<SwiffRender*>(self)->style[2].mode = 0;
 }
 
-// line color, cxform-transformed.
-int __fastcall sr_lineStyleColor(void* self, void*, unsigned int rgba)
+// PE 0x10153AA0. Line color, cxform-transformed.
+int RD9_THUNK sr_lineStyleColor(void* self RD9_THUNK_EDX, unsigned int rgba)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     const unsigned int transformed =
@@ -1712,9 +1950,9 @@ int __fastcall sr_lineStyleColor(void* self, void*, unsigned int rgba)
     return (int)transformed;
 }
 
-// the shipped body clamps the OLD width to >= 1.0 and then overwrites it with the
+// PE 0x10152DA0. The shipped body clamps the OLD width to >= 1.0 and then overwrites it with the
 // raw new dword - the clamp is dead. Reproduced as-is.
-void __fastcall sr_lineStyleWidth(void* self, void*, unsigned int widthAsDword)
+void RD9_THUNK sr_lineStyleWidth(void* self RD9_THUNK_EDX, unsigned int widthAsDword)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (s->style[2].width < 1.0f)
@@ -1725,62 +1963,67 @@ void __fastcall sr_lineStyleWidth(void* self, void*, unsigned int widthAsDword)
 
 // No-op slots retain their stack arguments so fastcall adapters perform the required
 // thiscall cleanup: five words for drawBitmap, one each for slots 38 and 48.
-void __fastcall sr_nullsub25(void*, void*, const void*, int, const void*, const void*, unsigned int) { }
-void __fastcall sr_nullsub38(void*, void*, int) { }
-void __fastcall sr_nullsub48(void*, void*, int) { }
+void RD9_THUNK sr_nullsub25(void* RD9_THUNK_EDX, const void*, int, const void*, const void*, unsigned int) { }
+void RD9_THUNK sr_nullsub38(void* RD9_THUNK_EDX, int) { }
+void RD9_THUNK sr_nullsub48(void* RD9_THUNK_EDX, int) { }
 
 
-// The font slots, 26..37. All of them ride the withheld FontRenderer/FontSystem (RW-80): createFont
-// resolves the FontSystem singleton (null here) and every forward dereferences the wrapper the
-// caller got from it. Null guards + a one-time note stand in for the always-present singletons.
+// The font slots, 26..37. createFont builds a wrapper through the FontSystem singleton
+// (SwiffFont.cpp's createSwiffFont); the forwards dispatch through the wrapper's table. The
+// wrapper's layout is [CHOSEN, not recovered] (RW-80), so the forwards keep
+// their existing null guards where retail would dereference the wrapper.
 
-void* __fastcall sr_createFont(void* self, void*, const char* name, int size)
+// PE 0x10152EE0. Allocation failure returns null without reporting a recovery boundary.
+void* RD9_THUNK sr_createFont(void* self RD9_THUNK_EDX, const char* name, int size)
 {
     (void)self;
     void* font = createSwiffFont(name, size, 0);
     if (sstEnabled())   // [TEMP] tracer
         ::renddx9abi::logf("[swiff] createFont(\"%s\", %d) -> %p", name ? name : "", size, font);
-    if (!font)
-        noteOnce(3, "[FRONTIER] SwiffRender::createFont: createSwiffFont returned null - the "
-                    "FontSystem singleton is unresolved or the .dif could not be loaded (RW-80); "
-                    "this Flash text will not render");
     return font;
 }
 
-void __fastcall sr_releaseFontHandle(void* self, void*, void* font)
-{
-    (void)self;
-    if (!font)
-        return;
-    noteOnce(4, "[FRONTIER] SwiffRender font slots: a non-null font reached a withheld font body "
-                "(RW-80)");
-}
-
-int __fastcall sr_fontForward16(void* self, void*, void* font, int arg)
+// PE 0x10154870 (slot 27): erase the wrapper from the +1040 set, then destroy and free it. Neither
+// step tests fontsDisabled; only the delete tests the pointer.
+void RD9_THUNK sr_releaseFontHandle(void* self RD9_THUNK_EDX, void* font)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    SST("[swiff]   font.setText font=%p arg=%08X", font, (unsigned)arg);   // [TEMP] tracer
+    s->fontSet.erase(font);
+    if (font)
+        swiffFontDelete(font);
+}
+
+// The forwarded argument is the text: SwiffPlayer's rcTextSet passes a const wchar_t* and the font
+// wrapper's +16 setText takes one, so it stays pointer-sized on x64 (ISwiffRender.h still spells
+// it int).
+// PE 0x10152F70
+int RD9_THUNK sr_fontForward16(void* self RD9_THUNK_EDX, void* font, const wchar_t* text)
+{
+    SwiffRender* s = static_cast<SwiffRender*>(self);
+    SST("[swiff]   font.setText font=%p arg=%p", font, text);   // [TEMP] tracer
     if (!font || s->fontsDisabled)
         return (int)(uintptr_t)font;
     void** vtbl = *reinterpret_cast<void***>(font);
-    typedef int (__thiscall* Fn)(void*, int, int);
-    return reinterpret_cast<Fn>(vtbl[16 / 4])(font, arg, 0);
+    typedef int (__thiscall* Fn)(void*, const wchar_t*, int);
+    return reinterpret_cast<Fn>(vtbl[16 / 4])(font, text, 0);
 }
 
-int __fastcall sr_destroyFont(void* self, void*, void* font)
+// PE 0x101541E0
+int RD9_THUNK sr_destroyFont(void* self RD9_THUNK_EDX, void* font)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (!font || s->fontsDisabled)
         return 0;
     void** vtbl = *reinterpret_cast<void***>(font);
     reinterpret_cast<HostVoidFn>(vtbl[8 / 4])(font);   // release
-    // sub_101557D0 - erase from the font list; withheld with the wrapper family (RW-80).
+    // Shipped defect: retain the released handle in the tracking set.
+    s->fontSet.insert(font);                            // 0x10154212, sub_101557D0
     return 0;
 }
 
-// draw one glyph/name object: flush, cxform the color, build the pixel-snapped 4x4,
+// PE 0x101548D0. Flush, cxform the color, build the pixel-snapped 4x4,
 // font vslot +20. The credits rain calls this through the vtable.
-void __fastcall sr_drawGlyphBitmap(void* self, void*, void* font, const float* m2x3,
+void RD9_THUNK sr_drawGlyphBitmap(void* self RD9_THUNK_EDX, void* font, const float* m2x3,
                                    unsigned int rgba, int /*unused*/)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -1809,15 +2052,24 @@ void __fastcall sr_drawGlyphBitmap(void* self, void*, void* font, const float* m
     m[5]  = m2x3[4];
     m[10] = 1.0f;
     m[15] = 1.0f;
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Pixel snapping truncates the unspilled x87 sum.
+    m[12] = (float)bf2x87::toIntTruncate(bf2x87::add(bf2x87::mul(bf2x87::mul(
+        bf2x87::wide(m2x3[2]), bf2x87::wide(0.05f)), bf2x87::wide(s->scaleX)), bf2x87::wide(0.5f)));
+    m[13] = (float)bf2x87::toIntTruncate(bf2x87::add(bf2x87::mul(bf2x87::mul(
+        bf2x87::wide(m2x3[5]), bf2x87::wide(0.05f)), bf2x87::wide(s->scaleY)), bf2x87::wide(0.5f)));
+#else
     m[12] = (float)(int)(m2x3[2] * 0.050000001f * s->scaleX + 0.5f);   // pixel-snapped
     m[13] = (float)(int)(m2x3[5] * 0.050000001f * s->scaleY + 0.5f);
+#endif
 
     void** vtbl = *reinterpret_cast<void***>(font);
     typedef void (__thiscall* DrawFn)(void*, const float*, unsigned int);
     reinterpret_cast<DrawFn>(vtbl[20 / 4])(font, m, color);
 }
 
-char __fastcall sr_fontGetExtent(void* self, void*, void* font, int arg,
+// PE 0x10152FA0
+char RD9_THUNK sr_fontGetExtent(void* self RD9_THUNK_EDX, void* font, int arg,
                                  float* outW, float* outH)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -1834,27 +2086,50 @@ char __fastcall sr_fontGetExtent(void* self, void*, void* font, int arg,
     return ok;
 }
 
-char __fastcall sr_fontForward32(void* self, void*, void* font, int arg,
+#if !defined(_MSC_VER)
+// PE 0x10152FF0. [CHOSEN, not recovered] Natively the passed-through second argument is the
+// int* out position it is (SwiffPlayer 0x10005E30 `lea edx,[ebp+0x14]`; font 0x100A48C0 stores
+// through it); the MSVC spelling keeps its 32-bit carrier.
+char RD9_THUNK sr_fontForward32(void* self RD9_THUNK_EDX, void* font, int* arg,
                                  float x, float y)
+#else
+char RD9_THUNK sr_fontForward32(void* self RD9_THUNK_EDX, void* font, int arg,
+                                 float x, float y)
+#endif
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (s->fontsDisabled || !font)
         return 0;
     void** vtbl = *reinterpret_cast<void***>(font);
+#if !defined(_MSC_VER)
+    typedef char (__thiscall* Fn)(void*, int*, float, float);
+#else
     typedef char (__thiscall* Fn)(void*, int, float, float);
+#endif
     return reinterpret_cast<Fn>(vtbl[32 / 4])(font, arg, x * s->scaleX, y * s->scaleY);
 }
 
-char __fastcall sr_fontForward40(void* self, void*, void* font, int a, int b)
+#if !defined(_MSC_VER)
+// PE 0x10153030 -> font +0x28 (0x10152080), which writes both outs. [CHOSEN, not recovered]
+// Natively they are the int* the SwiffPlayer forwarder 0x10005E50 passes.
+char RD9_THUNK sr_fontForward40(void* self RD9_THUNK_EDX, void* font, int* a, int* b)
+#else
+char RD9_THUNK sr_fontForward40(void* self RD9_THUNK_EDX, void* font, int a, int b)
+#endif
 {
     if (static_cast<SwiffRender*>(self)->fontsDisabled || !font)
         return 0;
     void** vtbl = *reinterpret_cast<void***>(font);
+#if !defined(_MSC_VER)
+    typedef char (__thiscall* Fn)(void*, int*, int*);
+#else
     typedef char (__thiscall* Fn)(void*, int, int);
+#endif
     return reinterpret_cast<Fn>(vtbl[40 / 4])(font, a, b);
 }
 
-char __fastcall sr_fontForward44(void* self, void*, void* font,
+// PE 0x10153060
+char RD9_THUNK sr_fontForward44(void* self RD9_THUNK_EDX, void* font,
                                  float x1, float y1, float x2, float y2)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -1866,7 +2141,8 @@ char __fastcall sr_fontForward44(void* self, void*, void* font,
                                               x2 * s->scaleX, y2 * s->scaleY);
 }
 
-int __fastcall sr_fontForward48(void* self, void*, void* font)
+// PE 0x101530B0
+int RD9_THUNK sr_fontForward48(void* self RD9_THUNK_EDX, void* font)
 {
     if (static_cast<SwiffRender*>(self)->fontsDisabled || !font)
         return 0;
@@ -1874,7 +2150,7 @@ int __fastcall sr_fontForward48(void* self, void*, void* font)
     return reinterpret_cast<HostIntFn>(vtbl[48 / 4])(font);
 }
 
-int __fastcall sr_fontSetSize(void* self, void*, void* font, float size, int flag)
+int RD9_THUNK sr_fontSetSize(void* self RD9_THUNK_EDX, void* font, float size, int flag)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (s->fontsDisabled || !font)
@@ -1887,7 +2163,8 @@ int __fastcall sr_fontSetSize(void* self, void*, void* font, float size, int fla
     return (int)(uintptr_t)font;
 }
 
-int __fastcall sr_fontSetField104(void* self, void*, void* font, int value)
+// PE 0x10153120
+int RD9_THUNK sr_fontSetField104(void* self RD9_THUNK_EDX, void* font, int value)
 {
     if (static_cast<SwiffRender*>(self)->fontsDisabled || !font)
         return 0;
@@ -1899,14 +2176,15 @@ int __fastcall sr_fontSetField104(void* self, void*, void* font, int value)
     return 0;
 }
 
-// the Flash clip-mask trio over the stencil buffer.
-void __fastcall sr_beginMask(void* self, void*)
+// PE 0x10154320. Begin the Flash clip-mask trio over the stencil buffer.
+void RD9_THUNK sr_beginMask(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (sstEnabled()) { ++g_sst.nMasks; SST("[swiff]   beginMask (ref %u)", s->stencilRef); }   // [TEMP] tracer
     if (!s->swiffHost || hostSuppressed(s))
         return;
     flushStrip(s);
+    fontRendererFlush(s->fontRenderer);             // 0x1015434E
     ++s->stats[2];      // +1068
     if (++s->stencilRef == 0)      // the shipped 0xFF wrap: 255 rolls to 1
         s->stencilRef = 1;
@@ -1921,13 +2199,15 @@ void __fastcall sr_beginMask(void* self, void*)
     smSetRenderState(168, 0);                // colorwriteenable off - the mask is stencil-only
 }
 
-void __fastcall sr_endMask(void* self, void*)
+// PE 0x10154400
+void RD9_THUNK sr_endMask(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     SST("[swiff]   endMask (ref %u)", s->stencilRef);   // [TEMP] tracer
     if (!s->swiffHost || hostSuppressed(s))
         return;
     flushStrip(s);
+    fontRendererFlush(s->fontRenderer);             // 0x1015442A
     ++s->stats[2];
     smSetRenderState(168, 15);               // colorwriteenable on
     smSetRenderState(57, s->stencilRef);
@@ -1937,40 +2217,47 @@ void __fastcall sr_endMask(void* self, void*)
     smSetRenderState(54, 1);
 }
 
-void __fastcall sr_disableMask(void* self, void*)
+// PE 0x101544A0
+void RD9_THUNK sr_disableMask(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     SST("[swiff]   disableMask");   // [TEMP] tracer
     if (!s->swiffHost || hostSuppressed(s))
         return;
     flushStrip(s);
+    fontRendererFlush(s->fontRenderer);             // 0x101544C6
     ++s->stats[2];
     smSetRenderState(52, 0);
 }
 
-void __fastcall sr_setMovieWidth(void* self, void*, unsigned int w)
+// PE 0x10152880
+void RD9_THUNK sr_setMovieWidth(void* self RD9_THUNK_EDX, unsigned int w)
 {
     if (sstEnabled()) ::renddx9abi::logf("[swiff] setMovieWidth(%u)", w);   // [TEMP] tracer
     static_cast<SwiffRender*>(self)->movieWidth = w;
 }
-void __fastcall sr_setMovieHeight(void* self, void*, int h)
+// PE 0x10152890
+void RD9_THUNK sr_setMovieHeight(void* self RD9_THUNK_EDX, int h)
 {
     if (sstEnabled()) ::renddx9abi::logf("[swiff] setMovieHeight(%d)", h);   // [TEMP] tracer
     static_cast<SwiffRender*>(self)->movieHeight = h;
 }
-void __fastcall sr_setScale(void* self, void*, float sx, float sy)
+// PE 0x101528B0
+void RD9_THUNK sr_setScale(void* self RD9_THUNK_EDX, float sx, float sy)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     if (sstEnabled()) ::renddx9abi::logf("[swiff] setScale(%.4f, %.4f)", sx, sy);   // [TEMP] tracer
     s->scaleX = sx;
     s->scaleY = sy;
 }
-void __fastcall sr_setBackgroundColor(void* self, void*, unsigned int rgb)
+// PE 0x101528A0
+void RD9_THUNK sr_setBackgroundColor(void* self RD9_THUNK_EDX, unsigned int rgb)
 {
     SST("[swiff]   setBackgroundColor %08X", rgb);   // [TEMP] tracer
     static_cast<SwiffRender*>(self)->bgColor = rgb;
 }
-void __fastcall sr_setMouseState(void* self, void*, int x, int y, int buttons)
+// PE 0x10152BB0
+void RD9_THUNK sr_setMouseState(void* self RD9_THUNK_EDX, int x, int y, int buttons)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     SST("[swiff]   setMouseState (%d,%d,%d)", x, y, buttons);   // [TEMP] tracer
@@ -1979,13 +2266,13 @@ void __fastcall sr_setMouseState(void* self, void*, int x, int y, int buttons)
     s->mouseButtons = buttons;
 }
 
-int __fastcall sr_slot47(void*, void*, int) { return -1; }
-char __fastcall sr_slot49(void*, void*, int) { return 1; }             // (a no-op preload)
-char __fastcall sr_slot50(void*, void*, int) { return 1; }
+int RD9_THUNK sr_slot47(void* RD9_THUNK_EDX, int) { return -1; }
+char RD9_THUNK sr_slot49(void* RD9_THUNK_EDX, intptr_t) { return 1; }             // (a no-op preload)
+char RD9_THUNK sr_slot50(void* RD9_THUNK_EDX, intptr_t) { return 1; }
 
-// beginFrame: the background clear color (when the host says the movie has one), the
+// PE 0x10153B60. The background clear color (when the host says the movie has one), the
 // per-frame stats reset, and the renderer's beginScene. This is the call BF2 crashed reaching.
-int __fastcall sr_beginFrame(void* self, void*)
+int RD9_THUNK sr_beginFrame(void* self RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -2004,12 +2291,12 @@ int __fastcall sr_beginFrame(void* self, void*)
     }
     for (int i = 0; i < 6; ++i)
         s->stats[i] = 0;
-    const bool ok = rendererBeginScene(rgb, true);
+    const bool ok = static_cast<IRenderer*>(g_rendererBase)->beginScene(rgb, 1);
     return ok ? 1 : 0;
 }
 
 // endFrame: endScene + Present. The menu's actual present call.
-int __fastcall sr_endFrame(void* self, void*)
+int RD9_THUNK sr_endFrame(void* self RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
@@ -2019,17 +2306,24 @@ int __fastcall sr_endFrame(void* self, void*)
     return presented ? 1 : 0;
 }
 
-// assign a per-texture technique index (into techRecord[]) by texture name.
-void* __fastcall sr_setTextureTechnique(void* self, void*, const vc71::string* name, int index)
+// PE 0x10154E60. Assign a per-texture technique index (into techRecord[]) by texture name. Only an
+// absent name is inserted: find (0x10036410) compared with the map head [this+0x3DC] skips the
+// operator[] (0x10155BC0) store when the name exists (0x10154E7F jnz 0x10154E94), so the first
+// registration wins. The image answers the found tree node or the new value's address; std::map
+// exposes no node, so the found arm answers its value's address (no reader is known).
+void* RD9_THUNK sr_setTextureTechnique(void* self RD9_THUNK_EDX, const std::string* name, int index)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    vc71::map_node* node = vc71::mapInsert(s->texTechniqueMap, 0x30, name->c_str());
-    if (node)
-        vc71::mapNodeValueRef(node) = reinterpret_cast<void*>((unsigned int)index);
-    return node;
+    std::map<std::string, int>::iterator it = s->texTechniqueMap.find(*name);
+    if (it != s->texTechniqueMap.end())
+        return &it->second;
+    int& slot = s->texTechniqueMap[*name];
+    slot = index;
+    return &slot;
 }
 
-int __fastcall sr_updateTime(void* self, void*, unsigned int t, float dt)
+// PE 0x101533C0
+int RD9_THUNK sr_updateTime(void* self RD9_THUNK_EDX, unsigned int t, float dt)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     SST("[swiff]   updateTime t=%u dt=%.5f", t, dt);   // [TEMP] tracer
@@ -2044,119 +2338,90 @@ int __fastcall sr_updateTime(void* self, void*, unsigned int t, float dt)
     return (int)t;
 }
 
-void* __fastcall sr_getTextureRegistry(void* self, void*)
+void* RD9_THUNK sr_getTextureRegistry(void* self RD9_THUNK_EDX)
 {
     return &static_cast<SwiffRender*>(self)->registry;
 }
 
-// uploadTexture: the loader with the cache skipped. Note the string-pointer argument.
-int __fastcall sr_uploadTexture(void* self, void*, const vc71::string* name,
+// PE 0x101533F0. The loader with the cache skipped. Note the string-pointer argument.
+int RD9_THUNK sr_uploadTexture(void* self RD9_THUNK_EDX, const std::string* name,
                                 unsigned int* outW, unsigned int* outH)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
     return registryGetOrLoad(s->registry, *name, outW, outH, 1);
 }
 
-// Copies the device driver version; returns zeros when caps are absent.
-unsigned int* __fastcall sr_getDriverVersion(void*, void*, unsigned int* out)
+// PE 0x10153430. Copies the device driver version; returns zeros when caps are absent.
+unsigned int* RD9_THUNK sr_getDriverVersion(void* RD9_THUNK_EDX, unsigned int* out)
 {
     void* caps = ::dice::hfe::dx9rend::g_deviceCaps;
     if (caps)
-    {
-        const unsigned char* c = static_cast<const unsigned char*>(caps);
-        out[0] = *reinterpret_cast<const unsigned int*>(c + 1360);
-        out[1] = *reinterpret_cast<const unsigned int*>(c + 1364);
-    }
+        ::dice::hfe::dx9rend::deviceCapsCopyDriverVersion(out);
     else
     {
-        out[0] = 0;     // [CHOSEN] zeroed where the shipped body copies stack garbage
+        // [CHOSEN, not recovered] PE 0x1015345C copies uninitialized stack
+        // words when caps are missing; preserve the existing safe zero fill.
+        out[0] = 0;
         out[1] = 0;
     }
     return out;
 }
 
-char __fastcall sr_isNvidia(void*, void*)      // adapter.VendorId == 0x10DE (4318)
+char RD9_THUNK sr_isNvidia(void* RD9_THUNK_EDX)      // adapter.VendorId == 0x10DE (4318)
 {
     void* caps = ::dice::hfe::dx9rend::g_deviceCaps;
     if (!caps)
         return 0;
-    const unsigned char* c = static_cast<const unsigned char*>(caps);
-    return *reinterpret_cast<const unsigned int*>(c + 1368) == 4318u ? 1 : 0;
+    return ::dice::hfe::dx9rend::deviceCapsIsNvidia() ? 1 : 0;
 }
 
-unsigned char g_swiffFlag1023D950 = 0;         // byte_1023D950 - a host-toggled flag pair
-char __fastcall sr_getFlag(void*, void*) { return (char)g_swiffFlag1023D950; }
-char __fastcall sr_setFlag(void*, void*, char v) { g_swiffFlag1023D950 = (unsigned char)v; return v; }
+// byte_1023D950 is one retail byte shared with EffectManager::compileEffect's successful-technique
+// store (PE 0x100357B9); both sides use the definition in RendDX9/Ra/EffectManager.cpp.
+// getter at 0x10153490, a tail inside the ledger range of PE 0x10153430
+char RD9_THUNK sr_getFlag(void* RD9_THUNK_EDX) { return (char)::dice::hfe::dx9rend::Ra::g_anyEffectCompiled; }
+// PE 0x101534A0
+char RD9_THUNK sr_setFlag(void* RD9_THUNK_EDX, char v) { ::dice::hfe::dx9rend::Ra::g_anyEffectCompiled = (unsigned char)v; return v; }
 
-int __fastcall sr_creditsCount(void* self, void*);     // slot 62, forward-declared for 61
+int RD9_THUNK sr_creditsCount(void* self RD9_THUNK_EDX);     // slot 62, forward-declared for 61
 
-// preload images/credits/1..113.png and remember each name that resolved.
-char __fastcall sr_preloadCredits(void* self, void*)
+// PE 0x10154EA0. Preload images/credits/1..113.png and remember each name that resolved. The
+// count query goes through primary slot +0xF8 (62) like the shipped body.
+char RD9_THUNK sr_preloadCredits(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    if (sr_creditsCount(self, 0))
+    if (reinterpret_cast<ui::ISwiffRender*>(self)->creditsCount())
         return 1;
 
     for (unsigned int i = 1; i <= 0x71; ++i)
     {
         char nameBuf[64];
         ::sprintf(nameBuf, "images/credits/%d.png", i);
-        vc71::string name(nameBuf);
+        std::string name(nameBuf);
         unsigned int w = 0, h = 0;
         if (registryGetOrLoad(s->registry, name, &w, &h, 0) != -1)
         {
             // sub_10011220 - push the name onto the credits vector at +1104.
-            if (s->creditsFirst && s->creditsLast < s->creditsEnd)
-            {
-                new (s->creditsLast) vc71::string(name);
-                ++s->creditsLast;
-            }
-            else
-            {
-                const unsigned int oldCount =
-                    s->creditsFirst ? (unsigned int)(s->creditsLast - s->creditsFirst) : 0;
-                const unsigned int newCap =
-                    s->creditsFirst ? (unsigned int)(s->creditsEnd - s->creditsFirst) * 2 : 8;
-                vc71::string* grown = static_cast<vc71::string*>(
-                    ::renddx9abi::engineAlloc(newCap * sizeof(vc71::string)));
-                if (grown)
-                {
-                    for (unsigned int k = 0; k < oldCount; ++k)
-                    {
-                        new (grown + k) vc71::string(s->creditsFirst[k]);
-                        s->creditsFirst[k].~string();
-                    }
-                    if (s->creditsFirst)
-                        ::renddx9abi::engineFree(s->creditsFirst);
-                    s->creditsFirst = grown;
-                    s->creditsLast  = grown + oldCount;
-                    s->creditsEnd   = grown + newCap;
-                    new (s->creditsLast) vc71::string(name);
-                    ++s->creditsLast;
-                }
-            }
+            s->credits.push_back(name);
         }
     }
     return 1;
 }
 
-int __fastcall sr_creditsCount(void* self, void*)
+int RD9_THUNK sr_creditsCount(void* self RD9_THUNK_EDX)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    if (!s->creditsFirst)
-        return 0;
-    return (int)(s->creditsLast - s->creditsFirst);
+    return (int)s->credits.size();
 }
 
-// copy the i-th credits name out; empty string when out of range.
-vc71::string* __fastcall sr_getCreditsName(void* self, void*, vc71::string* out, unsigned int index)
+// PE 0x10153C70. Copy the i-th credits name out; empty string when out of range.
+std::string* RD9_THUNK sr_getCreditsName(void* self RD9_THUNK_EDX, std::string* out, unsigned int index)
 {
     SwiffRender* s = static_cast<SwiffRender*>(self);
-    const int count = sr_creditsCount(self, 0);
-    if (count && index < (unsigned int)count)
-        new (out) vc71::string(s->creditsFirst[index]);
+    if (!s->credits.empty()
+        && index < (unsigned int)reinterpret_cast<ui::ISwiffRender*>(self)->creditsCount())
+        new (out) std::string(s->credits[index]);
     else
-        new (out) vc71::string("");
+        new (out) std::string("");
     return out;
 }
 
@@ -2165,7 +2430,7 @@ bool g_swiffRandSeeded = false;
 
 void swiffSeedRandom()      // sub_101C8240 - init()'s tail
 {
-    ::srand((unsigned int)::time(0));
+    bf2crt::srand((unsigned int)::time(0));
     g_swiffRandSeeded = true;
 }
 
@@ -2175,57 +2440,161 @@ int swiffRandomRange(int lo, int hi)
     if (!g_swiffRandSeeded)
         swiffSeedRandom();
     const float range = (float)(hi - lo);
-    return lo - (int)((double)::rand() * range * -0.000030518509);
+    return lo - (int)((double)bf2crt::rand() * range * -0.000030518509);
 }
 
-vc71::string* __fastcall sr_getRandomCreditsName(void* self, void*, vc71::string* out)
+// The next rand() value scaled by 0x38000100 (about 1 / 32767), seeding first as swiffRandomRange does.
+// PE 0x101C8260 (the value is returned on the x87 stack). Unreachable in 1.50: no code or data
+// references. [CHOSEN, not recovered] float return type: the body ends with `fild; fmul` and nothing
+// reads st0.
+float swiffRandomUnit()
 {
-    const int count = sr_creditsCount(self, 0);
+    if (!g_swiffRandSeeded)
+        swiffSeedRandom();
+    const int value = bf2crt::rand();
+    return static_cast<float>(static_cast<double>(value) * 3.0518509447574615e-05);
+}
+
+// True when probability is above 1e-05 and a fresh unit random value does not exceed it
+// (`fcomp` with C0 or C3 set). PE 0x101C82A0 (retn 4). Unreachable in 1.50: no code or data
+// references.
+bool swiffRandomChance(float probability)
+{
+    if (!(probability > 1e-05f))
+        return false;
+    if (!g_swiffRandSeeded)
+        swiffSeedRandom();
+    const int value = bf2crt::rand();
+    return static_cast<float>(static_cast<double>(value) * 3.0518509447574615e-05) <= probability;
+}
+
+// A float in [lo, hi]: lo + (rand * (hi - lo)) * 0x38000100. PE 0x101C8380 (retn 8, lo first).
+// Unreachable in 1.50: no code or data references.
+float swiffRandomFloatRange(float lo, float hi)
+{
+    const float range = hi - lo;
+    if (!g_swiffRandSeeded)
+        swiffSeedRandom();
+    const int value = bf2crt::rand();
+    return static_cast<float>((static_cast<double>(value) * range) * 3.0518509447574615e-05)
+         + lo;
+}
+
+// PE 0x101C83D0 (ecx = out, edx = count): fills count bytes with rand() * 0x3BFF01FE (255 / 32767)
+// truncated through the CRT's _ftol (0x101C45A4, a compiler/CRT helper), seeding before the first
+// byte only; always answers true. Unreachable in 1.50: no code or data references.
+bool swiffRandomBytes(unsigned char* out, int count)
+{
+    for (; count > 0; --count)
+    {
+        if (!g_swiffRandSeeded)
+            swiffSeedRandom();
+        const int value = bf2crt::rand();
+        *out++ = static_cast<unsigned char>(static_cast<int>(
+            static_cast<float>(static_cast<double>(value) * 0.007782219909131527)));
+    }
+    return true;
+}
+
+// PE 0x10153B10
+std::string* RD9_THUNK sr_getRandomCreditsName(void* self RD9_THUNK_EDX, std::string* out)
+{
+    const int count = sr_creditsCount(self RD9_THUNK_ARG);
     const int pick  = swiffRandomRange(0, count - 1);
     // slot 63, virtually - as the shipped body dispatches through its own vtable
     void** vtbl = static_cast<SwiffRender*>(self)->vtPrimary;
-    typedef vc71::string* (__fastcall* GetNameFn)(void*, void*, vc71::string*, unsigned int);
-    return reinterpret_cast<GetNameFn>(vtbl[63])(self, 0, out, (unsigned int)pick);
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Let Clang supply the native hidden return position.
+    typedef std::string (*GetNameFn)(void*, unsigned int);
+    new (out) std::string(reinterpret_cast<GetNameFn>(vtbl[63])(self, (unsigned int)pick));
+    return out;
+#else
+    typedef std::string* (__thiscall* GetNameFn)(void*, std::string*, unsigned int);
+    return reinterpret_cast<GetNameFn>(vtbl[63])(self, out, (unsigned int)pick);
+#endif
 }
 
-char __fastcall sr_getWasDeviceLost(void* self, void*)
+char RD9_THUNK sr_getWasDeviceLost(void* self RD9_THUNK_EDX)
 {
     return (char)static_cast<SwiffRender*>(self)->wasLostSticky;
 }
-void __fastcall sr_clearWasDeviceLost(void* self, void*)
+void RD9_THUNK sr_clearWasDeviceLost(void* self RD9_THUNK_EDX)
 {
     static_cast<SwiffRender*>(self)->wasLostSticky = 0;
 }
 
 
-// init - 0x10152200. Singletons, the effect + six parameters, eight technique records, the vertex
-// declaration, three ring VBs under a pool swap, the listener/event registrations, the rain.
+// PE 0x101B9290 (this = the rain). Builds one font per SwiffHost credits-list entry and answers true.
+// The retail body reads the list without a null test; the guard below is a [CHOSEN, not recovered]
+// memory-safety omission (a null list would fault at PE 0x101B9312).
+bool creditsRainBuildFonts(CreditsRain* rain)
+{
+    ui::ISwiffHost* host = static_cast<ui::ISwiffHost*>(
+        ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost")));
+    SwiffRender* renderer = static_cast<SwiffRender*>(static_cast<void*>(
+        ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffRender"))));
+    std::vector<::dice::hfe::SwiffStringIntEntry>* const list = host->getEntriesEC8();
+    if (list)
+    {
+        for (unsigned int i = 0; i < list->size(); ++i)
+        {
+            std::wstring localized;
+            const std::string key((*list)[i].text);
+            const int type = (*list)[i].value;
+            if (type && (*list)[i].text != "")
+                host->getLocalizedString(localized, key);
+            void** vtbl = renderer->vtPrimary;
+            typedef void* (__thiscall* CreateFontFn)(void*, const char*, int);
+            void* font = 0;
+            if (type == 1)
+                font = reinterpret_cast<CreateFontFn>(vtbl[26])(renderer, "StandardTextBold", 13);
+            else if (type == 2)
+                font = reinterpret_cast<CreateFontFn>(vtbl[26])(renderer, "StandardTextBold", 15);
+            else
+                font = reinterpret_cast<CreateFontFn>(vtbl[26])(renderer, "DynamicText", 11);
+            if (!font)
+                continue;       // existing RW-80 omission of the null-wrapper access
+            swiffFontConfigure(font, 620.0f, 2);
+            typedef int (__thiscall* SetTextFn)(void*, void*, const wchar_t*);
+            if (type)
+                reinterpret_cast<SetTextFn>(vtbl[28])(renderer, font, localized.c_str());
+            else
+            {
+                const std::wstring text = makeWide((*list)[i].text);
+                reinterpret_cast<SetTextFn>(vtbl[28])(renderer, font, text.c_str());
+            }
+            typedef int (__thiscall* TrackFontFn)(void*, void*);
+            reinterpret_cast<TrackFontFn>(vtbl[29])(renderer, font);
+            swiffFontRefreshWindow(font);
+            creditsRainPush(rain, font);
+            ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffRender"));
+        }
+    }
+    return true;
+}
 
-int __fastcall sr_init(void* self, void*)
+
+// PE 0x10152200. Singletons, the effect + six parameters, eight technique records, the vertex
+// declaration, three ring VBs under a pool swap, the listener/event registrations, the rain.
+// ClassManager must be initialized; FontRenderer is used without a null test.
+
+int RD9_THUNK sr_init(void* self RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
 
-    s->fontRenderer = 0;
-    s->swiffHost    = 0;
-    if (::dice::hfe::classManager)
-    {
-        s->fontRenderer = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("FontRenderer"));
-        s->swiffHost    = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
-    }
-    if (!s->fontRenderer)
-        noteOnce(5, "[FRONTIER] SwiffRender::init: the FontRenderer singleton is null (class "
-                    "81047 withheld, RW-80) - every font path is disabled with a guard");
+    s->fontRenderer = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("FontRenderer"));
+    s->swiffHost    = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
 
     s->effect = shaderManagerGetEffect(g_shaderManager, "Shaders/SwiffMenu");
 
     Effect* fx = static_cast<Effect*>(s->effect);
-    s->paramTransform = effectGetShaderParameter(fx, vc71::string("TRANSFORM"));
-    s->paramDiffuse   = effectGetShaderParameter(fx, vc71::string("DIFFUSE"));
-    s->paramTexGenS   = effectGetShaderParameter(fx, vc71::string("TEXGENS"));
-    s->paramTexGenT   = effectGetShaderParameter(fx, vc71::string("TEXGENT"));
-    s->paramTexture   = effectGetShaderParameter(fx, vc71::string("TEXTURE"));
-    s->paramTime      = effectGetShaderParameter(fx, vc71::string("TIME"));
+    s->paramTransform = effectGetShaderParameter(fx, std::string("TRANSFORM"));
+    s->paramDiffuse   = effectGetShaderParameter(fx, std::string("DIFFUSE"));
+    s->paramTexGenS   = effectGetShaderParameter(fx, std::string("TEXGENS"));
+    s->paramTexGenT   = effectGetShaderParameter(fx, std::string("TEXGENT"));
+    s->paramTexture   = effectGetShaderParameter(fx, std::string("TEXTURE"));
+    s->paramTime      = effectGetShaderParameter(fx, std::string("TIME"));
 
     s->techRecord[0] = 0;
     s->techRecord[1] = effectFindTechniqueRecord(s->effect, "TS0");
@@ -2248,11 +2617,12 @@ int __fastcall sr_init(void* self, void*)
     // Slot 49 with "default" - the shipped no-op preload, dispatched virtually as shipped.
     {
         void** vtbl = s->vtPrimary;
-        typedef char (__fastcall* PreloadFn)(void*, void*, const char*);
-        reinterpret_cast<PreloadFn>(vtbl[49])(s, 0, "default");
+        typedef char (__thiscall* PreloadFn)(void*, const char*);
+        reinterpret_cast<PreloadFn>(vtbl[49])(s, "default");
     }
 
-    // sub_100A1240 - FontRenderer attach (its effect, decls, FONT_VBS ring). Withheld (RW-80).
+    // 0x1015255A: the FontRenderer builds its effect, declarations and FONT_VBS ring (sub_100A1240).
+    fontRendererInit(s->fontRenderer);
 
     // RendDX9_registerDeviceLostResetListener(this+4, priority 4) - 0x10152565..0x10152571:
     // `push 4; lea ecx,[esi+4]; push ecx; mov ecx, dword_1023B970; call 0x10009D60`, straight after
@@ -2272,65 +2642,12 @@ int __fastcall sr_init(void* self, void*)
     CreditsRain* rain = 0;
     if (rainStorage)
     {
-        rain = static_cast<CreditsRain*>(rainStorage);
-        // sub_101B9200 - zero the glyph slots (the y slots stay uninitialised, as shipped), the
-        // vector, and the inited byte.
-        for (int i = 0; i < 40; ++i)
-            rain->points[i].font = 0;
-        rain->first = 0; rain->last = 0; rain->end = 0;
-        rain->inited = 0;
+        rain = creditsRainConstruct(rainStorage);                    // PE 0x101B9200
     }
     s->trail = rain;
 
-    // sub_101B9290 - build one font per SwiffHost credits-list entry. The list is empty at menu
-    // boot; entries appear when the credits screen opens. Fonts are withheld (RW-80), so entries
-    // whose font came back null are skipped where the shipped build dereferences.
     if (rain && s->swiffHost)
-    {
-        // ISwiffHost +0x2DC getEntriesEC8 -> vector<SwiffStringIntEntry>*. RW-266: the
-        // walk below reads the retail VC7.1 layout - first at +4, last at +8, 32-byte entries
-        // {string (28), int} with the int at +28. The native host hands back its own std::vector,
-        // {first, last, end} at +0/+4/+8 with 28-byte entries {std::string (24), int}, which that
-        // walk would have read as the wrong range at the wrong stride. So the native flavour walks
-        // it typed; the per-entry body is shared, in the same order.
-#if BF2_PLUGIN_ABI_NATIVE
-        std::vector<::dice::hfe::SwiffStringIntEntry>* const list = swiffHostOf(s->swiffHost)->getEntriesEC8();
-        if (list)
-        {
-            for (std::vector<::dice::hfe::SwiffStringIntEntry>::const_iterator it = list->begin();
-                 it != list->end(); ++it)
-            {
-                const int type = it->value;
-#else
-        typedef void* (__thiscall* GetListFn)(void*);
-        void* list = hostSlot<GetListFn>(s->swiffHost, 732)(s->swiffHost);
-        if (list)
-        {
-            unsigned char* base = *reinterpret_cast<unsigned char**>(
-                static_cast<unsigned char*>(list) + 4);
-            unsigned char* last = *reinterpret_cast<unsigned char**>(
-                static_cast<unsigned char*>(list) + 8);
-            for (unsigned char* e = base; base && e < last; e += 32)
-            {
-                const int type = *reinterpret_cast<int*>(e + 28);
-#endif
-                void** vtbl = s->vtPrimary;
-                typedef void* (__fastcall* CreateFontFn)(void*, void*, const char*, int);
-                void* font = 0;
-                if (type == 1)
-                    font = reinterpret_cast<CreateFontFn>(vtbl[26])(s, 0, "StandardTextBold", 13);
-                else if (type == 2)
-                    font = reinterpret_cast<CreateFontFn>(vtbl[26])(s, 0, "StandardTextBold", 15);
-                else
-                    font = reinterpret_cast<CreateFontFn>(vtbl[26])(s, 0, "DynamicText", 11);
-                if (!font)
-                    continue;       // withheld fonts (RW-80); the shipped dereferences here
-                // the size/flag fields, the localized setText, the release, and the push - all in
-                // the shipped order once fonts exist. Unreachable until RW-80 retires.
-                creditsRainPush(rain, font);
-            }
-        }
-    }
+        creditsRainBuildFonts(rain);                                 // PE 0x101B9290
 
     if (s->swiffHost)
     {
@@ -2346,28 +2663,18 @@ int __fastcall sr_init(void* self, void*)
 // shutdown - 0x10153FE0. The rain, the event handler, the paired releases, the fonts vector, the
 // VB ring + declaration, the six parameters, the effect, the FontRenderer detach.
 
-int __fastcall sr_shutdown(void* self, void*)
+int RD9_THUNK sr_shutdown(void* self RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = static_cast<SwiffRender*>(self);
 
     if (s->trail)
     {
-        // sub_101B8F00 - release every rain font through slot 27 (withheld font bodies no-op on
-        // null), then sub_101B9240 - the vector teardown - and the free.
+        // PE 0x101B8F00. Release every rain font through the current singleton's
+        // slot 27, then destroy its vector (0x101B9240) and free the scroller.
         CreditsRain* r = s->trail;
-        if (r->first)
-        {
-            for (void** f = r->first; f != r->last; ++f)
-            {
-                void** vtbl = s->vtPrimary;
-                typedef void (__fastcall* ReleaseFontFn)(void*, void*, void*);
-                if (*f)
-                    reinterpret_cast<ReleaseFontFn>(vtbl[27])(s, 0, *f);
-            }
-            ::renddx9abi::engineFree(r->first);
-        }
-        r->first = 0; r->last = 0; r->end = 0;
+        creditsRainReleaseFonts(r);
+        r->~CreditsRain();
         ::renddx9abi::engineFree(r);
         s->trail = 0;
     }
@@ -2396,29 +2703,25 @@ int __fastcall sr_shutdown(void* self, void*)
     s->released968 = 0;
     s->released972 = 0;
 
-    // The fonts vector at +956: release each {28-byte name, object at +28} entry. Nothing in this
-    // build can populate it until RW-80 retires; the walk is the shipped one.
-    if (s->fontsFirst)
+    // The fonts vector at +956: release each {name, object} entry. Nothing in this build can
+    // populate it until RW-80 retires; the walk is the shipped one.
+    for (std::vector<SwiffFontEntry*>::iterator e = s->fonts.begin(); e != s->fonts.end(); ++e)
     {
-        for (void** e = s->fontsFirst; e != s->fontsLast; ++e)
+        if (*e)
         {
-            if (*e)
+            SwiffFontEntry* const entry = *e;
+            void* obj = entry->object;
+            if (obj)
             {
-                unsigned char* entry = static_cast<unsigned char*>(*e);
-                void* obj = *reinterpret_cast<void**>(entry + 28);
-                if (obj)
-                {
-                    void** vtbl = *reinterpret_cast<void***>(obj);
-                    reinterpret_cast<HostVoidFn>(vtbl[8 / 4])(obj);
-                }
-                reinterpret_cast<vc71::string*>(entry)->~string();
-                ::renddx9abi::engineFree(entry);
-                *e = 0;
+                void** vtbl = *reinterpret_cast<void***>(obj);
+                reinterpret_cast<HostVoidFn>(vtbl[8 / 4])(obj);
             }
+            entry->~SwiffFontEntry();
+            ::renddx9abi::engineFree(entry);
+            *e = 0;
         }
-        ::renddx9abi::engineFree(s->fontsFirst);
     }
-    s->fontsFirst = 0; s->fontsLast = 0; s->fontsEnd = 0;
+    s->fonts.clear();
 
     if (s->object5C)
     {
@@ -2459,7 +2762,8 @@ int __fastcall sr_shutdown(void* self, void*)
     }
     s->effect = 0;
 
-    // sub_100A18A0 - the FontRenderer detach. Withheld with the class (RW-80).
+    // 0x101541C4: the FontRenderer releases its resources (sub_100A18A0).
+    fontRendererTeardown(s->fontRenderer);
     return 0;
 }
 
@@ -2469,16 +2773,18 @@ int __fastcall sr_shutdown(void* self, void*)
 
 SwiffRender* ownerFromDevLost(void* sub)
 {
-    return reinterpret_cast<SwiffRender*>(static_cast<unsigned char*>(sub) - 4);
+    return reinterpret_cast<SwiffRender*>(
+        static_cast<unsigned char*>(sub) - offsetof(SwiffRender, vtDevLost));    // +4
 }
 SwiffRender* ownerFromEcCore(void* sub)
 {
-    return reinterpret_cast<SwiffRender*>(static_cast<unsigned char*>(sub) - 8);
+    return reinterpret_cast<SwiffRender*>(
+        static_cast<unsigned char*>(sub) - offsetof(SwiffRender, vtEcCore));     // +8
 }
 
-// Marks device loss, stops host rendering, and unlocks the ring buffer before the lower
+// PE 0x10152640. Marks device loss and unlocks the ring buffer before the lower
 // priority BufferManager releases it. Initialization must have supplied a valid host.
-void __fastcall sr_onDeviceLost(void* sub, void*)
+void RD9_THUNK sr_onDeviceLost(void* sub RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = ownerFromDevLost(sub);
@@ -2492,9 +2798,9 @@ void __fastcall sr_onDeviceLost(void* sub, void*)
     }
 }
 
-// Rebuilds cached techniques and resets menu modifier state after device reset.
+// PE 0x10152680. Rebuilds cached techniques and resets menu modifier state after device reset.
 // The restart flag gates host flag updates and is re-read before requesting a menu restart.
-void __fastcall sr_onDeviceReset(void* sub, void*)
+void RD9_THUNK sr_onDeviceReset(void* sub RD9_THUNK_EDX)
 {
     using namespace ::dice::hfe::dx9rend;
     SwiffRender* s = ownerFromDevLost(sub);
@@ -2524,20 +2830,16 @@ void __fastcall sr_onDeviceReset(void* sub, void*)
         ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("SwiffPlayer"));
     if (player)
     {
-#if BF2_PLUGIN_ABI_NATIVE
         // RW-266: typed - ISwiffPlayer slot 18 is +0x48.
         static_cast<ui::ISwiffPlayer*>(static_cast<IBase*>(player))->resetModifierState();
-#else
-        void** vtbl = *reinterpret_cast<void***>(player);
-        reinterpret_cast<HostVoidFn>(vtbl[72 / 4])(player);               // +0x48 resetModifierState
-#endif
     }
 }
 
-void __fastcall sr_onDeviceDestroy(void*, void*) { }       // 0x10152870, SwiffRender's own `ret` (not the shared 0x10037D40)
+void RD9_THUNK sr_onDeviceDestroy(void* RD9_THUNK_EDX) { }       // 0x10152870, SwiffRender's own `ret` (not the shared 0x10037D40)
 
-// the ECCore handler: event (11,3) disables font rendering.
-void __fastcall sr_handleECCoreEvent(void* sub, void*, int category, int id, int, int)
+// PE 0x10153410. The ECCore handler: event (11,3) disables font rendering. The two unread arguments are
+// IEventListener::handleEvent's node and data pointers.
+void RD9_THUNK sr_handleECCoreEvent(void* sub RD9_THUNK_EDX, int category, int id, void*, void*)
 {
     SwiffRender* s = ownerFromEcCore(sub);
     if (category == 11 && id == 3)
@@ -2547,6 +2849,79 @@ void __fastcall sr_handleECCoreEvent(void* sub, void*, int category, int id, int
 
 // The vtables - primary 0x1021E1C0 (67), devlost 0x1021E1B4 (3), eccore 0x1021E1B0 (1).
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kSwiffRenderVtablePrimary[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, addRef, sr_addRef),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getRef, sr_getRef),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, release, sr_release),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, queryInterface, sr_queryInterfaceById),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, init, sr_init),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, shutdown, sr_shutdown),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, slot6, sr_slot6),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, uploadAlpha, sr_uploadAlpha),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, slot8, sr_slot8),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, uploadRgba, sr_uploadRgba),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, loadTexture, sr_loadTexture),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, releaseTexture, sr_releaseTexture),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, beginDisplay, sr_beginDisplay),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, endDisplay, sr_endDisplay),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setTransform, sr_setTransform),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setCxform, sr_setCxform),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, recordStat, sr_recordStat),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, drawVertices, sr_drawVertices),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, drawLineStrip, sr_drawLineStrip),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fillStyleDisable, sr_fillStyleDisable),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fillStyleColor, sr_fillStyleColor),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setTexture, sr_setTexture),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, lineStyleDisable, sr_lineStyleDisable),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, lineStyleColor, sr_lineStyleColor),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, lineStyleWidth, sr_lineStyleWidth),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, nullsub25, sr_nullsub25),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, createFont, sr_createFont),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, releaseFontHandle, sr_releaseFontHandle),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontForward16, sr_fontForward16),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, destroyFont, sr_destroyFont),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, drawGlyphBitmap, sr_drawGlyphBitmap),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontGetExtent, sr_fontGetExtent),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontForward32, sr_fontForward32),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontForward40, sr_fontForward40),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontForward44, sr_fontForward44),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontForward48, sr_fontForward48),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontSetSize, sr_fontSetSize),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, fontSetField104, sr_fontSetField104),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, nullsub38, sr_nullsub38),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, beginMask, sr_beginMask),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, endMask, sr_endMask),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, disableMask, sr_disableMask),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setMovieWidth, sr_setMovieWidth),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setMovieHeight, sr_setMovieHeight),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setScale, sr_setScale),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setBackgroundColor, sr_setBackgroundColor),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setMouseState, sr_setMouseState),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, slot47, sr_slot47),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, nullsub48, sr_nullsub48),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, slot49, sr_slot49),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, slot50, sr_slot50),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, beginFrame, sr_beginFrame),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, endFrame, sr_endFrame),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setTextureTechnique, sr_setTextureTechnique),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, updateTime, sr_updateTime),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getTextureRegistry, sr_getTextureRegistry),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, uploadTexture, sr_uploadTexture),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getDriverVersion, sr_getDriverVersion),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, isNvidia, sr_isNvidia),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getFlag, sr_getFlag),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, setFlag, sr_setFlag),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, preloadCredits, sr_preloadCredits),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, creditsCount, sr_creditsCount),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getCreditsName, sr_getCreditsName),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getRandomCreditsName, sr_getRandomCreditsName),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, getWasDeviceLost, sr_getWasDeviceLost),
+    BF2_NATIVE_SLOT(::dice::hfe::ui::ISwiffRender, clearWasDeviceLost, sr_clearWasDeviceLost),
+};
+#else
 void* const kSwiffRenderVtablePrimary[67] =
 {
     reinterpret_cast<void*>(&sr_addRef),               //  0 +0x00
@@ -2617,6 +2992,7 @@ void* const kSwiffRenderVtablePrimary[67] =
     reinterpret_cast<void*>(&sr_getWasDeviceLost),     // 65 +0x104
     reinterpret_cast<void*>(&sr_clearWasDeviceLost),   // 66 +0x108
 };
+#endif
 
 void* const kSwiffRenderVtableDevLost[3] =
 {
@@ -2625,18 +3001,26 @@ void* const kSwiffRenderVtableDevLost[3] =
     reinterpret_cast<void*>(&sr_onDeviceDestroy),      // +0x08  (its own `ret`)
 };
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kSwiffRenderVtableEcCore[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::IEventListener, handleEvent, sr_handleECCoreEvent),
+};
+#else
 void* const kSwiffRenderVtableEcCore[1] =
 {
     reinterpret_cast<void*>(&sr_handleECCoreEvent),    // +0x00
 };
+#endif
 
 
-// The constructor - 0x10155060. Reproduces exactly the shipped stores; fields it leaves alone stay
-// whatever the allocator handed over, as shipped.
-
+// The constructor - PE 0x10155060. Reproduces exactly the shipped stores; fields it leaves alone stay
+// whatever the allocator handed over, as shipped. The containers (the registry's vector,
+// sub_101B9AD0, the two maps and the three other vectors) are constructed empty first.
 SwiffRender* swiffRenderConstruct(void* storage)
 {
-    SwiffRender* s = static_cast<SwiffRender*>(storage);
+    SwiffRender* s = new (storage) SwiffRender;
     s->vtPrimary = const_cast<void**>(kSwiffRenderVtablePrimary);
     s->vtDevLost = const_cast<void**>(kSwiffRenderVtableDevLost);
     s->vtEcCore  = const_cast<void**>(kSwiffRenderVtableEcCore);
@@ -2677,92 +3061,62 @@ SwiffRender* swiffRenderConstruct(void* storage)
     s->locked = 0;
     s->statMax = -1;
     s->statMin = 1000;
-    s->registry.construct();
-    s->fontsFirst = 0; s->fontsLast = 0; s->fontsEnd = 0;
     s->stencilRef = 1;
     s->released968 = 0;
     s->released972 = 0;
-    s->u976 = 0;
+    s->currentVideo = 0;
     s->u980 = 0;
-    s->texTechniqueMap.construct(0x30);
     s->techRecord[0] = 0;
-    s->fontSet.construct();
     s->fontsDisabled = 0;
     s->b1057 = 0;
     s->swiffHost = 0;
     s->trail = 0;
     s->vpW = 0; s->vpH = 0;
     s->u1052 = -100;                           // *(this + 263) = -100, the one odd ctor store
-    s->creditsFirst = 0; s->creditsLast = 0; s->creditsEnd = 0;
     s->fontRenderer = 0;
     s->trailDt = 0.0f;
     s->timeMs = 0;                             // [CHOSEN] zeroed here; the shipped leaves it to
-    s->strings904.first = 0;                   // init(). Same for the +904 vector links, which the
-    s->strings904.last  = 0;                   // shipped ctor leaves as allocator garbage and the
-    s->strings904.end   = 0;                   // dtor then walks - ours nulls them instead.
+                                               // init(). The +904 string vector is zeroed by the
+                                               // shipped ctor too (PE 0x101551A9..0x101551B5:
+                                               // +0x388/+0x38C/+0x390); the native member is
+                                               // constructed empty, which is the same state.
     s->stats[0] = 0; s->stats[1] = 0; s->stats[2] = 0;
     s->stats[3] = 0; s->stats[4] = 0; s->stats[5] = 0;
     s->lastVerts = 0;
     s->lastCount = 0;
+    // [CHOSEN, not recovered] The stores of vpW, vpH, stats[1..5], lastVerts, lastCount and timeMs above
+    // have no counterpart in PE 0x10155060 (it leaves them to the allocator); they are zeroed so that no
+    // native path reads an uninitialised word (memory-safety omission).
     return s;
 }
 
-// The destructor tail - 0x10154F60 (after shutdown): the credits vectors, the two maps, the fonts
-// vector remnants, the registry.
+// The destructor tail - PE 0x10154F60 (after shutdown): the credits vectors, the two maps, the fonts
+// vector remnants, the registry - which is the members' reverse declaration order, so the closing
+// destructor call releases the emptied containers in that same order.
 void swiffRenderDestroy(SwiffRender* s)
 {
     s->vtPrimary = const_cast<void**>(kSwiffRenderVtablePrimary);
     s->vtDevLost = const_cast<void**>(kSwiffRenderVtableDevLost);
     s->vtEcCore  = const_cast<void**>(kSwiffRenderVtableEcCore);
 
-    sr_shutdown(s, 0);
+    sr_shutdown(s RD9_THUNK_ARG);
 
     // sub_100111E0 - the credits names at +1104.
-    if (s->creditsFirst)
-    {
-        for (vc71::string* e = s->creditsFirst; e != s->creditsLast; ++e)
-            e->~string();
-        ::renddx9abi::engineFree(s->creditsFirst);
-    }
-    s->creditsFirst = 0; s->creditsLast = 0; s->creditsEnd = 0;
+    s->credits.clear();
 
     // The two maps, in the shipped order: the font set (+1040, sub_10155890) first, then the
-    // technique map (+984, sub_10013E50). Both clears end by freeing the sentinel.
-    if (s->fontSet.head)
-    {
-        // empty in this build (fonts withheld, RW-80); free the sentinel
-        ::renddx9abi::engineFree(s->fontSet.head);
-        s->fontSet.head = 0;
-        s->fontSet.size = 0;
-    }
-    {
-        vc71::map_node* n = vc71::mapFirst(s->texTechniqueMap);
-        while (n)
-        {
-            vc71::map_node* next = vc71::mapNext(s->texTechniqueMap, n);
-            vc71::mapErase(s->texTechniqueMap, n);
-            n = next;
-        }
-        if (s->texTechniqueMap.head)
-            ::renddx9abi::engineFree(s->texTechniqueMap.head);
-        s->texTechniqueMap.head = 0;
-        s->texTechniqueMap.size = 0;
-    }
+    // technique map (+984, sub_10013E50).
+    s->fontSet.clear();                    // empty in this build (fonts withheld, RW-80)
+    s->texTechniqueMap.clear();
 
-    if (s->fontsFirst)
-        ::renddx9abi::engineFree(s->fontsFirst);
-    s->fontsFirst = 0; s->fontsLast = 0; s->fontsEnd = 0;
+    s->fonts.clear();
 
     // The +904 string vector (no recovered writer; the dtor destroys it as shipped).
-    if (s->strings904.first)
-    {
-        for (vc71::string* e = s->strings904.first; e != s->strings904.last; ++e)
-            e->~string();
-        ::renddx9abi::engineFree(s->strings904.first);
-    }
-    s->strings904.first = 0; s->strings904.last = 0; s->strings904.end = 0;
+    s->strings904.clear();
 
     registryDestroy(s->registry);
+
+    s->~SwiffRender();
 }
 
 } // anonymous namespace
@@ -2772,13 +3126,13 @@ IBase* __fastcall createSwiffRender(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
-    void* storage = ::renddx9abi::engineAlloc(0x460);
+    void* storage = ::renddx9abi::engineAlloc(sizeof(SwiffRender));   // 0x460 in the image
     if (!storage)
         return 0;
     SwiffRender* self = swiffRenderConstruct(storage);
-    void* itf = sr_queryInterfaceById(self, 0, iid);
+    void* itf = sr_queryInterfaceById(self RD9_THUNK_ARG, iid);
     if (!itf)
-        sr_release(self, 0);
+        sr_release(self RD9_THUNK_ARG);
     return static_cast<IBase*>(itf);
 }
 

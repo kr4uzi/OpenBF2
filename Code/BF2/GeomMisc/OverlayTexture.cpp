@@ -1,6 +1,5 @@
-// Viewport overlay texture with device-reset handling; five virtual operations remain frontiers.
+// Viewport overlay texture with device-reset handling.
 // [INFERRED] Source placement.
-// [RETIRE-WHEN: RW-81] Confirm source placement and implement and validate the remaining overlay operations.
 
 #ifdef BF2_IMAGE_RENDDX9
 
@@ -75,19 +74,22 @@ public:
 
     // (dc_console). [INFERRED] name; `ret` with no arguments.
     virtual void draw();                                      // +0x10
-    // read, left a named stop: returns the size pair {+0x14, +0x18} by value (hidden pointer, `retn 4`).
-    virtual void slot_0x14();
+    // [INFERRED] name; the size pair {+0x14, +0x18} by value (hidden return pointer, `retn 4`).
+    virtual Vec2 getSize() const;                             // +0x14  0x10088270
     // (dc_console). [INFERRED] name; `retn 4`, one pointer to two floats.
     virtual void setSize(const Vec2& size);                   // +0x18
-    // read, left named stops: +0x1C returns the position pair {+0x0C, +0x10} by value; +0x20 is
-    // setPosition(const Vec2&) - setSize's body on +0x0C/+0x10, setting +0x56; +0x24 returns the
-    // alpha (`fld [ecx+20h]`); +0x30 returns &m_textureName (`lea eax, [ecx+30h]`).
-    virtual void slot_0x1C();
-    virtual void slot_0x20();
-    virtual void slot_0x24();
+    // [INFERRED] names: the position pair {+0x0C, +0x10} by value, its setter (setSize's body on
+    // +0x0C/+0x10 and +0x56), and the alpha (`fld [ecx+20h]`).
+    virtual Vec2  getPosition() const;                        // +0x1C  0x10088210
+    virtual void  setPosition(const Vec2& position);          // +0x20  0x10088230
+    virtual float getAlpha() const;                           // +0x24  0x100880D0
     virtual void setAlpha(float alpha);                       // +0x28  0x100880E0   read
-    virtual void setTexture(const vc71::string& name);        // +0x2C  0x10088100   read
-    virtual void slot_0x30();                                 // 0x10088150   the last slot
+    virtual void setTexture(const std::string& name);        // +0x2C  0x10088100   read
+    // [INFERRED] name; `lea eax, [ecx+30h]` - the name setTexture last stored.
+    virtual const std::string& getTexture() const;           // +0x30  0x10088150   the last slot
+
+    // Not a slot: the +0x1C setter (PE 0x100880B0), unreached. [CHOSEN, not recovered] name.
+    void setWord1C(unsigned int value);
 
     // The DeviceLostResetListener at +0x04 (vtable 0x1020B110). .
     virtual void onDeviceLost();
@@ -109,7 +111,7 @@ private:
     void*                     m_vertexBuffer;   // +0x24  ctor: 0, built by the rebuild
     void*                     m_texture;        // +0x28  ctor: 0, setTexture writes this (EngineTexture*)
     dx9rend::Effect*          m_effect;         // +0x2C  the PortedFontShader effect
-    vc71::string              m_textureName;    // +0x30  setTexture compares and assigns this
+    std::string              m_textureName;    // +0x30  setTexture compares and assigns this
     dx9rend::ShaderParameter* m_paramTexLayer0; // +0x4C  the "TEXLAYER0" handle
     dx9rend::ShaderParameter* m_paramBlendAlpha;// +0x50  the "BLENDALPHA" handle
     unsigned char             m_alphaDirty;     // +0x54  ctor: 1, setAlpha sets it; no reader found
@@ -124,13 +126,15 @@ private:
     unsigned int              m_cachedH;        // +0x68
 };
 
-static_assert(sizeof(OverlayTexture) == 0x6C,
-              "RefFactory_geom_OverlayTexture allocates 0x6C - see 0x1007C860");
+
 
 
 // Creates the overlay buffer and shader parameters, retains the texture, and registers for device resets.
 // Requires valid renderer services and effect parameters; buffer rebuild failure is not propagated.
 
+// PE 0x10088600
+// [CHOSEN, not recovered] Retain native zero initialization of padding and shader pointers
+// that retail leaves unwritten until after rebuild(false).
 OverlayTexture::OverlayTexture()
     : m_refCount(1)
     , m_rectX(0.0f)
@@ -162,20 +166,20 @@ OverlayTexture::OverlayTexture()
         dx9rend::g_shaderManager, "mods/xpack/Shaders/PortedFontShader"));
 
     m_paramTexLayer0 =
-        dx9rend::effectGetShaderParameterBorrowedTyped(m_effect, vc71::string("TEXLAYER0"));
+        dx9rend::effectGetShaderParameterBorrowedTyped(m_effect, std::string("TEXLAYER0"));
     m_paramTexLayer0->addRef();
 
     m_paramBlendAlpha =
-        dx9rend::effectGetShaderParameterBorrowedTyped(m_effect, vc71::string("BLENDALPHA"));
+        dx9rend::effectGetShaderParameterBorrowedTyped(m_effect, std::string("BLENDALPHA"));
     m_paramBlendAlpha->addRef();
 
     dx9rend::registerDeviceLostResetListener(static_cast<dx9rend::DeviceLostResetListener*>(this), 4);
 }
 
 
+// PE 0x10088170
 // Releases the buffer, shader parameters, effect and texture, then unregisters the device listener.
 // The renderer must remain alive through destruction.
-
 OverlayTexture::~OverlayTexture()
 {
     if (m_vertexBuffer)
@@ -196,7 +200,7 @@ OverlayTexture::~OverlayTexture()
 void OverlayTexture::addRef() { ++m_refCount; }
 int  OverlayTexture::getRef() { return m_refCount; }
 
-// release - 0x10088830: `--[this+8]`; at zero the destructor 0x10088170 and then sub_1005F360 (the
+// PE 0x10088830, release: `--[this+8]`; at zero the destructor 0x10088170 and then sub_1005F360 (the
 // engine free); returns the decremented count either way.
 int OverlayTexture::release()
 {
@@ -209,6 +213,7 @@ int OverlayTexture::release()
     return remaining;
 }
 
+// PE 0x10088800: IDs 1 and 80002 (word 0x1020AE24) answer the receiver, everything else null; ret 4.
 void* OverlayTexture::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IOverlayTexture)
@@ -289,13 +294,12 @@ bool OverlayTexture::rebuild(bool force)
 }
 
 
-// Draws the overlay with its alpha setting. Requires initialized texture and shader resources.
-// A buffer rebuild may occur inside the pass; its result is ignored.
-
+// PE 0x10088720. Draws the overlay with its alpha setting. Requires initialized texture and shader
+// resources. A buffer rebuild may occur inside the pass; its result is ignored.
 void OverlayTexture::draw()
 {
     dx9rend::stateManagerPush();
-    dx9rend::effectSetTechniqueByName(m_effect, vc71::string("Overlay"));
+    dx9rend::effectSetTechniqueByName(m_effect, std::string("Overlay"));
     m_paramTexLayer0->setValue(m_texture, 0);
 
     float blendAlpha[4];
@@ -317,8 +321,7 @@ void OverlayTexture::draw()
 }
 
 
-// Updates size and marks the texture dirty when the combined difference exceeds epsilon or is NaN.
-
+// PE 0x10088290. Updates size and marks the texture dirty when the combined difference exceeds epsilon or is NaN.
 void OverlayTexture::setSize(const Vec2& size)
 {
     const float kEpsilon = 1.1920929e-07f;                                   // 0x34000000 at 0x101E05A0
@@ -349,7 +352,7 @@ void OverlayTexture::setAlpha(float alpha)
 // Loads a texture when the name changes, using the manager's current class and pool.
 // Replacing the texture does not release the previous reference.
 
-void OverlayTexture::setTexture(const vc71::string& name)
+void OverlayTexture::setTexture(const std::string& name)
 {
     RD9_TRACE("dice::hfe::geom::OverlayTexture::setTexture", 0x2C);
 
@@ -359,8 +362,8 @@ void OverlayTexture::setTexture(const vc71::string& name)
         m_textureDirty = 1;
         m_texture      = dx9rend::textureManagerGetTexture(name);
 
-        ::renddx9abi::logf("OverlayTexture::setTexture(\"%s\"): loaded -> 0x%08X",
-                           name.c_str(), ::renddx9abi::addr(m_texture));
+        ::renddx9abi::logf("OverlayTexture::setTexture(\"%s\"): loaded -> 0x%p",
+                           name.c_str(), m_texture);
     }
 }
 
@@ -380,19 +383,63 @@ void OverlayTexture::onDeviceDestroy()
 {
 }
 
-#define RD9_OT_FRONTIER(method, slotOffset)                                     \
-    void OverlayTexture::method()                                               \
-    {                                                                           \
-        RD9_FRONTIER("dice::hfe::geom::OverlayTexture::" #method, slotOffset);   \
+// +0x14, PE 0x10088270: {+0x14, +0x18} through the hidden return pointer.
+Vec2 OverlayTexture::getSize() const
+{
+    Vec2 size;
+    size.x = m_rectW;
+    size.y = m_rectH;
+    return size;
+}
+
+// +0x1C, PE 0x10088210: {+0x0C, +0x10} through the hidden return pointer.
+Vec2 OverlayTexture::getPosition() const
+{
+    Vec2 position;
+    position.x = m_rectX;
+    position.y = m_rectY;
+    return position;
+}
+
+// +0x20, PE 0x10088230: setSize's test on the position pair; a change sets +0x56, which the
+// rebuild reads.
+void OverlayTexture::setPosition(const Vec2& position)
+{
+    const float kEpsilon = 1.1920929e-07f;                                   // 0x34000000 at 0x101E05A0
+    if (!(std::fabs(m_rectY - position.y) + std::fabs(m_rectX - position.x) <= kEpsilon))
+    {
+        m_positionDirty = 1;
+        m_rectY = position.y;
+        m_rectX = position.x;
     }
+}
 
-RD9_OT_FRONTIER(slot_0x14, 0x14)
-RD9_OT_FRONTIER(slot_0x1C, 0x1C)
-RD9_OT_FRONTIER(slot_0x20, 0x20)
-RD9_OT_FRONTIER(slot_0x24, 0x24)
-RD9_OT_FRONTIER(slot_0x30, 0x30)
+// PE 0x100880B0 (`retn 4`): a changed +0x1C word sets the dirty byte +0x57 and is stored; an equal
+// one changes nothing. Unreached in 1.50: no code or data reference in RendDX9.dll; the 2006
+// RendDX9_r.dll body (0x1013CE60, next to a +0x1C getter 0x1013CE50) has no absolute or rel32
+// reference either, and the Linux ELF carries only CID/IID_OverlayTexture.
+// [CHOSEN, not recovered] Unobservable-type exception (AGENTS.md): the name and the field's
+// meaning cannot be observed (no instruction reads +0x1C); unsigned int is the dword compare's width.
+void OverlayTexture::setWord1C(unsigned int value)
+{
+    if (m_unknown1C != value)
+    {
+        m_dirty57   = 1;
+        m_unknown1C = value;
+    }
+}
 
-#undef RD9_OT_FRONTIER
+// +0x24, PE 0x100880D0: `fld [ecx+20h]; ret`.
+float OverlayTexture::getAlpha() const
+{
+    return m_alpha;
+}
+
+// +0x30, PE 0x10088150: `lea eax, [ecx+30h]; ret`.
+const std::string& OverlayTexture::getTexture() const
+{
+    return m_textureName;
+}
 
 // RefFactory_geom_OverlayTexture, 0x1007C860.
 IBase* __fastcall createOverlayTexture(unsigned int iid, IBase* outer)

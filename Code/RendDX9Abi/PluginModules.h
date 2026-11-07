@@ -8,6 +8,10 @@
 #define RENDDX9ABI_PLUGINMODULES_H
 
 #include "HfeAbi.h"
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native callbacks use the host's pointer-sized event arguments.
+#include "../BF2/Game/IEventListener.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -48,9 +52,21 @@ namespace geom {
 // ModuleGeom has a secondary event-handler vptr before its refcount, so it needs an
 // explicit declaration. [INFERRED] Handler interface name; preserve four integer arguments
 // and its single virtual slot, with no added destructor entry.
+#if !defined(_MSC_VER)
+class ECCoreEventHandler : public ::dice::hfe::IEventListener
+#else
 class ECCoreEventHandler
+#endif
 {
 public:
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Both module bodies inspect only category and id.
+    // Preserve their recovered helper while publishing the actual host callback.
+    void handleEvent(EventCategory category, unsigned int id, EventNode*, void*) override
+    {
+        handleCoreModuleEvent(static_cast<int>(category), static_cast<int>(id), 0, 0);
+    }
+#endif
     virtual void handleCoreModuleEvent(int category, int id, int a3, int a4) = 0;   // +0x00
 
 protected:

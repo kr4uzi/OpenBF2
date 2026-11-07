@@ -8,12 +8,18 @@
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "QuadPatch.h"
 #include "Terrain.h"
+#include "../GeomMisc/Debug.h"
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 #include "../Math/Frustum.h"
+#include "../RendDX9/RendDX9Math.h"   // the RendDX9 Frustum::inside copy
 #include "../Math/Mat4.h"
+#include "../Core/StringUtil.h"         // formatString (sub_10074AB0)
 #include "../RendDX9/RendDX9Base.h"
 #include "../RendDX9/ShaderParameter.h"
 #include "../RendMisc/IRenderView.h"
@@ -42,33 +48,10 @@ namespace geom {
 
 namespace {
 
-// sub_10074AB0 with one integer argument - see QuadPatch.cpp.
-void formatString(vc71::string& out, const char* format, int a)
-{
-    char buffer[0x1000];
-    const int written = std::snprintf(buffer, 0xFFF, format, a);
-    if (written < 0)
-        std::snprintf(buffer, sizeof(buffer), "%s",
-                      "WARNING: The original message was too long for formatString(). \n");
-    else
-        buffer[written] = 0;
-    out = buffer;
-}
-
-// sub_10079460 - a 4x4 from four rows, copied in order.
-void matrixFromRows(float* m, const float* row0, const float* row1, const float* row2, const float* row3)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        m[i]      = row0[i];
-        m[4 + i]  = row1[i];
-        m[8 + i]  = row2[i];
-        m[12 + i] = row3[i];
-    }
-}
 
 } // anonymous namespace
 
+// PE 0x1018E7D0
 SurroundingPatch::SurroundingPatch(Terrain* owner)
 {
     terrain = owner;
@@ -99,6 +82,7 @@ SurroundingPatch::SurroundingPatch(Terrain* owner)
 
 // Releases colormap, low-detail map, then both vertex buffers without clearing their pointers.
 // The load path already freed xzBytes; do not free the dangling pointer again.
+// PE 0x1018E910
 SurroundingPatch::~SurroundingPatch()
 {
     terrainReleaseTexture(colormap);                                              // +0x18
@@ -107,6 +91,7 @@ SurroundingPatch::~SurroundingPatch()
     if (heightVertexBuffer) dx9rend::vertexBufferRelease(heightVertexBuffer);     // +0x20
 }
 
+// PE 0x1018EFB0
 // four file fields, the placement, then the packed xz bytes and the height vectors
 // into two vertex buffers, and the two per-slot textures.
 void SurroundingPatch::load(int slotIndex, TerrainRawReader& reader)
@@ -155,10 +140,10 @@ void SurroundingPatch::load(int slotIndex, TerrainRawReader& reader)
             float y = src[1];
             float z = src[2];
             float w = 0.0f;
-            D3DXFloat32To16Array(dst,     &x, 1);
-            D3DXFloat32To16Array(dst + 2, &y, 1);
-            D3DXFloat32To16Array(dst + 4, &z, 1);
-            D3DXFloat32To16Array(dst + 6, &w, 1);
+            D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst),     &x, 1);
+            D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst + 2), &y, 1);
+            D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst + 4), &z, 1);
+            D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst + 6), &w, 1);
             dst += 8;
         }
     }
@@ -177,15 +162,15 @@ void SurroundingPatch::load(int slotIndex, TerrainRawReader& reader)
     ::renddx9abi::engineFree(heights);
     dx9rend::vertexBufferUnlock(heightVertexBuffer);
 
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
     {
-        vc71::string name(t->m_colormapBaseName.c_str());
+        std::string name(t->m_colormapBaseName.c_str());
         name += suffix;
         colormap = dx9rend::textureManagerGetTexture(name);
     }
     {
-        vc71::string name(t->m_lowDetailmapBaseName.c_str());
+        std::string name(t->m_lowDetailmapBaseName.c_str());
         name += suffix;
         lowDetailmap = dx9rend::textureManagerGetTexture(name);
     }
@@ -194,14 +179,26 @@ void SurroundingPatch::load(int slotIndex, TerrainRawReader& reader)
 // the placement of slot 0..7: the origin in world units, the 4x4 the draw applies
 // (two scaled axis rows, the z row, the translation row), the corner flag, the centre and bounds.
 // `h` is the ring span, `s` the secondary scale; integer division truncates as the shipped idiv.
+// PE 0x1018E9B0
 void SurroundingPatch::setupPlacement()
 {
     Terrain* const t = terrain;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Native FISTP and x86 32-bit arithmetic results.
+    const auto add32 = [](int a, int b) { return static_cast<int>(static_cast<unsigned int>(a) + static_cast<unsigned int>(b)); };
+    secondaryScaleX = bf2x87::toIntTruncate(bf2x87::Real(t->m_secondaryWorldScale.x));
+    span = static_cast<int>(static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::Real(t->m_primaryWorldScale.x))) *
+        (static_cast<unsigned int>(t->m_heightmapSizeX) - 1u));
+    spanPlusOne = add32(span, 1);
+    sideCount = add32(span / secondaryScaleX, 1);
+    sideCountSquared = static_cast<int>(static_cast<unsigned int>(sideCount) * static_cast<unsigned int>(sideCount));
+#else
     secondaryScaleX = static_cast<int>(t->m_secondaryWorldScale.x);
     span = static_cast<int>(t->m_primaryWorldScale.x) * (t->m_heightmapSizeX - 1);
     spanPlusOne = span + 1;
     sideCount = span / secondaryScaleX + 1;
     sideCountSquared = sideCount * sideCount;
+#endif
 
     const int   h  = span;
     const float sf = static_cast<float>(secondaryScaleX);
@@ -210,6 +207,84 @@ void SurroundingPatch::setupPlacement()
     const float row2[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
     float row3[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
+#if defined(__APPLE__)
+    const int half = h / 2;
+    const int left = static_cast<int>(0u - static_cast<unsigned int>(h) - static_cast<unsigned int>(half));
+    const int right = static_cast<int>(static_cast<unsigned int>(h) - static_cast<unsigned int>(half));
+    const float negativeScale = static_cast<float>(static_cast<int>(0u - static_cast<unsigned int>(secondaryScaleX)));
+    switch (slot)
+    {
+    case 0:
+        originX = left;
+        originZ = right;
+        row0[1] = sf;  row1[0] = negativeScale;
+        row3[0] = static_cast<float>(add32(originX, h)); row3[1] = static_cast<float>(originZ);
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 1;
+        break;
+    case 1:
+        originX = -half;
+        originZ = right;
+        row0[0] = sf;  row1[1] = sf;
+        row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ);
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 0;
+        break;
+    case 2:
+        originX = right;
+        originZ = right;
+        row0[0] = sf;  row1[1] = sf;
+        row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ);
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 1;
+        break;
+    case 3:
+        originX = right;
+        originZ = -half;
+        row0[1] = negativeScale; row1[0] = sf;
+        row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(add32(originZ, h));
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 0;
+        break;
+    case 4:
+        originX = right;
+        originZ = left;
+        row0[1] = negativeScale; row1[0] = sf;
+        row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(add32(originZ, h));
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 1;
+        break;
+    case 5:
+        originX = -half;
+        originZ = left;
+        row0[0] = negativeScale; row1[1] = negativeScale;
+        row3[0] = static_cast<float>(add32(originX, h)); row3[1] = static_cast<float>(add32(originZ, h));
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 0;
+        break;
+    case 6:
+        originX = left;
+        originZ = left;
+        row0[0] = negativeScale; row1[1] = negativeScale;
+        row3[0] = static_cast<float>(add32(originX, h)); row3[1] = static_cast<float>(add32(originZ, h));
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 1;
+        break;
+    case 7:
+        originX = left;
+        originZ = -half;
+        row0[1] = sf;  row1[0] = negativeScale;
+        row3[0] = static_cast<float>(add32(originX, h)); row3[1] = static_cast<float>(originZ);
+        rendmath::setRows(placement, row0, row1, row2, row3);
+        isCorner = 0;
+        break;
+    default:
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\SurroundingPatch.cpp",
+            156, std::string()) << "TBM: unknown surrounding terrain patch type!";
+        break;
+    }
+#else
     switch (slot)
     {
     case 0:
@@ -217,7 +292,7 @@ void SurroundingPatch::setupPlacement()
         originZ = h - h / 2;
         row0[1] = sf;  row1[0] = -sf;
         row3[0] = static_cast<float>(originX + h); row3[1] = static_cast<float>(originZ);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 1;
         break;
     case 1:
@@ -225,7 +300,7 @@ void SurroundingPatch::setupPlacement()
         originZ = h - h / 2;
         row0[0] = sf;  row1[1] = sf;
         row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 0;
         break;
     case 2:
@@ -233,7 +308,7 @@ void SurroundingPatch::setupPlacement()
         originZ = h - h / 2;
         row0[0] = sf;  row1[1] = sf;
         row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 1;
         break;
     case 3:
@@ -241,7 +316,7 @@ void SurroundingPatch::setupPlacement()
         originZ = -(h / 2);
         row0[1] = -sf; row1[0] = sf;
         row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ + h);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 0;
         break;
     case 4:
@@ -249,7 +324,7 @@ void SurroundingPatch::setupPlacement()
         originZ = -h - h / 2;
         row0[1] = -sf; row1[0] = sf;
         row3[0] = static_cast<float>(originX); row3[1] = static_cast<float>(originZ + h);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 1;
         break;
     case 5:
@@ -257,7 +332,7 @@ void SurroundingPatch::setupPlacement()
         originZ = -h - h / 2;
         row0[0] = -sf; row1[1] = -sf;
         row3[0] = static_cast<float>(originX + h); row3[1] = static_cast<float>(originZ + h);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 0;
         break;
     case 6:
@@ -265,7 +340,7 @@ void SurroundingPatch::setupPlacement()
         originZ = -h - h / 2;
         row0[0] = -sf; row1[1] = -sf;
         row3[0] = static_cast<float>(originX + h); row3[1] = static_cast<float>(originZ + h);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 1;
         break;
     case 7:
@@ -273,14 +348,16 @@ void SurroundingPatch::setupPlacement()
         originZ = -(h / 2);
         row0[1] = sf;  row1[0] = -sf;
         row3[0] = static_cast<float>(originX + h); row3[1] = static_cast<float>(originZ);
-        matrixFromRows(placement, row0, row1, row2, row3);
+        rendmath::setRows(placement, row0, row1, row2, row3);
         isCorner = 0;
         break;
     default:
-        // sub_10074300(6, __FILE__, 156, "") << the message - dice's debug stream, kept as one line.
-        ::renddx9abi::logf("[SurroundingPatch.cpp:156] TBM: unknown surrounding terrain patch type!");
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\SurroundingPatch.cpp",
+            156, std::string()) << "TBM: unknown surrounding terrain patch type!";
         break;
     }
+#endif
 
     // The origin as (x, 0, z, 0), the centre half a span in from it (lea ecx, [esi+58h]).
     zero5C = 0.0f;
@@ -294,12 +371,34 @@ void SurroundingPatch::setupPlacement()
     center.x = static_cast<float>(static_cast<double>(span) * 0.5 + center.x);
     center.z = static_cast<float>(static_cast<double>(span) * 0.5 + center.z);
 
+#if defined(__APPLE__)
+    endX = add32(originX, span);
+    endZ = add32(originZ, span);
+#else
     endX = originX + span;
     endZ = originZ + span;
+#endif
     const float x0 = static_cast<float>(originX);
     const float z0 = static_cast<float>(originZ);
     const float x1 = static_cast<float>(endX);
     const float z1 = static_cast<float>(endZ);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep FILD originX and dy wide; reload dx/dz spills for the sphere.
+    const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(x1), bf2x87::Real(originX));
+    const float storedDx = bf2x87::store(dx);
+    const bf2x87::Real dy = bf2x87::sub(bf2x87::Real(fileMaxY), bf2x87::Real(fileMinY));
+    const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(z1), bf2x87::Real(z0));
+    const float storedDz = bf2x87::store(dz);
+    const float halfDx = bf2x87::store(bf2x87::mul(bf2x87::Real(storedDx), bf2x87::Real(0.5f)));
+    const float halfDy = bf2x87::store(bf2x87::mul(dy, bf2x87::Real(0.5f)));
+    boundsCenter.z = bf2x87::store(bf2x87::add(bf2x87::mul(dz, bf2x87::Real(0.5f)), bf2x87::Real(z0)));
+    boundsCenter.x = bf2x87::store(bf2x87::add(bf2x87::Real(halfDx), bf2x87::Real(originX)));
+    boundsCenter.y = bf2x87::store(bf2x87::add(bf2x87::Real(halfDy), bf2x87::Real(fileMinY)));
+    const bf2x87::Real squared = bf2x87::add(bf2x87::add(
+        bf2x87::mul(bf2x87::Real(storedDz), bf2x87::Real(storedDz)), bf2x87::mul(dy, dy)),
+        bf2x87::mul(bf2x87::Real(storedDx), bf2x87::Real(storedDx)));
+    boundsRadius = bf2x87::store(bf2x87::mul(bf2x87::squareRoot(squared), bf2x87::Real(0.5f)));
+#else
     const float dx = x1 - x0;
     const float dy = fileMaxY - fileMinY;
     const float dz = z1 - z0;
@@ -308,6 +407,7 @@ void SurroundingPatch::setupPlacement()
     boundsCenter.y = static_cast<float>(dy * 0.5 + fileMinY);
     boundsRadius = static_cast<float>(
         std::sqrt(static_cast<double>(dz) * dz + static_cast<double>(dy) * dy + static_cast<double>(dx) * dx) * 0.5);
+#endif
     bounds.min.z = z0;
     bounds.min.x = x0;
     bounds.dirty = 1;
@@ -362,6 +462,46 @@ bool crossesFrustumEdge(float x0, float z0, float x1, float z1, const Frustum* f
 }
 
 } // anonymous namespace
+
+// PE 0x1018E550: Frustum::inside(boundsCenter, boundsRadius) (PE 0x10079A60) on the patch's bounds
+// sphere (`push [ecx+7Ch]; add ecx, 70h; push ecx; mov ecx, [ebp+8]`); the answer is the callee's al.
+// [INFERRED] name and owner (the sphere fields at +0x70/+0x7C belong to this class); unreachable in
+// 1.50: no code or data references.
+bool SurroundingPatch::isVisibleInFrustum(const Frustum* frustum)
+{
+    return rendmath::frustumInside(*frustum, boundsCenter, boundsRadius);
+}
+
+// PE 0x1018F360: the squared distance from `position` to the patch centre (+0x4C..+0x54): the three
+// differences stay on the x87 stack and the sum is dx*dx + dz*dz + dy*dy in that order (the same order
+// as QuadPatch::getSquaredDistance), answered in st0. [INFERRED] name and owner (the centre fields and
+// the address between the SurroundingPatch members); unreachable in 1.50: no code or data references.
+float SurroundingPatch::getSquaredDistance(const Vec3& position)
+{
+    const float dx = position.x - center.x;
+    const float dy = position.y - center.y;
+    const float dz = position.z - center.z;
+    return dx * dx + dz * dz + dy * dy;
+}
+
+// PE 0x1018F390: the distance from the render view's camera position (view matrix translation
+// m[12..14]) to the patch centre (+0x4C..+0x54), recomputed once per frame ordinal and cached at
+// +0x0C/+0x10. [INFERRED] name and owner (the center fields and the address between the
+// SurroundingPatch members); unreachable in 1.50: no code or data references.
+float SurroundingPatch::getCameraDistance()
+{
+    if (cachedDistanceFrame != dx9rend::rendererFrameOrdinal())                              // base +0x54
+    {
+        dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();                // base +0x48
+        const float* const m = view->getViewMatrixPtr()->m;                                  // view +0x64
+        const float dx = center.x - m[12];
+        const float dy = center.y - m[13];
+        const float dz = center.z - m[14];
+        cachedCameraDistance = std::sqrt(dx * dx + dz * dz + dy * dy);
+        cachedDistanceFrame = dx9rend::rendererFrameOrdinal();
+    }
+    return cachedCameraDistance;
+}
 
 // visible when the camera's xz lies inside the patch; invisible when the patch lies
 // beyond the far plane of the camera on any side; else the slot's two or three outer edges are

@@ -7,11 +7,13 @@
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "MeshTemplate.h"
+#include "../RendDX9/RendDX9Math.h"   // rendmath::unitScale (sub_1007B220)
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../IO/Stream/IStream.h"
 
+#include <stddef.h>
 #include <math.h>
 #include <sstream>
 #include <stdexcept>
@@ -31,7 +33,7 @@ namespace dx9rend {
 extern void* g_bufferManager;                                            // dword_1023B978
 
 void* createVertexBuffer(void* bufferManager, unsigned int count, unsigned int stride,
-                         const vc71::string& name, unsigned int usage);
+                         const std::string& name, unsigned int usage);
 void* vertexBufferLock(void* wrapper, unsigned int offsetVerts, unsigned int countVerts,
                        unsigned int flags);
 bool  vertexBufferUnlock(void* wrapper);
@@ -72,162 +74,11 @@ const unsigned int kCID_MeshTemplate = 0x870CA650u;
 // PE this is a file-scope `const std::string` at 0x10263DD4, constructed by the static initialiser
 // at 0x101D5760 and shared with at least SkinnedMeshTemplate::load (0x1010E840) and three other
 // bodies; the concatenation there is `path + <this> + name`. Held as a literal rather than as a
-// namespace-scope vc71::string because only the bytes are observable and a dynamically initialised
+// namespace-scope std::string because only the bytes are observable and a dynamically initialised
 // string object in a DLL would add a static-init ordering dependency this file does not need.
 const char kMeshesSubDirectory[] = "Meshes/";
 
 
-// Returns unit scale for the base template's uncompressed positions.
-
-const Vec3& unitScale()
-{
-    // Constant-initialised, so the current toolchain emits no guard. The retail guard exists only
-    // because dice wrote a constructor call; the published value is identical.
-    static Vec3 value = { 1.0f, 1.0f, 1.0f };
-    return value;
-}
-
-
-// std::vector<int>::resize(n, value) - sub_10192790, plus the _Insert_n it tail-calls (sub_1003A450)
-// reduced to the append case, which is the only one resize reaches. This is the instantiation the
-// MeshTemplate.cpp translation unit itself emits, so it lives here rather than in Vc71Vector.h
-// (which models the host's vector as a NON-owning view and has no resize).
-
-// The layout is the VC7.1 four-pointer shape: +0 allocator, +4 _First, +8 _Last, +12 _End.
-
-unsigned int vectorIntSize(const vc71::vector_layout& v)
-{
-    return v.first ? static_cast<unsigned int>((v.last - v.first) >> 2) : 0u;
-}
-
-unsigned int vectorIntCapacity(const vc71::vector_layout& v)
-{
-    return v.first ? static_cast<unsigned int>((v.end - v.first) >> 2) : 0u;
-}
-
-// sub_1003A450, the `_Where == end()` arm. The two 0x3FFFFFFF tests are the shipped _Xlen guards
-// (sub_100EFD60); VC7.1's _Xlen throws std::length_error, so this one does too.
-void vectorIntAppendN(vc71::vector_layout& v, unsigned int count, int value)
-{
-    if (!count)
-        return;
-
-    const unsigned int size = vectorIntSize(v);
-    if (0x3FFFFFFFu - size < count)
-        throw std::length_error("vector<T> too long");
-
-    const unsigned int capacity = vectorIntCapacity(v);
-    if (capacity >= count + size)
-    {
-        // Room already reserved: construct in place and publish.
-        int* const at = reinterpret_cast<int*>(v.last);
-        for (unsigned int i = 0; i < count; ++i)
-            at[i] = value;
-        v.last += 4 * count;
-        return;
-    }
-
-    // Grow: half again, clamped up to what was actually asked for.
-    unsigned int newCapacity = (0x3FFFFFFFu - (capacity >> 1) >= capacity)
-                                   ? capacity + (capacity >> 1)
-                                   : 0u;
-    if (newCapacity < count + size)
-        newCapacity = count + size;
-
-    char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(4 * newCapacity));
-    if (size)
-        ::memcpy(buffer, v.first, 4 * size);
-    int* const tail = reinterpret_cast<int*>(buffer) + size;
-    for (unsigned int i = 0; i < count; ++i)
-        tail[i] = value;
-
-    if (v.first)
-        ::renddx9abi::engineFree(v.first);
-
-    v.end   = buffer + 4 * newCapacity;
-    v.last  = buffer + 4 * (size + count);
-    v.first = buffer;
-}
-
-// sub_10192790 itself. The shrink arm's `memmove(first + n, last, 0)` moves zero bytes - it is the
-// std::copy inside erase(begin() + n, end()) for a trivial element - so all it does is retract _Last.
-void vectorIntResize(vc71::vector_layout& v, unsigned int n, int value)
-{
-    const unsigned int size = vectorIntSize(v);
-    if (size >= n)
-    {
-        if (v.first && n < static_cast<unsigned int>((v.last - v.first) >> 2))
-            v.last = v.first + 4 * n;
-        return;
-    }
-    vectorIntAppendN(v, n - size, value);
-}
-
-
-// Material-map nodes are 24 bytes: links, unsigned/float pair, color, then nil flag.
-// Construction leaves sentinel value bytes and the allocator word untouched.
-
-const unsigned int kMaterialNodeSize = 0x18u;
-
-bool materialNodeIsNil(const vc71::map_node* node)
-{
-    return reinterpret_cast<const unsigned char*>(node)[kMaterialNodeSize - 3] != 0;
-}
-
-// sub_100EB100 (_Buynode) followed by the five stores the constructor makes on its result. The
-// `if (p)` / `if (p != -4)` / `if (p != -8)` tests in the PE are MSVC's placement-new null guards
-// around _Alptr.construct(&_Left/_Parent/_Right, 0); they are unreachable in practice and the null
-// link stores below are the whole of their effect.
-void materialMapInit(vc71::map_layout& m)
-{
-    unsigned char* const raw =
-        static_cast<unsigned char*>(::renddx9abi::engineAlloc(kMaterialNodeSize));
-    vc71::map_node* const node = reinterpret_cast<vc71::map_node*>(raw);
-
-    node->left   = 0;
-    node->parent = 0;
-    node->right  = 0;
-    raw[kMaterialNodeSize - 4] = 1;   // _Color = _Black
-    raw[kMaterialNodeSize - 3] = 0;   // _Isnil = false ... which the constructor then overrides:
-
-    m.head = node;
-    raw[kMaterialNodeSize - 3] = 1;   // the header IS the nil node
-    node->parent = node;
-    node->left   = node;
-    node->right  = node;
-    m.size = 0;
-}
-
-// sub_100EB1A0 - VC7.1 _Tree::_Erase(_Root): recurse into the right subtree, free this node, then
-// continue down the left side. The node being freed is the one the loop entered with, which is why
-// the retail loop carries two cursors.
-void materialEraseSubtree(vc71::map_node* root)
-{
-    vc71::map_node* doomed = root;
-    for (vc71::map_node* node = root; !materialNodeIsNil(node); doomed = node)
-    {
-        materialEraseSubtree(node->right);
-        node = node->left;
-        ::renddx9abi::engineFree(doomed);
-    }
-}
-
-
-// sub_100ED1C0 - _Destroy(_First, _Last) for the vector<vector<float>> at +0x60: free each inner
-// vector's buffer and blank its _First/_Last/_End. The inner allocator word is left alone, matching
-// the outer object's own constructor.
-
-void destroyInnerVectors(vc71::vector_layout* first, vc71::vector_layout* last)
-{
-    for (vc71::vector_layout* v = first; v != last; ++v)
-    {
-        if (v->first)
-            ::renddx9abi::engineFree(v->first);
-        v->first = 0;
-        v->last  = 0;
-        v->end   = 0;
-    }
-}
 
 
 // sub_100E7180 - corner `index` of the axis-aligned box, as three separate float stores into the
@@ -254,18 +105,20 @@ void meshBoundsCorner(const MeshBounds& bounds, Vec3& out, int index)
 } // anonymous namespace
 
 
-// Expands bounds to include point, testing each maximum before its minimum.
-// Always marks derived bounds dirty.
+// The same retail function as RendDX9Math.h's rendmath::expand (RendDX9's
+// LocalBoundingBox::expand copy), not a separate one: MeshBounds is that 60-byte record under its
+// RendDX9 name, with min, max and the dirty byte at the same offsets. Expands bounds to include
+// point, testing each maximum before its minimum, and always marks the derived bounds dirty.
 void meshBoundsExpand(MeshBounds& bounds, const Vec3& point)
 {
-    if (point.x > bounds.max.x) bounds.max.x = point.x;
-    if (point.x < bounds.min.x) bounds.min.x = point.x;
-    if (point.y > bounds.max.y) bounds.max.y = point.y;
-    if (point.y < bounds.min.y) bounds.min.y = point.y;
-    if (point.z > bounds.max.z) bounds.max.z = point.z;
-    if (point.z < bounds.min.z) bounds.min.z = point.z;
-    bounds.dirty = 1;
+    rendmath::expand(reinterpret_cast<LocalBoundingBox&>(bounds), point);
 }
+
+static_assert(sizeof(MeshBounds) == sizeof(LocalBoundingBox), "MeshBounds is LocalBoundingBox");
+static_assert(offsetof(MeshBounds, min) == offsetof(LocalBoundingBox, m_min)
+              && offsetof(MeshBounds, max) == offsetof(LocalBoundingBox, m_max)
+              && offsetof(MeshBounds, dirty) == offsetof(LocalBoundingBox, m_derivedDataDirty),
+              "meshBoundsExpand hands MeshBounds to rendmath::expand as a LocalBoundingBox");
 
 // derive originRadius, center, radius and extent from min/max, then clear dirty.
 
@@ -313,6 +166,7 @@ void meshBoundsFinalize(MeshBounds& bounds)
 // the OLD on-disk form: one 36-byte block straight over min, max, the two radii and
 // the dirty dword, then dirty is forced back to 1. Nothing is finalised and the read result is
 // ignored; the answer is an unconditional true.
+// PE 0x10191E50
 bool meshBoundsReadLegacy(MeshBounds& bounds, renddx9abi::HostStream* stream)
 {
     stream->read(&bounds, 36);
@@ -322,12 +176,39 @@ bool meshBoundsReadLegacy(MeshBounds& bounds, renddx9abi::HostStream* stream)
 
 // the current form: min then max as two separate 12-byte reads, dirty, then finalize.
 // Two reads rather than one 24-byte read, as shipped.
+// PE 0x10191E90
 bool meshBoundsReadMinMax(MeshBounds& bounds, renddx9abi::HostStream* stream)
 {
     stream->read(&bounds.min, 12);
     stream->read(&bounds.max, 12);
     bounds.dirty = 1;
     meshBoundsFinalize(bounds);
+    return true;
+}
+
+// Marks the bounds dirty, then writes a 36-byte block. Shipped defect: the block starts at the
+// stack slot holding the bounds pointer (the address of the pointer was passed for the record), so
+// retail writes the pointer value followed by 32 bytes of its own stack frame. Always true.
+// [CHOSEN, not recovered] memory safety: the 32 bytes past the pointer slot are written as zero;
+// the first four bytes are the low half of the bounds address, as on the x86 image.
+// PE 0x10191E70
+bool meshBoundsWriteLegacy(MeshBounds& bounds, renddx9abi::HostStream* stream)
+{
+    bounds.dirty = 1;
+    unsigned char block[36];
+    memset(block, 0, sizeof(block));
+    const unsigned int address = static_cast<unsigned int>(reinterpret_cast<size_t>(&bounds));
+    memcpy(block, &address, 4);
+    stream->write(block, 36);
+    return true;
+}
+
+// Min, then max, as two 12-byte writes. Always true.
+// PE 0x10191EC0
+bool meshBoundsWriteMinMax(const MeshBounds& bounds, renddx9abi::HostStream* stream)
+{
+    stream->write(&bounds.min, 12);
+    stream->write(&bounds.max, 12);
     return true;
 }
 
@@ -354,29 +235,18 @@ void meshBoundsCopy(MeshBounds& dst, const MeshBounds& src)
 
 
 // Initializes ownership and container state. keepData is assigned by the factory;
-// file-header fields remain unset until loading, and container allocator words are untouched.
-
+// file-header fields remain unset until loading, and the VC7.1 vectors' allocator words are
+// untouched.
+// PE 0x101924F0
 MeshTemplate::MeshTemplate()
 {
     m_dword08 = 0;
     m_refCount = 1;
-    // m_name (+0x14) and m_path (+0x30) are default-constructed by the compiler here, in exactly
-    // the shipped order; the retail body calls std::string::string() on the two in the same places.
+    // m_name (+0x14), m_path (+0x30), the three per-geom vectors (+0x50, +0x60, +0x70) and the
+    // material-value map (+0x80) are default-constructed by the compiler here; the retail body
+    // calls std::string::string() on the two strings in the same places, zeroes the vectors and
+    // builds the map's head node (sub_100EB100) after them.
     m_loaded = 0;
-
-    m_lodCounts.first = 0;
-    m_lodCounts.last  = 0;
-    m_lodCounts.end   = 0;
-
-    m_lodDistances.first = 0;
-    m_lodDistances.last  = 0;
-    m_lodDistances.end   = 0;
-
-    m_geomInts.first = 0;
-    m_geomInts.last  = 0;
-    m_geomInts.end   = 0;
-
-    materialMapInit(m_materialValues);
 
     m_maxSkip3pLods    = 1;
     m_maxSkipWreckLods = 1;
@@ -392,8 +262,9 @@ MeshTemplate::MeshTemplate()
 
 
 // Releases wrappers, material map, containers, and strings in that order.
-// The map head must exist and wrapper references must be valid. Staging vertex/index
-// buffers are released by their build steps, not here. Called through the destroy slot.
+// Wrapper references must be valid. Staging vertex/index buffers are released by their build
+// steps, not here. Called through the destroy slot, which then frees the storage without running
+// a C++ destructor - so the std members are destroyed explicitly here.
 
 void MeshTemplate::destroyMembers()
 {
@@ -407,45 +278,17 @@ void MeshTemplate::destroyMembers()
     if (m_vertexDeclaration)
         dx9rend::vertexDeclarationRelease(m_vertexDeclaration);
 
-    // ~_Tree: erase [begin(), end()) - which sub_100EBD80 recognises as the whole range and
-    // services by destroying the root subtree and relinking the header - then free the header.
-    {
-        vc71::map_node* const head = m_materialValues.head;
-        materialEraseSubtree(head->parent);
-        head->parent = head;
-        m_materialValues.size = 0;
-        head->left  = head;
-        head->right = head;
+    // ~_Tree: erase [begin(), end()) (sub_100EBD80), then free the header.
+    m_materialValues.~MaterialValueMap();
 
-        ::renddx9abi::engineFree(head);
-        m_materialValues.head = 0;
-        m_materialValues.size = 0;
-    }
+    // The three vectors, last first; the lod-distance vector's inner vectors go before its buffer
+    // (sub_100ED1C0).
+    m_geomInts.~GeomIntVector();
+    m_lodDistances.~LodDistanceVector();
+    m_lodCounts.~GeomIntVector();
 
-    if (m_geomInts.first)
-        ::renddx9abi::engineFree(m_geomInts.first);
-    m_geomInts.first = 0;
-    m_geomInts.last  = 0;
-    m_geomInts.end   = 0;
-
-    if (m_lodDistances.first)
-    {
-        destroyInnerVectors(reinterpret_cast<vc71::vector_layout*>(m_lodDistances.first),
-                            reinterpret_cast<vc71::vector_layout*>(m_lodDistances.last));
-        ::renddx9abi::engineFree(m_lodDistances.first);
-    }
-    m_lodDistances.first = 0;
-    m_lodDistances.last  = 0;
-    m_lodDistances.end   = 0;
-
-    if (m_lodCounts.first)
-        ::renddx9abi::engineFree(m_lodCounts.first);
-    m_lodCounts.first = 0;
-    m_lodCounts.last  = 0;
-    m_lodCounts.end   = 0;
-
-    m_path.~string();
-    m_name.~string();
+    m_path.~basic_string();
+    m_name.~basic_string();
 }
 
 // the deleting destructor in vtable slot +0xB0: run the body, then free the object
@@ -508,22 +351,24 @@ unsigned int MeshTemplate::getClassId() const
 }
 
 // four one-line accessors over the two strings.
-void MeshTemplate::setName(const vc71::string& name)
+// PE 0x10191990
+void MeshTemplate::setName(const std::string& name)
 {
     m_name = name;
 }
 
-const vc71::string& MeshTemplate::getName() const
+const std::string& MeshTemplate::getName() const
 {
     return m_name;
 }
 
-void MeshTemplate::setPath(const vc71::string& path)
+// PE 0x101919B0
+void MeshTemplate::setPath(const std::string& path)
 {
     m_path = path;
 }
 
-const vc71::string& MeshTemplate::getPath() const
+const std::string& MeshTemplate::getPath() const
 {
     return m_path;
 }
@@ -593,7 +438,7 @@ int MeshTemplate::getLodPrimitiveCount(unsigned int) { return 0; }
 // compressed positions, so the "decompression" it publishes is a constant. Preserved as read.
 Vec3* MeshTemplate::decompressPosition(Vec3* out, const Vec3*)
 {
-    const Vec3& scale = unitScale();
+    const Vec3& scale = rendmath::unitScale();
     out->y = scale.y;
     out->x = scale.x;
     out->z = scale.z;
@@ -604,6 +449,7 @@ Vec3* MeshTemplate::decompressPosition(Vec3* out, const Vec3*)
 // is g_rendererBase vslot +0x54 (getFrameOrdinal, 0x1000CB10); this tree's typed accessor for that
 // slot is dx9rend::rendererFrameOrdinal(). Nothing else in the base releases a device resource -
 // the vertex/index buffers survive a device reset through BufferManager's own listener.
+// PE 0x101157A0
 void MeshTemplate::releaseDeviceResources()
 {
     m_dword08 = static_cast<int>(dx9rend::rendererFrameOrdinal());
@@ -613,6 +459,7 @@ void MeshTemplate::releaseDeviceResources()
 // Loads through virtual readers, then builds the buffers. Trailer parsing precedes LODs
 // and materials. Only readHeader can report failure; later results do not stop the load.
 
+// PE 0x10191A00
 bool MeshTemplate::loadFromStream(renddx9abi::HostNonlinearStream* stream)
 {
     if (!readHeader(stream))
@@ -633,6 +480,7 @@ bool MeshTemplate::loadFromStream(renddx9abi::HostNonlinearStream* stream)
 // Reads the header/version and consumes three reserved words and a reserved byte.
 // Returns false and logs the mesh path when the header is invalid.
 
+// PE 0x10191EF0
 bool MeshTemplate::readHeader(renddx9abi::HostNonlinearStream* stream)
 {
     stream->read(&m_head, 4);
@@ -655,7 +503,7 @@ bool MeshTemplate::readHeader(renddx9abi::HostNonlinearStream* stream)
 
     // `std::string(m_path) += "Meshes/"` then `+= m_name` - two operator+ temporaries in the PE,
     // one string here; the bytes are identical.
-    vc71::string full(m_path);
+    std::string full(m_path);
     full += kMeshesSubDirectory;
     full += m_name;
 
@@ -669,18 +517,19 @@ bool MeshTemplate::readHeader(renddx9abi::HostNonlinearStream* stream)
 // Reads geometry counts, declarations, vertex data and indices.
 // Requires valid file sizes; counts and allocation results are unchecked.
 
+// PE 0x10192080
 void MeshTemplate::readGeometry(renddx9abi::HostNonlinearStream* stream)
 {
     unsigned int geomCount = 0;
     stream->read(&geomCount, 4);
 
-    vectorIntResize(m_lodCounts, geomCount, 0);
-    vectorIntResize(m_geomInts, geomCount, 0);
+    m_lodCounts.resize(geomCount, 0);                                 // sub_10192790
+    m_geomInts.resize(geomCount, 0);
 
     for (unsigned int geom = 0; geom < geomCount; ++geom)
     {
-        stream->read(reinterpret_cast<int*>(m_lodCounts.first) + geom, 4);
-        reinterpret_cast<int*>(m_geomInts.first)[geom] = 0;
+        stream->read(&m_lodCounts[geom], 4);
+        m_geomInts[geom] = 0;
     }
 
     unsigned int attributeCount = 0;
@@ -712,6 +561,7 @@ void MeshTemplate::readGeometry(renddx9abi::HostNonlinearStream* stream)
 // the base's vertex block is raw: stride * count bytes into +0x90, verbatim. The
 // product is computed twice, once for the allocation and once for the read length, exactly as
 // shipped (stride first in both).
+// PE 0x10191B00
 void MeshTemplate::readVertices(renddx9abi::HostNonlinearStream* stream)
 {
     m_vertexData = ::renddx9abi::engineAlloc(m_vertexStride * m_vertexCount);
@@ -728,11 +578,12 @@ void MeshTemplate::mergeMaterials()
 // Creation is not null-checked. Lock counts are vertices, not bytes; the freed staging
 // pointer is deliberately left unchanged.
 
+// PE 0x10191B50
 void MeshTemplate::buildVertexBuffers()
 {
     m_vertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager,
                                                  m_vertexCount, m_vertexStride,
-                                                 vc71::string("MeshTemplate"), 8);
+                                                 std::string("MeshTemplate"), 8);
 
     void* const locked = dx9rend::vertexBufferLock(m_vertexBuffer, 0, m_vertexCount, 0);
     if (locked)
@@ -748,6 +599,7 @@ void MeshTemplate::buildVertexBuffers()
 // D3DFMT_INDEX16, which is why the byte count is 2 * indexCount everywhere. The lock is in index
 // units. Same three missing guards as buildVertexBuffers.
 
+// PE 0x10191A80
 void MeshTemplate::buildIndexBuffer()
 {
     m_indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(m_indexCount, 8, 101);
@@ -767,6 +619,7 @@ void MeshTemplate::finalizeMaterials()
 }
 
 // four bytes into +0xBC, immediately after the index block. Constructed as 8.
+// PE 0x10191BE0
 void MeshTemplate::readTrailer(renddx9abi::HostNonlinearStream* stream)
 {
     stream->read(&m_u2, 4);

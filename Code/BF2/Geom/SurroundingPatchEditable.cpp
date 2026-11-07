@@ -4,11 +4,18 @@
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "SurroundingPatchEditable.h"
+#include "../RendDX9/RendDX9Math.h"   // rendmath::setRows (sub_10079460)
+#include "../Core/StringUtil.h"         // formatString (sub_10074AB0)
 #include "TerrainEditable.h"
 #include "Terrain.h"
 #include "QuadPatch.h"
+#include "QuadPatchEditable.h"                   // ceilChop (sub_100A2FE0)
 #include "XpLightManager.h"                   // LightManager +0xEC / +0xF0 - the burn's shadow bracket (R3)
 #include "HemiMapManager/HemiMapDependencies.h"   // the three renderers' enable seams (R3)
+#include "../GeomMisc/Debug.h"
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 
 #include "../Physics/Heightmap.h"
 #include "../Physics/HeightmapCluster.h"
@@ -16,30 +23,18 @@
 #include "../RendDX9/ShaderParameter.h"
 #include "../RendDX9/Texture.h"
 #include "../../RendDX9Abi/BfMemory.h"
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "../../RendDX9Abi/Frontier.h"        // renddx9abi::logf - dice's debug stream
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"     // classManager, fileManager
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #include <cfloat>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-
-// The D3DX entry points this TU calls - static imports of the shipped image (Code/RendDX9Abi/
-// D3dx9_25.def), declared and bridged as QuadPatchEditable.cpp and XpLightManager.cpp do.
-extern "C" HRESULT WINAPI D3DXComputeBoundingSphere(
-    const ::dice::hfe::Vec3* firstPosition, DWORD vertexCount, DWORD stride,
-    ::dice::hfe::Vec3* centre, float* radius);
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-#pragma comment(linker, "/alternatename:_D3DXComputeBoundingSphere@20=_D3DXComputeBoundingSphere")
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
 
 namespace dice {
 namespace hfe {
@@ -122,47 +117,23 @@ inline ::dice::hfe::world::IHeightmapCluster* heightmapClusterByName()
 inline dx9rend::ShaderParameter* effectParameter(void* effect, const char* name)
 {
     return dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(effect),
-                                                          vc71::string(name));
+                                                          std::string(name));
 }
 
-// sub_10074AB0 - see QuadPatchEditable.cpp (the same transcription).
-void formatString(vc71::string& out, const char* format, ...)
-{
-    char buffer[0x1000];
-    va_list args;
-    va_start(args, format);
-    const int written = _vsnprintf(buffer, 0xFFF, format, args);
-    va_end(args);
-    if (written < 0)
-        std::snprintf(buffer, sizeof(buffer), "%s",
-                      "WARNING: The original message was too long for formatString(). \n");
-    else
-        buffer[written] = 0;
-    out = buffer;
-}
 
 // The "lock, fill every texel of mip 0, unlock" the texture-creating arms open-code (textureLock
-// sub_10014BA0 over the whole record, textureUnlock sub_10014D30).
-void fillTexture(dx9rend::EngineTexture* texture, unsigned int value)
+// sub_10014BA0 over the whole record, textureUnlock sub_10014D30). [INFERRED] Shared spelling of
+// init's three inlined fills and reloadLightmap's: the owner slot is reread after locking for the
+// unlock receiver, as each listing does.
+template<class TexturePointer>
+void fillTextureSlot(TexturePointer& texture, unsigned int value)
 {
-    dx9rend::TextureLockRecord* const record = dx9rend::textureLock(texture, 0, 0x7FFFFFFF);
+    dx9rend::TextureLockRecord* const record = dx9rend::textureLock(engineTexture(texture), 0, 0x7FFFFFFF);
     unsigned int* texel = static_cast<unsigned int*>(record->pBits);
     unsigned int* const end = texel + record->width * record->height;
     for (; texel != end; ++texel)
         *texel = value;
-    dx9rend::textureUnlock(texture, record);
-}
-
-// sub_10079460 - a 4x4 from four rows, copied in order (SurroundingPatch.cpp carries the same body).
-void matrixFromRows(float* m, const float* row0, const float* row1, const float* row2, const float* row3)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        m[i]      = row0[i];
-        m[4 + i]  = row1[i];
-        m[8 + i]  = row2[i];
-        m[12 + i] = row3[i];
-    }
+    dx9rend::textureUnlock(engineTexture(texture), record);
 }
 
 // the engine's in-place normalise (QuadPatch.cpp carries the read): |v|^2 =
@@ -193,11 +164,18 @@ inline int texelPitch(const D3DLOCKED_RECT& locked)
     return static_cast<int>(static_cast<unsigned int>(locked.Pitch) >> 2);
 }
 
-// sub_100A2FE0 - ceil of a float through the CRT's double ceil, chopped by the caller.
-inline int ceilChop(float value)
+#if defined(__APPLE__)
+// [INFERRED] Shared spelling of the three brushes' FCOS/clamp/strength arithmetic.
+// [CHOSEN, not recovered] Native widths use the existing bf2x87 transcendental policy.
+bf2x87::Real surroundingBrushWeight(bf2x87::Real distance, float inverse, int strength)
 {
-    return static_cast<int>(std::ceil(static_cast<double>(value)));
+    bf2x87::Real falloff = bf2x87::cosValue(bf2x87::mul(bf2x87::mul(distance,
+        bf2x87::Real(inverse)), bf2x87::Real(1.5707964f)));
+    if (!bf2x87::less(bf2x87::Real(0), falloff))
+        falloff = bf2x87::Real(0);
+    return bf2x87::mul(bf2x87::mul(bf2x87::Real(strength), falloff), bf2x87::Real(0.0039215689f));
 }
+#endif
 
 // The placement transform heightSubGrid's two crack-fix samples use (0x101A3647.. / 0x101A36C4..):
 // wz = ((pz * m5 + px * m1) + m9 * 0) + m13 and wx = ((pz * m4 + px * m0) + m8 * 0) + m12, then the
@@ -218,6 +196,7 @@ float crackSampleHeight(::dice::hfe::world::IHeightmapCluster* cluster, const fl
 // three layer sets (records created = 0, data = 0; the merged set's source is not set), then the body:
 // +0x178 / +0x17C zeroed and +0x170 / +0x168 zeroed again (the shipped store sequence), and the two
 // flag bytes. +0x2F8 / +0x2F9 are not touched.
+// PE 0x101A2400
 SurroundingPatchEditable::SurroundingPatchEditable(TerrainEditable* owner)
     : SurroundingPatch(owner),
       m_colormapEdit(0),
@@ -236,6 +215,7 @@ SurroundingPatchEditable::SurroundingPatchEditable(TerrainEditable* owner)
 // (slot +0x00 is 0x101A5F80, which adds the free) - five texture owner references in the
 // shipped order (+0x178, +0x17C, +0x16C, +0x170, +0x168; none nulled), then the members - the merged,
 // edit and imported sets, each freeing its maps last to first (0x1019B000) - and ~SurroundingPatch.
+// PE 0x101A24E0
 SurroundingPatchEditable::~SurroundingPatchEditable()
 {
     terrainReleaseTexture(m_texture178);
@@ -249,98 +229,104 @@ SurroundingPatchEditable::~SurroundingPatchEditable()
 // Places the ring patch and loads managed editor textures, creating missing defaults.
 // Rebuilds bounds and buffers after restoring the texture flag. Existing resources are
 // not released first; the constructed game-colormap path is intentionally unused.
+// PE 0x101A4710
 void SurroundingPatchEditable::init(int newSlot)
 {
-    TerrainEditable* const te = editableTerrain;
     slot = newSlot;
-    if (te->m_surroundingTerrainEngineMode)
+    if (editableTerrain->m_surroundingTerrainEngineMode)
         setupPlacement();
     else
         setupEditorPlacement();
 
-    vc71::string colormapPath;
+    std::string colormapPath;
     {
-        const vc71::string base = te->getEditorColormapBaseName();            // P+0xFC
-        vc71::string name;
-        formatString(name, "%s_s%i", base.c_str(), slot);
-        colormapPath = ::renddx9abi::toVc71String(te->getLevelSavePath());   // E+0x90
-        colormapPath += name;
+        const std::string base = editableTerrain->getEditorColormapBaseName(); // P+0xFC
+        std::string name;
+        name = formatString("%s_s%i", base.c_str(), slot);
+        colormapPath = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + name; // E+0x90
     }
+    std::string unusedGamePath;
     {
-        TerrainEditableNameResult base = te->getColormapBaseName();          // E+0x6C
-        vc71::string name;
-        formatString(name, "%s_s%i", ::renddx9abi::toVc71String(base).c_str(), slot);
-        vc71::string unusedGamePath(::renddx9abi::toVc71String(te->getLevelSavePath()));
-        unusedGamePath += name;
+        TerrainEditableNameResult base = editableTerrain->getColormapBaseName(); // E+0x6C
+        std::string name;
+        name = formatString("%s_s%i", ::renddx9abi::fromHostString(base).c_str(), slot);
+        unusedGamePath = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + name;
     }
     const int savedManaged = dx9rend::textureManagerSwapManaged(1);
 
+    bool exists;
     {
-        vc71::string dds(colormapPath);
+        std::string dds(colormapPath);
         dds += ".dds";
-        if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    {
+        if (exists)
         {
             m_colormap = engineTexture(dx9rend::textureManagerGetTexture(colormapPath));
         }
         else
         {
             m_colormap = engineTexture(dx9rend::textureManagerCreateEmpty(
-                static_cast<unsigned int>(te->m_surroundingTextureSize),
-                static_cast<unsigned int>(te->m_surroundingTextureSize), 21, 1, 0, 0));
-            fillTexture(m_colormap, 0xFF00FF00u);
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize),
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize), 21, 1, 0, 0));
+            fillTextureSlot(m_colormap, 0xFF00FF00u);
         }
     }
     m_colormapReady = 1;
 
-    vc71::string lightmapPath;
+    std::string lightmapPath;
     {
-        const vc71::string base = te->getEditorLightmapBaseName();            // P+0x104
-        vc71::string name;
-        formatString(name, "%s_s%i", base.c_str(), slot);
-        lightmapPath = ::renddx9abi::toVc71String(te->getLevelSavePath());
-        lightmapPath += name;
+        const std::string base = editableTerrain->getEditorLightmapBaseName(); // P+0x104
+        std::string name;
+        name = formatString("%s_s%i", base.c_str(), slot);
+        lightmapPath = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + name;
     }
     {
-        vc71::string dds(lightmapPath);
+        std::string dds(lightmapPath);
         dds += ".dds";
-        if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    {
+        if (exists)
         {
             m_lightmap = engineTexture(dx9rend::textureManagerGetTexture(lightmapPath));
         }
         else
         {
             m_lightmap = engineTexture(dx9rend::textureManagerCreateEmpty(
-                static_cast<unsigned int>(te->m_surroundingTextureSize),
-                static_cast<unsigned int>(te->m_surroundingTextureSize), 21, 1, 0, 0));
-            fillTexture(m_lightmap, 0xFFFFFFFFu);
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize),
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize), 21, 1, 0, 0));
+            fillTextureSlot(m_lightmap, 0xFFFFFFFFu);
         }
     }
     m_colormapEdit = 0;
     m_texture178 = 0;
     m_texture17C = 0;
 
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
-    vc71::string lowDetailPath;
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
+    std::string lowDetailPath;
     {
-        const vc71::string base = te->getEditorLowDetailmapBaseName();        // P+0x10C
-        lowDetailPath = ::renddx9abi::toVc71String(te->getLevelSavePath());  // E+0x90
-        lowDetailPath += base;
-        lowDetailPath += suffix;
+        const std::string base = editableTerrain->getEditorLowDetailmapBaseName(); // P+0x10C
+        lowDetailPath = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + base + suffix; // E+0x90
     }
     {
-        vc71::string dds(lowDetailPath);
+        std::string dds(lowDetailPath);
         dds += ".dds";
-        if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    {
+        if (exists)
         {
             lowDetailmap = dx9rend::textureManagerGetTexture(lowDetailPath);
         }
         else
         {
             lowDetailmap = dx9rend::textureManagerCreateEmpty(
-                static_cast<unsigned int>(te->m_surroundingTextureSize),
-                static_cast<unsigned int>(te->m_surroundingTextureSize), 21, 1, 0, 0);
-            fillTexture(engineTexture(lowDetailmap), 0x00FF0000u);
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize),
+                static_cast<unsigned int>(editableTerrain->m_surroundingTextureSize), 21, 1, 0, 0);
+            fillTextureSlot(lowDetailmap, 0x00FF0000u);
         }
     }
     dx9rend::textureManagerSwapManaged(savedManaged);
@@ -350,9 +336,35 @@ void SurroundingPatchEditable::init(int newSlot)
 
 // Places slots 0..7 around the terrain using an unrotated secondary-scale grid.
 // Invalid slots retain the previous origin. Updates the local box but not derived bounds.
+// PE 0x101A2610
 void SurroundingPatchEditable::setupEditorPlacement()
 {
     TerrainEditable* const te = editableTerrain;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FISTP's invalid result and 32-bit integer wrap on native ports.
+    secondaryScaleX = bf2x87::toIntTruncate(bf2x87::Real(te->m_secondaryWorldScale.x));
+    span = static_cast<int>(static_cast<unsigned int>(bf2x87::toIntTruncate(
+        bf2x87::Real(te->m_primaryWorldScale.x))) * (static_cast<unsigned int>(te->m_heightmapSizeX) - 1u));
+    unresolved48 = span / bf2x87::toIntTruncate(bf2x87::Real(te->m_secondaryWorldScale.x));
+    spanPlusOne = static_cast<int>(static_cast<unsigned int>(span) + 1u);
+    sideCount = static_cast<int>(static_cast<unsigned int>(span / secondaryScaleX) + 1u);
+    sideCountSquared = static_cast<int>(static_cast<unsigned int>(sideCount) * static_cast<unsigned int>(sideCount));
+    const int half = span / 2;
+    const int left = static_cast<int>(0u - static_cast<unsigned int>(span) - static_cast<unsigned int>(half));
+    const int right = static_cast<int>(static_cast<unsigned int>(span) - static_cast<unsigned int>(half));
+    switch (slot)
+    {
+    case 0: originX = left;  originZ = right; break;
+    case 1: originX = -half; originZ = right; break;
+    case 2: originX = right; originZ = right; break;
+    case 3: originX = right; originZ = -half; break;
+    case 4: originX = right; originZ = left;  break;
+    case 5: originX = -half; originZ = left;  break;
+    case 6: originX = left;  originZ = left;  break;
+    case 7: originX = left;  originZ = -half; break;
+    default: break;
+    }
+#else
     secondaryScaleX = static_cast<int>(te->m_secondaryWorldScale.x);
     span = static_cast<int>(te->m_primaryWorldScale.x) * (te->m_heightmapSizeX - 1);
     unresolved48 = span / static_cast<int>(te->m_secondaryWorldScale.x);
@@ -371,10 +383,14 @@ void SurroundingPatchEditable::setupEditorPlacement()
     case 5: originX = h / -2;     originZ = -h - h / 2; break;
     case 6: originX = -h - h / 2; originZ = -h - h / 2; break;
     case 7: originX = -h - h / 2; originZ = h / -2;     break;
-    default:
-        // sub_10074300(6, __FILE__, 133, "") << the message - dice's debug stream, kept as one line.
-        ::renddx9abi::logf("[SurroundingPatchEditable.cpp:133] TBM: unknown surrounding terrain patch type!");
-        break;
+    default: break;
+    }
+#endif
+    if (static_cast<unsigned int>(slot) > 7u)
+    {
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\SurroundingPatchEditable.cpp",
+            133, std::string()) << "TBM: unknown surrounding terrain patch type!";
     }
 
     const float step = static_cast<float>(secondaryScaleX);
@@ -382,7 +398,7 @@ void SurroundingPatchEditable::setupEditorPlacement()
     const float row1[4] = { 0.0f, step, 0.0f, 0.0f };
     const float row2[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
     const float row3[4] = { static_cast<float>(originX), static_cast<float>(originZ), 0.0f, 1.0f };
-    matrixFromRows(placement, row0, row1, row2, row3);
+    rendmath::setRows(placement, row0, row1, row2, row3);
     isCorner = 0;
 
     originXf = static_cast<float>(originX);
@@ -396,8 +412,13 @@ void SurroundingPatchEditable::setupEditorPlacement()
     center.x = static_cast<float>(static_cast<double>(span) * 0.5 + center.x);
     center.z = static_cast<float>(static_cast<double>(span) * 0.5 + center.z);
 
+#if defined(__APPLE__)
+    endX = static_cast<int>(static_cast<unsigned int>(originX) + static_cast<unsigned int>(span));
+    endZ = static_cast<int>(static_cast<unsigned int>(originZ) + static_cast<unsigned int>(span));
+#else
     endX = originX + span;
     endZ = originZ + span;
+#endif
     TerrainAabb box;
     box.min.x = static_cast<float>(originX);
     box.min.y = fileMinY;
@@ -420,27 +441,51 @@ void SurroundingPatchEditable::setupEditorPlacement()
 // (+0x6C) - `max < h` raises the maximum, `!(min < h)` lowers the minimum (a NaN lands in the
 // minimum) - and the point ((originX + x) * scale.x, h, (originZ + z) * scale.z).
 // D3DXComputeBoundingSphere into +0x70 / +0x7C, the array freed, and the corners of a local box.
+// PE 0x101A4150
 void SurroundingPatchEditable::computeBounds()
 {
     const Vec3& secondary = editableTerrain->getSecondaryWorldScale();       // E+0x3C
     const float scaleX = secondary.x;
     const float scaleZ = secondary.z;
     ::dice::hfe::world::IHeightmapCluster* const cluster = heightmapClusterByName();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep the x86 allocation/count arithmetic in 32 bits.
+    const int count = static_cast<int>(static_cast<unsigned int>(sideCount) * static_cast<unsigned int>(sideCount));
+#else
     const int count = sideCount * sideCount;
+#endif
     Vec3* points = 0;
     {
-        void* const storage = ::renddx9abi::engineAlloc(static_cast<unsigned int>(12 * count));
+        void* const storage = ::renddx9abi::engineAlloc(12u * static_cast<unsigned int>(count));
         if (storage)
         {
             points = static_cast<Vec3*>(storage);
+#if defined(__APPLE__)
+            const int last = static_cast<int>(static_cast<unsigned int>(count) - 1u);
+            if (last >= 0)
+            {
+                Vec3* point = points;
+                unsigned int remaining = static_cast<unsigned int>(last) + 1u;
+                do
+                {
+                    point->x = 0.0f;
+                    point->y = 0.0f;
+                    point->z = 0.0f;
+                    ++point;
+                }
+                while (--remaining);
+            }
+#else
             for (int i = 0; i < count; ++i)
             {
                 points[i].x = 0.0f;
                 points[i].y = 0.0f;
                 points[i].z = 0.0f;
             }
+#endif
         }
     }
+    // shipped defect: an all-negative grid keeps the positive FLT_MIN maximum.
     fileMaxY = FLT_MIN;
     fileMinY = FLT_MAX;
     int next = 0;
@@ -455,9 +500,30 @@ void SurroundingPatchEditable::computeBounds()
                 int x = 0;
                 do
                 {
+#if defined(__APPLE__)
+                    const float worldZ = static_cast<float>(static_cast<int>(static_cast<unsigned int>(z) + static_cast<unsigned int>(originZ)));
+                    const float worldX = static_cast<float>(static_cast<int>(static_cast<unsigned int>(x) + static_cast<unsigned int>(originX)));
+#else
                     const float worldZ = static_cast<float>(z + originZ);
                     const float worldX = static_cast<float>(x + originX);
+#endif
                     const float height = cluster->getHeightInWorldCoords(worldX, worldZ);
+#if defined(__APPLE__)
+                    // [CHOSEN, not recovered] Retain FILD products until their actual stores.
+                    if (bf2x87::less(bf2x87::Real(fileMaxY), bf2x87::Real(height)))
+                        fileMaxY = height;
+                    if (!bf2x87::less(bf2x87::Real(fileMinY), bf2x87::Real(height)))
+                        fileMinY = height;
+                    next = static_cast<int>(static_cast<unsigned int>(next) + 1u);
+                    const int pointZ = static_cast<int>(static_cast<unsigned int>(z) + static_cast<unsigned int>(originZ));
+                    const int pointX = static_cast<int>(static_cast<unsigned int>(x) + static_cast<unsigned int>(originX));
+                    const bf2x87::Real zProduct = bf2x87::mul(bf2x87::Real(pointZ), bf2x87::Real(scaleZ));
+                    point->x = bf2x87::store(bf2x87::mul(bf2x87::Real(pointX), bf2x87::Real(scaleX)));
+                    point->y = height;
+                    point->z = bf2x87::store(zProduct);
+                    ++point;
+                    x = static_cast<int>(static_cast<unsigned int>(x) + static_cast<unsigned int>(secondaryScaleX));
+#else
                     if (fileMaxY < height)
                         fileMaxY = height;
                     if (!(fileMinY < height))
@@ -468,14 +534,25 @@ void SurroundingPatchEditable::computeBounds()
                     point->z = static_cast<float>(z + originZ) * scaleZ;
                     ++point;
                     x += secondaryScaleX;
+#endif
                 }
                 while (x < spanPlusOne);
             }
+#if defined(__APPLE__)
+            z = static_cast<int>(static_cast<unsigned int>(z) + static_cast<unsigned int>(secondaryScaleX));
+#else
             z += secondaryScaleX;
+#endif
         }
         while (z < spanPlusOne);
     }
-    D3DXComputeBoundingSphere(points, static_cast<DWORD>(sideCount * sideCount), 12, &boundsCenter, &boundsRadius);
+#if defined(__APPLE__)
+    const DWORD sphereCount = static_cast<unsigned int>(sideCount) * static_cast<unsigned int>(sideCount);
+#else
+    const DWORD sphereCount = static_cast<DWORD>(sideCount * sideCount);
+#endif
+    D3DXComputeBoundingSphere(reinterpret_cast<const D3DXVECTOR3*>(points), sphereCount,
+                              12, reinterpret_cast<D3DXVECTOR3*>(&boundsCenter), &boundsRadius);
     ::renddx9abi::engineFree(points);
 
     TerrainAabb box;
@@ -493,7 +570,7 @@ void SurroundingPatchEditable::computeBounds()
     aabbCorners(corners, &box.min.x);
 }
 
-// Appends inclusive height-grid samples to out, advancing cursor for each value.
+// PE 0x101A3580: appends inclusive height-grid samples to out, advancing cursor for each value.
 // Heights divide by secondary y scale. Flag bits 0/1 average odd samples along the
 // final row/column to close cracks between grid resolutions.
 void SurroundingPatchEditable::heightSubGrid(int x0, int z0, int x1, int z1, int stepX, int stepZ,
@@ -535,7 +612,7 @@ void SurroundingPatchEditable::heightSubGrid(int x0, int z0, int x1, int z1, int
     }
 }
 
-// Appends normals from a bordered world-space sample grid and advances cursor.
+// PE 0x101A38A0: appends normals from a bordered world-space sample grid and advances cursor.
 // Each normal averages six neighboring triangle crosses before normalization; flags are unused.
 void SurroundingPatchEditable::normalSubGrid(int x0, int z0, int x1, int z1, int stepX, int stepZ,
                                              Vec3* out, int* cursor, int)
@@ -624,7 +701,7 @@ void SurroundingPatchEditable::normalSubGrid(int x0, int z0, int x1, int z1, int
     ::renddx9abi::engineFree(grid);
 }
 
-// Rebuilds height and normal streams using editor or stepped engine-mode grids.
+// PE 0x101A3D70: rebuilds height and normal streams using editor or stepped engine-mode grids.
 // Editor placement must initialize the step count first; an engine-only first placement
 // leaves it uninitialized. Old wrappers are released without clearing their pointers.
 void SurroundingPatchEditable::buildVertexBuffers()
@@ -694,7 +771,7 @@ void SurroundingPatchEditable::buildVertexBuffers()
 
 // R2 - the draws
 
-// (slot +0x04) - only when SurroundingPatch::isVisible (0x1018F420): TEXLAYER1 = the
+// PE 0x101A20F0 (slot +0x04) - only when SurroundingPatch::isVisible (0x1018F420): TEXLAYER1 = the
 // lightmap, TEXLAYER4 = the low-detail map (+0x14) and settransxz = the placement (both by name),
 // the height stream on 1 and the normal stream on 2, TEXLAYER0 = the edit copy when there is one,
 // else the colormap; pass 1 when +0x2FB is set, else 0 (the ring draw opened the technique); one
@@ -719,9 +796,58 @@ void SurroundingPatchEditable::draw(int)
     dx9rend::rendererDrawIndexedPrimitive(primitives, 4u, 0, 0u, vertices, 0u);
 }
 
+// Two orientation maps of a point (x, z) for the patch's slot, picked by a jump table over slot 0..7 and
+// returning one of x, z, span - x or span - z (span is the int +0x38, converted with fild). Any other slot
+// raises the retail Error "TBM: unknown surrounding terrain patch type!" (SurroundingPatchEditable.cpp,
+// lines 529 / 553) and answers 0. Slot 0 and 7 share an arm, as do 1 / 2, 3 / 4 and 5 / 6.
+// unreachable in 1.50: no code or data references. [INFERRED] names.
+// PE 0x101A1F30: slot 0 / 7 -> z, 1 / 2 -> x, 3 / 4 -> span - z, 5 / 6 -> span - x.
+float SurroundingPatchEditable::orientedX(float x, float z)
+{
+    switch (slot)
+    {
+    case 0:
+    case 7: return z;
+    case 1:
+    case 2: return x;
+    case 3:
+    case 4: return static_cast<float>(span) - z;
+    case 5:
+    case 6: return static_cast<float>(span) - x;
+    default: break;
+    }
+    ::renddx9abi::Debug(DebugTypeError,
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\SurroundingPatchEditable.cpp",
+        529, std::string()) << "TBM: unknown surrounding terrain patch type!";
+    return 0.0f;
+}
+
+// PE 0x101A2010: slot 0 / 7 -> span - x, 1 / 2 -> z, 3 / 4 -> x, 5 / 6 -> span - z.
+float SurroundingPatchEditable::orientedZ(float x, float z)
+{
+    switch (slot)
+    {
+    case 0:
+    case 7: return static_cast<float>(span) - x;
+    case 1:
+    case 2: return z;
+    case 3:
+    case 4: return x;
+    case 5:
+    case 6: return static_cast<float>(span) - z;
+    default: break;
+    }
+    ::renddx9abi::Debug(DebugTypeError,
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\SurroundingPatchEditable.cpp",
+        553, std::string()) << "TBM: unknown surrounding terrain patch type!";
+    return 0.0f;
+}
+
 // the lightmap-generation pass: when visible, TEXLAYER0 = the colormap, settransxz = the
 // placement, the height stream on 1, and one draw over the side grid's counts (+0xF4 / +0xFC) whatever
-// the patch kind (TerrainEditable binds only the side buffers for this pass).
+// the patch kind (TerrainEditable binds only the side buffers for this pass). The index count is
+// divided signed (`imul 0x55555556`, 0x101A22E9).
+// PE 0x101A2250
 void SurroundingPatchEditable::drawForLightmapGeneration()
 {
     if (!isVisible(0))
@@ -730,10 +856,13 @@ void SurroundingPatchEditable::drawForLightmapGeneration()
     param(te->m_hTexLayer[0])->setValue(m_colormap, 0);
     effectParameter(te->m_effect, "SETTRANSXZ")->setValue(placement, 0);
     dx9rend::vertexBufferBindStream(xzVertexBuffer, 1);
-    dx9rend::rendererDrawIndexedPrimitive(te->m_sideIndexCount / 3, 4u, 0, 0u, te->m_sideVertexCount, 0u);
+    dx9rend::rendererDrawIndexedPrimitive(
+        static_cast<unsigned int>(static_cast<int>(te->m_sideIndexCount) / 3), 4u, 0, 0u,
+        te->m_sideVertexCount, 0u);
 }
 
 // The placement rectangle at height 0, in the shipped store order.
+// PE 0x101A2320
 void SurroundingPatchEditable::getWorldBounds(TerrainAabb& box)
 {
     box.min.y = 0.0f;
@@ -749,6 +878,7 @@ void SurroundingPatchEditable::getWorldBounds(TerrainAabb& box)
 
 // only when there is none: a +0x50-sized A8R8G8B8 copy (stored first) of the colormap,
 // loaded by D3DX, the copy's surface released first.
+// PE 0x101A1E90
 void SurroundingPatchEditable::makeColormapEditCopy()
 {
     if (m_colormapEdit)
@@ -760,6 +890,51 @@ void SurroundingPatchEditable::makeColormapEditCopy()
     D3DXLoadSurfaceFromSurface(destination, 0, 0, source, 0, 0, 0xFFFFFFFFu, 0);
     destination->Release();
     source->Release();
+}
+
+// PE 0x101A2360: with a colormap edit copy, every texel of its level 0 zeroed over (0, 0, size, size),
+// the size read from the terrain's +0x48 (the patch colormap size, not the +0x50 surrounding size the
+// commit uses); x outer, z inner, the pitch honoured; unlocked and released. Without a copy nothing
+// happens. unreachable in 1.50: no code or data references. [INFERRED] name.
+void SurroundingPatchEditable::clearColormapEdit()
+{
+    if (!m_colormapEdit)
+        return;
+    const int size = editableTerrain->m_patchColormapSize;                    // +0x48
+    RECT rect = { 0, 0, size, size };
+    IDirect3DSurface9* const surface = dx9rend::textureGetLevelSurface(m_colormapEdit, 0, 0x7FFFFFFF);
+    D3DLOCKED_RECT locked;
+    surface->LockRect(&locked, &rect, 0);
+    unsigned int* const bits = static_cast<unsigned int*>(locked.pBits);
+    for (int x = 0; x < size; ++x)
+        for (int z = 0; z < size; ++z)
+            bits[x + z * texelPitch(locked)] = 0;
+    surface->UnlockRect();
+    surface->Release();
+}
+
+// PE 0x101A29F0: the +0x178 texture, when set, loses its owner reference, is evicted from the texture
+// cache and is nulled. unreachable in 1.50: no code or data references. [INFERRED] name; the texture
+// itself is [UNRESOLVED] (the constructor zeroes it and nothing else stores it).
+void SurroundingPatchEditable::releaseTexture178()
+{
+    if (m_texture178)
+    {
+        terrainReleaseTexture(m_texture178);
+        dx9rend::textureManagerEvictFromCache(m_texture178);
+        m_texture178 = 0;
+    }
+}
+
+// PE 0x101A2A40: the same for the +0x17C texture. unreachable in 1.50: no code or data references.
+void SurroundingPatchEditable::releaseTexture17C()
+{
+    if (m_texture17C)
+    {
+        terrainReleaseTexture(m_texture17C);
+        dx9rend::textureManagerEvictFromCache(m_texture17C);
+        m_texture17C = 0;
+    }
 }
 
 // with a copy: both locked over (0, 0, size, size) (size = +0x50), flags 0, the colormap
@@ -815,7 +990,9 @@ void SurroundingPatchEditable::commitColormapEdit()
 
 // the lightmap dropped (owner release + evict, nulled) and reloaded under a managed-flag
 // swap to 1: "<save><editor lightmap base>_s<slot>" (P+0x104 asked first), else a +0x50-sized texture
-// filled white.
+// filled white (the unlock re-reads the +0x170 slot, 0x101A46DD). TerrainEditable::rebuildTerrain's
+// ring step.
+// PE 0x101A4520
 void SurroundingPatchEditable::reloadLightmap()
 {
     TerrainEditable* const te = editableTerrain;
@@ -826,17 +1003,19 @@ void SurroundingPatchEditable::reloadLightmap()
         m_lightmap = 0;
     }
     const int savedManaged = dx9rend::textureManagerSwapManaged(1);
-    vc71::string path;
+    std::string path;
     {
-        const vc71::string base = te->getEditorLightmapBaseName();            // P+0x104
-        vc71::string name;
-        formatString(name, "%s_s%i", base.c_str(), slot);
-        path = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        path += name;
+        const std::string base = te->getEditorLightmapBaseName();            // P+0x104
+        std::string name;
+        name = formatString("%s_s%i", base.c_str(), slot);
+        path = ::renddx9abi::fromHostString(te->getLevelSavePath()) + name;    // E+0x90
     }
-    vc71::string dds(path);
-    dds += ".dds";
-    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+    bool exists;
+    {
+        const std::string dds(path + ".dds");                                 // destroyed before the test
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    if (exists)
     {
         m_lightmap = engineTexture(dx9rend::textureManagerGetTexture(path));
     }
@@ -845,13 +1024,14 @@ void SurroundingPatchEditable::reloadLightmap()
         m_lightmap = engineTexture(dx9rend::textureManagerCreateEmpty(
             static_cast<unsigned int>(te->m_surroundingTextureSize),
             static_cast<unsigned int>(te->m_surroundingTextureSize), 21, 1, 0, 0));
-        fillTexture(m_lightmap, 0xFFFFFFFFu);
+        fillTextureSlot(m_lightmap, 0xFFFFFFFFu);
     }
     dx9rend::textureManagerSwapManaged(savedManaged);
 }
 
 // not for slots 1 and 2: the edit copy committed, then the colormap, the lightmap and the
 // low-detail map re-oriented for the (new) engine mode.
+// PE 0x101A4FF0
 void SurroundingPatchEditable::onModeSwitch()
 {
     if (slot == 1 || slot == 2)
@@ -870,6 +1050,7 @@ void SurroundingPatchEditable::onModeSwitch()
 //   editor mode: slots 3/4 (row, rc), slots 5/6 (rc, rr), else (rr, col).
 // Both locked whole, flags 0, the scratch first; unlocked and released the scratch's first; the
 // scratch then evicted before its owner reference is released.
+// PE 0x101A4DE0
 void SurroundingPatchEditable::rotateTexture(dx9rend::EngineTexture** texture, bool engineMode)
 {
     if (slot == 1 || slot == 2)
@@ -932,38 +1113,79 @@ void SurroundingPatchEditable::rotateTexture(dx9rend::EngineTexture** texture, b
 // Paints the ring colormap with cosine falloff; the caller supplies a quartered radius.
 // Positive strength blends toward color, negative restores the original, and zero stores zero.
 // Uses the supplied channel order directly, unlike the inner patch brush.
+// PE 0x101A2E80
 void SurroundingPatchEditable::paintColor(float x, float z, float radius, int strength, unsigned int color)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the inspected x87 loads, spills and comparisons.
+    const float xr = bf2x87::store(bf2x87::sub(bf2x87::Real(x), bf2x87::Real(originX)));
+    const float zr = bf2x87::store(bf2x87::sub(bf2x87::Real(z), bf2x87::Real(originZ)));
+#else
     const float xr = x - static_cast<float>(originX);                         // +0x24
     const float zr = z - static_cast<float>(originZ);                         // +0x28
+#endif
+#if defined(__APPLE__)
+    if (!bf2x87::greater(bf2x87::add(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(0)))
+#else
     if (!(xr + radius > 0.0f))
+#endif
         return;
     const float spanF = static_cast<float>(span);                             // +0x38
+#if defined(__APPLE__)
+    if (!bf2x87::less(bf2x87::sub(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(spanF)) ||
+        !bf2x87::greater(bf2x87::add(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(0)) ||
+        !bf2x87::less(bf2x87::sub(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(spanF)) || !m_colormapReady)
+#else
     if (!(xr - radius < spanF) || !(zr + radius > 0.0f) || !(zr - radius < spanF) || !m_colormapReady)
+#endif
         return;
     if (!m_colormapEdit)
         makeColormapEditCopy();
     const int size = editableTerrain->m_surroundingTextureSize;               // +0x50
+#if defined(__APPLE__)
+    const bf2x87::Real scale = bf2x87::div(bf2x87::Real(size), bf2x87::Real(span));
+    const float xs = bf2x87::store(bf2x87::mul(bf2x87::Real(xr), bf2x87::Real(scale)));
+    const float zs = bf2x87::store(bf2x87::mul(bf2x87::Real(zr), bf2x87::Real(scale)));
+    const float rs = bf2x87::store(bf2x87::mul(bf2x87::Real(scale), bf2x87::Real(radius)));
+    const float inverse = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(rs)));
+#else
     const float scale = static_cast<float>(size) / static_cast<float>(span);
     const float xs = xr * scale;
     const float zs = zr * scale;
     const float rs = scale * radius;
     const float inverse = 1.0f / rs;
+#endif
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(xs), bf2x87::Real(rs)));
+#else
     int x0 = static_cast<int>(xs - rs);
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(xs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(xs + rs);
+#endif
         if (size >= top)
             xEnd = top;
     }
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(zs), bf2x87::Real(rs)));
+#else
     int z0 = static_cast<int>(zs - rs);
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(zs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(zs + rs);
+#endif
         if (size >= top)
             zEnd = top;
     }
@@ -978,20 +1200,37 @@ void SurroundingPatchEditable::paintColor(float x, float z, float radius, int st
 
     for (int px = x0; px < xEnd; ++px)
     {
+#if defined(__APPLE__)
+        const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(px), bf2x87::Real(xs));
+        const float dxSquared = bf2x87::store(bf2x87::mul(dx, dx));
+#else
         const float dx = static_cast<float>(px) - xs;
         const float dxSquared = dx * dx;
+#endif
         for (int pz = z0; pz < zEnd; ++pz)
         {
+#if defined(__APPLE__)
+            const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(pz), bf2x87::Real(zs));
+            const bf2x87::Real distance = bf2x87::squareRoot(bf2x87::add(bf2x87::mul(dz, dz), bf2x87::Real(dxSquared)));
+            if (bf2x87::greater(distance, bf2x87::Real(rs)))
+#else
             const float dz = static_cast<float>(pz) - zs;
             const float distance = std::sqrt(dz * dz + dxSquared);
             if (distance > rs)
+#endif
                 continue;
+#if defined(__APPLE__)
+            const float t = bf2x87::store(surroundingBrushWeight(distance, inverse, strength));
+            const unsigned int* const original = colormapBits + px + pz * texelPitch(colormapLocked);
+            unsigned int* const edit = editBits + px + pz * texelPitch(editLocked);
+#else
             double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));   // flt_102212AC
             const unsigned int* const original = colormapBits + px + pz * texelPitch(colormapLocked);
             unsigned int* const edit = editBits + px + pz * texelPitch(editLocked);
             if (!(0.0 < falloff))
                 falloff = 0.0;
             const float t = static_cast<float>(static_cast<double>(strength) * falloff) * 0.0039215689f;
+#endif
             float target[4];
             terrainEditUnpackColor(target, color);
             float result[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1025,38 +1264,81 @@ void SurroundingPatchEditable::paintColor(float x, float z, float radius, int st
 // radius: t = |cos weight * strength / 255|, nothing unless t > 0; a positive strength lerps the texel
 // toward the colour R/B-swapped ({c2, c1, c0, c3}: the slot's 0xFF paints 0x00FF0000), a negative
 // one toward zero. Unlocked and released.
+// PE 0x101A3200
 void SurroundingPatchEditable::paintDetail(float x, float z, float radius, int strength, unsigned int color)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the inspected x87 loads, spills and comparisons.
+    const float xr = bf2x87::store(bf2x87::sub(bf2x87::Real(x), bf2x87::Real(originX)));
+    const float zr = bf2x87::store(bf2x87::sub(bf2x87::Real(z), bf2x87::Real(originZ)));
+#else
     const float xr = x - static_cast<float>(originX);
     const float zr = z - static_cast<float>(originZ);
+#endif
+#if defined(__APPLE__)
+    if (!bf2x87::greater(bf2x87::add(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(0)))
+#else
     if (!(xr + radius > 0.0f))
+#endif
         return;
     const float spanF = static_cast<float>(span);
+#if defined(__APPLE__)
+    if (!bf2x87::less(bf2x87::sub(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(spanF)) ||
+        !bf2x87::greater(bf2x87::add(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(0)) ||
+        !bf2x87::less(bf2x87::sub(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(spanF)))
+#else
     if (!(xr - radius < spanF) || !(zr + radius > 0.0f) || !(zr - radius < spanF))
+#endif
         return;
     const int size = editableTerrain->m_surroundingTextureSize;               // +0x50
+#if defined(__APPLE__)
+    const bf2x87::Real scale = bf2x87::div(bf2x87::Real(size), bf2x87::Real(spanF));
+    const int xCentre = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(xr), scale));
+    const int zCentre = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(zr), scale));
+    const float rs = bf2x87::store(bf2x87::mul(scale, bf2x87::Real(radius)));
+    const float inverse = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(rs)));
+#else
     const float scale = static_cast<float>(size) / spanF;
     const int xCentre = static_cast<int>(xr * scale);
     const int zCentre = static_cast<int>(zr * scale);
     const float rs = scale * radius;
     const float inverse = 1.0f / rs;
+#endif
     const float xs = static_cast<float>(xCentre);
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(bf2x87::Real(std::ceil(bf2x87::storeDouble(
+        bf2x87::sub(bf2x87::Real(xCentre), bf2x87::Real(rs))))));
+#else
     int x0 = static_cast<int>(std::ceil(static_cast<double>(xs - rs)));
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = bf2x87::toIntTruncate(bf2x87::add(bf2x87::Real(xs), bf2x87::Real(rs)));
+#else
         const int top = static_cast<int>(xs + rs);
+#endif
         if (size >= top)
             xEnd = top;
     }
     const float zs = static_cast<float>(zCentre);
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(bf2x87::Real(std::ceil(bf2x87::storeDouble(
+        bf2x87::sub(bf2x87::Real(zCentre), bf2x87::Real(rs))))));
+#else
     int z0 = static_cast<int>(std::ceil(static_cast<double>(zs - rs)));
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = bf2x87::toIntTruncate(bf2x87::add(bf2x87::Real(zs), bf2x87::Real(rs)));
+#else
         const int top = static_cast<int>(zs + rs);
+#endif
         if (size >= top)
             zEnd = top;
     }
@@ -1068,14 +1350,32 @@ void SurroundingPatchEditable::paintDetail(float x, float z, float radius, int s
 
     for (int px = x0; px < xEnd; ++px)
     {
+#if defined(__APPLE__)
+        const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(px), bf2x87::Real(xs));
+        const float dxSquared = bf2x87::store(bf2x87::mul(dx, dx));
+#else
         const float dx = static_cast<float>(px) - xs;
         const float dxSquared = dx * dx;
+#endif
         for (int pz = z0; pz < zEnd; ++pz)
         {
+#if defined(__APPLE__)
+            const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(pz), bf2x87::Real(zs));
+            const bf2x87::Real distance = bf2x87::squareRoot(bf2x87::add(bf2x87::mul(dz, dz), bf2x87::Real(dxSquared)));
+            if (bf2x87::greater(distance, bf2x87::Real(rs)))
+#else
             const float dz = static_cast<float>(pz) - zs;
             const float distance = std::sqrt(dz * dz + dxSquared);
             if (distance > rs)
+#endif
                 continue;
+#if defined(__APPLE__)
+            const bf2x87::Real weight = bf2x87::abs(surroundingBrushWeight(distance, inverse, strength));
+            const float t = bf2x87::store(weight);
+            if (!bf2x87::greater(weight, bf2x87::Real(0)))
+                continue;
+            unsigned int* const texel = bits + px + pz * texelPitch(locked);
+#else
             double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));
             if (!(0.0 < falloff))
                 falloff = 0.0;
@@ -1083,6 +1383,7 @@ void SurroundingPatchEditable::paintDetail(float x, float z, float radius, int s
             if (!(t > 0.0f))
                 continue;
             unsigned int* const texel = bits + px + pz * texelPitch(locked);
+#endif
             float result[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             float current[4];
             terrainEditUnpackColor(current, *texel);
@@ -1114,39 +1415,79 @@ void SurroundingPatchEditable::paintDetail(float x, float z, float radius, int s
 // (shipped, as in the patch brush). t = cos weight * strength / 255 (NOT made absolute); a positive
 // strength lerps the copy toward the texture, a negative one back toward the colormap by |t|.
 // Unlocked and released colormap, copy, texture.
+// PE 0x101A5AB0
 void SurroundingPatchEditable::paintColorFromTexture(float x, float z, float radius, int strength, int layer)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the inspected x87 loads, spills and comparisons.
+    const float xr = bf2x87::store(bf2x87::sub(bf2x87::Real(x), bf2x87::Real(originX)));
+    const float zr = bf2x87::store(bf2x87::sub(bf2x87::Real(z), bf2x87::Real(originZ)));
+#else
     const float xr = x - static_cast<float>(originX);
     const float zr = z - static_cast<float>(originZ);
+#endif
+#if defined(__APPLE__)
+    if (!bf2x87::greater(bf2x87::add(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(0)))
+#else
     if (!(xr + radius > 0.0f))
+#endif
         return;
     const float spanF = static_cast<float>(span);
+#if defined(__APPLE__)
+    if (!bf2x87::less(bf2x87::sub(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(spanF)) ||
+        !bf2x87::greater(bf2x87::add(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(0)) ||
+        !bf2x87::less(bf2x87::sub(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(spanF)) || !m_colormapReady)
+#else
     if (!(xr - radius < spanF) || !(zr + radius > 0.0f) || !(zr - radius < spanF) || !m_colormapReady)
+#endif
         return;
     if (!m_colormapEdit)
         makeColormapEditCopy();
-    TerrainEditable* const te = editableTerrain;
-    const int size = te->m_surroundingTextureSize;
+    const int size = editableTerrain->m_surroundingTextureSize;
+#if defined(__APPLE__)
+    const float scale = bf2x87::store(bf2x87::div(bf2x87::Real(size), bf2x87::Real(span)));
+    const float xs = bf2x87::store(bf2x87::mul(bf2x87::Real(xr), bf2x87::Real(scale)));
+    const float zs = bf2x87::store(bf2x87::mul(bf2x87::Real(zr), bf2x87::Real(scale)));
+    const float rs = bf2x87::store(bf2x87::mul(bf2x87::Real(scale), bf2x87::Real(radius)));
+    const float inverse = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(rs)));
+#else
     const float scale = static_cast<float>(size) / static_cast<float>(span);
     const float xs = xr * scale;
     const float zs = zr * scale;
     const float rs = scale * radius;
     const float inverse = 1.0f / rs;
+#endif
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(xs), bf2x87::Real(rs)));
+#else
     int x0 = static_cast<int>(xs - rs);
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(xs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(xs + rs);
+#endif
         if (size >= top)
             xEnd = top;
     }
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(zs), bf2x87::Real(rs)));
+#else
     int z0 = static_cast<int>(zs - rs);
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(zs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(zs + rs);
+#endif
         if (size >= top)
             zEnd = top;
     }
@@ -1157,7 +1498,7 @@ void SurroundingPatchEditable::paintColorFromTexture(float x, float z, float rad
     D3DLOCKED_RECT editLocked;
     editSurface->LockRect(&editLocked, 0, 0);
     const TerrainDetailTextureEditable* const record = static_cast<const TerrainDetailTextureEditable*>(
-        reinterpret_cast<TerrainDetailTexture**>(te->m_detailTextures.first)[layer]);
+        editableTerrain->m_detailTextures.data()[layer]);
     const int textureHeight = static_cast<int>(dx9rend::textureDims(record->colorTexture)[1]);
     const int textureWidth = static_cast<int>(dx9rend::textureDims(record->colorTexture)[0]);
     IDirect3DSurface9* const textureSurface = dx9rend::textureGetLevelSurface(record->colorTexture, 0, 0x7FFFFFFF);
@@ -1170,26 +1511,58 @@ void SurroundingPatchEditable::paintColorFromTexture(float x, float z, float rad
     for (int px = x0; px < xEnd; ++px)
     {
         const float pxF = static_cast<float>(px);
+#if defined(__APPLE__)
+        const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(px), bf2x87::Real(xs));
+        const float dxSquared = bf2x87::store(bf2x87::mul(dx, dx));
+#else
         const float dx = pxF - xs;
         const float dxSquared = dx * dx;
+#endif
         for (int pz = z0; pz < zEnd; ++pz)
         {
             const float pzF = static_cast<float>(pz);
+#if defined(__APPLE__)
+            const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(pz), bf2x87::Real(zs));
+            const bf2x87::Real distance = bf2x87::squareRoot(bf2x87::add(bf2x87::mul(dz, dz), bf2x87::Real(dxSquared)));
+            const float storedDistance = bf2x87::store(distance);
+            if (bf2x87::greater(distance, bf2x87::Real(rs)))
+#else
             const float dz = pzF - zs;
             const float distance = std::sqrt(dz * dz + dxSquared);
             if (distance > rs)
+#endif
                 continue;
+#if defined(__APPLE__)
+            const bf2x87::Real inverseScaleRetained = bf2x87::div(bf2x87::Real(1), bf2x87::Real(scale));
+            const float inverseScale = bf2x87::store(inverseScaleRetained);
+            int u = bf2x87::toIntTruncate(bf2x87::Real(std::floor(bf2x87::storeDouble(bf2x87::add(
+                bf2x87::mul(bf2x87::add(bf2x87::mul(inverseScaleRetained, bf2x87::Real(pxF)),
+                    bf2x87::Real(originX)), bf2x87::Real(record->colorTextureTiling.x)), bf2x87::Real(0.5f))))));
+#else
             const float inverseScale = 1.0f / scale;
             int u = static_cast<int>(std::floor(static_cast<double>(
                 (inverseScale * pxF + static_cast<float>(originX)) * record->colorTextureTiling.x + 0.5f)));
+#endif
             u = u % textureWidth;
             if (u < 0)
                 u += textureWidth;
+#if defined(__APPLE__)
+            int v = bf2x87::toIntTruncate(bf2x87::Real(std::floor(bf2x87::storeDouble(bf2x87::add(
+                bf2x87::mul(bf2x87::add(bf2x87::mul(bf2x87::Real(inverseScale), bf2x87::Real(pzF)),
+                    bf2x87::Real(originZ)), bf2x87::Real(record->colorTextureTiling.y)), bf2x87::Real(0.5f))))));
+#else
             int v = static_cast<int>(std::floor(static_cast<double>(
                 (inverseScale * pzF + static_cast<float>(originZ)) * record->colorTextureTiling.y + 0.5f)));
+#endif
             v = v % textureHeight;
             if (v < 0)
-                v += textureWidth;                                            // the width (shipped)
+                v += textureWidth;                                            // shipped defect: adds width.
+#if defined(__APPLE__)
+            const float t = bf2x87::store(surroundingBrushWeight(bf2x87::Real(storedDistance), inverse, strength));
+            const unsigned int* const source = textureBits + u + v * texelPitch(textureLocked);
+            const unsigned int* const original = colormapBits + px + pz * texelPitch(colormapLocked);
+            unsigned int* const edit = editBits + px + pz * texelPitch(editLocked);
+#else
             double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));
             const unsigned int* const source = textureBits + u + v * texelPitch(textureLocked);
             const unsigned int* const original = colormapBits + px + pz * texelPitch(colormapLocked);
@@ -1197,6 +1570,7 @@ void SurroundingPatchEditable::paintColorFromTexture(float x, float z, float rad
             if (!(0.0 < falloff))
                 falloff = 0.0;
             const float t = static_cast<float>(static_cast<double>(strength) * falloff) * 0.0039215689f;
+#endif
             float paint[4];
             terrainEditUnpackColor(paint, *source);
             float result[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1232,17 +1606,15 @@ void SurroundingPatchEditable::paintColorFromTexture(float x, float z, float rad
 
 // the low-detail map (+0x14) saved as "<save><editor low-detail base>_s<slot>" (the
 // suffix formatted first, then P+0x10C, then the save path).
+// PE 0x101A2A90
 void SurroundingPatchEditable::saveLowDetailMap()
 {
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
-    TerrainEditable* const te = editableTerrain;
-    vc71::string name;
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
+    std::string name;
     {
-        const vc71::string editorBase = te->getEditorLowDetailmapBaseName();  // P+0x10C
-        name = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        name += editorBase;
-        name += suffix;
+        const std::string editorBase = editableTerrain->getEditorLowDetailmapBaseName(); // P+0x10C
+        name = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + editorBase + suffix; // E+0x90
     }
     dx9rend::textureManagerSaveTexture(engineTexture(lowDetailmap), name);
 }
@@ -1251,48 +1623,46 @@ void SurroundingPatchEditable::saveLowDetailMap()
 // (E+0x84)>_s<slot>" saved uncompressed (sub_10017F90), nvdxt (E+0xF4) into "<save><low-detail
 // directory>" (0x101A6260) with the surrounding low-detail settings (+0x838), the uncompressed input
 // deleted, "_.dds" moved onto ".dds" and deleted. Nothing is deleted first.
+// PE 0x101A2B90
 void SurroundingPatchEditable::compileLowDetailMap()
 {
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
-    TerrainEditable* const te = editableTerrain;
-    vc71::string name;
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
+    std::string name;
     {
-        TerrainEditableNameResult lowBase = te->getLowDetailmapBaseName();   // E+0x84
-        name = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        name += ::renddx9abi::toVc71String(lowBase);
-        name += suffix;
+        TerrainEditableNameResult lowBase = editableTerrain->getLowDetailmapBaseName(); // E+0x84
+        name = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) +
+            ::renddx9abi::fromHostString(lowBase) + suffix; // E+0x90
     }
-    vc71::string outputDirectory;
+    std::string outputDirectory;
     {
-        const vc71::string directory = te->getLowDetailmapDirectory();
-        outputDirectory = ::renddx9abi::toVc71String(te->getLevelSavePath());
-        outputDirectory += directory;
+        const std::string directory = editableTerrain->getLowDetailmapDirectory();
+        outputDirectory = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + directory;
     }
     dx9rend::textureManagerSaveTexture(engineTexture(lowDetailmap), name);
     {
         // The argument blocks are built right to left: the options, the directory, the file.
-        const TerrainEditableString options(te->m_surroundingLowDetailmapSettings);   // +0x838
-        const vc71::string directory(outputDirectory);
-        vc71::string file(name);
+        const TerrainEditableString options(editableTerrain->m_surroundingLowDetailmapSettings); // +0x838
+        const std::string directory(outputDirectory);
+        std::string file(name);
         file += ".dds";
-        te->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(directory), options);   // E+0xF4
+        editableTerrain->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(directory), options); // E+0xF4
     }
     {
-        vc71::string input(name);
+        std::string input(name);
         input += ".dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(input));
     }
     {
-        vc71::string target(name);
+        std::string target(name);
         target += ".dds";
-        vc71::string source(name);
+        std::string source(name);
         source += "_.dds";
         ::dice::hfe::fileManager->moveFile(::renddx9abi::makeHostString(source),
                                            ::renddx9abi::makeHostString(target));
     }
     {
-        vc71::string leftover(name);
+        std::string leftover(name);
         leftover += "_.dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(leftover));
     }
@@ -1300,20 +1670,18 @@ void SurroundingPatchEditable::compileLowDetailMap()
 
 // only once the colormap exists (+0x2FA): the edit copy committed by alpha (0x101A4370),
 // then the colormap (+0x16C) saved as "<save><editor colormap base>_s<slot>" (P+0xFC asked first).
+// PE 0x101A4CC0
 void SurroundingPatchEditable::saveEditedColormap()
 {
     if (!m_colormapReady)
         return;
     commitColormapEdit();
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
-    TerrainEditable* const te = editableTerrain;
-    vc71::string name;
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
+    std::string name;
     {
-        const vc71::string editorBase = te->getEditorColormapBaseName();      // P+0xFC
-        name = ::renddx9abi::toVc71String(te->getLevelSavePath());
-        name += editorBase;
-        name += suffix;
+        const std::string editorBase = editableTerrain->getEditorColormapBaseName(); // P+0xFC
+        name = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + editorBase + suffix;
     }
     dx9rend::textureManagerSaveTexture(m_colormap, name);
 }
@@ -1321,60 +1689,60 @@ void SurroundingPatchEditable::saveEditedColormap()
 // Burns and compiles the surrounding-patch colormap, restoring draw state afterward.
 // Ready patches use the terrain colormap path; otherwise base selects the destination.
 // [CHOSEN, not recovered] Unused render flags are zero-initialized.
-void SurroundingPatchEditable::burnColormap(const vc71::string& base)
+// PE 0x101A5060
+void SurroundingPatchEditable::burnColormap(const std::string& base)
 {
-    vc71::string suffix;
-    formatString(suffix, "_s%i", slot);
-    TerrainEditable* const te = editableTerrain;
-    const int size = te->m_surroundingTextureSize;                            // +0x50
+    std::string suffix;
+    suffix = formatString("_s%i", slot);
+    const int size = editableTerrain->m_surroundingTextureSize;              // +0x50
     if (!m_colormapReady)
     {
-        vc71::string target(::renddx9abi::toVc71String(te->getLevelSavePath()));
-        target += base;
-        target += suffix;
-        vc71::string dds(target);
-        dds += ".dds";
-        const bool missing = !::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));   // +0x1C
+        std::string target(::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + base + suffix);
+        bool missing;
+        {
+            std::string dds(target);
+            dds += ".dds";
+            missing = !::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)); // +0x1C
+        }
         if (missing)
             dx9rend::textureManagerSaveTexture(m_colormap, target);
         return;
     }
 
     dx9rend::stateManagerPush();
-    unsigned char* const toggles = static_cast<unsigned char*>(static_cast<void*>(dx9rend::g_Renderer));
-    const unsigned char saved1693 = toggles[1693];
-    const unsigned char saved1713 = toggles[1713];
-    const unsigned char saved1705 = toggles[1705];
-    const unsigned char saved1697 = toggles[1697];
-    const unsigned char saved1717 = toggles[1717];
-    const unsigned char saved1702 = toggles[1702];
-    const unsigned char saved1703 = toggles[1703];
-    const unsigned char saved1698 = toggles[1698];
-    const unsigned char saved1714 = toggles[1714];
-    const unsigned char saved1700 = toggles[1700];
-    const float savedSeaLevel = te->m_primaryHeightmap->getSeaWaterLevel();  // +0x64
+    const unsigned char saved1693 = dx9rend::rendererRenderSwitch(1693);
+    const unsigned char saved1713 = dx9rend::rendererRenderSwitch(1713);
+    const unsigned char saved1705 = dx9rend::rendererRenderSwitch(1705);
+    const unsigned char saved1697 = dx9rend::rendererRenderSwitch(1697);
+    const unsigned char saved1717 = dx9rend::rendererRenderSwitch(1717);
+    const unsigned char saved1702 = dx9rend::rendererRenderSwitch(1702);
+    const unsigned char saved1703 = dx9rend::rendererRenderSwitch(1703);
+    const unsigned char saved1698 = dx9rend::rendererRenderSwitch(1698);
+    const unsigned char saved1714 = dx9rend::rendererRenderSwitch(1714);
+    const unsigned char saved1700 = dx9rend::rendererRenderSwitch(1700);
+    const float savedSeaLevel = editableTerrain->m_primaryHeightmap->getSeaWaterLevel(); // +0x64
     const int savedRenderMode = dx9rend::rendererGetHemiRenderMode();
     const bool savedShadows = g_LightManager->getDynamicShadowsEnabled();     // +0xF0
-    const int savedTechnique = te->getShaderTechnique();                      // E+0x8C
+    const int savedTechnique = editableTerrain->getShaderTechnique();        // E+0x8C
     const unsigned char savedPass = m_burnPass;                               // +0x2FB
 
-    toggles[1693] = 1;
-    toggles[1713] = 0;
-    toggles[1705] = 0;
-    toggles[1697] = 0;
+    dx9rend::rendererRenderSwitch(1693) = 1;
+    dx9rend::rendererRenderSwitch(1713) = 0;
+    dx9rend::rendererRenderSwitch(1705) = 0;
+    dx9rend::rendererRenderSwitch(1697) = 0;
     bundledMeshSetHemiEnabled(0);
-    toggles[1717] = 1;
-    toggles[1702] = 0;
-    toggles[1703] = 0;
-    toggles[1698] = 0;
+    dx9rend::rendererRenderSwitch(1717) = 1;
+    dx9rend::rendererRenderSwitch(1702) = 0;
+    dx9rend::rendererRenderSwitch(1703) = 0;
+    dx9rend::rendererRenderSwitch(1698) = 0;
     staticMeshRendererSetHemiEnabled(0);
-    toggles[1714] = 0;
-    toggles[1700] = 1;
+    dx9rend::rendererRenderSwitch(1714) = 0;
+    dx9rend::rendererRenderSwitch(1700) = 1;
     roadCompiledRendererSetHemiEnabled(1);
-    te->m_primaryHeightmap->setSeaWaterLevel(-110.0f);
+    editableTerrain->m_primaryHeightmap->setSeaWaterLevel(-110.0f);
     dx9rend::rendererSetHemiRenderMode(0);
     g_LightManager->setDynamicShadowsEnabled(false);                          // +0xEC
-    te->setShaderTechnique(0);                                                // E+0x88
+    editableTerrain->setShaderTechnique(0);                                  // E+0x88
     m_burnPass = 1;
     dx9rend::RenderFlags flags;
     std::memset(&flags, 0, sizeof(flags));
@@ -1386,7 +1754,8 @@ void SurroundingPatchEditable::burnColormap(const vc71::string& base)
     IDirect3DSurface9* depthStencil = 0;
     device->CreateRenderTarget(static_cast<UINT>(size), static_cast<UINT>(size), D3DFMT_A8R8G8B8,
                                D3DMULTISAMPLE_NONE, 0, FALSE, &renderTarget, 0);              // +0x70
-    device->CreateDepthStencilSurface(static_cast<UINT>(size), static_cast<UINT>(size), D3DFMT_D24S8,
+    static_cast<IDirect3DDevice9*>(dx9rend::renderDevice())->CreateDepthStencilSurface(
+                                      static_cast<UINT>(size), static_cast<UINT>(size), D3DFMT_D24S8,
                                       D3DMULTISAMPLE_NONE, 0, FALSE, &depthStencil, 0);       // +0x74
     const float extent = static_cast<float>(span);                            // +0x38, fild
     Vec3 position;
@@ -1395,33 +1764,32 @@ void SurroundingPatchEditable::burnColormap(const vc71::string& base)
     position.z = center.z;                                                    // +0x54
     dx9rend::rendererRenderOrthoTopDown(renderTarget, depthStencil, position, extent, flags);
 
-    toggles[1693] = saved1693;
-    toggles[1713] = saved1713;
-    toggles[1705] = saved1705;
-    toggles[1697] = saved1697;
+    dx9rend::rendererRenderSwitch(1693) = saved1693;
+    dx9rend::rendererRenderSwitch(1713) = saved1713;
+    dx9rend::rendererRenderSwitch(1705) = saved1705;
+    dx9rend::rendererRenderSwitch(1697) = saved1697;
     bundledMeshSetHemiEnabled(saved1697);
-    toggles[1717] = saved1717;
-    toggles[1702] = saved1702;
-    toggles[1703] = saved1703;
-    toggles[1698] = saved1698;
+    dx9rend::rendererRenderSwitch(1717) = saved1717;
+    dx9rend::rendererRenderSwitch(1702) = saved1702;
+    dx9rend::rendererRenderSwitch(1703) = saved1703;
+    dx9rend::rendererRenderSwitch(1698) = saved1698;
     staticMeshRendererSetHemiEnabled(saved1698);
-    toggles[1714] = saved1714;
-    toggles[1700] = saved1700;
+    dx9rend::rendererRenderSwitch(1714) = saved1714;
+    dx9rend::rendererRenderSwitch(1700) = saved1700;
     roadCompiledRendererSetHemiEnabled(saved1700);
-    te->m_primaryHeightmap->setSeaWaterLevel(savedSeaLevel);
+    editableTerrain->m_primaryHeightmap->setSeaWaterLevel(savedSeaLevel);
     dx9rend::rendererSetHemiRenderMode(savedRenderMode);
     g_LightManager->setDynamicShadowsEnabled(savedShadows);
-    te->setShaderTechnique(savedTechnique);
+    editableTerrain->setShaderTechnique(savedTechnique);
     m_burnPass = savedPass;
 
-    vc71::string path;
+    std::string path;
     {
-        vc71::string pathSuffix;
-        formatString(pathSuffix, "_s%i", slot);                               // formatted again
-        TerrainEditableNameResult colormapBase = te->getColormapBaseName();  // E+0x6C
-        path = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        path += ::renddx9abi::toVc71String(colormapBase);
-        path += pathSuffix;
+        std::string pathSuffix;
+        pathSuffix = formatString("_s%i", slot);                               // formatted again
+        TerrainEditableNameResult colormapBase = editableTerrain->getColormapBaseName(); // E+0x6C
+        path = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) +
+            ::renddx9abi::fromHostString(colormapBase) + pathSuffix; // E+0x90
     }
     dx9rend::EngineTexture* const big = engineTexture(dx9rend::textureManagerCreateEmpty(
         static_cast<unsigned int>(size), static_cast<unsigned int>(size), 21, 0, 0, 0));   // levels 0: the full chain
@@ -1446,43 +1814,42 @@ void SurroundingPatchEditable::burnColormap(const vc71::string& base)
     bigSurface->UnlockRect();
     rotateTexture(&flipped, true);
     {
-        vc71::string name(path);
+        std::string name(path);
         name += "_u8888";
         dx9rend::textureManagerSaveTexture(flipped, name);
     }
     {
         // The argument blocks are built right to left: the options, the directory, the file.
-        const TerrainEditableString options(te->m_surroundingColormapSettings);   // +0x81C
-        vc71::string outputDirectory;
+        const TerrainEditableString options(editableTerrain->m_surroundingColormapSettings); // +0x81C
+        std::string outputDirectory;
         {
-            const vc71::string directory = te->getColormapDirectory();         // P+0xEC
-            outputDirectory = ::renddx9abi::toVc71String(te->getLevelSavePath());
-            outputDirectory += directory;
+            const std::string directory = editableTerrain->getColormapDirectory(); // P+0xEC
+            outputDirectory = ::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()) + directory;
         }
-        vc71::string file(path);
+        std::string file(path);
         file += "_u8888.dds";
-        te->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options);   // E+0xF4
+        editableTerrain->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options); // E+0xF4
     }
     {
-        vc71::string target(path);
+        std::string target(path);
         target += ".dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(target));
     }
     {
-        vc71::string target(path);
+        std::string target(path);
         target += ".dds";
-        vc71::string source(path);
+        std::string source(path);
         source += "_u8888_.dds";
         ::dice::hfe::fileManager->moveFile(::renddx9abi::makeHostString(source),
                                            ::renddx9abi::makeHostString(target));   // +0x24
     }
     {
-        vc71::string input(path);
+        std::string input(path);
         input += "_u8888.dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(input));
     }
     {
-        vc71::string leftover(path);
+        std::string leftover(path);
         leftover += "_u8888_.dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(leftover));
     }

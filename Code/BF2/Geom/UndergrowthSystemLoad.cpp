@@ -6,10 +6,15 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "UndergrowthSystem.h"
+#include "../Core/StringUtil.h"              // equalsIgnoreCase (sub_10075080)
 
 #include "MeshTemplate.h"                 // MeshBounds, meshBoundsExpand / meshBoundsFinalize
 #include "Terrain.h"                      // geom::Terrain - the "Terrain" singleton (ITerrain 820004)
+#include "LcgRandom.h"                    // lcgrandStep - sub_1009EF30
 #include "../IO/Tokenizer.h"
 #include "../Physics/Heightmap.h"
 #include "../Physics/HeightmapCluster.h"
@@ -22,11 +27,8 @@
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"
-#include "../../RendDX9Abi/Vc71Map.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#if BF2_PLUGIN_ABI_NATIVE
+#include <string>
 #include "../Core/SettingsRepostitory.h"  // settings->stringGet, typed (the XpLightManager precedent)
-#endif
 
 #include <cfloat>
 #include <cmath>
@@ -48,7 +50,7 @@ namespace dx9rend {
 extern void* g_shaderManager;                                              // dword_1023B97C
 extern void* g_bufferManager;                                              // dword_1023B978
 void* createVertexBuffer(void* bufferManager, unsigned int count, unsigned int stride,
-                         const vc71::string& name, unsigned int usage);
+                         const std::string& name, unsigned int usage);
 void* bufferManagerCreateIndexBuffer(unsigned int count, unsigned int usage,
                                      unsigned int format);
 
@@ -62,13 +64,14 @@ namespace geom {
 namespace {
 
 
-// Case-sensitive token comparison; keyword matching uses a separate rule.
+// PE 0x100763F0 (listing read: NUL-terminated unsigned-byte compare of the token text with the C string,
+// equality only). Case-sensitive token comparison; keyword matching uses a separate rule.
 bool tokenEquals(const Token& token, const char* text)
 {
     return std::strcmp(token.text.c_str(), text) == 0;
 }
 
-// (287 B) / ELF 0x84395F0: the number starting at `token`, consuming its tokens. A sign
+// PE 0x10076600 (listing read; callers: 22 sites in the undergrowth loader 0x1014B8F0) / ELF 0x84395F0: the number starting at `token`, consuming its tokens. A sign
 // token is glued to the next token; a following "." token glues "." and the token after it (the
 // scanner splits "1.5" into "1", ".", "5"). atof of the text, narrowed to float (`fstp dword` then
 // `fld dword`, both images).
@@ -90,7 +93,7 @@ float tokenizerGetNumber(Token& token)
     return static_cast<float>(std::atof(number.c_str()));
 }
 
-// (155 B) / ELF 0x84397E0: the sign rule of getNumber, no fraction, atoi.
+// PE 0x10076720 (listing read; 4 callers in 0x1014B8F0) / ELF 0x84397E0: the sign rule of getNumber, no fraction, atoi.
 int tokenizerGetIntNumber(Token& token)
 {
     std::string number(token.text.c_str());
@@ -103,17 +106,11 @@ int tokenizerGetIntNumber(Token& token)
     return std::atoi(number.c_str());
 }
 
-// sub_10075080 (63 B, fastcall ecx/edx): two std::strings equal under _stricmp (MSVCR71 `stricmp`).
-// Every keyword test builds std::string(keyword) and std::string(token.text.c_str()) and hands both
-// over; the tree's NametagManagerConsole.cpp carries the same body under the same name.
-bool equalsNoCase(const char* a, const char* b)
-{
-    return ::_stricmp(a, b) == 0;
-}
-
+// Every keyword test builds std::string(keyword) and std::string(token.text.c_str()) and compares
+// them case-insensitively (Core's equalsIgnoreCase, the image's shared helper).
 bool isKeyword(const Token& token, const char* keyword)
 {
-    return equalsNoCase(token.text.c_str(), keyword);
+    return equalsIgnoreCase(std::string(keyword), std::string(token.text.c_str()));   // sub_10075080
 }
 
 // sub_1000ED40 (34 B, __stdcall, `retn 0Ch`): fld low; fld high; fld value; fcomi st,st1;
@@ -129,39 +126,19 @@ float clampRange(float value, float low, float high)
     return value;
 }
 
-// lcgrand_step (0x1009EF30) - RendDX9's copy of dice::hfe::Random::getRaw (ELF 0x8166CE0): two
-// Schrage steps, 24112 (0x5E30) then 26143 (0x661F), the state written back. Core/Random.cpp is not
-// in the RendDX9 manifest, so the arithmetic is reproduced (NametagManager.cpp does the same).
-unsigned int lehmerStep(unsigned int value, unsigned int multiplier)
-{
-    const unsigned int low = (value & 0xFFFFu) * multiplier;
-    const unsigned int high = static_cast<unsigned int>(static_cast<int>(value) >> 16) * multiplier;
-    const int middle = static_cast<int>((low >> 16) + high);
-    const unsigned int next = (low & 0xFFFFu) + ((static_cast<unsigned int>(middle) & 0x7FFFu) << 16)
-        + static_cast<unsigned int>(middle >> 15);
-    const int reduced = static_cast<int>(next - 0x7FFFFFFFu);
-    return reduced < 0 ? next : static_cast<unsigned int>(reduced);
-}
-
-unsigned int randomGetRaw(Random& random)
-{
-    random.m_seed = lehmerStep(lehmerStep(random.m_seed, 24112u), 26143u);
-    return random.m_seed;
-}
-
 // std::string operator+(const string&, const char*) / (const string&, const string&) - the shipped
-// code inlines MSVCP71's: copy-construct, operator+=, copy the result out. vc71::string publishes no
+// code inlines MSVCP71's: copy-construct, operator+=, copy the result out. std::string publishes no
 // operator+, so these carry the same three steps. [CHOSEN, not recovered] helpers.
-vc71::string concat(const vc71::string& left, const char* right)
+std::string concat(const std::string& left, const char* right)
 {
-    vc71::string result(left);
+    std::string result(left);
     result += right;
     return result;
 }
 
-vc71::string concat(const vc71::string& left, const vc71::string& right)
+std::string concat(const std::string& left, const std::string& right)
 {
-    vc71::string result(left);
+    std::string result(left);
     result += right;
     return result;
 }
@@ -183,7 +160,7 @@ void assignEffect(dx9rend::Effect*& slot, dx9rend::Effect* value)
 void bindParameter(dx9rend::ShaderParameter*& slot, dx9rend::Effect* effect, const char* name)
 {
     dx9rend::ShaderParameter* const parameter =
-        dx9rend::effectGetShaderParameterBorrowedTyped(effect, vc71::string(name));
+        dx9rend::effectGetShaderParameterBorrowedTyped(effect, std::string(name));
     if (slot)
     {
         slot->release();                                                     // vtable +0x08
@@ -247,10 +224,14 @@ world::IHeightmapCluster* heightmapCluster()
 // in HfeAbi.h: `virtual void* getSingletonAs(const renddx9abi::HostString&, unsigned int) = 0;`.
 void* classManagerGetSingletonAs(const renddx9abi::HostString& name, unsigned int iid)
 {
+#if defined(_MSC_VER)
     typedef void* (__thiscall* GetSingletonAsFn)(void*, const renddx9abi::HostString&, unsigned int);
     void* const manager = ::dice::hfe::classManager;
     return reinterpret_cast<GetSingletonAsFn>((*reinterpret_cast<void***>(manager))[0x4C / 4])(
         manager, name, iid);
+#else
+    return ::dice::hfe::classManager->getSingletonAs(name, iid);                 // typed (HfeAbi.h)
+#endif
 }
 
 // SettingsRepostitory +0x40, stringGet(const std::string& key, const std::string& fallback) ->
@@ -259,20 +240,13 @@ void* classManagerGetSingletonAs(const renddx9abi::HostString& name, unsigned in
 const renddx9abi::HostString& settingsStringGet(const renddx9abi::HostString& key,
                                                 const renddx9abi::HostString& fallback)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return ::dice::hfe::settings->stringGet(key, fallback);
-#else
-    typedef const renddx9abi::HostString& (__thiscall* GetStringFn)(
-        void*, const renddx9abi::HostString&, const renddx9abi::HostString&);
-    return reinterpret_cast<GetStringFn>((*reinterpret_cast<void***>(::dice::hfe::settings))[0x40 / 4])(
-        ::dice::hfe::settings, key, fallback);
-#endif
 }
 
 // FileManager +0x18 open(const std::string&, FileMode, FileAccess, unsigned int) - typed in both
 // flavours (HostFileAbi.h; EngineFile.cpp is the precedent). The load path uses (2, 0) to read and
 // (0, 2) to write.
-renddx9abi::HostStream* openFile(const vc71::string& name, int mode, int access)
+renddx9abi::HostStream* openFile(const std::string& name, int mode, int access)
 {
     return ::dice::hfe::fileManager->open(renddx9abi::makeHostString(name),
                                           static_cast<renddx9abi::HostFileMode>(mode),
@@ -284,7 +258,7 @@ renddx9abi::HostStream* openFile(const vc71::string& name, int mode, int access)
 // (0x1014F500 is vector<char>::resize). A length <= 0 empties the string and succeeds; a short read
 // empties it and fails. `erase(0, npos)` and `assign(p, n)` are the shipped calls. The callers ignore
 // the answer. [INFERRED] name.
-bool readString(renddx9abi::HostStream* stream, vc71::string& text)
+bool readString(renddx9abi::HostStream* stream, std::string& text)
 {
     int length = 0;
     stream->read(&length, 4);                                                // stream +0x10
@@ -300,7 +274,7 @@ bool readString(renddx9abi::HostStream* stream, vc71::string& text)
         text = "";                                                           // erase(0, npos)
         return false;
     }
-    text = vc71::string(&buffer[0], static_cast<unsigned int>(length));      // assign(p, n)
+    text = std::string(&buffer[0], static_cast<unsigned int>(length));      // assign(p, n)
     return true;
 }
 
@@ -316,6 +290,7 @@ const char* const kRawDataDirectory = "../RawData/Undergrowth/";
 // allocator words are not written). Callers: the cfg reader's "Type" arm 0x1014BC76 and loadDat's
 // resize temporary 0x1014B6F4.
 
+// PE 0x10148070
 UndergrowthType::UndergrowthType()
     : density(0.01f)
     , variation(0.2f)
@@ -335,15 +310,27 @@ UndergrowthType::UndergrowthType()
 // Generates sixteen sway speed, amplitude, and phase entries from the object's RNG.
 // Runs before configuration parsing, so new Sway settings affect the next load.
 
+// PE 0x10145E40
 void UndergrowthSystem::initSwayTables()
 {
     for (int i = 0; i < 16; ++i)
     {
-        int r = (static_cast<int>(randomGetRaw(m_random) | 0x80u) >> 7) + 1;
+        int r = (static_cast<int>(lcgrandStep(&m_random.m_seed) | 0x80u) >> 7) + 1;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] FILD products stay wide until the table-entry stores.
+        m_windSpeed[i] = bf2x87::store(bf2x87::Real(r) * m_swaySpeedDiff
+            * 5.96046448e-08f + m_swaySpeed);
+#else
         m_windSpeed[i] = static_cast<float>(r) * m_swaySpeedDiff * 5.96046448e-08f + m_swaySpeed;
-        r = (static_cast<int>(randomGetRaw(m_random) | 0x80u) >> 7) + 1;
+#endif
+        r = (static_cast<int>(lcgrandStep(&m_random.m_seed) | 0x80u) >> 7) + 1;
+#if defined(__APPLE__)
+        m_windAmplitude[i] = bf2x87::store(bf2x87::Real(r) * m_swayScaleDiff
+            * 5.96046448e-08f + m_swayScale);
+#else
         m_windAmplitude[i] = static_cast<float>(r) * m_swayScaleDiff * 5.96046448e-08f + m_swayScale;
-        r = (static_cast<int>(randomGetRaw(m_random) | 0x80u) >> 7) + 1;
+#endif
+        r = (static_cast<int>(lcgrandStep(&m_random.m_seed) | 0x80u) >> 7) + 1;
         m_windPhase[i] = static_cast<float>(r) * 3.74507039e-07f;
     }
 }
@@ -353,9 +340,10 @@ void UndergrowthSystem::initSwayTables()
 // Copies the input before clearing old state and marks loaded only after buffers exist.
 // A failed configuration read leaves the system unloaded.
 
-void UndergrowthSystem::load(const vc71::string& levelPathArgument)
+// PE 0x1014B8F0
+void UndergrowthSystem::load(const std::string& levelPathArgument)
 {
-    vc71::string levelPath(levelPathArgument);
+    std::string levelPath(levelPathArgument);
     bool rebuild = false;                                                    // [ebp+arg_0+3]
 
     if (m_loadStarted)
@@ -386,7 +374,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
         return;
 
     // Undergrowth.cfg
-    // One keyword per step, tested in this order (each through equalsNoCase except "}", which is
+    // One keyword per step, tested in this order (each through isKeyword except "}", which is
     // the case-sensitive token compare). The current material and type are plain pointers into the
     // vectors: neither is null-tested by the arms that use them (a "Type" before any "Material", or
     // a "Mesh" outside a Type, faults in retail - preserved), and a "Material" does NOT reset the
@@ -404,7 +392,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
                 // "Material <name> <id> {": the name, a fresh record pushed and taken from the back,
                 // the id read (it consumes its token), then the "{" stepped over.
                 ++token;
-                const vc71::string name(token.text.c_str());
+                const std::string name(token.text.c_str());
                 ++token;
                 m_materials.push_back(UndergrowthMaterial());
                 material = &m_materials.back();
@@ -416,7 +404,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
             {
                 // "Type <name> {".
                 ++token;
-                const vc71::string name(token.text.c_str());
+                const std::string name(token.text.c_str());
                 ++token;
                 ++token;
                 material->types.push_back(UndergrowthType());
@@ -580,7 +568,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
     {
         // The rebuild branch: the editor, or a level with no Undergrowth.dat. Its output directory is
         // the editor's save path - " ERROR " in a game, where nobody sets that key.
-        const vc71::string savePath(renddx9abi::toVc71String(settingsStringGet(
+        const std::string savePath(renddx9abi::fromHostString(settingsStringGet(
             renddx9abi::HostString("Editor_LevelSavePath"), renddx9abi::HostString(" ERROR "))));
 
         if (!dx9rend::textureAtlasLoadTAI(m_atlas, concat(levelPath, "UndergrowthAtlas.tai")))
@@ -705,7 +693,11 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
     const int patchSize = terrain->getPatchSize();                           // Terrain +0x34
     m_cellSize = static_cast<float>(patchSize) * worldScale->x / subdivideF; // +0xE8
     // `fdivr [esi+30h]`, ceil (the double CRT one), then fistp under a truncating control word.
+#if defined(__APPLE__)
+    const int radius = bf2x87::toIntTruncate(std::ceil(static_cast<double>(m_viewDistance / m_cellSize)));
+#else
     const int radius = static_cast<int>(std::ceil(static_cast<double>(m_viewDistance / m_cellSize)));
+#endif
     m_patchCount = static_cast<unsigned int>((2 * radius + 1) * (2 * radius + 1) + 4);   // +0xF0
     m_patches = new UndergrowthPatch[m_patchCount];                          // 0x30 * n + 4 (cookie)
 
@@ -728,10 +720,20 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
             const UndergrowthType& each = current.types[t];
             // density * cellSize * cellSize, truncated (fistp under the truncating control word),
             // computed twice as shipped.
+#if defined(__APPLE__)
+            vertices += each.vertices.size() *
+                        static_cast<unsigned int>(bf2x87::toIntTruncate(each.density * m_cellSize * m_cellSize));
+#else
             vertices += each.vertices.size() *
                         static_cast<unsigned int>(static_cast<int>(each.density * m_cellSize * m_cellSize));
+#endif
+#if defined(__APPLE__)
+            indices += each.indices.size() *
+                       static_cast<unsigned int>(bf2x87::toIntTruncate(each.density * m_cellSize * m_cellSize));
+#else
             indices += each.indices.size() *
                        static_cast<unsigned int>(static_cast<int>(each.density * m_cellSize * m_cellSize));
+#endif
         }
         if (vertices > m_patchVertexCount)                                   // unsigned (jbe)
             m_patchVertexCount = vertices;
@@ -795,7 +797,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
         UndergrowthPatch& patch = m_patches[p];
         patch.vertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager, m_patchVertexCount,
                                                          vertexStride,
-                                                         vc71::string("UndergrowthSystem"),
+                                                         std::string("UndergrowthSystem"),
                                                          8u);                // D3DUSAGE_WRITEONLY
         patch.indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(m_patchIndexCount, 8u,
                                                                     101u);   // D3DFMT_INDEX16
@@ -810,7 +812,7 @@ void UndergrowthSystem::load(const vc71::string& levelPathArgument)
 // Loads baked material/type records and geometry from Undergrowth.dat.
 // Requires a complete valid file; individual read results and counts are unchecked.
 
-bool UndergrowthSystem::loadDat(const vc71::string& levelPath)
+bool UndergrowthSystem::loadDat(const std::string& levelPath)
 {
     renddx9abi::HostStream* const file = openFile(concat(levelPath, "Undergrowth.dat"), 2, 0);
     if (!file)
@@ -876,21 +878,21 @@ bool UndergrowthSystem::loadDat(const vc71::string& levelPath)
 // in '\\' or '/' (`at(size() - 1)`, whose range check cannot fire under the size test). A failed open
 // writes nothing. In a game the save path is " ERROR " (see load()).
 
-void UndergrowthSystem::saveDat(const vc71::string& savePath, const vc71::string& levelPath)
+void UndergrowthSystem::saveDat(const std::string& savePath, const std::string& levelPath)
 {
-    vc71::string directory(savePath);
+    std::string directory(savePath);
     if (directory.size() > 0)
     {
         const char last = directory.c_str()[directory.size() - 1];
         if (last != '\\' && last != '/')
-            directory += vc71::string("/");                                  // += (const string&)
+            directory += std::string("/");                                  // += (const string&)
     }
-    vc71::string level(levelPath);
+    std::string level(levelPath);
     if (level.size() > 0)
     {
         const char last = level.c_str()[level.size() - 1];
         if (last != '\\' && last != '/')
-            level += vc71::string("/");
+            level += std::string("/");
     }
 
     renddx9abi::HostStream* const file =
@@ -961,17 +963,17 @@ void UndergrowthSystem::saveDat(const vc71::string& savePath, const vc71::string
 // each type's mesh and then default.dds. Sources are disk paths relative to the working
 // directory under ../RawData/Undergrowth. Writes a DXT5 atlas and .tai file under savePath.
 
-void UndergrowthSystem::buildAtlas(const vc71::string& savePath, const vc71::string& levelPath)
+void UndergrowthSystem::buildAtlas(const std::string& savePath, const std::string& levelPath)
 {
-    const vc71::string rawDirectory(kRawDataDirectory);
-    std::list<vc71::string> textures;
+    const std::string rawDirectory(kRawDataDirectory);
+    std::list<std::string> textures;
     for (unsigned int m = 0; m < m_materials.size(); ++m)
     {
         const UndergrowthMaterial& material = m_materials[m];
         for (unsigned int t = 0; t < material.types.size(); ++t)
         {
             const UndergrowthType& type = material.types[t];
-            vc71::string name;
+            std::string name;
             if (type.texture.size() > 0)                                     // +0x4C, unsigned
                 name = concat(concat(rawDirectory, type.texture), ".dds");
             else if (type.mesh.size() > 0)                                   // +0x30
@@ -979,10 +981,10 @@ void UndergrowthSystem::buildAtlas(const vc71::string& savePath, const vc71::str
             else
                 name = concat(rawDirectory, "default.dds");
 
-            std::list<vc71::string>::iterator it = textures.begin();
+            std::list<std::string>::iterator it = textures.begin();
             for (; it != textures.end(); ++it)
             {
-                if (equalsNoCase(it->c_str(), name.c_str()))
+                if (equalsIgnoreCase(*it, name))
                     break;
             }
             if (it == textures.end())
@@ -997,7 +999,7 @@ void UndergrowthSystem::buildAtlas(const vc71::string& savePath, const vc71::str
     // Reached only by the rebuild branch (the editor, or a level without Undergrowth.dat); the stock
     // levels ship their .dat and .tai.
     dx9rend::textureAtlasGenerate(m_atlas, savePath, concat(levelPath, "UndergrowthAtlas"),
-                                  vc71::string(""), textures, true);
+                                  std::string(""), textures, true);
 }
 
 
@@ -1013,8 +1015,8 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
         for (unsigned int t = 0; t < material.types.size(); ++t)
         {
             UndergrowthType& type = material.types[t];
-            const vc71::string rawDirectory(kRawDataDirectory);
-            vc71::string textureName;
+            const std::string rawDirectory(kRawDataDirectory);
+            std::string textureName;
             if (type.texture.size() > 0)
                 textureName = concat(concat(rawDirectory, type.texture), ".dds");
             else if (type.mesh.size() > 0)
@@ -1035,7 +1037,7 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
                 rect.height = entry->height;
                 rect.uOffset = entry->uOffset;
                 rect.vOffset = entry->vOffset;
-                vc71::string stripped;
+                std::string stripped;
                 dx9rend::pathStripExtension(stripped, textureName);
                 usedTextures.insert(std::string(stripped.c_str()));
             }
@@ -1064,12 +1066,30 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
                 quad[7].position.x = 0.0f;      quad[7].position.y = height; quad[7].position.z = halfWidth;
 
                 // uv in 1/32767 atlas units (flt_10219558), each through __ftol2 and its low word.
+#if defined(__APPLE__)
+                const short u0 = static_cast<short>(bf2x87::toIntTruncate(rect.uOffset * 32767.0f));
+#else
                 const short u0 = static_cast<short>(static_cast<int>(rect.uOffset * 32767.0f));
+#endif
+#if defined(__APPLE__)
+                const short v0 = static_cast<short>(bf2x87::toIntTruncate(rect.vOffset * 32767.0f));
+#else
                 const short v0 = static_cast<short>(static_cast<int>(rect.vOffset * 32767.0f));
+#endif
+#if defined(__APPLE__)
+                const short u1 = static_cast<short>(
+                    bf2x87::toIntTruncate((rect.uOffset + rect.width) * 32767.0f));
+#else
                 const short u1 = static_cast<short>(
                     static_cast<int>((rect.uOffset + rect.width) * 32767.0f));
+#endif
+#if defined(__APPLE__)
+                const short v1 = static_cast<short>(
+                    bf2x87::toIntTruncate((rect.vOffset + rect.height) * 32767.0f));
+#else
                 const short v1 = static_cast<short>(
                     static_cast<int>((rect.vOffset + rect.height) * 32767.0f));
+#endif
                 const float sway = type.typeSwayScale;
                 for (int half = 0; half < 2; ++half)                         // the two quads
                 {
@@ -1092,13 +1112,18 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
 
             for (unsigned int v = 0; v < type.vertices.size(); ++v)
             {
+#if defined(__APPLE__)
+                type.vertices[v].colorScale = static_cast<unsigned char>(
+                    bf2x87::toIntTruncate((1.0f - type.terrainColorScale) * 255.0f));   // flt_101E14C0
+#else
                 type.vertices[v].colorScale = static_cast<unsigned char>(
                     static_cast<int>((1.0f - type.terrainColorScale) * 255.0f));   // flt_101E14C0
+#endif
             }
         }
     }
 
-    std::vector<vc71::string> atlasNames;
+    std::vector<std::string> atlasNames;
     dx9rend::textureAtlasCollectNames(m_atlas, atlasNames);
 
     // Every used texture must be in the atlas ...
@@ -1107,7 +1132,7 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
         unsigned int i = 0;
         for (; i < atlasNames.size(); ++i)
         {
-            if (equalsNoCase(atlasNames[i].c_str(), it->c_str()))
+            if (equalsIgnoreCase(atlasNames[i], *it))
                 break;
         }
         if (i == atlasNames.size())
@@ -1119,7 +1144,7 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
         std::set<std::string>::const_iterator it = usedTextures.begin();
         for (; it != usedTextures.end(); ++it)
         {
-            if (equalsNoCase(atlasNames[i].c_str(), it->c_str()))
+            if (equalsIgnoreCase(atlasNames[i], *it))
                 break;
         }
         if (it == usedTextures.end())
@@ -1135,8 +1160,8 @@ bool UndergrowthSystem::buildMeshes(bool /*secondPass - never read*/)
 
 void UndergrowthSystem::loadMesh(UndergrowthType& type, const UndergrowthAtlasRect& rect)
 {
-    const vc71::string fileName =
-        concat(concat(vc71::string(kRawDataDirectory), type.mesh), ".obj");
+    const std::string fileName =
+        concat(concat(std::string(kRawDataDirectory), type.mesh), ".obj");
     renddx9abi::HostStream* const file = openFile(fileName, 2, 0);
     if (!file)
     {
@@ -1198,10 +1223,20 @@ void UndergrowthSystem::loadMesh(UndergrowthType& type, const UndergrowthAtlasRe
                     UndergrowthVertex vertex;
                     vertex.position = positions[face[0] - 1];
                     const Vec2& uv = texCoords[face[1] - 1];
+#if defined(__APPLE__)
+                    vertex.texCoord[0] = static_cast<short>(
+                        bf2x87::toIntTruncate((uv.x * rect.width + rect.uOffset) * 32767.0f));
+#else
                     vertex.texCoord[0] = static_cast<short>(
                         static_cast<int>((uv.x * rect.width + rect.uOffset) * 32767.0f));
+#endif
+#if defined(__APPLE__)
+                    vertex.texCoord[1] = static_cast<short>(
+                        bf2x87::toIntTruncate((uv.y * rect.height + rect.vOffset) * 32767.0f));
+#else
                     vertex.texCoord[1] = static_cast<short>(
                         static_cast<int>((uv.y * rect.height + rect.vOffset) * 32767.0f));
+#endif
 
                     unsigned int found = type.vertices.size();
                     for (unsigned int i = 0; i < type.vertices.size(); ++i)
@@ -1275,6 +1310,14 @@ void UndergrowthSystem::computeCellTypeFractions(UndergrowthCell* cell)
     const unsigned int texels = static_cast<unsigned int>((z1 - z0 + 1) * (x1 - x0 + 1));
     for (int i = 0; i < 16; ++i)
         cell->typeFractions[i] = static_cast<float>(histogram[i]) / static_cast<float>(texels);
+}
+
+// PE 0x10146B20: runs computeCellTypeFractions over every cell, index 0 .. m_cellCount - 1 (the count
+// is re-read each iteration). [INFERRED] name. Unreachable in 1.50: no code or data references.
+void UndergrowthSystem::computeAllCellTypeFractions()
+{
+    for (unsigned int c = 0; c < m_cellCount; ++c)
+        computeCellTypeFractions(&m_cells[c]);
 }
 
 } // namespace geom

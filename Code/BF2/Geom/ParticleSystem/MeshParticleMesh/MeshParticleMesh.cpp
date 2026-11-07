@@ -2,7 +2,13 @@
 // Shared age/alpha and transform arrays provide per-instance data to the renderer.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Typed native geometry table adapters.
+#include "../../../../RendDX9Abi/NativeVtable.h"
+#include "../../IScaleable.h"
+#endif
 
+#include "../../../../RendDX9Abi/ThunkAbi.h"
 #include "MeshParticleMesh.h"
 #include "MeshParticleMeshTemplate.h"
 #include "../../BundledMeshStateManager.h"
@@ -12,8 +18,7 @@
 #include "../../../../RendDX9Abi/HfeAbi.h"
 #include "../../../../RendDX9Abi/BfMemory.h"
 #include "../../../../RendDX9Abi/Frontier.h"       // logf
-#include "../../../../RendDX9Abi/Vc71Vector.h"
-#include "../../../../RendDX9Abi/Vc71Map.h"
+#include "../ParticleRendererCallbacks.h"              // particleRendererList, the mesh renderer
 
 #include <new>
 #include <cstring>
@@ -71,22 +76,26 @@ MeshBounds s_emptyBounds =
     { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }
 };
 
-// The shared helper both the constructor and refreshSelection inline (0x101B02A3.. / 0x101B0070).
+// A bundled state's first texture (state +0x28 -> [0]), unguarded.
+template<class T>
+void* bundledStateFirstTexture(const std::vector<T>& textures)
+{
+    return textures.data()[0];
+}
+
+// The shared helper both the constructor and refreshSelection inline.
 // NO guards: an unloaded template's null tree faults here in retail too; the geom-count test is
 // `sar 4` then an unsigned `jb 2`.
 void selectFromTemplate(MeshParticleMesh* self)
 {
     MeshParticleMeshTemplate* const t = self->m_template;
-    if (t->m_geoms.first
-        && static_cast<unsigned int>(static_cast<int>(t->m_geoms.last - t->m_geoms.first) >> 4) >= 2u)
+    if (static_cast<unsigned int>(t->m_geoms.size()) >= 2u)
         self->m_geomIndex = 1;
 
     const int geom = self->m_geomIndex;
     const int lod  = self->m_lodIndex;
-    self->m_lodRecord = reinterpret_cast<MeshParticleMeshLod*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_geoms.first)[geom].first) + lod;
-    self->m_lodMaterials = reinterpret_cast<vc71::vector_layout*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_materials.first)[geom].first) + lod;
+    self->m_lodRecord    = t->m_geoms.data()[geom].data() + lod;
+    self->m_lodMaterials = t->m_materials.data()[geom].data() + lod;
 }
 
 } // anonymous namespace
@@ -117,7 +126,8 @@ MeshParticleMesh::MeshParticleMesh(MeshParticleMeshTemplate* objectTemplate)
     m_alternateView = 0;                                   // +0x7D
     m_template      = objectTemplate;                      // +0x84
 
-    m_partTransforms = static_cast<const Mat4**>(::renddx9abi::engineAlloc(0x68));
+    // 26 part-transform pointers (retail 0x68 bytes).
+    m_partTransforms = static_cast<const Mat4**>(::renddx9abi::engineAlloc(0x68u / 4u * kPsmPointerSize));
     for (unsigned int offset = 0; offset < 0x68u; offset += 4)
         m_partTransforms[offset / 4] = &s_partIdentity[0];
 
@@ -129,6 +139,7 @@ MeshParticleMesh::MeshParticleMesh(MeshParticleMeshTemplate* objectTemplate)
 // Unregisters the instance if its template is still alive.
 // Instances created from an already-loaded template may not be in the live set.
 
+// PE 0x101B0310
 MeshParticleMesh::~MeshParticleMesh()
 {
     m_vptr          = g_meshParticleMeshVtable;            // not observable; kept for the reader
@@ -136,7 +147,7 @@ MeshParticleMesh::~MeshParticleMesh()
     if (m_partTransforms)
         ::renddx9abi::engineFree(m_partTransforms);
     if (m_template)
-        vc71::setEraseValue(m_template->m_instances, this);   // sub_10129110(&this)
+        m_template->m_instances.erase(this);                // sub_10129110(&this)
     // off_1020A660 is restored and m_name destroyed by the base - not observable.
 }
 
@@ -185,13 +196,14 @@ int MeshParticleMesh::release()
     const int remaining = --m_refCount;
     if (!remaining)
     {
-        typedef void* (__fastcall* DestroyFn)(void*, void*, unsigned int);
-        reinterpret_cast<DestroyFn>(m_vptr[0x34 / sizeof(void*)])(this, 0, 1u);   // [eax+34h] (1)
+        typedef void* (__thiscall* DestroyFn)(void*, unsigned int);
+        reinterpret_cast<DestroyFn>(m_vptr[0x34 / 4])(this, 1u);   // [eax+34h] (1)
     }
     return remaining;
 }
 
 // four ids, compared in this order. The IScaleable arm keeps MSVC's `this` null test.
+// PE 0x101B03A0
 void* MeshParticleMesh::queryInterface(unsigned int iid)
 {
     if (iid == 1u                                          // dword_102088DC, IBase
@@ -199,10 +211,11 @@ void* MeshParticleMesh::queryInterface(unsigned int iid)
         || iid == 0xADCBF4FCu)                             // dword_1021AE64, IID_IRenderable
         return this;
     if (iid == 0xEBC881FAu && this)                        // dword_1021AE68, IID_IScaleable
-        return reinterpret_cast<unsigned char*>(this) + 0x30;
+        return &m_scaleableVptr;                           // the IScaleable subobject (+0x30)
     return 0;
 }
 
+// PE 0x101B0490
 void  MeshParticleMesh::setFov(float value) { m_fov = value; }            // +0x10
 float MeshParticleMesh::getFov() const      { return m_fov; }             // +0x14
 
@@ -214,18 +227,17 @@ void MeshParticleMesh::queueDraw(void*, void*, int)
 {
     if (!m_template->m_loaded)                             // [eax+4Ch]
         return;
-    if (!reinterpret_cast<const unsigned char*>(dx9rend::g_Renderer)[0x69F])   // particles switch
+    if (!dx9rend::rendererRenderSwitch(0x69F))                             // particles switch
         return;
     meshParticlesRendererQueueMesh(
-        reinterpret_cast<unsigned char*>(g_ParticleSystemManager) + 0x5F30, this);
+        particleSystemManagerMeshParticlesRenderer(g_ParticleSystemManager), this);
 }
 
 // sub_101B04C0 - `add ecx, 1D80h`, then the fast push when size < capacity, else _Insert_n
-// (sub_100D7560, engine heap via sub_1005F320). vectorRef reproduces both arms and the VC7.1
-// growth; its operator new is the same engine heap in this image (BfMemory.h).
+// (sub_100D7560, engine heap via sub_1005F320): std::vector::push_back.
 void meshParticlesRendererQueueMesh(unsigned char* renderer, MeshParticleMesh* mesh)
 {
-    vc71::vectorRef<MeshParticleMesh*>(renderer + 0x1D80).push_back(mesh);
+    meshParticlesRendererMeshes(renderer).push_back(mesh);
 }
 
 // +0x2C, 0x101AFD00 - `mov eax,[ecx+44h]; mov eax,[eax+40h]`. No lod guard.
@@ -277,19 +289,18 @@ void MeshParticleMesh::setPartTransformation(const Mat4* value, int part)
 // +0x50, through THE table: `call [eax+4Ch]` with (value, 0).
 void MeshParticleMesh::setGeometryTransformation(const Mat4* value)
 {
-    typedef void (__fastcall* SetPartFn)(void*, void*, const Mat4*, int);
-    reinterpret_cast<SetPartFn>(m_vptr[0x4C / sizeof(void*)])(this, 0, value, 0);
+    typedef void (__thiscall* SetPartFn)(void*, const Mat4*, int);
+    reinterpret_cast<SetPartFn>(m_vptr[0x4C / 4])(this, value, 0);
 }
 
 // Selects geom and the current LOD without checking their range or loaded state.
+// PE 0x101B00D0
 void MeshParticleMesh::setGeomIndex(int geom)
 {
     m_geomIndex = geom;
     MeshParticleMeshTemplate* const t = m_template;
-    m_lodRecord = reinterpret_cast<MeshParticleMeshLod*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_geoms.first)[geom].first) + m_lodIndex;
-    m_lodMaterials = reinterpret_cast<vc71::vector_layout*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_materials.first)[geom].first) + m_lodIndex;
+    m_lodRecord    = t->m_geoms.data()[geom].data() + m_lodIndex;
+    m_lodMaterials = t->m_materials.data()[geom].data() + m_lodIndex;
 }
 
 int MeshParticleMesh::getGeomIndex() const { return m_geomIndex; }        // +0x70
@@ -298,9 +309,7 @@ int MeshParticleMesh::getGeomIndex() const { return m_geomIndex; }        // +0x
 int MeshParticleMesh::getGeomCount() const
 {
     const MeshParticleMeshTemplate* const t = m_template;
-    if (!t->m_geoms.first)
-        return 0;
-    return static_cast<int>(t->m_geoms.last - t->m_geoms.first) >> 4;
+    return static_cast<int>(t->m_geoms.size());
 }
 
 // +0x78, 0x101B0120. -1 = back to lod 0 and clear the explicit byte; otherwise store and raise it.
@@ -312,31 +321,24 @@ void MeshParticleMesh::setLodIndex(int lod)
     {
         m_lodIndex    = 0;
         m_lodExplicit = 0;
-        m_lodRecord = reinterpret_cast<MeshParticleMeshLod*>(
-            reinterpret_cast<vc71::vector_layout*>(t->m_geoms.first)[m_geomIndex].first);
-        m_lodMaterials = reinterpret_cast<vc71::vector_layout*>(
-            reinterpret_cast<vc71::vector_layout*>(t->m_materials.first)[m_geomIndex].first);
+        m_lodRecord    = t->m_geoms.data()[m_geomIndex].data();
+        m_lodMaterials = t->m_materials.data()[m_geomIndex].data();
         return;
     }
     m_lodIndex    = lod;
     m_lodExplicit = 1;
-    m_lodRecord = reinterpret_cast<MeshParticleMeshLod*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_geoms.first)[m_geomIndex].first) + lod;
-    m_lodMaterials = reinterpret_cast<vc71::vector_layout*>(
-        reinterpret_cast<vc71::vector_layout*>(t->m_materials.first)[m_geomIndex].first) + lod;
+    m_lodRecord    = t->m_geoms.data()[m_geomIndex].data() + lod;
+    m_lodMaterials = t->m_materials.data()[m_geomIndex].data() + lod;
 }
 
 int MeshParticleMesh::getLodIndex() const { return m_lodIndex; }          // +0x7C
 
 // +0x80, the current geom's lod count (72-byte records, signed division). The geom
-// tree itself is indexed unguarded; only the geom's own `first` is tested.
+// tree itself is indexed unguarded.
 int MeshParticleMesh::getLodCount() const
 {
-    const vc71::vector_layout& lods =
-        reinterpret_cast<const vc71::vector_layout*>(m_template->m_geoms.first)[m_geomIndex];
-    if (!lods.first)
-        return 0;
-    return static_cast<int>(lods.last - lods.first) / 72;
+    const std::vector<MeshParticleMeshLod>& lods = m_template->m_geoms.data()[m_geomIndex];
+    return static_cast<int>(lods.size());
 }
 
 // +0xB4, 0x101B0440 - `[ecx+58h] = arg` (a body comdat-shared with the emitter descriptor's slot
@@ -347,14 +349,27 @@ void MeshParticleMesh::setDword58(unsigned int value)
 }
 
 unsigned char MeshParticleMesh::getFirstPerson() const    { return m_firstPerson; }
+// PE 0x101B0460
 void MeshParticleMesh::setFirstPerson(unsigned char v)    { m_firstPerson = v; }
 unsigned char MeshParticleMesh::getAlternateView() const  { return m_alternateView; }
+// PE 0x101B0480
 void MeshParticleMesh::setAlternateView(unsigned char v)  { m_alternateView = v; }
 
 // +0xF8, 0x101AFC60 - `retn 0Ch`: three arguments, nothing done. The table's first slot past the
 // 62-entry IGeometry shape the Bundled/Skinned tables end at. [UNRESOLVED] name.
 void MeshParticleMesh::slotF8(unsigned int, unsigned int, unsigned int)
 {
+}
+
+// Debug error (MeshParticleMesh.cpp line 0x13F, "no get angle for meshparticlemesh") and a 0.0f result
+// (fld of the .rdata zero). The one stack argument and `this` are never read. [INFERRED] name and
+// [CHOSEN, not recovered] argument type: no instruction exposes either, and nothing calls it.
+// unreachable in 1.50: no code or data references
+// PE 0x101AFC70
+float MeshParticleMesh::getAngle(int)
+{
+    ::renddx9abi::logf("MeshParticleMesh.cpp:319: no get angle for meshparticlemesh");
+    return 0.0f;
 }
 
 // +0xFC, 0x10188350 - `[ecx+80h] = arg` (comdat-shared with the trail descriptor's slot 97).
@@ -387,6 +402,7 @@ const Vec3& MeshParticleMesh::getScale() const
 
 // 0x101AFBF0, 31 bytes, `retn 0Ch` - (age, alpha) into AgeAndAlphaArray[index]. No bounds test.
 
+// PE 0x101AFBF0
 void MeshParticleMesh::setAgeAndAlpha(float age, float alpha, int index)
 {
     s_ageAndAlpha[index].x = age;                          // dword_10266258[index * 16]
@@ -397,15 +413,14 @@ void MeshParticleMesh::setAgeAndAlpha(float age, float alpha, int index)
 // Draws batched mesh particles with the selected blend technique.
 // Alpha-mode-1 materials are skipped in both passes. Invalid blend modes retain the prior
 // technique; material, state and first-texture pointers must be valid.
-
+// PE 0x101AFDA0 (listing read in full: material loop, alphaMode/transparent tests, technique names,
+// shader parameter order, draw argument mapping onto the named rendererDrawIndexedPrimitive order)
 void MeshParticleMesh::draw(int blendMode, bool transparentPass)
 {
     MeshParticleMeshEffectState& shared = g_meshParticleMeshEffectState;
 
-    const vc71::vector_layout* const materials = m_lodMaterials;      // [edi+48h]
-    const unsigned int materialCount = materials->first
-        ? static_cast<unsigned int>(static_cast<int>(materials->last - materials->first) / 24)
-        : 0u;
+    const std::vector<MeshParticleMeshMaterial>* const materials = m_lodMaterials;   // [edi+48h]
+    const unsigned int materialCount = static_cast<unsigned int>(materials->size());
 
     dx9rend::vertexDeclarationBind(m_template->m_vertexDeclaration);  // +0xA0, sub_100147C0
     dx9rend::vertexBufferBindStream(m_template->m_vertexBuffer, 0);   // +0x94, sub_100146C0
@@ -414,8 +429,7 @@ void MeshParticleMesh::draw(int blendMode, bool transparentPass)
 
     for (unsigned int i = 0; i < materialCount; ++i)
     {
-        const MeshParticleMeshMaterial& material =
-            reinterpret_cast<const MeshParticleMeshMaterial*>(m_lodMaterials->first)[i];
+        const MeshParticleMeshMaterial& material = m_lodMaterials->data()[i];
         BundledMeshState* const state = material.state;               // ebx
         const int alphaMode = material.alphaMode;
 
@@ -432,11 +446,11 @@ void MeshParticleMesh::draw(int blendMode, bool transparentPass)
             continue;
 
         if (blendMode == 1)
-            dx9rend::effectSetTechniqueByName(shared.effect, vc71::string("Additive"));
+            dx9rend::effectSetTechniqueByName(shared.effect, std::string("Additive"));
         else if (blendMode == 2)
-            dx9rend::effectSetTechniqueByName(shared.effect, vc71::string("DiffuseWithZWrite"));
+            dx9rend::effectSetTechniqueByName(shared.effect, std::string("DiffuseWithZWrite"));
         else if (blendMode == 0)
-            dx9rend::effectSetTechniqueByName(shared.effect, vc71::string("Diffuse"));
+            dx9rend::effectSetTechniqueByName(shared.effect, std::string("Diffuse"));
 
         dx9rend::effectBegin(shared.effect);
 
@@ -445,15 +459,14 @@ void MeshParticleMesh::draw(int blendMode, bool transparentPass)
             m_lodRecord->partCount);                                  // [eax+28h]
 
         dx9rend::effectGetShaderParameterBorrowedTyped(
-            shared.effect, vc71::string("AgeAndAlphaArray"))
+            shared.effect, std::string("AgeAndAlphaArray"))
                 ->setValue(s_ageAndAlpha, m_lodRecord->partCount);    // sub_1001E3A0, [edx+18h]
 
         dx9rend::effectGetShaderParameterBorrowedTyped(
-            shared.effect, vc71::string("GlobalScale"))
+            shared.effect, std::string("GlobalScale"))
                 ->setValue(&m_scale, 0);                              // +0x5C
 
-        shared.texture0->setValue(
-            reinterpret_cast<void* const*>(state->m_textures.first)[0], 0);   // state +0x28 -> [0]
+        shared.texture0->setValue(bundledStateFirstTexture(state->m_textures), 0);   // state +0x28 -> [0]
 
         dx9rend::effectBeginPass(shared.effect, 0);
 
@@ -483,76 +496,153 @@ namespace {
 MeshParticleMesh* self(void* p) { return static_cast<MeshParticleMesh*>(p); }
 MeshParticleMesh* fromScaleable(void* p)
 {
-    return reinterpret_cast<MeshParticleMesh*>(static_cast<unsigned char*>(p) - 0x30);
+    return reinterpret_cast<MeshParticleMesh*>(
+        static_cast<unsigned char*>(p) - offsetof(MeshParticleMesh, m_scaleableVptr));   // `sub ecx, 30h`
 }
 
-int   __fastcall mpm_addRef(void* s, void*)                   { return self(s)->addRef(); }
-int   __fastcall mpm_getRef(void* s, void*)                   { return self(s)->getRef(); }
-int   __fastcall mpm_release(void* s, void*)                  { return self(s)->release(); }
-void* __fastcall mpm_queryInterface(void* s, void*, unsigned int iid)
+int   RD9_THUNK mpm_addRef(void* s RD9_THUNK_EDX)                   { return self(s)->addRef(); }
+int   RD9_THUNK mpm_getRef(void* s RD9_THUNK_EDX)                   { return self(s)->getRef(); }
+int   RD9_THUNK mpm_release(void* s RD9_THUNK_EDX)                  { return self(s)->release(); }
+void* RD9_THUNK mpm_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return self(s)->queryInterface(iid); }
-void  __fastcall mpm_setFov(void* s, void*, float v)          { self(s)->setFov(v); }
-float __fastcall mpm_getFov(void* s, void*)                   { return self(s)->getFov(); }
-void  __fastcall mpm_queueDraw(void* s, void*, void* a, void* b, int c)
+void  RD9_THUNK mpm_setFov(void* s RD9_THUNK_EDX, float v)          { self(s)->setFov(v); }
+float RD9_THUNK mpm_getFov(void* s RD9_THUNK_EDX)                   { return self(s)->getFov(); }
+void  RD9_THUNK mpm_queueDraw(void* s RD9_THUNK_EDX, void* a, void* b, int c)
 { self(s)->queueDraw(a, b, c); }
-int   __fastcall mpm_getGeometryType(void* s, void*)          { return self(s)->getGeometryType(); }
-void* __fastcall mpm_destroy(void* s, void*, unsigned int flags)
+int   RD9_THUNK mpm_getGeometryType(void* s RD9_THUNK_EDX)          { return self(s)->getGeometryType(); }
+void* RD9_THUNK mpm_destroy(void* s RD9_THUNK_EDX, unsigned int flags)
 { return meshParticleMeshDestroyFlags(s, static_cast<unsigned char>(flags)); }
-void* __fastcall mpm_getTemplate(void* s, void*)              { return self(s)->getTemplate(); }
-const void* __fastcall mpm_getLocalBounds(void* s, void*)     { return self(s)->getLocalBounds(); }
-float __fastcall mpm_getBoundingRadius(void* s, void*)        { return self(s)->getBoundingRadius(); }
-const Mat4* __fastcall mpm_getGeometryTransformation(void* s, void*)
+void* RD9_THUNK mpm_getTemplate(void* s RD9_THUNK_EDX)              { return self(s)->getTemplate(); }
+const void* RD9_THUNK mpm_getLocalBounds(void* s RD9_THUNK_EDX)     { return self(s)->getLocalBounds(); }
+float RD9_THUNK mpm_getBoundingRadius(void* s RD9_THUNK_EDX)        { return self(s)->getBoundingRadius(); }
+const Mat4* RD9_THUNK mpm_getGeometryTransformation(void* s RD9_THUNK_EDX)
 { return self(s)->getGeometryTransformation(); }
-void  __fastcall mpm_setPartTransformation(void* s, void*, const Mat4* v, int part)
+void  RD9_THUNK mpm_setPartTransformation(void* s RD9_THUNK_EDX, const Mat4* v, int part)
 { self(s)->setPartTransformation(v, part); }
-void  __fastcall mpm_setGeometryTransformation(void* s, void*, const Mat4* v)
+void  RD9_THUNK mpm_setGeometryTransformation(void* s RD9_THUNK_EDX, const Mat4* v)
 { self(s)->setGeometryTransformation(v); }
-void  __fastcall mpm_setName(void* s, void*, const vc71::string& name) { self(s)->m_name = name; }
-void  __fastcall mpm_setGeomIndex(void* s, void*, int g)      { self(s)->setGeomIndex(g); }
-int   __fastcall mpm_getGeomIndex(void* s, void*)             { return self(s)->getGeomIndex(); }
-int   __fastcall mpm_getGeomCount(void* s, void*)             { return self(s)->getGeomCount(); }
-void  __fastcall mpm_setLodIndex(void* s, void*, int l)       { self(s)->setLodIndex(l); }
-int   __fastcall mpm_getLodIndex(void* s, void*)              { return self(s)->getLodIndex(); }
-int   __fastcall mpm_getLodCount(void* s, void*)              { return self(s)->getLodCount(); }
-void  __fastcall mpm_setDword58(void* s, void*, unsigned int v) { self(s)->setDword58(v); }
-unsigned char __fastcall mpm_getFirstPerson(void* s, void*)   { return self(s)->getFirstPerson(); }
-void  __fastcall mpm_setFirstPerson(void* s, void*, unsigned int v)
+void  RD9_THUNK mpm_setName(void* s RD9_THUNK_EDX, const std::string& name) { self(s)->m_name = name; }
+void  RD9_THUNK mpm_setGeomIndex(void* s RD9_THUNK_EDX, int g)      { self(s)->setGeomIndex(g); }
+int   RD9_THUNK mpm_getGeomIndex(void* s RD9_THUNK_EDX)             { return self(s)->getGeomIndex(); }
+int   RD9_THUNK mpm_getGeomCount(void* s RD9_THUNK_EDX)             { return self(s)->getGeomCount(); }
+void  RD9_THUNK mpm_setLodIndex(void* s RD9_THUNK_EDX, int l)       { self(s)->setLodIndex(l); }
+int   RD9_THUNK mpm_getLodIndex(void* s RD9_THUNK_EDX)              { return self(s)->getLodIndex(); }
+int   RD9_THUNK mpm_getLodCount(void* s RD9_THUNK_EDX)              { return self(s)->getLodCount(); }
+void  RD9_THUNK mpm_setDword58(void* s RD9_THUNK_EDX, unsigned int v) { self(s)->setDword58(v); }
+unsigned char RD9_THUNK mpm_getFirstPerson(void* s RD9_THUNK_EDX)   { return self(s)->getFirstPerson(); }
+void  RD9_THUNK mpm_setFirstPerson(void* s RD9_THUNK_EDX, unsigned int v)
 { self(s)->setFirstPerson(static_cast<unsigned char>(v)); }  // `mov al, [ebp+8]` - the low byte
-unsigned char __fastcall mpm_getAlternateView(void* s, void*) { return self(s)->getAlternateView(); }
-void  __fastcall mpm_setAlternateView(void* s, void*, unsigned int v)
+unsigned char RD9_THUNK mpm_getAlternateView(void* s RD9_THUNK_EDX) { return self(s)->getAlternateView(); }
+void  RD9_THUNK mpm_setAlternateView(void* s RD9_THUNK_EDX, unsigned int v)
 { self(s)->setAlternateView(static_cast<unsigned char>(v)); }
-void  __fastcall mpm_slotF8(void* s, void*, unsigned int a, unsigned int b, unsigned int c)
+void  RD9_THUNK mpm_slotF8(void* s RD9_THUNK_EDX, unsigned int a, unsigned int b, unsigned int c)
 { self(s)->slotF8(a, b, c); }
-void  __fastcall mpm_setAlpha(void* s, void*, float v)        { self(s)->setAlpha(v); }
+void  RD9_THUNK mpm_setAlpha(void* s RD9_THUNK_EDX, float v)        { self(s)->setAlpha(v); }
 
 // The shared bodies.
-void  __fastcall mpm_empty0(void*, void*) {}
-void  __fastcall mpm_empty1(void*, void*, unsigned int) {}
-void  __fastcall mpm_empty2(void*, void*, unsigned int, unsigned int) {}
-void  __fastcall mpm_empty3(void*, void*, unsigned int, unsigned int, unsigned int) {}
-void  __fastcall mpm_empty6(void*, void*, unsigned int, unsigned int, unsigned int,
+void  RD9_THUNK mpm_empty0(void* RD9_THUNK_EDX) {}
+void  RD9_THUNK mpm_empty1(void* RD9_THUNK_EDX, unsigned int) {}
+void  RD9_THUNK mpm_empty2(void* RD9_THUNK_EDX, unsigned int, unsigned int) {}
+void  RD9_THUNK mpm_empty3(void* RD9_THUNK_EDX, unsigned int, unsigned int, unsigned int) {}
+void  RD9_THUNK mpm_empty6(void* RD9_THUNK_EDX, unsigned int, unsigned int, unsigned int,
                             unsigned int, unsigned int, unsigned int) {}
-unsigned int __fastcall mpm_zero0(void*, void*) { return 0; }
-unsigned int __fastcall mpm_zero1(void*, void*, unsigned int) { return 0; }
-bool  __fastcall mpm_false0(void*, void*) { return false; }
-bool  __fastcall mpm_false1(void*, void*, unsigned int) { return false; }
-int   __fastcall mpm_minusOne(void*, void*) { return -1; }
-int   __fastcall mpm_seven(void*, void*) { return 7; }
+unsigned int RD9_THUNK mpm_zero0(void* RD9_THUNK_EDX) { return 0; }
+unsigned int RD9_THUNK mpm_zero1(void* RD9_THUNK_EDX, unsigned int) { return 0; }
+bool  RD9_THUNK mpm_false0(void* RD9_THUNK_EDX) { return false; }
+bool  RD9_THUNK mpm_false1(void* RD9_THUNK_EDX, unsigned int) { return false; }
+int   RD9_THUNK mpm_minusOne(void* RD9_THUNK_EDX) { return -1; }
+int   RD9_THUNK mpm_seven(void* RD9_THUNK_EDX) { return 7; }
 
 // IScaleable - four adjustor thunks (`sub ecx, 30h; jmp`) and the two bodies.
-int   __fastcall mpms_addRef(void* s, void*)                  { return fromScaleable(s)->addRef(); }
-int   __fastcall mpms_getRef(void* s, void*)                  { return fromScaleable(s)->getRef(); }
-int   __fastcall mpms_release(void* s, void*)                 { return fromScaleable(s)->release(); }
-void* __fastcall mpms_queryInterface(void* s, void*, unsigned int iid)
+int   RD9_THUNK mpms_addRef(void* s RD9_THUNK_EDX)                  { return fromScaleable(s)->addRef(); }
+int   RD9_THUNK mpms_getRef(void* s RD9_THUNK_EDX)                  { return fromScaleable(s)->getRef(); }
+int   RD9_THUNK mpms_release(void* s RD9_THUNK_EDX)                 { return fromScaleable(s)->release(); }
+void* RD9_THUNK mpms_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return fromScaleable(s)->queryInterface(iid); }
-void  __fastcall mpms_setScale(void* s, void*, const Vec3& v) { fromScaleable(s)->setScale(v); }
-const Vec3& __fastcall mpms_getScale(void* s, void*)          { return fromScaleable(s)->getScale(); }
+void  RD9_THUNK mpms_setScale(void* s RD9_THUNK_EDX, const Vec3& v) { fromScaleable(s)->setScale(v); }
+const Vec3& RD9_THUNK mpms_getScale(void* s RD9_THUNK_EDX)          { return fromScaleable(s)->getScale(); }
 
 } // anonymous namespace
 
 #define BF2_MPM_ENTRY(fn) reinterpret_cast<void*>(&fn)
 
 // The 64-slot table includes a three-argument no-op at +0xF8 and the setter at +0xFC.
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Preserve the empty opacity body's four-byte carrier.
+void mpm_nativeOpacity(void* self, float opacity)
+{
+    unsigned int bits;
+    std::memcpy(&bits, &opacity, sizeof(bits));
+    mpm_empty1(self, bits);
+}
+void* const g_meshParticleMeshVtable[] =
+{
+    BF2_MPM_ENTRY(mpm_addRef),                     // +0x00  0x10103C00  shared (StaticMesh)
+    BF2_MPM_ENTRY(mpm_getRef),                     // +0x04  0x10103C10  shared
+    BF2_MPM_ENTRY(mpm_release),                    // +0x08  0x10103C20  shared
+    BF2_MPM_ENTRY(mpm_queryInterface),             // +0x0C  0x101B03A0  own
+    BF2_MPM_ENTRY(mpm_setFov),                     // +0x10  0x101B0490  own
+    BF2_MPM_ENTRY(mpm_getFov),                     // +0x14  0x101B04A0  own
+    BF2_MPM_ENTRY(mpm_queueDraw),                  // +0x18  0x101B0370  own
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0x1C  0x100E1480  shared (silhouette)
+    BF2_MPM_ENTRY(mpm_empty6),                     // +0x20  0x10082D20  shared (shadow map)
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0x24  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0x28  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_getGeometryType),            // +0x2C  0x101AFD00  own
+    BF2_MPM_ENTRY(mpm_false1),                     // +0x30  0x1005DA00  shared
+    BF2_MPM_ENTRY(mpm_destroy),                    // +0x34  0x101B0520  own
+    BF2_MPM_ENTRY(mpm_getTemplate),                // +0x38  0x10145640  shared (comdat)
+    BF2_MPM_ENTRY(mpm_zero1),                      // +0x3C  0x10088060  shared
+    BF2_MPM_ENTRY(mpm_getLocalBounds),             // +0x40  0x101B03E0  own
+    BF2_MPM_ENTRY(mpm_getBoundingRadius),          // +0x44  0x101B0400  own
+    BF2_MPM_ENTRY(mpm_getGeometryTransformation),  // +0x48  0x101AFC10  own
+    BF2_MPM_ENTRY(mpm_setPartTransformation),      // +0x4C  0x101AFD80  own
+    BF2_MPM_ENTRY(mpm_setGeometryTransformation),  // +0x50  0x101AFC20  own
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0x54  0x100E1480  shared
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0x58  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0x5C  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0x60  0x100E1480  shared
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0x64  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_setName),                    // +0x68  0x10082D30  shared
+    BF2_MPM_ENTRY(mpm_setGeomIndex),               // +0x6C  0x101B00D0  own
+    BF2_MPM_ENTRY(mpm_getGeomIndex),               // +0x70  0x101AFC40  own
+    BF2_MPM_ENTRY(mpm_getGeomCount),               // +0x74  0x101AFD10  own
+    BF2_MPM_ENTRY(mpm_setLodIndex),                // +0x78  0x101B0120  own
+    BF2_MPM_ENTRY(mpm_getLodIndex),                // +0x7C  0x101B0430  own
+    BF2_MPM_ENTRY(mpm_getLodCount),                // +0x80  0x101B01B0  own
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0x84  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_minusOne),                   // +0x88  0x10082D40  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0x8C  0x100ED3B0  shared (material count 0!)
+    BF2_MPM_ENTRY(mpm_empty3),                     // +0x90  0x10083AB0  shared
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0x94  0x100E1480  shared
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0x98  0x100E1480  shared
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0x9C  0x100E13B0  shared (owner: ignored)
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xA0  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xA4  0x100ED3B0  shared (root: none)
+    BF2_MPM_ENTRY(mpm_false0),                     // +0xA8  0x10083AF0  shared (no shadow)
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0xAC  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xB0  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_setDword58),                 // +0xB4  0x101B0440  shared (comdat)
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0xB8  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_false0),                     // +0xBC  0x10083AF0  shared
+    BF2_MPM_ENTRY(mpm_empty2),                     // +0xC0  0x100E1480  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xC4  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_zero1),                      // +0xC8  0x10088060  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xCC  0x100ED3B0  shared (no next geometry)
+    BF2_MPM_ENTRY(mpm_getFirstPerson),             // +0xD0  0x101B0450  own
+    BF2_MPM_ENTRY(mpm_setFirstPerson),             // +0xD4  0x101B0460  own
+    BF2_MPM_ENTRY(mpm_getAlternateView),           // +0xD8  0x101B0470  own
+    BF2_MPM_ENTRY(mpm_setAlternateView),           // +0xDC  0x101B0480  own
+    BF2_MPM_ENTRY(mpm_empty1),                     // +0xE0  0x100E13B0  shared
+    BF2_MPM_ENTRY(mpm_seven),                      // +0xE4  0x10082D50  shared
+    BF2_MPM_ENTRY(mpm_zero0),                      // +0xE8  0x100ED3B0  shared
+    BF2_MPM_ENTRY(mpm_zero1),                      // +0xEC  0x10088060  shared
+    BF2_MPM_ENTRY(mpm_empty0),                     // +0xF0  0x10037D40  shared (NO frame stamp)
+    BF2_MPM_ENTRY(mpm_nativeOpacity),                     // +0xF4  0x100E13B0  shared (fade ignored)
+    BF2_MPM_ENTRY(mpm_slotF8),                     // +0xF8  0x101AFC60  own, retn 0Ch
+    BF2_MPM_ENTRY(mpm_setAlpha)                    // +0xFC  0x10188350  shared (comdat)
+};
+#else
 void* const g_meshParticleMeshVtable[64] =
 {
     BF2_MPM_ENTRY(mpm_addRef),                     // +0x00  0x10103C00  shared (StaticMesh)
@@ -620,8 +710,21 @@ void* const g_meshParticleMeshVtable[64] =
     BF2_MPM_ENTRY(mpm_slotF8),                     // +0xF8  0x101AFC60  own, retn 0Ch
     BF2_MPM_ENTRY(mpm_setAlpha)                    // +0xFC  0x10188350  shared (comdat)
 };
+#endif
 
 // IScaleable, six slots, zero-terminated in the image (0x10221B8C = 0).
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Use the shared native scale-interface signatures.
+void* const g_meshParticleMeshScaleableVtable[6] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, addRef, mpms_addRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, getRef, mpms_getRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, release, mpms_release),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, queryInterface, mpms_queryInterface),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, setScale, mpms_setScale),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IScaleable, getScale, mpms_getScale),
+};
+#else
 void* const g_meshParticleMeshScaleableVtable[6] =
 {
     BF2_MPM_ENTRY(mpms_addRef),                    // +0x00  0x10103C50  thunk (StaticMesh's)
@@ -631,6 +734,7 @@ void* const g_meshParticleMeshScaleableVtable[6] =
     BF2_MPM_ENTRY(mpms_setScale),                  // +0x10
     BF2_MPM_ENTRY(mpms_getScale)                   // +0x14
 };
+#endif
 
 #undef BF2_MPM_ENTRY
 

@@ -14,50 +14,20 @@
 #include "../Geom/GeometryTemplateManager.h"
 #include "../Geom/ParticleSystem/ParticleSystemManager.h"
 #include "../Geom/XpLightManager.h"
-#if BF2_PLUGIN_ABI_NATIVE
 #include "../Core/SettingsRepostitory.h"
+#include "../Core/StringUtil.h"
+#include "../GeomMisc/Debug.h"
+#if defined(_WIN32)
+#include <dxerr9.h>
+#pragma comment(lib, "dxerr9.lib")
 #endif
 
 #include <new>
 #include <list>
 #include <string>
 #include <cstring>
+#include <cstdio>
 
-#if !BF2_PLUGIN_ABI_NATIVE
-namespace renddx9abi {
-// [PLATFORM] PE FileInfo is 64 bytes; its list nodes are 72 (1000E4A0).
-// The modern native host uses io::FileInfo and its own STL instead.
-struct HostFileInfo {
-    HostString name;
-    bool isDirectory;
-    unsigned char pad[3];
-    unsigned int size, reserved;
-    unsigned int times[6];
-};
-struct HostFileInfoList {
-    struct Node { Node* next; Node* prev; HostFileInfo value; };
-    unsigned int allocator;
-    Node* head;
-    unsigned int size;
-    HostFileInfoList() : allocator(0), size(0) {
-        head = static_cast<Node*>(engineAlloc(sizeof(Node)));
-        head->next = head->prev = head;
-    }
-    ~HostFileInfoList() {
-        Node* n = head->next;
-        while (n != head) {
-            Node* next = n->next;
-            n->value.~HostFileInfo();
-            engineFree(n);
-            n = next;
-        }
-        engineFree(head);
-    }
-};
-static_assert(sizeof(HostFileInfo) == 64, "retail FileInfo ABI");
-static_assert(sizeof(HostFileInfoList) == 12, "retail list ABI");
-}
-#endif
 
 namespace dice {
 namespace hfe {
@@ -69,24 +39,35 @@ namespace dx9rend {
 extern void* g_rendererBase;
 void bufferManagerCollectUnused();
 void textureManagerSweep();
+void textureManagerPreLoadLevelHook();
 void textureManagerRefreshFileSuffix();
 void overGrowthPreLoadResources();
 void overGrowthPostLoadResources();
-void pathGetExtension(vc71::string&, const vc71::string&);
-void pathToLower(vc71::string&);
+void pathToLower(std::string&);
+
+namespace {
+const char kResourceFile[] =
+    "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendDX9\\ResourceManager.cpp";
+
+const char* resourceErrorDescription(HRESULT result)
+{
+#if defined(_WIN32)
+    return ::DXGetErrorDescription9A(result);
+#else
+    // [CHOSEN, not recovered] DXErr9 is a Windows SDK library; native diagnostics retain HRESULT.
+    static char description[32];
+    std::snprintf(description, sizeof(description), "HRESULT 0x%08X",
+                  static_cast<unsigned int>(result));
+    return description;
+#endif
+}
+}
 
 // Source-level adapter for the load callbacks' unguarded SettingsRepostitory::boolGet.
 // No fabricated default for an absent manager/result.
 bool readLevelLoadBoolSetting(const char* name, bool fallback)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return settings->boolGet(std::string(name), fallback);
-#else
-    const renddx9abi::HostString key(name);
-    typedef const bool& (__thiscall *GetBool)(void*, const renddx9abi::HostString&, const bool&);
-    return reinterpret_cast<GetBool>((*reinterpret_cast<void***>(settings))[0x50 / 4])(
-        settings, key, fallback);
-#endif
 }
 
 // dword_1023B988. The texture sweep loads it directly to read the flag.
@@ -106,7 +87,10 @@ public:
     void preLoadLevel();                         // PE 1000E2D0, [INFERRED] name
     void postLoadLevel();                        // PE 1000DB70, [INFERRED] name
     void loadAtlases(const std::string& path, bool recursive);
+    void loadObjectLightmapAtlases();            // PE 0x1000E110, [INFERRED] name
+    void loadMenuAtlases();                      // PE 0x1000E290, [INFERRED] name
     void reserveVideoMemory();
+    void releaseReservedVideoMemory();           // PE 0x1000DAB0, [INFERRED] name
 
     // sub_1000D950 / sub_1000D960 - a getter and a setter over the byte at +0x04, one instruction
     // each. The texture sweep's entire body is gated on the getter - AND SO IS THE loader'S file
@@ -132,15 +116,21 @@ private:
     int           m_defaultTexturePriority; // +0x10  ctor: 0 - see defaultPriority() above
 };
 
+// Retail x86 evidence. createResourceManager allocates sizeof(ResourceManager) and other TUs use the
+// resourceManager* seams, so the x64 object is native (issue #7).
+#if defined(_M_IX86)
 static_assert(sizeof(ResourceManager) == 0x14,
               "initializeD3DSubsystems allocates 20 - see the push 14h at 0x1000B4D0");
+#endif
 
+// PE 0x1000DAD0.
 ResourceManager::ResourceManager()
     : m_ready(0), m_dword08(0), m_reservedSurface(0), m_defaultTexturePriority(0)
 {
     // registration is part of construction, before any map events.
     if (!eventManager->registerEventHandler(ECCore, this, 9000))
-        ::renddx9abi::logf("ResourceManager.cpp:29: Failed to register ResourceManager as event handler for ECCore.");
+        ::renddx9abi::Debug(DebugTypeError2, kResourceFile, 29, "")
+            << "Failed to register ResourceManager as event handler for ECCore.";
 }
 
 ResourceManager::~ResourceManager()
@@ -149,6 +139,14 @@ ResourceManager::~ResourceManager()
     eventManager->unregisterEventHandler(ECCore, this);
 }
 
+// [CHOSEN, not recovered] Owner-TU seam for PE 0x1000B078..0x1000B089.
+// Native virtual destruction retains the compiler's own destructor-slot convention.
+void destroyResourceManager()
+{
+    delete static_cast<ResourceManager*>(g_resourceManager);
+}
+
+// PE 0x1000E380 (listing read: category 5, id 2 then 3).
 void ResourceManager::handleEvent(EventCategory category, unsigned int id, EventNode*, void*)
 {
     if (category == ECCore) {
@@ -157,52 +155,60 @@ void ResourceManager::handleEvent(EventCategory category, unsigned int id, Event
     }
 }
 
+// PE 0x1000D970.
 void ResourceManager::reserveVideoMemory()
 {
     // PE +0x70 is CreateRenderTarget, not CreateTexture. The three zero arguments are
     // multisample type, quality and lockability; the surface is released after texture loading.
-    ::renddx9abi::logf("ResourceManager.cpp:265: tl: don't reserve first memory, will mess up "
-                      "\"fastmem\" allocation in driver. should not be used.");
+    ::renddx9abi::Debug(DebugTypeError, kResourceFile, 265, "")
+        << "tl: don't reserve first memory, will mess up \"fastmem\" allocation in driver. should not be used.";
     m_dword08 = 0x1000000u;
     const HRESULT result = static_cast<RendDX9Base*>(g_rendererBase)->device->CreateRenderTarget(
         2048, 2048, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &m_reservedSurface, 0);
-    // [CHOSEN, not recovered] diagnostic formatting follows RendDX9Draw's existing raw-HRESULT
-    // convention; retail prints DXGetErrorDescription9A. The failure branch itself is unchanged.
     if (result != 0)
-        ::renddx9abi::logf("ResourceManager.cpp:277: dep: Failed to reserve video memory of size %u: 0x%08X",
-                          m_dword08, static_cast<unsigned int>(result));
+    {
+        ::renddx9abi::Debug diagnostic(DebugTypeError, kResourceFile, 277, "");
+        const char* const description = resourceErrorDescription(result);
+        const unsigned int reservedBytes = m_dword08;
+        diagnostic << "dep: Failed to reserve video memory of size " << reservedBytes
+                   << ": " << description;
+    }
 }
 
+// Drops the surface reserveVideoMemory created (no null test) and clears both members.
+// postLoadLevel inlines it; the outlined copy has no code or data references.
+// PE 0x1000DAB0
+void ResourceManager::releaseReservedVideoMemory()
+{
+    m_reservedSurface->Release();
+    m_dword08 = 0;
+    m_reservedSurface = 0;
+}
+
+// PE 0x1000DCB0.
 void ResourceManager::loadAtlases(const std::string& path, bool recursive)
 {
     // Keep enumeration order; atlas-named DDS files suppress the fallback DDS list.
-    std::list<std::pair<std::string, bool> > entries;
-#if BF2_PLUGIN_ABI_NATIVE
-    std::list<io::FileInfo> files;
-    fileManager->findFiles(path, false, files);
-    for (const io::FileInfo& file : files)
-        entries.emplace_back(file.name, file.isDirectory);
-#else
-    ::renddx9abi::HostFileInfoList files;
-    fileManager->findFiles(::renddx9abi::HostString(path.c_str()), false, files);
-    for (::renddx9abi::HostFileInfoList::Node* n = files.head->next;
-         n != files.head; n = n->next)
-        entries.emplace_back(n->value.name.c_str(), n->value.isDirectory);
-#endif
+    static const std::string ddsExtension("dds");
+    std::list<io::FileInfo> entries;
+    fileManager->findFiles(path, false, entries);
     std::list<std::string> directories, atlases;
+    const auto hasDdsExtension = [](const std::string& name) {
+        std::string extension;
+        extension = extractFileExt(name);
+        return extension == ddsExtension;
+    };
+    const auto containsAtlas = [](const std::string& name) {
+        std::string lower(name), needle("atlas");
+        pathToLower(lower);
+        pathToLower(needle);
+        return lower.find(needle) != std::string::npos;
+    };
     for (const auto& file : entries) {
-        if (file.second) {
-            directories.push_back(file.first);
-        } else {
-            vc71::string extension;
-            pathGetExtension(extension, vc71::string(file.first.c_str()));
-            if (std::strcmp(extension.c_str(), "dds") != 0) continue;
-            vc71::string lower(file.first.c_str());
-            // PE 10075110 -> the five Latin-1 substitutions precede CRT tolower.
-            pathToLower(lower);
-            if (std::string(lower.c_str(), lower.size()).find("atlas") != std::string::npos)
-                atlases.push_back(file.first);
-        }
+        if (file.isDirectory)
+            directories.push_back(file.name);
+        else if (hasDdsExtension(file.name) && containsAtlas(file.name))
+            atlases.push_back(file.name);
     }
     const auto acquire = [&path](const std::string& file) {
         // PE 100752B0 -> remove directory AND final extension.
@@ -211,15 +217,13 @@ void ResourceManager::loadAtlases(const std::string& path, bool recursive)
         const std::string::size_type dot = name.rfind('.');
         if (dot != std::string::npos) name.erase(dot);
         EngineTexture* texture = static_cast<EngineTexture*>(
-            textureManagerGetTexture(vc71::string((path + name).c_str())));
+            textureManagerGetTexture(path + name));
         textureReleaseRef(texture);
     };
     if (atlases.empty()) {
         // Retail does not repeat the directory test in this fallback pass.
         for (const auto& file : entries) {
-            vc71::string extension;
-            pathGetExtension(extension, vc71::string(file.first.c_str()));
-            if (std::strcmp(extension.c_str(), "dds") == 0) acquire(file.first);
+            if (hasDdsExtension(file.name)) acquire(file.name);
         }
     } else {
         for (const std::string& name : atlases) acquire(name);
@@ -228,11 +232,30 @@ void ResourceManager::loadAtlases(const std::string& path, bool recursive)
         for (const std::string& name : directories) loadAtlases(path + name + "/", true);
 }
 
+// PE 0x1000E110. Unreachable in 1.50: no code or data references. Loads the atlases below
+// <GSLevelDirectory>/<GSLoadLevel>/Lightmaps/Objects (both settings read with an empty default).
+void ResourceManager::loadObjectLightmapAtlases()
+{
+    const std::string levelDirectory(settings->stringGet(std::string("GSLevelDirectory"), std::string("")));
+    const std::string levelName(settings->stringGet(std::string("GSLoadLevel"), std::string("")));
+    std::string path(std::string(levelDirectory + "/") + levelName);
+    path += "/Lightmaps/Objects";
+    fixPath(path, '/');                          // PE 0x100752C0 with dl = 0x2f
+    loadAtlases(path, true);
+}
+
+// PE 0x1000E290. Unreachable in 1.50: no code or data references. The same call as the one
+// preLoadLevel (PE 0x1000E2D0) makes inline.
+void ResourceManager::loadMenuAtlases()
+{
+    loadAtlases(std::string("menu/atlas/"), true);
+}
+
 void ResourceManager::preLoadLevel()
 {
     m_ready = 1;
     static_cast<geom::IGeometryTemplateManager*>(geom::g_GeometryTemplateManager)->resetTemplateUse();
-    // PE calls TextureManager nullsub_4 here: the shipped body is just RET.
+    textureManagerPreLoadLevelHook();
     if (readLevelLoadBoolSetting("GSManagedTextures", true)) {
         textureManagerSwapManaged(1);
     } else {
@@ -263,9 +286,7 @@ void ResourceManager::postLoadLevel()
     if (readLevelLoadBoolSetting("GSManagedTextures", true)) {
         textureManagerRefreshFileSuffix();
     } else {
-        m_reservedSurface->Release();
-        m_dword08 = 0;
-        m_reservedSurface = 0;
+        releaseReservedVideoMemory();
         textureManagerSwapManaged(1);
     }
     overGrowthPostLoadResources();

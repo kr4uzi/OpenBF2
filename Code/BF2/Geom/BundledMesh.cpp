@@ -1,6 +1,7 @@
 // Path attested: BF2 1.50 RendDX9.dll string1021B300 names Geom/BundledMesh.cpp.
 // PE-only renderer. No dedicated ELF body exists.
 #ifdef BF2_IMAGE_RENDDX9
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "BundledMesh.h"
 #include "BundledMeshTemplate.h"
 #include "BundledMeshMaterial.h"
@@ -8,15 +9,20 @@
 #include "StaticMesh.h"
 #include "StaticMeshRenderer.h"
 #include "XpLightManager.h"
+#include "../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../RendDX9/RendDX9Base.h"
+#include "../RendDX9/QueueProfiler.h"
 #include "../RendDX9/ShaderParameter.h"
-#if BF2_PLUGIN_ABI_NATIVE
+#include "../RendMisc/IRenderView.h"
 #include "../Game/Objects/IObject.h"
 #include "../Game/Objects/IObjectTemplate.h"
 #include "../Game/Objects/ObjectLayoutAccess.h"
+#include "../GeomMisc/Debug.h"
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
 #endif
 #include <cfloat>
 #include <cmath>
@@ -32,14 +38,15 @@ void indexBufferBind(void*);
 void vertexDeclarationBind(void*);
 // Shared 10005820 wrapper. Parameter names follow its actual body, not IDA's glued calls.
 void rendererDrawIndexedPrimitive(unsigned int,unsigned int,int,unsigned int,unsigned int,unsigned int);
+void* effectD3dxHandle(void* effect);   // Effect.cpp - the wrapper's +0x08 ID3DXEffect*
 }
 namespace geom {
 extern LightManager* g_LightManager;
 namespace {
 template<class R,class... A> R dispatch(void* self,unsigned int offset,A... args)
 {
-    typedef R(__fastcall* Fn)(void*,void*,A...);
-    return reinterpret_cast<Fn>((*static_cast<void***>(self))[offset/4])(self,0,args...);
+    typedef R(__thiscall* Fn)(void*,A...);
+    return reinterpret_cast<Fn>((*static_cast<void***>(self))[offset/4])(self,args...);
 }
 template<class T> T& field(void* p,unsigned int offset)
 { return *reinterpret_cast<T*>(static_cast<unsigned char*>(p)+offset); }
@@ -48,17 +55,27 @@ template<class T> T& field(void* p,unsigned int offset)
 // retail-ABI flavour keeps the raw offset, which IObject's retail-aligned prefix shares.
 void* objectGeometryField(void* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return world::object_detail::LayoutAccess::geometry(static_cast<world::IObject*>(object));
-#else
-    return field<void*>(object,0x38);
-#endif
 }
 
 // 100A6170, including its 2^-46 squared-length threshold. Unordered comparisons
 // take the same x87 refusal/normalization arms; the callers discard the status code.
+// PE 0x100A6170
 int normalizeXZ(Vec2& value)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep the squared-length spill and retained x87 inverse.
+    using namespace bf2x87;
+    const float lengthSquared=store(add(mul(wide(value.x),wide(value.x)),mul(wide(value.y),wide(value.y))));
+    if(!less(bf2x87::abs(sub(wide(lengthSquared),wide(1.0f))),wide(FLT_EPSILON)))
+    {
+        if(less(bf2x87::abs(wide(lengthSquared)),wide(1.4210854715202004e-14f)))
+        { value.x=0; value.y=0; return -20001; }
+        const Real factor=div(wide(1.0f),squareRoot(wide(lengthSquared)));
+        value.x=store(mul(factor,wide(value.x)));
+        value.y=store(mul(factor,wide(value.y)));
+    }
+#else
     const float lengthSquared=value.x*value.x+value.y*value.y;
     if (!(std::fabs(static_cast<double>(lengthSquared)-1.0)<FLT_EPSILON))
     {
@@ -68,6 +85,7 @@ int normalizeXZ(Vec2& value)
         value.x=static_cast<float>(factor*value.x);
         value.y=static_cast<float>(factor*value.y);
     }
+#endif
     return 0;
 }
 void allocateUvMatrices(BundledMesh& self)
@@ -76,44 +94,47 @@ void allocateUvMatrices(BundledMesh& self)
     {
         self.m_uvMatrices=static_cast<Mat4*>(::renddx9abi::engineAlloc(8*sizeof(Mat4)));
         if (self.m_uvMatrices)
-            for (int i=0;i<8;++i) new(self.m_uvMatrices+i) Mat4;
+            for (int i=0;i<8;++i) rendmath::constructIdentity(self.m_uvMatrices[i]);   // element ctor sub_10030D80
         for (int i=0;i<8;++i) self.m_uvMatrices[i]=Mat4::getIdentity();
     }
 }
 void uvRangeDiagnostic(int index,unsigned int line)
 {
-    ::renddx9abi::logf("Geom/BundledMesh.cpp:%u TBM: UVMatrixIndex is out of range %d",line,index);
+    ::renddx9abi::Debug(DebugTypeError,
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\BundledMesh.cpp",
+        static_cast<int>(line),"") << "TBM: UVMatrixIndex is out of range " << index;
 }
 }
 
+// PE 0x10079290, RendDX9's copy of Mat4::getZero: a function-local matrix built once from four
+// zero rows through the Mat4(row0..row3) copy PE 0x100795B0; distinct from the identity used by
+// getTransformation.
 const Mat4& bundledMeshZeroMatrix()
 {
-    // four zero rows, distinct from the identity used by getTransformation.
-    static Mat4 result;
-    static const bool initialized=[](){ std::memset(result.m,0,sizeof(result.m)); return true; }();
-    (void)initialized;
+    static const Vec4 zero = { 0.0f, 0.0f, 0.0f, 0.0f };
+    static Mat4 result = rendmath::mat4FromRows(zero, zero, zero, zero);
     return result;
 }
 
+// PE 0x10104D10
 BundledMesh::BundledMesh(BundledMeshTemplate* objectTemplate)
-    : GeometryInstanceData(g_bundledMeshVtable)
+    : GeometryInstanceData(g_bundledMeshVtable), m_refCount(1)
 {
     // Explicit fields retain the constructor's untouched allocator/padding words.
-    m_refCount=1;
-    dx9rend::Ra::raObjectParametersConstruct(&m_parameters);
+    // m_parameters (sub_100458E0) is constructed with the object.
     m_template=objectTemplate; m_partTransforms=0; m_distanceToCamera=0; m_fov=-1;
     m_heightOverTerrain=0; m_shadowSunHeight=0; m_underRoof=0; m_heightmapCluster=0;
     m_horizontalForward.x=0; m_horizontalForward.y=0;
     m_lodRecord=0; m_lodMaterials=0; m_geomIndex=0; m_lodIndex=0; m_animationIndex=0;
     m_dword29C=-1; m_dword2A0=0; m_dword2A4=0; m_uvMatrices=0; m_ownerObject=0;
     m_shadowCasterFrame=0; m_shadowProjection=0; m_nextGeometry=0;
-    m_lights.first=m_lights.last=m_lights.end=0;
-    m_lightRecords.first=m_lightRecords.last=m_lightRecords.end=0;
+    // m_lights and m_lightRecords are default-constructed empty
     m_shadowFadeTime=0; m_castsShadow=0; m_animationExplicit=0; m_lodExplicit=0;
     m_lodFrame=0; m_heightFrame=0; m_shadowFade=1; m_inverseTransform=0;
     if (m_template->m_loaded) initializeFromTemplate();
     m_heightmapCluster=classManager->getSingleton(renddx9abi::HostString("HeightmapCluster"));
 }
+// PE 0x10104E90
 BundledMesh::~BundledMesh()
 {
     // No template reference/count decrement exists in this body.
@@ -121,12 +142,10 @@ BundledMesh::~BundledMesh()
     if (m_inverseTransform) ::renddx9abi::engineFree(m_inverseTransform);
     ::renddx9abi::engineFree(m_partTransforms);
     ::renddx9abi::engineFree(m_uvMatrices);
-    vc71::setEraseValue(m_template->m_instances,this);
-    if (m_lightRecords.first) ::renddx9abi::engineFree(m_lightRecords.first);
-    m_lightRecords.first=m_lightRecords.last=m_lightRecords.end=0;
-    if (m_lights.first) ::renddx9abi::engineFree(m_lights.first);
-    m_lights.first=m_lights.last=m_lights.end=0;
-    dx9rend::Ra::raObjectParametersDestroy(&m_parameters);
+    m_template->m_instances.erase(this);
+    std::vector<dx9rend::Ra::RaLightRecord>().swap(m_lightRecords);
+    std::vector<world::LightSource*>().swap(m_lights);
+    // m_parameters (sub_1004D900) is destroyed with the object, after this body.
     // The base-class vptr restore is not observable: like StaticMesh, this is a flat ABI object.
 }
 void* bundledMeshConstruct(void* storage,BundledMeshTemplate* templ)
@@ -149,8 +168,10 @@ int BundledMesh::release()
 }
 void* BundledMesh::queryInterface(unsigned int iid)
 { return iid==1u || iid==1227874558u || iid==2915824892u ? this : 0; }
+// PE 0x10178EF0
 void BundledMesh::setFov(float value) { m_fov=value; }
 float BundledMesh::getFov() const { return m_fov; }
+// PE 0x101070E0
 void* BundledMesh::setShadowProjection(void* value) { return m_shadowProjection=value; }
 void* BundledMesh::getShadowProjection() const { return m_shadowProjection; }
 int BundledMesh::getGeometryType() const { return m_lodRecord->renderKind; }
@@ -172,11 +193,13 @@ float BundledMesh::getBoundingRadius() const
 }
 const Mat4* BundledMesh::getGeometryTransformation() const
 { return m_partTransforms ? m_partTransforms[0] : &Mat4::getIdentity(); }
+// PE 0x10103D10
 void BundledMesh::allocatePartTransforms()
 {
     if (!m_partTransforms)
     {
-        m_partTransforms=static_cast<const Mat4**>(::renddx9abi::engineAlloc(4*m_template->m_maxPartCount));
+        m_partTransforms=static_cast<const Mat4**>(
+            ::renddx9abi::engineAlloc(sizeof(const Mat4*)*m_template->m_maxPartCount));
         for (unsigned int i=0;i<m_template->m_maxPartCount;++i)
             m_partTransforms[i]=&bundledMeshZeroMatrix();
     }
@@ -187,6 +210,7 @@ void BundledMesh::setPartTransformation(const Mat4* value,int part)
     if (m_template->m_loaded && part<static_cast<int>(m_template->m_maxPartCount))
     { allocatePartTransforms(); m_partTransforms[part]=value; }
 }
+// PE 0x10103DB0
 void BundledMesh::setGeometryTransformation(const Mat4* value)
 {
     if (m_template->m_loaded)
@@ -208,21 +232,21 @@ void BundledMesh::setBoneTransforms(const Mat4* value,int)
 unsigned int BundledMesh::getPartCount() const { return m_lodRecord ? m_lodRecord->partCount : 0; }
 void BundledMesh::setGeomIndex(int geom)
 {
-    if (!m_template->m_loaded || !m_template->m_geoms.first) return;
-    const unsigned int count=static_cast<unsigned int>((m_template->m_geoms.last-m_template->m_geoms.first)/32);
+    if (!m_template->m_loaded || m_template->m_geoms.empty()) return;
+    const unsigned int count=static_cast<unsigned int>(m_template->m_geoms.size());
     if (static_cast<unsigned int>(geom)>=count || geom<0) return;
     if (m_geomIndex!=static_cast<unsigned int>(geom)) { m_lodIndex=0; m_lodExplicit=0; }
     m_geomIndex=geom;
-    vc71::vector_layout& materials=reinterpret_cast<vc71::vector_layout*>(m_template->m_materials.first)[geom];
-    const unsigned int lods=materials.first ? static_cast<unsigned int>((materials.last-materials.first)/16) : 0;
+    std::vector<BundledMeshTemplate::MaterialList>& materials=m_template->m_materials[geom];
+    const unsigned int lods=static_cast<unsigned int>(materials.size());
     if (m_lodIndex>=lods-1) m_lodIndex=lods-1;
-    m_lodMaterials=reinterpret_cast<vc71::vector_layout*>(materials.first)+m_lodIndex;
-    m_lodRecord=reinterpret_cast<BundledMeshLod*>(
-        reinterpret_cast<BundledMeshGeom*>(m_template->m_geoms.first)[geom].lods.first)+m_lodIndex;
+    m_lodMaterials=materials.data()+m_lodIndex;
+    m_lodRecord=m_template->m_geoms[geom].lods.data()+m_lodIndex;
 }
 int BundledMesh::getGeomIndex() const { return static_cast<int>(m_geomIndex); }
 int BundledMesh::getGeomCount() const
-{ return m_template->m_geoms.first ? static_cast<int>((m_template->m_geoms.last-m_template->m_geoms.first)/32) : 0; }
+{ return static_cast<int>(m_template->m_geoms.size()); }
+// PE 0x10103EB0
 void BundledMesh::setLodIndex(int lod)
 {
     if (lod==-1) { m_lodExplicit=0; m_lodIndex=0; }
@@ -232,9 +256,9 @@ void BundledMesh::setLodIndex(int lod)
 int BundledMesh::getLodIndex() const { return static_cast<int>(m_lodIndex); }
 int BundledMesh::getLodCount() const
 {
-    const vc71::vector_layout& lods=reinterpret_cast<BundledMeshGeom*>(m_template->m_geoms.first)[m_geomIndex].lods;
-    return lods.first ? static_cast<int>((lods.last-lods.first)/72) : 0;
+    return static_cast<int>(m_template->m_geoms[m_geomIndex].lods.size());
 }
+// PE 0x10104980
 int BundledMesh::setAnimationIndex(int value)
 {
     if (value==-1) { m_animationExplicit=0; return m_animationIndex=0; }
@@ -242,7 +266,8 @@ int BundledMesh::setAnimationIndex(int value)
 }
 int BundledMesh::getAnimationIndex() const { return m_animationIndex; }
 int BundledMesh::getMaterialCount() const
-{ return m_lodMaterials && m_lodMaterials->first ? static_cast<int>((m_lodMaterials->last-m_lodMaterials->first)/4) : 0; }
+{ return m_lodMaterials ? static_cast<int>(m_lodMaterials->size()) : 0; }
+// PE 0x10104490
 void BundledMesh::setUvTranslation(int index,float x,float y)
 {
     // All three setters really use OR, admitting many out-of-range indices (retail defect).
@@ -250,17 +275,29 @@ void BundledMesh::setUvTranslation(int index,float x,float y)
     { allocateUvMatrices(*this); m_uvMatrices[index].m[8]=x; m_uvMatrices[index].m[9]=y; }
     else uvRangeDiagnostic(index,1423);
 }
+// PE 0x101045C0
 void BundledMesh::setUvRotation(int index,float angle)
 {
     if (index>=0 || index<static_cast<int>(m_template->m_dword10C+1))
     {
-        const float c=static_cast<float>(std::cos(angle)),s=static_cast<float>(std::sin(angle));
+        float c,s;
+#if defined(__APPLE__) && defined(__x86_64__)
+        // [CHOSEN, not recovered] Use the shipped fsincos and its two float stores on Intel.
+        __asm__ volatile("flds %2; fsincos; fstps %0; fstps %1" : "=m"(c),"=m"(s) : "m"(angle) : "st");
+#elif defined(__APPLE__)
+        // [CHOSEN, not recovered] Shared native transcendental policy on Apple silicon.
+        c=bf2x87::store(bf2x87::cosValue(bf2x87::wide(angle)));
+        s=bf2x87::store(bf2x87::sinValue(bf2x87::wide(angle)));
+#else
+        c=static_cast<float>(std::cos(angle)); s=static_cast<float>(std::sin(angle));
+#endif
         allocateUvMatrices(*this);
         m_uvMatrices[index].m[0]=c; m_uvMatrices[index].m[1]=-s;
         m_uvMatrices[index].m[4]=s; m_uvMatrices[index].m[5]=c;
     }
     else uvRangeDiagnostic(index,1443);
 }
+// PE 0x10104720
 void BundledMesh::setUvTransformation(int index,const Mat4* value)
 {
     if (index>=0 || index<static_cast<int>(m_template->m_dword10C+1))
@@ -271,12 +308,8 @@ void* BundledMesh::setOwnerObject(void* value) { return m_ownerObject=value; }
 void* BundledMesh::refreshRootObject()
 {
     void* root=staticMeshRootParent(m_ownerObject);
-#if BF2_PLUGIN_ABI_NATIVE
     // The native MSVC table also places getFlags at +44; prefer its typed host contract.
     m_castsShadow=root && (static_cast<world::IObject*>(root)->getTemplate()->getFlags()&0x800) ? 1 : 0;
-#else
-    m_castsShadow=root && (dispatch<unsigned int>(field<void*>(root,0x14),0x44)&0x800) ? 1 : 0;
-#endif
     return root;
 }
 bool BundledMesh::castsDynamicShadow()
@@ -294,33 +327,61 @@ int BundledMesh::setDword29C(int value) { return m_dword29C=value; }
 void* BundledMesh::setNextGeometry(void* value) { return m_nextGeometry=value; }
 void* BundledMesh::getNextGeometry() const { return m_nextGeometry; }
 void BundledMesh::setTransparency(float value) { m_parameters.transparency.value=value; }
+// PE 0x101040F0
 void BundledMesh::initializeFromTemplate()
 {
-    if (m_template->m_geoms.first && static_cast<unsigned int>((m_template->m_geoms.last-m_template->m_geoms.first)/32)>=2)
+    if (m_template->m_geoms.size()>=2)
         m_geomIndex=1;
     dispatch<void>(this,0x6C,static_cast<int>(m_geomIndex));
     if (m_template->m_maxPartCount==1 && m_ownerObject)
-#if BF2_PLUGIN_ABI_NATIVE
         dispatch<void>(this,0x50,&static_cast<world::IObject*>(m_ownerObject)->getAbsoluteTransformation());
-#else
-        dispatch<void>(this,0x50,dispatch<const Mat4*>(m_ownerObject,0x80));
-#endif
 }
+#if defined(__APPLE__)
+namespace {
+// [CHOSEN, not recovered] Carry the x87 return through the caller's multiply/FISTP.
+bf2x87::Real bundledAnimationPhaseNative(BundledMesh& mesh,const Vec3& camera)
+{
+    using namespace bf2x87;
+    Vec2 direction={store(sub(wide(camera.x),wide(mesh.m_partTransforms[0]->m[12]))),
+        store(sub(wide(camera.z),wide(mesh.m_partTransforms[0]->m[14])))};
+    const Vec2 side={mesh.m_partTransforms[0]->m[0],mesh.m_partTransforms[0]->m[2]};
+    normalizeXZ(direction);
+    Real result=sub(wide(0.25f),mul(add(mul(wide(direction.y),wide(mesh.m_horizontalForward.y)),
+        mul(wide(direction.x),wide(mesh.m_horizontalForward.x))),wide(0.249975f)));
+    if(less(add(mul(wide(side.y),wide(direction.y)),mul(wide(side.x),wide(direction.x))),wide(0.0f)))
+        result=sub(wide(1.0f),result);
+    return result;
+}
+}
+#endif
+// PE 0x10104840
 float BundledMesh::animationPhase(const Vec3& camera)
 {
+#if defined(__APPLE__)
+    return bf2x87::store(bundledAnimationPhaseNative(*this,camera));
+#else
     Vec2 direction={camera.x-m_partTransforms[0]->m[12],camera.z-m_partTransforms[0]->m[14]};
     const Vec2 side={m_partTransforms[0]->m[0],m_partTransforms[0]->m[2]};
     normalizeXZ(direction);
-    double result=0.25-(direction.y*m_horizontalForward.y+direction.x*m_horizontalForward.x)*0.249975f;
-    if (side.y*direction.y+side.x*direction.x<0) result=1.0-result;
+    double result=0.25-(static_cast<double>(direction.y)*m_horizontalForward.y
+        +static_cast<double>(direction.x)*m_horizontalForward.x)*0.249975f;
+    if (static_cast<double>(side.y)*direction.y+static_cast<double>(side.x)*direction.x<0) result=1.0-result;
     return static_cast<float>(result);
+#endif
 }
+// PE 0x101048D0
 unsigned int BundledMesh::animationIndex(const Vec3& camera)
 {
     const unsigned int count=m_template->m_u2;
+#if defined(__APPLE__)
+    const unsigned int index=static_cast<unsigned int>(bf2x87::toIntTruncate(
+        bf2x87::mul(bf2x87::wide(count),bundledAnimationPhaseNative(*this,camera))));
+#else
     const unsigned int index=static_cast<unsigned int>(static_cast<int>(animationPhase(camera)*static_cast<double>(count)));
+#endif
     return index>=count ? m_template->m_u2-1 : index;
 }
+// PE 0x10103F00
 unsigned int BundledMesh::materialFeatures(BundledMeshMaterial* material,bool additive,unsigned int caps)
 {
     const BundledMeshState& state=*material->m_state;
@@ -339,29 +400,48 @@ unsigned int BundledMesh::materialFeatures(BundledMeshMaterial* material,bool ad
     if(additive)bits|=0x800;
     return bits;
 }
+// PE 0x10104AE0
 void BundledMesh::updateLodSelection()
 {
     const unsigned int frame=dx9rend::rendererFrameOrdinal();
     if(m_lodFrame==frame || m_lodExplicit)return;
     m_lodFrame=frame;
     void* view=dispatch<void*>(dx9rend::g_rendererBase,0x48);
-    BundledMeshGeom& geom=reinterpret_cast<BundledMeshGeom*>(m_template->m_geoms.first)[m_geomIndex];
-    MeshBounds& bounds=reinterpret_cast<BundledMeshLod*>(geom.lods.first)->bounds;
+    BundledMeshGeom& geom=m_template->m_geoms[m_geomIndex];
+    MeshBounds& bounds=geom.lods.data()->bounds;
     if(bounds.dirty)meshBoundsFinalize(bounds);
     const float radius=bounds.radius;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Spill the threshold once, retaining each scaled comparison.
+    using namespace bf2x87;
+    const float threshold=store(sub(mul(wide(dispatch<float>(view,0x2C)),wide(m_distanceToCamera)),wide(radius)));
+#else
     const float threshold=dispatch<float>(view,0x2C)*m_distanceToCamera-radius;
-    const unsigned int count=geom.distances.first ? static_cast<unsigned int>((geom.distances.last-geom.distances.first)/4):0;
-    const float* distances=reinterpret_cast<const float*>(geom.distances.first);
+#endif
+    const unsigned int count=static_cast<unsigned int>(geom.distances.size());
+    const float* distances=geom.distances.data();
     unsigned int selected=0;
     for(unsigned int i=0;i<count;++i)
-        if(distances[i]*field<float>(dx9rend::g_Renderer,0x84C)*field<float>(dx9rend::g_Renderer,0x8B4)<threshold)selected=i+1;
+    {
+#if defined(__APPLE__)
+        const Real a=wide(dx9rend::rendererTailFloat(0x84C));
+        const Real b=wide(dx9rend::rendererTailFloat(0x8B4));
+        // The third lane of each four-element batch multiplies the two scales first.
+        const Real scaled=(i%4==2 && i+1<count) ? mul(mul(a,b),wide(distances[i]))
+            : mul(mul(wide(distances[i]),a),b);
+        if(less(scaled,wide(threshold)))selected=i+1;
+#else
+        if(distances[i]*dx9rend::rendererTailFloat(0x84C)*dx9rend::rendererTailFloat(0x8B4)<threshold)selected=i+1;
+#endif
+    }
     if(selected!=m_lodIndex) { m_lodIndex=selected; dispatch<void>(this,0x6C,static_cast<int>(m_geomIndex)); }
     m_shaderLod=0;
-    if(field<unsigned char>(dx9rend::g_Renderer,0x708))
+    if(dx9rend::rendererTailByte(0x708))
         for(int i=3;i>=0;--i)
-            if(threshold>field<float>(dx9rend::g_Renderer,0x72C+4*i)) { m_shaderLod=i+1; break; }
+            if(threshold>dx9rend::rendererTailFloat(0x72C+4*i)) { m_shaderLod=i+1; break; }
 }
 
+// PE 0x10106620
 void BundledMesh::drawShadowMap(void* light,void*,void*,void*,void*,void*)
 {
     // The profiling-only bracket follows the existing mesh policy;
@@ -379,32 +459,37 @@ void BundledMesh::drawShadowMap(void* light,void*,void*,void*,void*,void*)
     const int lodCount=dispatch<int>(this,0x80);
     if(currentLod!=shadowLod)dispatch<void>(this,0x78,lodCount-1<shadowLod ? lodCount-1 : shadowLod);
     Mat4 combined;
-    const unsigned int materialCount=m_lodMaterials->first ? static_cast<unsigned int>((m_lodMaterials->last-m_lodMaterials->first)/4):0;
+    rendmath::constructIdentity(combined);                           // 0x10106723
+    const unsigned int materialCount=static_cast<unsigned int>(m_lodMaterials->size());
     dx9rend::vertexDeclarationBind(m_template->m_vertexDeclaration);
     dx9rend::vertexBufferBindStream(m_template->m_vertexBuffer,0);
     dx9rend::indexBufferBind(m_template->m_indexBuffer);
     // 1001E3A0 returns a borrowed parameter, unlike the counted 1001E420 owner.
-    dx9rend::ShaderParameter* unpack=dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,vc71::string("POSUNPACK"));
+    dx9rend::ShaderParameter* unpack=dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,std::string("POSUNPACK"));
     const float scale[4]={m_template->m_decompressScale.x,m_template->m_decompressScale.y,m_template->m_decompressScale.z,1};
     unpack->setValue(scale,0);
-    if(light && field<unsigned char>(light,0x495))
+    const LightShadowRecord* const record=static_cast<const LightShadowRecord*>(light);
+    if(light && record->tail494[1])                                  // +0x495
     {
-        combined=Mat4::getIdentity();
-        combined.fullMult(field<Mat4>(light,0x238),field<Mat4>(light,0x278));
-        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,vc71::string("vpLightMat"))->setValue(&combined,0);
-        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,vc71::string("vpLightTrapezMat"))->setValue(&combined,0);
-        void* d3dx=field<void*>(g_bundledShadowEffect,8);
+        rendmath::constructIdentity(combined);                       // 0x101067DD
+        geometryRendererMatrixProduct(combined,record->matrices[1],record->matrices[2]);  // +0x238, +0x278 (0x10077A30)
+        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,std::string("vpLightMat"))->setValue(&combined,0);
+        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,std::string("vpLightTrapezMat"))->setValue(&combined,0);
+        // The effect's +0x08 D3DX interface. g_bundledShadowEffect is non-null here: the
+        // POSUNPACK and vpLightMat lookups above already dereferenced it.
+        void* d3dx=dx9rend::effectD3dxHandle(g_bundledShadowEffect);
         typedef void(__stdcall* Commit)(void*);
         reinterpret_cast<Commit>((*static_cast<void***>(d3dx))[0x104/4])(d3dx);
     }
     else
     {
-        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,vc71::string("vpLightMat"))->setValue(&field<Mat4>(m_shadowProjection,0x238),0);
-        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,vc71::string("vpLightTrapezMat"))->setValue(&field<Mat4>(m_shadowProjection,0x278),0);
+        const LightShadowRecord* const own=static_cast<const LightShadowRecord*>(m_shadowProjection);
+        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,std::string("vpLightMat"))->setValue(&own->matrices[1],0);
+        dx9rend::effectGetShaderParameterBorrowedTyped(g_bundledShadowEffect,std::string("vpLightTrapezMat"))->setValue(&own->matrices[2],0);
     }
     for(unsigned int i=0;i<materialCount;++i)
     {
-        BundledMeshMaterial* material=reinterpret_cast<BundledMeshMaterial**>(m_lodMaterials->first)[i];
+        BundledMeshMaterial* material=(*m_lodMaterials)[i];
         if(material->m_kind==1 || material->m_kind==2)continue;
         g_bundledOneBoneSkinning->setMatrixPointerArray(reinterpret_cast<const void* const*>(m_partTransforms),m_lodRecord->partCount);
         // Keep the wrapper's declared argument order: primitive count, type, base,
@@ -417,9 +502,52 @@ void BundledMesh::drawShadowMap(void* light,void*,void*,void*,void*,void*)
     if(originalLod!=shadowLod)dispatch<void>(this,0x78,originalGeom ? -1 : originalLod);
 }
 
+// PE 0x101063B0: unreachable in 1.50: no code or data references
+// [INFERRED] name. Draws the current lod's materials with every part but `part` hidden behind the
+// shared zero matrix, in the effect technique "subPartHighlight". The unused-by-others globals are
+// StaticMeshRenderer's borrowed bundled-mesh parameters (view inverse, one-bone skinning array,
+// texture layer 0). Each material draw rebuilds the view inverse from the camera's inverse view
+// matrix (a copy of a copy, then the orthonormal inverse) and binds the state's second texture.
+void BundledMesh::drawSubPartHighlight(unsigned int part)
+{
+    static dx9rend::QueueProfiler profiler(std::string("BundledMeshSingleSubGeom"));
+    profiler.begin();
+
+    Mat4 hidden(bundledMeshZeroMatrix());
+    const Mat4** const transforms=static_cast<const Mat4**>(
+        ::renddx9abi::engineAlloc(m_template->m_maxPartCount*4));
+    for(unsigned int i=0;i<m_template->m_maxPartCount;++i)
+        transforms[i]=i==part ? m_partTransforms[i] : &hidden;
+
+    const unsigned int materialCount=static_cast<unsigned int>(m_lodMaterials->size());
+    dx9rend::IRenderView* const view=dx9rend::rendererGetRenderViewDup();
+    dx9rend::vertexDeclarationBind(m_template->m_vertexDeclaration);
+    dx9rend::vertexBufferBindStream(m_template->m_vertexBuffer,0);
+    dx9rend::indexBufferBind(m_template->m_indexBuffer);
+    for(unsigned int i=0;i<materialCount;++i)
+    {
+        BundledMeshMaterial* const material=(*m_lodMaterials)[i];
+        BundledMeshState* const state=material->m_state;
+        Mat4 viewInverse(*view->getInverseViewMatrixPtr());
+        const Mat4 viewInverseCopy(viewInverse);
+        viewInverse.setInverse(viewInverseCopy);
+        g_bundledViewI->setValue(&viewInverse,0);
+        g_bundledOneBoneSkinning->setMatrixPointerArray(reinterpret_cast<const void* const*>(transforms),m_lodRecord->partCount);
+        dx9rend::effectSetTechniqueByName(g_bundledShadowEffect,std::string("subPartHighlight"));
+        dx9rend::effectBegin(g_bundledShadowEffect);
+        g_bundledTexLayer0->setValue(state->m_textures[1],0);
+        dx9rend::effectBeginPass(g_bundledShadowEffect,0);
+        dx9rend::rendererDrawIndexedPrimitive(material->m_primitiveCount,m_template->m_primitiveType,
+            material->m_vertexStart,0,material->m_vertexCount,material->m_indexStart);
+        dx9rend::effectEnd(g_bundledShadowEffect);
+    }
+    ::renddx9abi::engineFree(transforms);
+    dx9rend::QueueProfiler::end();
+}
+
 namespace {
-#define BM0(R,name) R __fastcall bm_##name(BundledMesh* s,void*) { return s->name(); }
-#define BM1(R,name,T) R __fastcall bm_##name(BundledMesh* s,void*,T v) { return s->name(v); }
+#define BM0(R,name) R RD9_THUNK bm_##name(BundledMesh* s RD9_THUNK_EDX) { return s->name(); }
+#define BM1(R,name,T) R RD9_THUNK bm_##name(BundledMesh* s RD9_THUNK_EDX,T v) { return s->name(v); }
 BM0(int,addRef) BM0(int,getRef) BM0(int,release) BM1(void*,queryInterface,unsigned int)
 BM1(void,setFov,float) BM0(float,getFov)
 BM1(void*,setShadowProjection,void*) BM0(void*,getShadowProjection) BM0(int,getGeometryType)
@@ -435,24 +563,24 @@ BM1(int,setDword29C,int) BM1(void*,setNextGeometry,void*) BM0(void*,getNextGeome
 BM1(void,setTransparency,float)
 #undef BM0
 #undef BM1
-void __fastcall bm_draw(BundledMesh* s,void*,void* a,void* b,void* c) { s->draw(a,b,c); }
-void __fastcall bm_shadow(BundledMesh* s,void*,void* a,void* b,void* c,void* d,void* e,void* f) { s->drawShadowMap(a,b,c,d,e,f); }
-void* __fastcall bm_destroy(void* s,void*,unsigned char flags) { return bundledMeshDestroyFlags(s,flags); }
-void __fastcall bm_setPart(BundledMesh* s,void*,const Mat4* value,int part) { s->setPartTransformation(value,part); }
-void __fastcall bm_setBones(BundledMesh* s,void*,const Mat4* value,int count) { s->setBoneTransforms(value,count); }
-void __fastcall bm_setName(BundledMesh* s,void*,const vc71::string& value) { s->m_name=value; }
-void __fastcall bm_uvTranslate(BundledMesh* s,void*,int i,float x,float y) { s->setUvTranslation(i,x,y); }
-void __fastcall bm_uvRotate(BundledMesh* s,void*,int i,float angle) { s->setUvRotation(i,angle); }
-void __fastcall bm_uvTransform(BundledMesh* s,void*,int i,const Mat4* value) { s->setUvTransformation(i,value); }
+void RD9_THUNK bm_draw(BundledMesh* s RD9_THUNK_EDX,void* a,void* b,void* c) { s->draw(a,b,c); }
+void RD9_THUNK bm_shadow(BundledMesh* s RD9_THUNK_EDX,void* a,void* b,void* c,void* d,void* e,void* f) { s->drawShadowMap(a,b,c,d,e,f); }
+void* RD9_THUNK bm_destroy(void* s RD9_THUNK_EDX,unsigned char flags) { return bundledMeshDestroyFlags(s,flags); }
+void RD9_THUNK bm_setPart(BundledMesh* s RD9_THUNK_EDX,const Mat4* value,int part) { s->setPartTransformation(value,part); }
+void RD9_THUNK bm_setBones(BundledMesh* s RD9_THUNK_EDX,const Mat4* value,int count) { s->setBoneTransforms(value,count); }
+void RD9_THUNK bm_setName(BundledMesh* s RD9_THUNK_EDX,const std::string& value) { s->m_name=value; }
+void RD9_THUNK bm_uvTranslate(BundledMesh* s RD9_THUNK_EDX,int i,float x,float y) { s->setUvTranslation(i,x,y); }
+void RD9_THUNK bm_uvRotate(BundledMesh* s RD9_THUNK_EDX,int i,float angle) { s->setUvRotation(i,angle); }
+void RD9_THUNK bm_uvTransform(BundledMesh* s RD9_THUNK_EDX,int i,const Mat4* value) { s->setUvTransformation(i,value); }
 // Shared retail bodies: exact callee cleanup confirmed in the instruction census.
-void __fastcall bm_empty1(void*,void*,unsigned int) {}
-void __fastcall bm_empty2(void*,void*,unsigned int,unsigned int) {}
-bool __fastcall bm_false1(void*,void*,unsigned int) { return false; }
-bool __fastcall bm_false0(void*,void*) { return false; }
-int __fastcall bm_zero0(void*,void*) { return 0; }
-int __fastcall bm_zero1(void*,void*,unsigned int) { return 0; }
-int __fastcall bm_seven(void*,void*) { return 7; }
-void __fastcall bm_stamp(BundledMesh* s,void*) { s->m_visibleFrame=dx9rend::rendererFrameOrdinal(); }
+void RD9_THUNK bm_empty1(void* RD9_THUNK_EDX,unsigned int) {}
+void RD9_THUNK bm_empty2(void* RD9_THUNK_EDX,unsigned int,unsigned int) {}
+bool RD9_THUNK bm_false1(void* RD9_THUNK_EDX,unsigned int) { return false; }
+bool RD9_THUNK bm_false0(void* RD9_THUNK_EDX) { return false; }
+int RD9_THUNK bm_zero0(void* RD9_THUNK_EDX) { return 0; }
+int RD9_THUNK bm_zero1(void* RD9_THUNK_EDX,unsigned int) { return 0; }
+int RD9_THUNK bm_seven(void* RD9_THUNK_EDX) { return 7; }
+void RD9_THUNK bm_stamp(BundledMesh* s RD9_THUNK_EDX) { s->m_visibleFrame=dx9rend::rendererFrameOrdinal(); }
 }
 #define BM_ENTRY(x) reinterpret_cast<void*>(&bm_##x)
 void* const g_bundledMeshVtable[62]={

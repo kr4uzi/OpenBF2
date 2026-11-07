@@ -8,29 +8,27 @@
 #define BF2_GEOM_SKINNEDMESH_H
 
 #include <stddef.h>   // offsetof - the layout assertions below
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 #include "../Math/Mat4.h"
+#include "../RendDX9/Ra/RaShader.h"   // RaObjectParameters, RaLightRecord
 #include "GeometryInstanceData.h"
 
-#if BF2_PLUGIN_ABI_NATIVE
 #include <vector>
-#endif
 
 namespace dice {
 namespace hfe {
+namespace world { class LightSource; }
+namespace dx9rend { class Effect; }
 namespace geom {
 
 
-// The host owns the used-bone output vector. Match its STL in native builds and
-// the 16-byte VC7.1 vector layout in compatibility builds; the interface stays a pointer.
-#if BF2_PLUGIN_ABI_NATIVE
+// The host owns the used-bone output vector: the toolset's std::vector; the interface stays a
+// pointer.
 typedef std::vector<int> HostIntVector;
-#else
-typedef vc71::vector_layout HostIntVector;
-#endif
 
 class SkinnedMeshTemplate;
+struct SkinnedMeshLod;
+struct SkinnedMeshMaterial;
 
 // The palette geometry is shipped, not chosen: the constructor allocates four runs of twenty-SIX
 // Mat4 pointers, one 0x40 block each, and sets every matrix to identity twice over - once inside
@@ -45,8 +43,8 @@ public:
     explicit SkinnedMesh(void* objectTemplate);
 
     // the IBase quartet, +0x00..+0x0C
-    // The first three are NOT StaticMesh's. StaticMesh counts at +0x34 and uses 0x10103C00/10/20;
-    // this class counts at +0x30 and uses 0x101071D0/E0/F0. Different offsets, different bodies -
+    // The first three are NOT StaticMesh's. This class counts at +0x30 and uses 0x101071D0/E0/F0;
+    // StaticMesh counts at +0x34 and uses its own three. Different offsets, different bodies -
     // which is exactly the sanity check that says the two layouts really do diverge here.
     int   addRef();                                          // +0x00  (shared)
     int   getRef() const;                                    // +0x04  (shared)
@@ -124,12 +122,17 @@ public:
     // and load() only calls it after the read, which is the whole of the shipped protection.
     void* refreshSelection();
     // Three ray probes whose results land in +0x48 / +0x4C / +0x50.
-    // The body is a named stop.
-    void updateHeightOverTerrain();                          // 0x101A6A20  frontier
+    // Requires an owner, loaded template and HeightmapCluster singleton.
+    void updateHeightOverTerrain();                          // 0x101A6A20
+    // Non-virtual; unreachable in 1.50 (PE 0x101A6A10). [INFERRED] name.
+    float getDistanceToCamera() const;
+    // Binds the sun direction (rotated by m_matrix60), sky, ambient and sky-light colours on the shared
+    // shadow effect; non-virtual, unreachable in 1.50 (PE 0x101A6D10). [INFERRED] name.
+    void applyShadowLightParameters();
     // The per-material shader-permutation mask the main draw stamps into every queue
     // entry. A __thiscall with three stack arguments - the draw's decompilation drops the
     // receiver, and the standalone view restores it (it dispatches +0xA8 and +0xB0).
-    unsigned int buildShaderDefineMask(const unsigned char* material, bool alphaPass,
+    unsigned int buildShaderDefineMask(const SkinnedMeshMaterial* material, bool alphaPass,
                                        unsigned int quality);
 
     // the draws
@@ -145,16 +148,14 @@ public:
     // NOT read. It has 104 Mat4 allocations and four vectors to undo, so it is not guessable.
     ~SkinnedMesh();                                          // 0x101A7A10        frontier
 
-    // data, in shipped order
-    // +0x000..+0x02F: inherited GeometryInstanceData; all retail offsets remain asserted.
+    // data, in shipped order; the `+0xNN` comments are the retail offsets
+    // +0x000..+0x02F: inherited GeometryInstanceData.
     int                 m_refCount;             // +0x030  ctor 1  StaticMesh keeps its at +0x34
 
-    // +0x034 / +0x038: the current selection, rewritten together by +0x6C and +0x78. The lod
-    // record is 132 bytes (its +0x1C is the bounding radius, its +0x20 the "bounds dirty" byte,
-    // its +0x80 a flag the draw reads, and a vector of 68-byte material records starts at its
-    // +0x44). The companion is itself a vc71 vector, of 456-byte records.
-    unsigned char*      m_lodRecord;            // +0x034  ctor 0, then the template gate
-    vc71::vector_layout* m_lodMaterials;        // +0x038  ctor 0, then the template gate
+    // +0x034 / +0x038: the current selection, rewritten together by +0x6C and +0x78: the
+    // template's 132-byte lod record and that lod's vector of 456-byte material records.
+    SkinnedMeshLod*     m_lodRecord;            // +0x034  ctor 0, then the template gate
+    std::vector<SkinnedMeshMaterial>* m_lodMaterials;   // +0x038  ctor 0, then the template gate
     unsigned int        m_geomIndex;            // +0x03C  ctor 0; slots +0x6C / +0x70
     unsigned int        m_lodIndex;             // +0x040  ctor 0; slots +0x78 / +0x7C
     unsigned char       m_lodExplicit;          // +0x044  ctor 0; +0x78 sets it, -1 clears it
@@ -165,7 +166,7 @@ public:
     unsigned int        m_dword4C;              // +0x04C  ctor 0
     unsigned char       m_byte50;               // +0x050  ctor 0
     unsigned char       m_pad051[3];            // +0x051
-    void*               m_heightmapCluster;     // +0x054  ctor 0, and the constructor's last store
+    void*               m_heightmapCluster;     // +0x054  borrowed singleton, looked up last
     SkinnedMeshTemplate* m_template;            // +0x058  the constructor's argument
     const Mat4*         m_transform;            // +0x05C  ctor 0; slots +0x48 / +0x50
 
@@ -176,10 +177,9 @@ public:
 
     unsigned int        m_dword160;             // +0x160  NOT written by the constructor
     // +0x164 is a vector, and that is why the constructor "skips" +0x164 and zeroes exactly
-    // +0x168/+0x16C/+0x170: the allocator word is left alone, the shipped shape this whole tree
-    // shows. The draw passes `this + 0x164` to XpLightManager's gather and then walks
-    // (last - first) >> 2 pointers out of it, so the element type is world::LightSource*.
-    vc71::vector_layout m_lights;               // +0x164  alloc UNwritten; first/last/end zeroed
+    // +0x168/+0x16C/+0x170 in retail. The draw passes `this + 0x164` to XpLightManager's gather and
+    // then walks (last - first) >> 2 pointers out of it, so the element type is world::LightSource*.
+    std::vector<world::LightSource*> m_lights;  // +0x164
     // The skeleton palette the caller hands in. updateBonePalettes indexes it with
     // `partRecord[0] << 6`, a stride of sizeof(Mat4) - which is what proves the type.
     const Mat4*         m_boneTransforms;       // +0x174  ctor 0; slot +0x54
@@ -210,11 +210,10 @@ public:
     // +0x360 .. +0x583 - raObjectParametersConstruct (0x100458E0), the same 0x224-byte block
     // StaticMesh embeds at its +0x38 and Terrain.cpp already drives. Its `Transparency` holder is
     // the +0x510 that slot +0xF4 writes.
-    unsigned char       m_objectParameters[0x224];   // +0x360
+    ::dice::hfe::dx9rend::Ra::RaObjectParameters m_objectParameters;   // +0x360
 
-    // +0x584: the same unwritten-allocator vector shape again. The draw appends one 68-byte record
-    // per gathered light here and walks it with (last - first) / 68.
-    vc71::vector_layout m_lightRecords;         // +0x584  alloc UNwritten; first/last/end zeroed
+    // +0x584: the draw sizes this to one 68-byte record per gathered light.
+    std::vector< ::dice::hfe::dx9rend::Ra::RaLightRecord> m_lightRecords;   // +0x584
     unsigned int        m_dword594;             // +0x594  NOT written by the constructor
 };
 
@@ -224,50 +223,7 @@ public:
 
 static_assert(offsetof(SkinnedMesh, m_vptr) == 0x000, "m_vptr");
 static_assert(offsetof(SkinnedMesh, m_name) == 0x004, "m_name");
-static_assert(offsetof(SkinnedMesh, m_dword20) == 0x020, "m_dword20");
-static_assert(offsetof(SkinnedMesh, m_float28) == 0x028, "m_float28");
-static_assert(offsetof(SkinnedMesh, m_refCount) == 0x030, "m_refCount");
-static_assert(offsetof(SkinnedMesh, m_lodRecord) == 0x034, "m_lodRecord");
-static_assert(offsetof(SkinnedMesh, m_lodMaterials) == 0x038, "m_lodMaterials");
-static_assert(offsetof(SkinnedMesh, m_geomIndex) == 0x03C, "m_geomIndex");
-static_assert(offsetof(SkinnedMesh, m_lodIndex) == 0x040, "m_lodIndex");
-static_assert(offsetof(SkinnedMesh, m_lodExplicit) == 0x044, "m_lodExplicit");
-static_assert(offsetof(SkinnedMesh, m_dword48) == 0x048, "m_dword48");
-static_assert(offsetof(SkinnedMesh, m_dword4C) == 0x04C, "m_dword4C");
-static_assert(offsetof(SkinnedMesh, m_byte50) == 0x050, "m_byte50");
-static_assert(offsetof(SkinnedMesh, m_heightmapCluster) == 0x054, "m_heightmapCluster");
-static_assert(offsetof(SkinnedMesh, m_template) == 0x058, "m_template");
-static_assert(offsetof(SkinnedMesh, m_transform) == 0x05C, "m_transform");
-static_assert(offsetof(SkinnedMesh, m_matrix60) == 0x060, "m_matrix60");
-static_assert(offsetof(SkinnedMesh, m_matrixA0) == 0x0A0, "m_matrixA0");
-static_assert(offsetof(SkinnedMesh, m_matrixE0) == 0x0E0, "m_matrixE0");
-static_assert(offsetof(SkinnedMesh, m_matrix120) == 0x120, "m_matrix120");
-static_assert(offsetof(SkinnedMesh, m_dword160) == 0x160, "m_dword160");
-static_assert(offsetof(SkinnedMesh, m_lights) == 0x164, "m_lights");
-static_assert(offsetof(SkinnedMesh, m_boneTransforms) == 0x174, "m_boneTransforms");
-static_assert(offsetof(SkinnedMesh, m_boneTransformCount) == 0x178, "m_boneTransformCount");
-static_assert(offsetof(SkinnedMesh, m_excludedPart) == 0x17C, "m_excludedPart");
-static_assert(offsetof(SkinnedMesh, m_bonePalettes) == 0x180, "m_bonePalettes");
 static_assert(sizeof(((SkinnedMesh*)0)->m_bonePalettes) == 0x1A0, "104 Mat4* = 0x180..0x31F");
-static_assert(offsetof(SkinnedMesh, m_boneCounts) == 0x320, "m_boneCounts");
-static_assert(offsetof(SkinnedMesh, m_ownerObject) == 0x330, "m_ownerObject");
-static_assert(offsetof(SkinnedMesh, m_byte334) == 0x334, "m_byte334");
-static_assert(offsetof(SkinnedMesh, m_shadowCasterFrame) == 0x338, "m_shadowCasterFrame");
-static_assert(offsetof(SkinnedMesh, m_dword33C) == 0x33C, "m_dword33C");
-static_assert(offsetof(SkinnedMesh, m_fov) == 0x340, "m_fov");
-static_assert(offsetof(SkinnedMesh, m_distanceToCamera) == 0x344, "m_distanceToCamera");
-static_assert(offsetof(SkinnedMesh, m_dword348) == 0x348, "m_dword348");
-static_assert(offsetof(SkinnedMesh, m_paletteFrameStamp) == 0x34C, "m_paletteFrameStamp");
-static_assert(offsetof(SkinnedMesh, m_lodFrameStamp) == 0x350, "m_lodFrameStamp");
-static_assert(offsetof(SkinnedMesh, m_float354) == 0x354, "m_float354");
-static_assert(offsetof(SkinnedMesh, m_double358) == 0x358, "m_double358");
-static_assert(offsetof(SkinnedMesh, m_objectParameters) == 0x360, "m_objectParameters");
-static_assert(offsetof(SkinnedMesh, m_lightRecords) == 0x584, "m_lightRecords");
-static_assert(offsetof(SkinnedMesh, m_dword594) == 0x594, "m_dword594");
-
-// 0x594 + 4 = 0x598, and SkinnedMeshTemplate::createInstance (0x1010F270) allocates exactly that.
-static_assert(sizeof(SkinnedMesh) == 0x598,
-              "SkinnedMeshTemplate::createInstance (0x1010F270) allocates 0x598");
 #endif
 
 // the SkinnedMesh technique initialisation. It is what fills the per-quality
@@ -281,8 +237,27 @@ void skinnedMeshInitTechniques();
 // storage lives beside the draw that reads it.
 void skinnedMeshInitShadowState();
 
+// The release half, inlined into the template destructor at PE 0x10110875..0x101108C4: drops one
+// reference on each of the four parameters, then on the effect, and forgets the effect (so the
+// next skinnedMeshInitShadowState creates it again) only when that was its last reference. The
+// parameter globals are not cleared. Called once per destroyed template that had loaded.
+void skinnedMeshReleaseShadowState();
+
+// Borrows the current shadow effect; initialization and lifetime remain with the templates.
+dx9rend::Effect* skinnedMeshShadowEffect();
+
 // 0x101A7650, called on storage the template already allocated.
 SkinnedMesh* skinnedMeshConstruct(void* storage, void* objectTemplate);
+
+// SkinnedMeshRenderer (SkinnedMeshRenderer.cpp), as the draw reaches it through the published
+// singleton. sub_10123A40 answers the renderer's mode word, which the draw compares against 2.
+// sub_10123A50 / sub_10123A90 queue a mesh by its camera distance into the renderer's first and
+// third distance-ordered queues; both return at once when the renderer or the mesh is null.
+int  skinnedMeshRendererMode();
+// Store the render pass's enable byte; the published singleton must exist.
+void skinnedMeshRendererSetEnabled(unsigned char enabled);
+void skinnedMeshRendererSubmitA(SkinnedMesh* mesh);
+void skinnedMeshRendererSubmitB(SkinnedMesh* mesh);
 
 // Primary compatibility table. Keep each thunk's declared stack-argument count.
 extern void* const g_skinnedMeshVtable[62];

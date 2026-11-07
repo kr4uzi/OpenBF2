@@ -9,37 +9,7 @@
 #include "../RendMisc/IRenderView.h"
 #include "../RendDX9/RendDX9Base.h"        // d3d9.h, renderDevice, the effect and draw seams
 #include "../RendDX9/ShaderParameter.h"
-
-// dice's DirectX SDK supplied ID3DXMesh through d3dx9mesh.h; the current Windows SDK does not. This is
-// the instruction-proven prefix the sphere uses - the same slots XpLightManager.cpp declares for
-// LightManager::buildDebugGeometry, under this TU's own name. The prefix ends at GetIndexBuffer.
-struct SplineD3dxMesh : public IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE DrawSubset(DWORD attributeId) = 0;       // +0x0C
-    virtual DWORD STDMETHODCALLTYPE GetNumFaces() = 0;                         // +0x10
-    virtual DWORD STDMETHODCALLTYPE GetNumVertices() = 0;                      // +0x14
-    virtual DWORD STDMETHODCALLTYPE GetFVF() = 0;                              // +0x18
-    virtual HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9*) = 0;  // +0x1C
-    virtual DWORD STDMETHODCALLTYPE GetNumBytesPerVertex() = 0;                // +0x20
-    virtual DWORD STDMETHODCALLTYPE GetOptions() = 0;                          // +0x24
-    virtual HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**) = 0;       // +0x28
-    virtual HRESULT STDMETHODCALLTYPE CloneMeshFVF(
-        DWORD options, DWORD fvf, IDirect3DDevice9* device,
-        SplineD3dxMesh** clone) = 0;                                           // +0x2C
-    virtual HRESULT STDMETHODCALLTYPE CloneMesh(
-        DWORD options, const D3DVERTEXELEMENT9* declaration,
-        IDirect3DDevice9* device, SplineD3dxMesh** clone) = 0;                 // +0x30
-    virtual HRESULT STDMETHODCALLTYPE GetVertexBuffer(IDirect3DVertexBuffer9**) = 0; // +0x34
-    virtual HRESULT STDMETHODCALLTYPE GetIndexBuffer(IDirect3DIndexBuffer9**) = 0;   // +0x38
-};
-
-// d3dx9_25 import. The modern SDK ships no D3DX9 import declarations; lib.exe gives the .def export a
-// cdecl-shaped thunk name while this winapi declaration asks for the stdcall-decorated one (six
-// arguments = @24). XpLightManager.cpp bridges the same pair with the same directive.
-extern "C" HRESULT WINAPI D3DXCreateSphere(
-    IDirect3DDevice9* device, float radius, unsigned int slices,
-    unsigned int stacks, SplineD3dxMesh** mesh, void** adjacency);
-#pragma comment(linker, "/alternatename:_D3DXCreateSphere@24=_D3DXCreateSphere")
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 
 namespace dice {
 namespace hfe {
@@ -57,7 +27,7 @@ namespace geom {
 namespace {
 
 // 0x1024B59C..0x1024B5A8 - the shared sphere and its effect handles.
-SplineD3dxMesh*             s_sphere = 0;           // dword_1024B59C
+ID3DXMesh*                  s_sphere = 0;           // dword_1024B59C
 dx9rend::Effect*            s_effect = 0;           // dword_1024B5A0
 dx9rend::ShaderParameter*   s_worldViewProjection = 0;   // dword_1024B5A4
 dx9rend::ShaderParameter*   s_diffuseColor = 0;     // dword_1024B5A8
@@ -93,6 +63,7 @@ void addSharedReferences()
 } // anonymous namespace
 
 // Initializes point position, radius, and timing, preserving repeated assignments. The trailing byte remains unset.
+// PE 0x100A2A60.
 SplineControlPoint::SplineControlPoint(const Vec3& position)
     : m_position(position)
     , m_radius(0.3f)
@@ -113,16 +84,16 @@ SplineControlPoint::SplineControlPoint(const Vec3& position)
         // cloned into the static as managed write-only XYZ (options 0x660, FVF 2), the local
         // released; then the effect and its two parameters. No result is tested (shipped).
         IDirect3DDevice9* const device = static_cast<IDirect3DDevice9*>(dx9rend::renderDevice());
-        SplineD3dxMesh* source = 0;
+        ID3DXMesh* source = 0;
         D3DXCreateSphere(device, 1.0f, 5u, 5u, &source, 0);
         source->CloneMeshFVF(0x660u, D3DFVF_XYZ, device, &s_sphere);
         source->Release();
         s_effect = static_cast<dx9rend::Effect*>(
             dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "Shaders/SplineShader"));
         s_worldViewProjection =
-            dx9rend::effectGetShaderParameterTyped(s_effect, vc71::string("WorldViewProjection"));
+            dx9rend::effectGetShaderParameterTyped(s_effect, std::string("WorldViewProjection"));
         s_diffuseColor =
-            dx9rend::effectGetShaderParameterTyped(s_effect, vc71::string("DiffuseColor"));
+            dx9rend::effectGetShaderParameterTyped(s_effect, std::string("DiffuseColor"));
     }
     else
     {
@@ -131,6 +102,7 @@ SplineControlPoint::SplineControlPoint(const Vec3& position)
 }
 
 // Copies fields and retains shared handles. The trailing byte remains unset; shared mesh storage must be initialized.
+// PE 0x100A2BD0.
 SplineControlPoint::SplineControlPoint(const SplineControlPoint& other)
     : m_position(other.m_position)
     , m_radius(other.m_radius)
@@ -150,6 +122,7 @@ SplineControlPoint::SplineControlPoint(const SplineControlPoint& other)
 // release DiffuseColor, WorldViewProjection and the effect (+0x08 each, no null tests),
 // then the mesh: a null static is skipped, and the static is nulled only when Release answers 0.
 // Then the string.
+// PE 0x100A2A10.
 SplineControlPoint::~SplineControlPoint()
 {
     s_diffuseColor->release();
@@ -161,6 +134,7 @@ SplineControlPoint::~SplineControlPoint()
 
 // Draws control points in green, white or dark blue for types 0, 1 or 2.
 // Type 3 is hidden; other types retain the previous color.
+// PE 0x100A2C70
 void SplineControlPoint::draw()
 {
     if (m_type == 3)
@@ -202,7 +176,7 @@ void SplineControlPoint::draw()
     vertices->Release();
     indices->Release();
 
-    dx9rend::effectSetTechniqueByName(s_effect, vc71::string("controlpoint"));
+    dx9rend::effectSetTechniqueByName(s_effect, std::string("controlpoint"));
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();    // renderer +0x48
 
     Vec3 scale;

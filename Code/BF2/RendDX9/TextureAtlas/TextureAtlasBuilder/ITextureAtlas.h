@@ -12,7 +12,10 @@
 struct IDirect3DDevice9;
 
 // The DLL image exports the two interfaces; every other image (RendDX9, test hosts) imports them.
-#if defined(BF2_IMAGE_TEXTUREATLASBUILDER)
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] The native renderer embeds the builder without DLL attributes.
+#  define TEXTUREATLAS_API
+#elif defined(BF2_IMAGE_TEXTUREATLASBUILDER)
 #  define TEXTUREATLAS_API __declspec(dllexport)
 #else
 #  define TEXTUREATLAS_API __declspec(dllimport)

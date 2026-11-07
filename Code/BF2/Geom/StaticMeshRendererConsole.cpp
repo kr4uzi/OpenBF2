@@ -1,17 +1,16 @@
 // Native StaticMeshRenderer console bindings: the two object-lightmap atlas builders,
 // loadAllLightMapFiles and loadAllLightMapFilesDLL. [INFERRED] file placement; 1.50 registers these
-// rows in ModuleGeom's list after the StaticMeshRenderer properties, which this file does not bind.
+// rows in ModuleGeom's list after the StaticMeshRenderer properties, published first below.
 // Compatibility builds cannot share host ConsoleObject layouts and omit these bindings.
 
 #ifdef BF2_IMAGE_RENDDX9
 #include "../../RendDX9Abi/PluginAbi.h"
-#if BF2_PLUGIN_ABI_NATIVE
 
 #include "StaticMeshRenderer.h"
 
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 #include "../Core/ConsoleObjectMacro.h"
 #include "../Core/ConsoleObjects.h"
 
@@ -20,6 +19,9 @@
 namespace dice {
 namespace hfe {
 namespace geom {
+
+bool registerStaticMeshRendererPropertyConsoleObjects();
+bool unregisterStaticMeshRendererPropertyConsoleObjects();
 
 namespace {
 
@@ -39,16 +41,16 @@ StaticMeshRenderer* staticMeshRendererSingleton()
 // check of their own.
 bool consoleLoadAllLightMapFiles(const std::string& directory, const std::string& extension)
 {
-    const vc71::string directoryCopy(directory.c_str());
-    const vc71::string extensionCopy(extension.c_str());
+    const std::string directoryCopy(directory.c_str());
+    const std::string extensionCopy(extension.c_str());
     return staticMeshRendererLoadAllLightMapFiles(staticMeshRendererSingleton(), directoryCopy,
                                                   extensionCopy);
 }
 
 bool consoleLoadAllLightMapFilesDll(const std::string& directory, const std::string& extension)
 {
-    const vc71::string directoryCopy(directory.c_str());
-    const vc71::string extensionCopy(extension.c_str());
+    const std::string directoryCopy(directory.c_str());
+    const std::string extensionCopy(extension.c_str());
     return staticMeshRendererLoadAllLightMapFilesDll(staticMeshRendererSingleton(), directoryCopy,
                                                      extensionCopy);
 }
@@ -59,22 +61,26 @@ bool consoleLoadAllLightMapFilesDll(const std::string& directory, const std::str
 BF2_CONSOLE_OBJECT("StaticMeshRenderer", 2, 0)
 
 // StaticMeshRenderer.loadAllLightMapFiles <directory> <extension> - the batched atlas builder.
+// PE 0x100BB02A, 0x100BB11C, 0x100BB0B7: constructor, argument conversion, executor.
 BF2_CONSOLE_METHOD_2_RET_ACTIVE(loadAllLightMapFiles, consoleLoadAllLightMapFiles, bool,
                                 staticMeshRendererSingleton() != 0, std::string, std::string,
                                 kStaticMeshRendererConsoleTag)
 // StaticMeshRenderer.loadAllLightMapFilesDLL <directory> <extension> - the single-atlas builder.
+// PE 0x100BB1F1, 0x100BB2E3, 0x100BB27E: constructor, argument conversion, executor.
 BF2_CONSOLE_METHOD_2_RET_ACTIVE(loadAllLightMapFilesDLL, consoleLoadAllLightMapFilesDll, bool,
                                 staticMeshRendererSingleton() != 0, std::string, std::string,
                                 kStaticMeshRendererConsoleTag)
 
 bool registerStaticMeshRendererConsoleObjects()
 {
+    registerStaticMeshRendererPropertyConsoleObjects();
     return mainConsoleObjects->registerConsoleObjects(
         consoleBindingList(kStaticMeshRendererConsoleTag));
 }
 
 bool unregisterStaticMeshRendererConsoleObjects()
 {
+    unregisterStaticMeshRendererPropertyConsoleObjects();
     return mainConsoleObjects->unregisterConsoleObjects(
         consoleBindingList(kStaticMeshRendererConsoleTag));
 }
@@ -83,5 +89,4 @@ bool unregisterStaticMeshRendererConsoleObjects()
 } // namespace hfe
 } // namespace dice
 
-#endif // BF2_PLUGIN_ABI_NATIVE
 #endif // BF2_IMAGE_RENDDX9

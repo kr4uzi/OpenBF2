@@ -1,14 +1,22 @@
 // Procedural noise generation. Arithmetic order is significant for floating-point results;
-// transcendental calculations use double precision before conversion.
+// Native transcendental calls retain the port's libm policy.
 
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "PerlinNoise.h"
+#include "../Geom/LcgRandom.h"                 // lcgrandStep - sub_1009EF30
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"          // renddx9abi::logf - dice's debug stream
 #include "../../RendDX9Abi/ModuleCommon.h"
+#include "Debug.h"
+#if !defined(_MSC_VER)
+#include "../Platform/X87Compat.h"
+#endif
 
 #include <cmath>
 #include <cstring>
@@ -36,20 +44,6 @@ const float kTwoPowMinus25 = 2.98023223876953125e-08f;
 const float kTwoPowMinus26 = 1.490116119384765625e-08f;
 const float kPi            = 3.1415927f;
 
-// One Schrage half of lcgrand: x' = a * x mod (2^31 - 1) in 16-bit halves, with the image's signed
-// shifts (`sar`) - every state it is handed is already in [0, 2^31 - 1).
-int lcgrandHalf(int x, int factor)
-{
-    const int lo = (x & 0xFFFF) * factor;
-    int hi = (x >> 16) * factor;
-    hi += lo >> 16;
-    const int folded = ((hi & 0x7FFF) << 16) + (hi >> 15);
-    int result = folded + (lo & 0xFFFF) - 0x7FFFFFFF;
-    if (result < 0)
-        result += 0x7FFFFFFF;
-    return result;
-}
-
 // The 24-bit draw every sampler makes: `or al, 80h; sar eax, 7; add eax, 1` - [1, 2^24], exact in a
 // float.
 float draw24(int value)
@@ -66,7 +60,7 @@ float draw24(int value)
 // The stores in shipped order after the three vptr writes: refCount 1, then the lcgrand
 // state from the seed word before the seed is written - the allocator's leftover +0x10 masked to 31
 // bits (shipped; read through memcpy so the stale bytes are copied, not interpreted early) - then the
-// seed from time(0), and the six defaults.
+// seed from time(0), and the six defaults. PE 0x1009F530.
 PerlinNoise::PerlinNoise()
 {
     m_refCount = 1;
@@ -125,23 +119,32 @@ bool PerlinNoise::makeScript(::dice::hfe::io::IStream* /*stream*/)
 }
 
 
-// The accessors, 0x1009F000..0x1009F0C0 and 0x1009F470 - one store or one load each.
+// The accessors, 0x1009F000..0x1009F0C0 and 0x1009F470 - one store or one load each. The setters
+// are PE 0x1009F000 (seed +0x10), 0x1009F020 (dimension +0x14), 0x1009F040 (smoothing +0x18),
+// 0x1009F060 (interpolation +0x1C), 0x1009F080 (octaves +0x20) and 0x1009F0A0 (persistence +0x24),
+// each `ret 4`.
 
+// PE 0x1009F000
 void  PerlinNoise::setSeed(int seed)                  { m_seed = seed; }
 int   PerlinNoise::getSeed()                          { return m_seed; }
+// PE 0x1009F020
 void  PerlinNoise::setDimension(int dimension)        { m_dimension = dimension; }
 int   PerlinNoise::getDimension()                     { return m_dimension; }
+// PE 0x1009F040
 void  PerlinNoise::setSmoothing(int mode)             { m_smoothing = mode; }
 int   PerlinNoise::getSmoothing()                     { return m_smoothing; }
+// PE 0x1009F060
 void  PerlinNoise::setInterpolation(int mode)         { m_interpolation = mode; }
 int   PerlinNoise::getInterpolation()                 { return m_interpolation; }
+// PE 0x1009F080
 void  PerlinNoise::setOctaves(int octaves)            { m_octaves = octaves; }
 int   PerlinNoise::getOctaves()                       { return m_octaves; }
+// PE 0x1009F0A0
 void  PerlinNoise::setPersistence(float persistence)  { m_persistence = persistence; }
 float PerlinNoise::getPersistence()                   { return m_persistence; }
 const Vec2& PerlinNoise::getOutputRange()             { return m_range; }
 
-// y through the FPU, x as a dword - a plain Vec2 copy.
+// PE 0x1009F470: y through the FPU, x as a dword - a plain Vec2 copy.
 void PerlinNoise::setOutputRange(const Vec2& range)
 {
     m_range.y = range.y;
@@ -151,18 +154,134 @@ void PerlinNoise::setOutputRange(const Vec2& range)
 
 // The generator and the three samplers.
 
+namespace {
 
-// lcgrand: two Lehmer steps (24112, then 26143) on +0x0C; the new state is the answer.
+static void unknownNoiseParameter(int line)
+{
+    ::renddx9abi::Debug(static_cast<DebugType>(6),
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\GeomMisc\\PerlinNoise.cpp",
+        line, "") << "Unknown param";
+}
+
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native internal calls carry ST0 in Real rather than
+// narrowing at the C++ float return boundary. Public signatures stay unchanged.
+static int noiseOffset(int n, int delta)
+{
+    const unsigned int bits = static_cast<unsigned int>(n) + static_cast<unsigned int>(delta);
+    int result;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+// PE 0x1009F0D0
+static bf2x87::Real baseNoiseValue(PerlinNoise* self, int n)
+{
+    const unsigned int seed = static_cast<unsigned int>(self->m_seed) + static_cast<unsigned int>(n);
+    if (self->m_smoothing == 0)
+    {
+        self->m_state = seed & 0x7FFFFFFFu;
+        const float hi = self->m_range.y, lo = self->m_range.x;
+        const float draw = draw24(self->nextRandom());
+        return bf2x87::add(bf2x87::mul(bf2x87::mul(bf2x87::wide(draw),
+            bf2x87::sub(bf2x87::wide(hi), bf2x87::wide(lo))), bf2x87::wide(kTwoPowMinus24)),
+            bf2x87::wide(lo));
+    }
+    if (self->m_smoothing != 1)
+    {
+        unknownNoiseParameter(151);
+        return bf2x87::wide(0.0f);
+    }
+
+    self->m_state = seed & 0x7FFFFFFFu;
+    const float lo = self->m_range.x, hi = self->m_range.y;
+    const float first = draw24(self->nextRandom());
+    self->m_state = (seed - 1u) & 0x7FFFFFFFu;
+    const float previousLo = self->m_range.x, previousHi = self->m_range.y;
+    const float center = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::mul(bf2x87::wide(first),
+        bf2x87::sub(bf2x87::wide(hi), bf2x87::wide(lo))), bf2x87::wide(kTwoPowMinus25)),
+        bf2x87::mul(bf2x87::wide(lo), bf2x87::wide(0.5f))));
+    const float second = draw24(self->nextRandom());
+    self->m_state = (seed + 1u) & 0x7FFFFFFFu;
+    const float nextHi = self->m_range.y, nextLo = self->m_range.x;
+    const float partial = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::mul(bf2x87::mul(
+        bf2x87::wide(second), bf2x87::sub(bf2x87::wide(previousHi), bf2x87::wide(previousLo))),
+        bf2x87::wide(kTwoPowMinus26)), bf2x87::mul(bf2x87::wide(previousLo), bf2x87::wide(0.25f))),
+        bf2x87::wide(center)));
+    const float third = draw24(self->nextRandom());
+    return bf2x87::add(bf2x87::add(bf2x87::mul(bf2x87::mul(bf2x87::wide(third),
+        bf2x87::sub(bf2x87::wide(nextHi), bf2x87::wide(nextLo))), bf2x87::wide(kTwoPowMinus26)),
+        bf2x87::mul(bf2x87::wide(nextLo), bf2x87::wide(0.25f))), bf2x87::wide(partial));
+}
+
+// PE 0x1009F2A0
+static bf2x87::Real interpolatedNoiseValue(PerlinNoise* self, int n, float t)
+{
+    switch (self->m_interpolation)
+    {
+    case 1:
+    {
+        bf2x87::Real angle = bf2x87::mul(bf2x87::wide(t), bf2x87::wide(kPi));
+#if defined(__i386__) || defined(__x86_64__)
+        // [CHOSEN, not recovered] Native Intel can execute the original FCOS directly.
+        __asm__ volatile("fcos" : "+t"(angle));
+#else
+        // [CHOSEN, not recovered] Other processors retain the port's native libm policy.
+        angle = bf2x87::cosValue(angle);
+#endif
+        t = bf2x87::store(bf2x87::mul(bf2x87::sub(bf2x87::wide(1.0f), angle), bf2x87::wide(0.5f)));
+    }
+        // The linear and cosine modes share the weighted-sample operation.
+        // fall through
+    case 0:
+    {
+        const float a = bf2x87::store(bf2x87::mul(baseNoiseValue(self, noiseOffset(n, 1)), bf2x87::wide(t)));
+        const bf2x87::Real b = baseNoiseValue(self, n);
+        return bf2x87::add(bf2x87::mul(bf2x87::sub(bf2x87::wide(1.0f), bf2x87::wide(t)), b), bf2x87::wide(a));
+    }
+    case 2:
+    {
+        const float v0 = bf2x87::store(baseNoiseValue(self, noiseOffset(n, -1)));
+        const float d01 = bf2x87::store(bf2x87::sub(bf2x87::wide(v0), baseNoiseValue(self, n)));
+        const float v3 = bf2x87::store(baseNoiseValue(self, noiseOffset(n, 2)));
+        const float p = bf2x87::store(bf2x87::sub(bf2x87::sub(bf2x87::wide(v3),
+            baseNoiseValue(self, noiseOffset(n, 1))), bf2x87::wide(d01)));
+        const float v2 = bf2x87::store(baseNoiseValue(self, noiseOffset(n, 1)));
+        const float linear = bf2x87::store(bf2x87::mul(bf2x87::sub(bf2x87::wide(v2),
+            baseNoiseValue(self, noiseOffset(n, -1))), bf2x87::wide(t)));
+        bf2x87::Real result = bf2x87::add(baseNoiseValue(self, n), bf2x87::wide(linear));
+        // [CHOSEN, not recovered] Native libm supplies the existing _CIpow substitution.
+        const bf2x87::Real square = bf2x87::wide(std::pow(static_cast<double>(t), 2.0));
+        (void)bf2x87::store(square); // The original FST raises conversion exceptions too.
+        result = bf2x87::add(result, bf2x87::mul(bf2x87::sub(bf2x87::wide(d01), bf2x87::wide(p)), square));
+        const bf2x87::Real cube = bf2x87::wide(std::pow(static_cast<double>(t), 3.0));
+        (void)bf2x87::store(cube);
+        return bf2x87::add(result, bf2x87::mul(cube, bf2x87::wide(p)));
+    }
+    default:
+        unknownNoiseParameter(175);
+        return bf2x87::wide(0.0f);
+    }
+}
+#endif
+
+} // anonymous namespace
+
+
+// The same retail function as Geom/LcgRandom.h's lcgrandStep (lcgrand_step), not a separate one:
+// the image calls it with ecx = this + 0x0C. The new state is the answer.
 int PerlinNoise::nextRandom()
 {
-    m_state = lcgrandHalf(lcgrandHalf(m_state, 24112), 26143);
-    return m_state;
+    return static_cast<int>(lcgrandStep(reinterpret_cast<unsigned int*>(&m_state)));
 }
 
 // Reseeds each coordinate so output depends only on seed, coordinate, range, and smoothing mode.
 // Mode 0 draws once; mode 1 weights neighboring samples 1/4, 1/2, 1/4. Unknown modes report an error and return zero.
 float PerlinNoise::baseNoise(int n)
 {
+#if !defined(_MSC_VER)
+    return bf2x87::store(baseNoiseValue(this, n));
+#else
     const int seed = m_seed + n;
     switch (m_smoothing)
     {
@@ -192,15 +311,19 @@ float PerlinNoise::baseNoise(int n)
     }
     default:
         // sub_10074300(6, __FILE__, 151, "") << "Unknown param"; sub_10074690 - dice's debug stream.
-        ::renddx9abi::logf("PerlinNoise.cpp:151: Unknown param");
+        unknownNoiseParameter(151);
         return 0.0f;
     }
+#endif
 }
 
 // Interpolates neighboring samples linearly, with cosine smoothing, or cubically.
 // Preserve repeated cubic samples and their order because each call changes generator state.
 float PerlinNoise::interpolatedNoise(int n, float t)
 {
+#if !defined(_MSC_VER)
+    return bf2x87::store(interpolatedNoiseValue(this, n, t));
+#else
     switch (m_interpolation)
     {
     case 0:
@@ -234,26 +357,48 @@ float PerlinNoise::interpolatedNoise(int n, float t)
         return result;
     }
     default:
-        ::renddx9abi::logf("PerlinNoise.cpp:175: Unknown param");
+        unknownNoiseParameter(175);
         return 0.0f;
     }
+#endif
 }
 
 // Sums octave samples weighted by persistence. Nonpositive octave counts return zero.
+// PE 0x1009F490
 float PerlinNoise::octaveSum(float x)
 {
     float total = 0.0f;
     for (int i = 0; i < m_octaves; ++i)
     {
         const float persistence = m_persistence;
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] The scaled coordinate stays in ST0 through FISTP
+        // and fractional subtraction; neither the interpolation nor its product is spilled.
+        const unsigned int frequencyBits = 1u << (i & 31);
+        int frequency;
+        std::memcpy(&frequency, &frequencyBits, sizeof(frequency));
+        const bf2x87::Real scaled = bf2x87::mul(bf2x87::wide(frequency), bf2x87::wide(x));
+        const int whole = bf2x87::toIntTruncate(scaled);
+        const float fraction = bf2x87::store(bf2x87::sub(scaled, bf2x87::wide(whole)));
+        const bf2x87::Real value = interpolatedNoiseValue(this, whole, fraction);
+        // [CHOSEN, not recovered] Retain the native libm substitution for _CIpow.
+        const bf2x87::Real amplitude = bf2x87::wide(std::pow(static_cast<double>(persistence), static_cast<double>(i)));
+        (void)bf2x87::store(amplitude);
+        total = bf2x87::store(bf2x87::add(bf2x87::mul(amplitude, value), bf2x87::wide(total)));
+#else
         // `shl edx, cl` - the hardware masks the count to five bits.
         const float scaled = static_cast<float>(static_cast<int>(1u << (i & 31))) * x;
+#if defined(__APPLE__)
+        const int whole = bf2x87::toIntTruncate(scaled);                          // fistp, truncating
+#else
         const int whole = static_cast<int>(scaled);                          // fistp, truncating
+#endif
         const float fraction = scaled - static_cast<float>(whole);
         const float value = interpolatedNoise(whole, fraction);
         total = static_cast<float>(static_cast<double>(value) *
                                    std::pow(static_cast<double>(persistence),
                                             static_cast<double>(i))) + total;
+#endif
     }
     return total;
 }
@@ -279,7 +424,7 @@ IBase* __fastcall createPerlinNoise(unsigned int iid, IBase* outer)
     if (outer)
         return 0;
 
-    void* const storage = ::renddx9abi::engineAlloc(0x30);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(PerlinNoise));    // 0x30 on x86
     PerlinNoise* self = 0;
     if (storage)
         self = new (storage) PerlinNoise();

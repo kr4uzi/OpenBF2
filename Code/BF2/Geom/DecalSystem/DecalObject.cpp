@@ -3,27 +3,25 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "DecalObject.h"
 
 #include "../../Math/Plane3.h"
+#include "../../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
+#include "../../GeomMisc/Debug.h"
 #include "../../../RendDX9Abi/BfMemory.h"
 #include "../../../RendDX9Abi/Frontier.h"
 
 // The host (BF2.exe) interfaces add dispatches into, typed in both flavours (RW-266): each virtual
 // used below sits at its retail PE slot in this tree's MSVC table; no STL type crosses
 // those calls. IObject's +0x28 / +0x38
-// are its retail-aligned prefix (ObjectLayoutAccess). The retail-ABI flavour blocks Core/ClassManager.h
-// exactly as SkinnedMesh.cpp does.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_CLASSMANAGER_H
-#endif
+// are its retail-aligned prefix (ObjectLayoutAccess).
 #include "../../Game/Objects/ObjectLayoutAccess.h"      // world::IObject + its retail-aligned prefix
 #include "../../Physics/ICollisionMesh.h"               // hasLod / getVertexVector / getFaceCount /
                                                          // getFaceVector
 #include "../../Physics/HeightmapCluster.h"             // getPrimaryScale / getSquareInWorldCoords
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#endif
 
 #include <cfloat>
 #include <cmath>
@@ -37,6 +35,9 @@ namespace geom {
 
 extern IBase* g_DecalManager;               // ModuleGeom.cpp, dword_1024B908
 extern IBase* g_ParticleSystemManager;      // ModuleGeom.cpp, dword_1024B900
+// ParticleSystemManager.cpp (published in ParticleSystemManager.h): the manager's HeightmapCluster
+// pointer (retail +0x8C14), read without a null test on the manager.
+IBase* particleSystemManagerHeightmapCluster(IBase* manager);
 
 // the per-face clip planes, a VC7.1 std::vector<Plane> file static (constructed empty,
 // destroyed by the atexit thunk 0x101D9F90). File-private: nothing outside this file reads its
@@ -120,12 +121,11 @@ IDecalManager* decalManager()
 }
 
 // ParticleSystemManager +0x8C14 - m_heightmapCluster, the "HeightmapCluster" singleton the particle
-// system caches (0x100D2FD0). The struct is TU-local to ParticleSystemManager.cpp, which pins the
-// offset (static_assert, line 219); this RendDX9-own field is read at that offset in both flavours.
+// system caches (particleSystemManagerPostLoadLevel). The struct is TU-local to
+// ParticleSystemManager.cpp, which publishes the read; retail loads the field directly.
 IBase* particleHeightmapCluster()
 {
-    return *reinterpret_cast<IBase* const*>(
-        reinterpret_cast<const unsigned char*>(g_ParticleSystemManager) + 0x8C14);
+    return particleSystemManagerHeightmapCluster(g_ParticleSystemManager);
 }
 
 
@@ -158,9 +158,19 @@ float clampValue(float value, float low, float high)
 // -20001, discarded by every caller here); otherwise each component is scaled by 1 / sqrt(|v|^2).
 int normalizeInPlace(Vec3& v)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] PE 0x100777A0 spills the squared length, but not its reciprocal root.
+    using bf2x87::wide;
+    using bf2x87::store;
+    const float lengthSquared = store(wide(v.x) * wide(v.x) + wide(v.y) * wide(v.y)
+                                   + wide(v.z) * wide(v.z));
+    if (bf2x87::abs(wide(lengthSquared) - wide(1.0f)) < wide(FLT_EPSILON))
+        return 0;
+#else
     const float lengthSquared = v.x * v.x + v.y * v.y + v.z * v.z;
     if (std::fabs(lengthSquared - 1.0f) < FLT_EPSILON)
         return 0;
+#endif
     if (std::fabs(lengthSquared) < FLT_EPSILON)
     {
         v.x = 0.0f;
@@ -168,33 +178,44 @@ int normalizeInPlace(Vec3& v)
         v.z = 0.0f;
         return -20001;
     }
+#if defined(__APPLE__)
+    const bf2x87::Real inverse = wide(1.0f) / bf2x87::squareRoot(wide(lengthSquared));
+    v.x = store(inverse * wide(v.x));
+    v.y = store(inverse * wide(v.y));
+    v.z = store(inverse * wide(v.z));
+#else
     const float inverse = 1.0f / std::sqrt(lengthSquared);
     v.x = inverse * v.x;
     v.y = inverse * v.y;
     v.z = inverse * v.z;
+#endif
     return 0;
-}
-
-// PE 0x1007C440 (83 B, thiscall on the matrix) - transformVector: the 3x3 part only. Every input is
-// read before the first store, so `in` and `out` may alias.
-void transformVector(const Mat4& m, const Vec3& in, Vec3& out)
-{
-    const float z = m.m[2] * in.x + m.m[10] * in.z + m.m[6] * in.y;
-    const float y = m.m[1] * in.x + m.m[9] * in.z + m.m[5] * in.y;
-    const float x = m.m[8] * in.z + m.m[4] * in.y + in.x * m.m[0];
-    out.x = x;
-    out.y = y;
-    out.z = z;
 }
 
 // the plane through three points: normal = normalise((b - a) x
 // (c - a)), d = -(normal . a). The normal member is zeroed first (its constructor), as shipped.
+// PE 0x101AEA50
 Plane3 planeFromPoints(const Vec3& a, const Vec3& b, const Vec3& c)
 {
     Plane3 plane;
     plane.normal.x = 0.0f;
     plane.normal.y = 0.0f;
     plane.normal.z = 0.0f;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Only the Z differences spill before the cross product.
+    using bf2x87::wide;
+    using bf2x87::store;
+    const bf2x87::Real ux = wide(c.x) - wide(a.x);
+    const bf2x87::Real uy = wide(c.y) - wide(a.y);
+    const float uz = store(wide(c.z) - wide(a.z));
+    const bf2x87::Real vx = wide(b.x) - wide(a.x);
+    const bf2x87::Real vy = wide(b.y) - wide(a.y);
+    const float vz = store(wide(b.z) - wide(a.z));
+    Vec3 normal;
+    normal.x = store(wide(uz) * vy - wide(vz) * uy);
+    normal.y = store(wide(vz) * ux - vx * wide(uz));
+    normal.z = store(vx * uy - vy * ux);
+#else
     const float ux = c.x - a.x;
     const float uy = c.y - a.y;
     const float uz = c.z - a.z;
@@ -205,9 +226,15 @@ Plane3 planeFromPoints(const Vec3& a, const Vec3& b, const Vec3& c)
     normal.x = uz * vy - vz * uy;
     normal.y = vz * ux - vx * uz;
     normal.z = vx * uy - vy * ux;
+#endif
     normalizeInPlace(normal);
     plane.normal = normal;
+#if defined(__APPLE__)
+    plane.d = store(-(wide(normal.x) * wide(a.x) + wide(normal.y) * wide(a.y)
+                   + wide(normal.z) * wide(a.z)));
+#else
     plane.d = -(normal.x * a.x + normal.y * a.y + normal.z * a.z);
+#endif
     return plane;
 }
 
@@ -225,6 +252,18 @@ void planeAssign(Plane3& destination, const Plane3& source)
 
 Vec3 edgeNormal(const Vec3& from, const Vec3& to, const Vec3& faceNormal)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] PE 0x101AD390 retains the X/Y edge differences.
+    using bf2x87::wide;
+    using bf2x87::store;
+    const bf2x87::Real ex = wide(to.x) - wide(from.x);
+    const bf2x87::Real ey = wide(to.y) - wide(from.y);
+    const float ez = store(wide(to.z) - wide(from.z));
+    Vec3 normal;
+    normal.x = store(wide(faceNormal.z) * ey - wide(ez) * wide(faceNormal.y));
+    normal.y = store(wide(ez) * wide(faceNormal.x) - wide(faceNormal.z) * ex);
+    normal.z = store(ex * wide(faceNormal.y) - ey * wide(faceNormal.x));
+#else
     const float ex = to.x - from.x;
     const float ey = to.y - from.y;
     const float ez = to.z - from.z;
@@ -232,6 +271,7 @@ Vec3 edgeNormal(const Vec3& from, const Vec3& to, const Vec3& faceNormal)
     normal.x = faceNormal.z * ey - ez * faceNormal.y;
     normal.y = ez * faceNormal.x - faceNormal.z * ex;
     normal.z = ex * faceNormal.y - ey * faceNormal.x;
+#endif
     normalizeInPlace(normal);
     return normal;
 }
@@ -293,8 +333,16 @@ unsigned char computeOutcode(const Vec3& point, const std::vector<Plane3>& plane
     for (unsigned int i = 0; i < planes.size(); ++i)
     {
         const Plane3& plane = planes[i];
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] PE 0x101AECD0 compares the retained dot product.
+        const bf2x87::Real distance =
+            bf2x87::wide(plane.normal.z) * bf2x87::wide(point.z)
+            + bf2x87::wide(plane.normal.x) * bf2x87::wide(point.x)
+            + bf2x87::wide(point.y) * bf2x87::wide(plane.normal.y) + bf2x87::wide(plane.d);
+#else
         const float distance =
             plane.normal.z * point.z + plane.normal.x * point.x + point.y * plane.normal.y + plane.d;
+#endif
         if (distance > 0.0f)
             code = static_cast<unsigned char>(code | static_cast<unsigned char>(1u << i));
     }
@@ -311,12 +359,24 @@ void emitVertex(DecalRecord* record, const DecalVertex& source, const Plane3& fa
     target = source;
     if (s_projectOntoFacePlane)
     {
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] PE 0x101AD751..0x101AD797 spills only the Y/Z pushes.
+        using bf2x87::wide;
+        using bf2x87::store;
+        const bf2x87::Real distance = wide(facePlane.normal.y) * wide(target.position.y)
+                                  + wide(facePlane.normal.z) * wide(target.position.z)
+                                  + wide(facePlane.normal.x) * wide(target.position.x) + wide(facePlane.d);
+        const float pushY = store(wide(facePlane.normal.y) * distance);
+        const float pushZ = store(wide(facePlane.normal.z) * distance);
+        target.position.x = store(wide(target.position.x) - wide(facePlane.normal.x) * distance);
+#else
         const float distance = facePlane.normal.y * target.position.y
                              + facePlane.normal.z * target.position.z
                              + facePlane.normal.x * target.position.x + facePlane.d;
         const float pushY = facePlane.normal.y * distance;
         const float pushZ = facePlane.normal.z * distance;
         target.position.x = target.position.x - facePlane.normal.x * distance;
+#endif
         target.position.y = target.position.y - pushY;
         target.position.z = target.position.z - pushZ;
     }
@@ -347,9 +407,18 @@ void setupQuad(QuadSetup& setup, const DecalRecord* record, const IDecalTemplate
     const float rotationDraw = randomSymmetric();
     const float randomRotation = decalTemplate->getRandomRotation() * rotationDraw;   // +0x44
     // The product stays in st(0) through fcos / fsin (never stored first).
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FCOS and FSIN receive the retained angle, not its float rounding.
+    using bf2x87::wide;
+    using bf2x87::store;
+    const bf2x87::Real angle = (wide(decalTemplate->getRotation()) + wide(randomRotation)) * wide(s_degreesToRadians);
+    setup.cosine = store(bf2x87::cosValue(angle));
+    setup.sine = store(bf2x87::sinValue(angle));
+#else
     const float angle = (decalTemplate->getRotation() + randomRotation) * s_degreesToRadians;   // +0x4C
     setup.cosine = static_cast<float>(std::cos(static_cast<double>(angle)));
     setup.sine = static_cast<float>(std::sin(static_cast<double>(angle)));
+#endif
 
     const float sizeDraw = randomSymmetric();
     setup.randomSize = decalTemplate->getRandomSize() * sizeDraw;                     // +0x14
@@ -362,15 +431,28 @@ void setupQuad(QuadSetup& setup, const DecalRecord* record, const IDecalTemplate
     {
         // fistp in truncation mode, then an unsigned divide by the frames across - no guard
         // against a zero divisor, as shipped.
+#if defined(__APPLE__)
+        const unsigned int frame =
+            static_cast<unsigned int>(bf2x87::toIntTruncate(record->startFrame));
+#else
         const unsigned int frame =
             static_cast<unsigned int>(static_cast<int>(record->startFrame));
+#endif
         const unsigned int column = frame % decal_template_state::animationFrameCountX(decalTemplate);
         const Vec2& extent = decal_template_state::uvExtent(decalTemplate);
+#if defined(__APPLE__)
+        setup.originU = store(wide(column) * wide(extent.x)
+            + wide(decal_template_state::uvOffset(decalTemplate).x));
+        setup.originV = store(wide(frame - column)
+            * wide(decal_template_state::frameCountXReciprocal(decalTemplate)) * wide(extent.y)
+            + wide(decal_template_state::uvOffset(decalTemplate).y));
+#else
         setup.originU = static_cast<float>(column) * extent.x
                       + decal_template_state::uvOffset(decalTemplate).x;
         setup.originV = static_cast<float>(frame - column)
                       * decal_template_state::frameCountXReciprocal(decalTemplate) * extent.y
                       + decal_template_state::uvOffset(decalTemplate).y;
+#endif
     }
 }
 
@@ -392,6 +474,8 @@ void DecalObject::operator delete(void* block) noexcept
 
 // in the image's store order. The block is not null-tested: an
 // allocation failure faults on the first terminator store, as shipped.
+// PE 0x101AC7B0 (also 0x101AC7BB).
+// The analysis splits this one body at 0x101AC7BB, after the owner test; the tail's stores equal the ones below.
 DecalObject::DecalObject(world::IObject* owner)
 {
     m_count = 0;
@@ -421,6 +505,7 @@ DecalObject::DecalObject(world::IObject* owner)
 
 // (complete, unreferenced) / 0x101AEC80 (scalar deleting, +0x00): clear by a direct call,
 // leave the manager's active set, free the block (operator delete[], sub_1005F370).
+// PE 0x101AD010
 DecalObject::~DecalObject()
 {
     DecalObject::clear();
@@ -429,6 +514,7 @@ DecalObject::~DecalObject()
 }
 
 
+// PE 0x101AC670
 void DecalObject::setShadowRecord(void* record)         // +0x04,
 {
     m_shadowRecord = record;
@@ -439,6 +525,7 @@ void* DecalObject::getShadowRecord() const              // +0x08,
     return m_shadowRecord;
 }
 
+// PE 0x101AC690
 void DecalObject::setVisible(bool visible)              // +0x0C, both bytes
 {
     m_visible = visible;
@@ -466,6 +553,7 @@ void DecalObject::release()
 
 
 // (38 B, retn 4). No bound: the eighth static's terminator lands in m_ring[0].
+// PE 0x101AC6F0
 void DecalObject::pushStatic(DecalRecord* record)
 {
     m_static[m_staticCount] = record;
@@ -474,6 +562,7 @@ void DecalObject::pushStatic(DecalRecord* record)
 }
 
 // (76 B, retn 4). An empty ring restarts at slot 0 (oldest 0, insert 1).
+// PE 0x101AC720
 void DecalObject::pushRing(DecalRecord* record)
 {
     if (m_count == 0)
@@ -501,9 +590,21 @@ DecalRecord* DecalObject::popRing()
     return record;
 }
 
+// retn 8, thiscall: the static list's swap-with-last removal of slot `index`, as clear and remove
+// inline it. The first argument is pushed by nobody and never read.
+// unreachable in 1.50: no code or data references
+// PE 0x101AC6C0
+void DecalObject::removeStaticAt(DecalRecord* /*record*/, unsigned int index)
+{
+    --m_staticCount;
+    m_static[index] = m_static[m_staticCount];
+    m_static[m_staticCount] = 0;
+}
+
 // +0x14, drain the ring oldest first, then the statics (swap-with-last from
 // slot 0), then zero both ring cursors. The manager is NOT told: the object stays in the active
 // set until update finds it empty.
+// PE 0x101AC840
 void DecalObject::clear()
 {
     while (m_count > 0)
@@ -523,6 +624,7 @@ void DecalObject::clear()
 // +0x1C, drop one static decal by id. The id compares zero-extended
 // against the whole argument, so no argument above 255 ever matches. Ring decals are never
 // removable this way. The manager is not told.
+// PE 0x101ACEB0
 void DecalObject::remove(unsigned int decalId)
 {
     if (!decalId)
@@ -551,6 +653,7 @@ void DecalObject::remove(unsigned int decalId)
 //     (asked again here, +0x38 - the record's own +0x38 is not read);
 //   * an object left with no decal at all leaves the active set.
 // Always answers true (`mov al, 1`); the manager ignores it.
+// PE 0x101ACF30
 bool DecalObject::update(float deltaTime)
 {
     if (!m_owner)
@@ -581,10 +684,15 @@ bool DecalObject::update(float deltaTime)
 
 // add - +0x18, 0x101AE4B0 (941 B, retn 14h)
 
+// PE 0x101AE4B0
 unsigned int DecalObject::add(const Mat4* transform, const IDecalTemplate* decalTemplate,
                               float scale, world::ICollisionMesh* collisionMesh,
                               world::CollisionFaceInfo* faceInfo)
 {
+#if defined(__APPLE__)
+    using bf2x87::wide;
+    using bf2x87::store;
+#endif
     if (!decal_manager_state::decalsEnabled())                             // manager +0x2A6
         return 0;
     // An object nobody drew last frame takes static decals only.
@@ -609,14 +717,32 @@ unsigned int DecalObject::add(const Mat4* transform, const IDecalTemplate* decal
     // truncated (fistp, chop) and packed 0xFFrrggbb. Hex-Rays drops the clamp's answer; the
     // instruction stream uses it for all three channels.
     const float colorDraw = randomSymmetric();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the one argument spill before the clamp call.
+    const float intensity = clampValue(store(wide(decalTemplate->getRandomColorIntensity())
+        * wide(colorDraw) + wide(1.0f)), 0.0f, 1.0f);
+#else
     const float intensity = clampValue(
         decalTemplate->getRandomColorIntensity() * colorDraw + 1.0f, 0.0f, 1.0f);   // +0x1C
+#endif
     const Vec4& color = decal_template_state::color(decalTemplate);
+#if defined(__APPLE__)
+    const int red = bf2x87::toIntTruncate(wide(intensity) * wide(color.x) * wide(255.0f));
+#else
     const int red = static_cast<int>(intensity * color.x * 255.0f);
+#endif
     unsigned int packed = (static_cast<unsigned int>(red) | 0xFFFFFF00u) << 8;
+#if defined(__APPLE__)
+    const int green = bf2x87::toIntTruncate(wide(intensity) * wide(color.y) * wide(255.0f));
+#else
     const int green = static_cast<int>(intensity * color.y * 255.0f);
+#endif
     packed = (packed | (static_cast<unsigned int>(green) & 0xFFu)) << 8;
+#if defined(__APPLE__)
+    const int blue = bf2x87::toIntTruncate(wide(intensity) * wide(color.z) * wide(255.0f));
+#else
     const int blue = static_cast<int>(intensity * color.z * 255.0f);
+#endif
     packed |= static_cast<unsigned int>(blue) & 0xFFu;
     record->diffuse = packed;
 
@@ -624,9 +750,15 @@ unsigned int DecalObject::add(const Mat4* transform, const IDecalTemplate* decal
     {
         const int frameDraw = randomInteger();
         // (draw * (count - 1)) * 2^-24, the count unsigned: a zero count wraps to 2^32 - 1.
+#if defined(__APPLE__)
+        record->startFrame = store(wide(frameDraw)
+            * wide(decal_template_state::animationFrameCount(decalTemplate) - 1u)
+            * wide(5.9604644775390625e-08f));
+#else
         record->startFrame = static_cast<float>(frameDraw)
                            * static_cast<float>(decal_template_state::animationFrameCount(decalTemplate) - 1u)
                            * 5.9604644775390625e-08f;
+#endif
     }
     else
     {
@@ -640,12 +772,12 @@ unsigned int DecalObject::add(const Mat4* transform, const IDecalTemplate* decal
     {
         const Mat4& inverse = m_owner->getInvAbsoluteTransformation();    // IObject PE +0x84
         const Mat4 copy = local;
-        local.mult(copy, inverse);
+        rendmath::mult(local, copy, inverse);                         // PE 0x10077C50
         Vec3 row1;
         row1.x = transform->m[4];
         row1.y = transform->m[5];
         row1.z = transform->m[6];
-        transformVector(inverse, row1, record->normal);
+        rendmath::transformVector(inverse, row1, record->normal);                 // sub_1007C440
     }
     else
     {
@@ -774,11 +906,17 @@ void DecalObject::buildQuad(DecalRecord* record, const Mat4* transform,
 // An object decal with no collision face - PlayerControlObject's driver tags pass (0, 0) - takes
 // the terrain arm with its owner-space translation as world x / z. Shipped, kept.
 
+// PE 0x101ADF80
 void DecalObject::buildProjected(DecalRecord* record, const Mat4* transform,
                                  const IDecalTemplate* decalTemplate, float scale,
                                  world::ICollisionMesh* collisionMesh,
                                  world::CollisionFaceInfo* faceInfo)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the x87 expression order and explicit float stores.
+    using bf2x87::wide;
+    using bf2x87::store;
+#endif
     QuadSetup setup;
     setupQuad(setup, record, decalTemplate);
 
@@ -787,26 +925,46 @@ void DecalObject::buildProjected(DecalRecord* record, const Mat4* transform,
     {
         const DecalVertex& source = s_quadTemplate[i];
         DecalVertex& corner = s_quad[i];
+#if defined(__APPLE__)
+        corner.position.x = store(wide(setup.cosine) * wide(source.position.x) - wide(setup.sine) * wide(source.position.z));
+        corner.position.z = store(wide(setup.sine) * wide(source.position.x) + wide(setup.cosine) * wide(source.position.z));
+        const bf2x87::Real size = (wide(decalTemplate->getSize()) + wide(setup.randomSize)) * wide(scale);
+        corner.position.x = store(size * wide(corner.position.x));
+        corner.position.y = store(size * wide(corner.position.y));
+        corner.position.z = store(size * wide(corner.position.z));
+#else
         corner.position.x = setup.cosine * source.position.x - setup.sine * source.position.z;
         corner.position.z = setup.sine * source.position.x + setup.cosine * source.position.z;
         const float size = (decalTemplate->getSize() + setup.randomSize) * scale;   // +0x0C per corner
         corner.position.x = size * corner.position.x;
         corner.position.y = size * corner.position.y;
         corner.position.z = size * corner.position.z;
+#endif
         corner.u = source.u;
         corner.v = source.v;
         const Vec2& extent = decal_template_state::uvExtent(decalTemplate);
+#if defined(__APPLE__)
+        corner.u = store((wide(corner.u) + wide(1.0f)) * wide(extent.x) * wide(0.5f));
+        corner.v = store((wide(corner.v) + wide(1.0f)) * wide(extent.y) * wide(0.5f));
+#else
         corner.u = (corner.u + 1.0f) * extent.x * 0.5f;
         corner.v = (corner.v + 1.0f) * extent.y * 0.5f;
+#endif
         corner.u = setup.originU + corner.u;
         corner.v = setup.originV + corner.v;
 
         const float x = corner.position.x;
         const float y = corner.position.y;
         const float z = corner.position.z;
+#if defined(__APPLE__)
+        const float tz = store(wide(m.m[10]) * wide(z) + wide(y) * wide(m.m[6]) + wide(m.m[2]) * wide(x) + wide(m.m[14]));
+        const float ty = store(wide(m.m[9]) * wide(z) + wide(m.m[5]) * wide(y) + wide(m.m[1]) * wide(x) + wide(m.m[13]));
+        const float tx = store(wide(m.m[0]) * wide(x) + wide(m.m[8]) * wide(z) + wide(y) * wide(m.m[4]) + wide(m.m[12]));
+#else
         const float tz = m.m[10] * z + y * m.m[6] + m.m[2] * x + m.m[14];
         const float ty = m.m[9] * z + m.m[5] * y + m.m[1] * x + m.m[13];
         const float tx = m.m[0] * x + m.m[8] * z + y * m.m[4] + m.m[12];
+#endif
         corner.position.x = tx;
         corner.position.y = ty;
         corner.position.z = tz;
@@ -864,7 +1022,9 @@ void DecalObject::buildProjected(DecalRecord* record, const Mat4* transform,
     if (!vertices)
     {
         // vertexCount keeps its value with a null block - the render pass would walk it. Shipped.
-        ::renddx9abi::logf("DecalObject.cpp:370 Failed to allocate geometry mem");     // 0x172
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\DecalSystem\\DecalObject.cpp",
+            370, "") << "Failed to allocate geometry mem";
         return;
     }
     std::memcpy(vertices, s_geometry, count * sizeof(DecalVertex));
@@ -876,6 +1036,7 @@ void DecalObject::buildProjected(DecalRecord* record, const Mat4* transform,
 // flipped) - or the sentinel 0x1267 when the centre square did not answer, which reports false.
 // Every cell is asked even after a miss; the cluster and its scale are fetched once.
 
+// PE 0x101ACDB0
 bool DecalObject::getTerrainPatch(float x, float z, Vec3* vertices, unsigned int* face)
 {
     world::IHeightmapCluster* const cluster = static_cast<world::IHeightmapCluster*>(
@@ -910,6 +1071,7 @@ bool DecalObject::getTerrainPatch(float x, float z, Vec3* vertices, unsigned int
 // Reaching 128 vertices clears the whole record at that recursion level; callers continue.
 // Stops on depth exhaustion, complete containment, or clip rejection.
 
+// PE 0x101AD5E0
 void DecalObject::projectOntoFace(unsigned int face, const Vec3& direction, const DecalVertex* quad,
                                   DecalRecord* record, float maxAngle, int depth,
                                   const Vec3* vertices, const DecalFace* faces, int faceCount,
@@ -921,7 +1083,8 @@ void DecalObject::projectOntoFace(unsigned int face, const Vec3& direction, cons
     if (!buildClipPlanes(face, direction, maxAngle, vertices, faces, faceCount))
         return;
 
-    // [CHOSEN] initialised: retail leaves the out-pointer unwritten when the clip rejects (-1), and
+    // [CHOSEN, not recovered] PE 0x101AD660 reads an unwritten out-pointer when clipping rejects.
+    // Keep it initialized: retail leaves the out-pointer unwritten when the clip rejects (-1), and
     // its first test below then compares that garbage with `quad` - either way the -1 test returns.
     const DecalVertex* clipped = 0;
     const int clippedCount = clipPolygon(quad, 4, s_clipPlanes, &clipped);
@@ -996,6 +1159,7 @@ void DecalObject::projectOntoFace(unsigned int face, const Vec3& direction, cons
 // normalise(edge x normal) - pointing out of the triangle for the face winding - are pushed. The
 // three d's use different association orders, kept. faceCount is not read.
 
+// PE 0x101AD390
 bool DecalObject::buildClipPlanes(unsigned int face, const Vec3& direction, float maxAngle,
                                   const Vec3* vertices, const DecalFace* faces, int faceCount)
 {
@@ -1008,6 +1172,16 @@ bool DecalObject::buildClipPlanes(unsigned int face, const Vec3& direction, floa
 
     if (maxAngle > 0.0f)                                                   // `test ah, 41h; jnz`
     {
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Spill the clamp argument; retain the angle limit product.
+        const float cosine = clampValue(clampValue(bf2x87::store(
+            bf2x87::wide(normal.z) * bf2x87::wide(direction.z)
+            + bf2x87::wide(normal.y) * bf2x87::wide(direction.y)
+            + bf2x87::wide(normal.x) * bf2x87::wide(direction.x)), -1.0f, 1.0f), -1.0f, 1.0f);
+        const double angle = std::acos(static_cast<double>(cosine));
+        if (bf2x87::wide(s_degreesToRadians) * bf2x87::wide(maxAngle) < bf2x87::wide(angle))
+            return false;
+#else
         const float cosine = clampValue(
             clampValue(normal.z * direction.z + normal.y * direction.y + normal.x * direction.x,
                        -1.0f, 1.0f),
@@ -1015,17 +1189,35 @@ bool DecalObject::buildClipPlanes(unsigned int face, const Vec3& direction, floa
         const double angle = std::acos(static_cast<double>(cosine));       // _CIacos
         if (static_cast<double>(s_degreesToRadians * maxAngle) < angle)    // unordered keeps it
             return false;
+#endif
     }
 
     Plane3 edge0;
     edge0.normal = edgeNormal(p0, p1, normal);
+#if defined(__APPLE__)
+    using bf2x87::wide;
+    using bf2x87::store;
+    edge0.d = store(-(wide(edge0.normal.x) * wide(p0.x) + wide(edge0.normal.y) * wide(p0.y)
+                   + wide(edge0.normal.z) * wide(p0.z)));
+#else
     edge0.d = -(edge0.normal.x * p0.x + edge0.normal.y * p0.y + edge0.normal.z * p0.z);
+#endif
     Plane3 edge1;
     edge1.normal = edgeNormal(p1, p2, normal);
+#if defined(__APPLE__)
+    edge1.d = store(-(wide(edge1.normal.x) * wide(p1.x) + wide(edge1.normal.z) * wide(p1.z)
+                   + wide(edge1.normal.y) * wide(p1.y)));
+#else
     edge1.d = -(edge1.normal.x * p1.x + edge1.normal.z * p1.z + edge1.normal.y * p1.y);
+#endif
     Plane3 edge2;
     edge2.normal = edgeNormal(p2, p0, normal);
+#if defined(__APPLE__)
+    edge2.d = store(-(wide(edge2.normal.x) * wide(p2.x) + wide(edge2.normal.z) * wide(p2.z)
+                   + wide(edge2.normal.y) * wide(p2.y)));
+#else
     edge2.d = -(edge2.normal.x * p2.x + edge2.normal.z * p2.z + edge2.normal.y * p2.y);
+#endif
 
     s_clipPlanes.planes.push_back(edge0);
     s_clipPlanes.planes.push_back(edge1);
@@ -1034,10 +1226,98 @@ bool DecalObject::buildClipPlanes(unsigned int face, const Vec3& direction, floa
 }
 
 
+// The collision-mesh flood that collects clip planes without projecting: the face's three edge
+// planes, then for each adjacent face either its shared edge plane joins the clip set (the neighbour's
+// normal is more than maxAngle degrees from the projection direction) or, while depth remains and the
+// neighbour is unvisited, the flood recurses into it. The edge planes are built exactly as
+// buildClipPlanes builds them. The adjacency answer is ignored, as shipped; the neighbour triple is
+// initialised to the 0xFFFF terminator here, where the shipped stack buffer is uninitialised when the
+// mesh refuses ([CHOSEN, not recovered] memory-safety exception). Callers pass collisionMesh and
+// faceInfo; the shipped body tests only collisionMesh and hasLod.
+// unreachable in 1.50: no code or data references. [INFERRED] name.
+// PE 0x101ADB50
+void DecalObject::collectClipPlanes(unsigned int face, const Vec3& direction, float maxAngle,
+                                    world::ICollisionMesh* collisionMesh, int depth,
+                                    world::CollisionFaceInfo* faceInfo)
+{
+    if (!collisionMesh)
+        return;
+    if (!collisionMesh->hasLod(faceInfoLod(faceInfo)))                              // +0x28, `test al, al`
+        return;
+    const Vec3* const vertices = static_cast<const Vec3*>(
+        collisionMesh->getVertexVector(faceInfoLod(faceInfo)));                     // +0x40
+    const DecalFace* const faces = static_cast<const DecalFace*>(
+        collisionMesh->getFaceVector(faceInfoLod(faceInfo)));                       // +0x4C
+
+    s_visitedFaces.insert(static_cast<unsigned short>(face));
+
+    const DecalFace& corners = faces[face];
+    const Vec3& p0 = vertices[corners.v0];
+    const Vec3& p1 = vertices[corners.v1];
+    const Vec3& p2 = vertices[corners.v2];
+    const Plane3 facePlane = planeFromPoints(p0, p1, p2);
+    const Vec3& normal = facePlane.normal;
+
+    Plane3 edges[3];
+    edges[0].normal = edgeNormal(p0, p1, normal);
+    edges[1].normal = edgeNormal(p1, p2, normal);
+    edges[2].normal = edgeNormal(p2, p0, normal);
+#if defined(__APPLE__)
+    {
+        using bf2x87::wide;
+        using bf2x87::store;
+        edges[0].d = store(-(wide(edges[0].normal.x) * wide(p0.x) + wide(edges[0].normal.y) * wide(p0.y)
+                          + wide(edges[0].normal.z) * wide(p0.z)));
+        edges[1].d = store(-(wide(edges[1].normal.x) * wide(p1.x) + wide(edges[1].normal.z) * wide(p1.z)
+                          + wide(edges[1].normal.y) * wide(p1.y)));
+        edges[2].d = store(-(wide(edges[2].normal.x) * wide(p2.x) + wide(edges[2].normal.z) * wide(p2.z)
+                          + wide(edges[2].normal.y) * wide(p2.y)));
+    }
+#else
+    edges[0].d = -(edges[0].normal.x * p0.x + edges[0].normal.y * p0.y + edges[0].normal.z * p0.z);
+    edges[1].d = -(edges[1].normal.x * p1.x + edges[1].normal.z * p1.z + edges[1].normal.y * p1.y);
+    edges[2].d = -(edges[2].normal.x * p2.x + edges[2].normal.z * p2.z + edges[2].normal.y * p2.y);
+#endif
+
+    unsigned short neighbours[3] = { 0xFFFFu, 0xFFFFu, 0xFFFFu };
+    collisionMeshAdjacentFaces(collisionMesh, faceInfoGeometry(faceInfo), faceInfoLod(faceInfo),
+                               face, neighbours);                                   // +0x38, result unread
+
+    for (int k = 0; k < 3; ++k)
+    {
+        const unsigned short next = neighbours[k];
+        if (next == 0xFFFFu)
+            continue;
+        const DecalFace& other = faces[next];
+        const Vec3 neighbourNormal = planeFromPoints(vertices[other.v0], vertices[other.v1],
+                                                     vertices[other.v2]).normal;
+#if defined(__APPLE__)
+        const float cosine = clampValue(clampValue(bf2x87::store(
+            bf2x87::wide(neighbourNormal.z) * bf2x87::wide(direction.z)
+            + bf2x87::wide(neighbourNormal.y) * bf2x87::wide(direction.y)
+            + bf2x87::wide(neighbourNormal.x) * bf2x87::wide(direction.x)), -1.0f, 1.0f), -1.0f, 1.0f);
+        const double angle = std::acos(static_cast<double>(cosine));
+        const bool steep = bf2x87::wide(s_degreesToRadians) * bf2x87::wide(maxAngle) < bf2x87::wide(angle);
+#else
+        const float cosine = clampValue(
+            clampValue(neighbourNormal.z * direction.z + neighbourNormal.y * direction.y
+                       + neighbourNormal.x * direction.x, -1.0f, 1.0f), -1.0f, 1.0f);
+        const double angle = std::acos(static_cast<double>(cosine));                // _CIacos
+        const bool steep = static_cast<double>(s_degreesToRadians * maxAngle) < angle;
+#endif
+        if (steep)
+            s_clipPlanes.planes.push_back(edges[k]);
+        else if (depth > 0 && s_visitedFaces.find(next) == s_visitedFaces.end())
+            collectClipPlanes(next, direction, maxAngle, collisionMesh, depth - 1, faceInfo);
+    }
+}
+
+
 // Clips against planes and returns the vertex count, with output pointing to input or
 // scratch storage. Returns -1 for a near-parallel crossing. The zero-seeded rejection
 // mask never rejects early; wholly outside polygons are clipped down to zero vertices.
 
+// PE 0x101AD040
 int DecalObject::clipPolygon(const DecalVertex* input, unsigned int count,
                              const DecalClipPlanes& clip, const DecalVertex** output)
 {
@@ -1100,6 +1380,28 @@ int DecalObject::clipPolygon(const DecalVertex* input, unsigned int count,
                 const float dx = b.position.x - a.position.x;
                 const float dy = b.position.y - a.position.y;
                 const float dz = b.position.z - a.position.z;
+#if defined(__APPLE__)
+                // [CHOSEN, not recovered] Retain denominator, ratio and UV deltas; preserve spills.
+                using bf2x87::wide;
+                using bf2x87::store;
+                const bf2x87::Real du = wide(b.u) - wide(a.u);
+                const bf2x87::Real dv = wide(b.v) - wide(a.v);
+                const bf2x87::Real denominator = wide(dz) * wide(plane.normal.z)
+                    + wide(dx) * wide(plane.normal.x) + wide(dy) * wide(plane.normal.y);
+                if (bf2x87::abs(denominator) < wide(FLT_EPSILON))
+                    return -1;
+                const bf2x87::Real distance = wide(a.position.z) * wide(plane.normal.z)
+                    + wide(plane.normal.y) * wide(a.position.y)
+                    + wide(a.position.x) * wide(plane.normal.x) + wide(plane.d);
+                const bf2x87::Real t = distance * (wide(-1.0f) / denominator);
+                const float stepY = store(wide(dy) * t);
+                const float stepZ = store(wide(dz) * t);
+                out->position.x = store(wide(dx) * t + wide(a.position.x));
+                out->position.y = stepY + a.position.y;
+                out->position.z = stepZ + a.position.z;
+                const float stepU = store(du * t);
+                const float stepV = store(dv * t);
+#else
                 const float du = b.u - a.u;
                 const float dv = b.v - a.v;
                 const float denominator =
@@ -1116,6 +1418,7 @@ int DecalObject::clipPolygon(const DecalVertex* input, unsigned int count,
                 out->position.z = stepZ + a.position.z;
                 const float stepU = du * t;
                 const float stepV = dv * t;
+#endif
                 out->u = stepU + a.u;
                 out->v = stepV + a.v;
                 nextCodes[produced] = computeOutcode(out->position, planes);

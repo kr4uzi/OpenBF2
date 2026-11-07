@@ -72,13 +72,13 @@ void freeEngineFile(EngineFileData& file)
     file.size = 0;
 }
 
-bool engineFileExists(const vc71::string& path)
+bool engineFileExists(const std::string& path)
 {
     HostString hostPath = makeHostString(path);
     return ::dice::hfe::fileManager->fileExists(hostPath);
 }
 
-void engineFilePrepareWrite(const vc71::string& path)
+void engineFilePrepareWrite(const std::string& path)
 {
     HostString hostPath = makeHostString(path);
     HostStream* stream = ::dice::hfe::fileManager->open(
@@ -87,7 +87,7 @@ void engineFilePrepareWrite(const vc71::string& path)
         stream->release();
 }
 
-void engineFileGetWritePath(const vc71::string& path, vc71::string& out)
+void engineFileGetWritePath(const std::string& path, std::string& out)
 {
     const HostString hostPath = makeHostString(path);
     HostString hostOut;
@@ -95,9 +95,9 @@ void engineFileGetWritePath(const vc71::string& path, vc71::string& out)
     assignFromHostString(out, hostOut);
 }
 
-// Closes any held stream before opening the new path through the engine file interface.
-
-bool EngineStream::open(const vc71::string& path)
+// PE 0x10076340. Closes any held stream, then opens the new path through the engine file interface.
+// The fileManager null guard is this adapter's; the shipped body calls through it unguarded.
+bool EngineStream::open(const std::string& path, int mode, int access, unsigned int fourth)
 {
     close();
 
@@ -106,8 +106,9 @@ bool EngineStream::open(const vc71::string& path)
 
     HostString hostPath = makeHostString(path);
     HostStream* stream = ::dice::hfe::fileManager->open(
-        hostPath, static_cast<HostFileMode>(kFileModeShipped),
-        static_cast<HostFileAccess>(kFileAccessShipped), 0);
+        hostPath, static_cast<HostFileMode>(mode), static_cast<HostFileAccess>(access), fourth);
+    // The shipped body releases a held stream a second time here; the slot is always null by now.
+    close();
     m_stream = static_cast<HostNonlinearStream*>(stream);
 
     return m_stream != 0;
@@ -135,6 +136,22 @@ int EngineStream::seek(int origin, int offset)
     return m_stream->seek(static_cast<HostSeekOrigin>(origin), offset);
 }
 
+// PE 0x10076070
+bool EngineStream::readWideLine(std::u16string& out, unsigned short terminator)
+{
+    // The shipped body reads into an 0x2000-byte stack buffer with no bound: a line of 4096 or
+    // more units runs off the buffer. [CHOSEN, not recovered] memory safety: stop at 4095 units.
+    char16_t buffer[0x1000];
+    unsigned int count = 0;
+    while (count < 0x0FFFu && m_stream->read(&buffer[count], 2) == 2
+           && buffer[count] != static_cast<char16_t>(terminator))
+        ++count;
+    buffer[count] = 0;
+    out = buffer;                     // assigned as a terminated string, as shipped
+    return true;
+}
+
+// PE 0x10075E70 (the null guard is this adapter's; the shipped body is unguarded)
 int EngineStream::getSize()
 {
     if (!m_stream)

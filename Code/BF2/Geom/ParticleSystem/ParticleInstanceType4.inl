@@ -7,7 +7,7 @@ float* psmType4NewParticle(void* self);
 void psmType4Emit(void* self,float dt);
 int psmType4AdvanceParticle(void* self,float* particle,int index,float step,unsigned int steps);
 
-// PE100D3150 returns shared matrix scratch; the owner immediately copies it. Preserve the
+// PE 0x100D3150 returns shared matrix scratch; the owner immediately copies it. Preserve the
 // unusual forward-cross-up order and the parallel-axis identity result, including NaN routing.
 const Mat4& psmType4WaterMatrix(const Vec3& position,const Vec3& up,const Vec3& forward)
 {
@@ -31,27 +31,28 @@ const Mat4& psmType4WaterMatrix(const Vec3& position,const Vec3& up,const Vec3& 
     return result;
 }
 
-// PE1017CB20 matches the ordinary visual-owner composition, then aligns water effects.
+// PE 0x1017CB20 matches the ordinary visual-owner composition, then aligns water effects.
 void psmType4RefreshTransform(void* self)
 {
-    if (psmRuntimeField<unsigned char>(self,0x14)) return;
-    Mat4& output=psmRuntimeField<Mat4>(self,0x74);
-    const Mat4& local=psmRuntimeField<Mat4>(self,0x34);
-    world::IObject* const owner=psmRuntimeField<world::IObject*>(self,0x10);
-    if (owner) output.mult(local,owner->getVisualAbsoluteTransformation());
-    else if (psmRuntimeField<const Mat4*>(self,0x30)) output.mult(local,*psmRuntimeField<const Mat4*>(self,0x30));
+    if (psmInstanceA<unsigned char>(self,0x14)) return;
+    Mat4& output=psmInstanceA<Mat4>(self,0x74);
+    const Mat4& local=psmInstanceA<Mat4>(self,0x34);
+    world::IObject* const owner=psmInstanceA<world::IObject*>(self,0x10);
+    if (owner) rendmath::mult(output,local,owner->getVisualAbsoluteTransformation());
+    else if (psmInstanceA<const Mat4*>(self,0x30)) rendmath::mult(output,local,*psmInstanceA<const Mat4*>(self,0x30));
     else output=local;
-    if (psmRuntimeField<unsigned char>(psmRuntimeField<void*>(self,0x2C),0xA0))
-        output=psmType4WaterMatrix(psmRuntimeField<Vec3>(self,0xA4),Vec3{0,1,0},psmRuntimeField<Vec3>(self,0x94));
+    if (psmDescriptor4<unsigned char>(psmInstanceA<void*>(self,0x2C),0xA0))
+        output=psmType4WaterMatrix(psmInstanceA<Vec3>(self,0xA4),Vec3{0,1,0},psmInstanceA<Vec3>(self,0x94));
 }
 
 class ParticleInstanceType4 : public IParticleSystemInstance
 {
-    unsigned char m_data[0x224];
-    template<class T> T& at(unsigned int offset) { return psmRuntimeField<T>(this, offset); }
+    unsigned char m_data[PSM_INSTANCE_DATA(0x228)];
+    template<class T> T& at(unsigned int offset) { return psmInstanceA<T>(this, offset); }
     template<class T> const T& at(unsigned int offset) const
-    { return *reinterpret_cast<const T*>(reinterpret_cast<const unsigned char*>(this) + offset); }
+    { return psmInstanceA<T>(const_cast<ParticleInstanceType4*>(this), offset); }
 public:
+    // PE 0x1017D430
     explicit ParticleInstanceType4(IParticleSystemTemplate* descriptor)
     {
         at<unsigned char>(0x14)=0;
@@ -69,13 +70,13 @@ public:
         at<unsigned char>(0x224)=0; at<unsigned char>(0x225)=0;
         // PE1017D430 leaves owner+10/controller+C untouched; EffectBundle binds these next.
         at<unsigned char>(8)=0;
-        const double lifetime = psmRuntimeField<float>(descriptor,0x7C)+static_cast<double>(psmRuntimeField<float>(descriptor,0x78));
+        const double lifetime = psmDescriptor4<float>(descriptor,0x7C)+static_cast<double>(psmDescriptor4<float>(descriptor,0x78));
         double capacityTime=lifetime;
-        const float emitTime=psmRuntimeField<float>(descriptor,0x1C4);
-        if (emitTime!=0 && !psmRuntimeField<unsigned char>(descriptor,0x74) && capacityTime>emitTime)
+        const float emitTime=psmDescriptor4<float>(descriptor,0x1C4);
+        if (emitTime!=0 && !psmDescriptor4<unsigned char>(descriptor,0x74) && capacityTime>emitTime)
             capacityTime=emitTime;
-        at<int>(0x220)=static_cast<int>(capacityTime*psmRuntimeField<float>(descriptor,0x10)+10.0);
-        at<float**>(0x24)=static_cast<float**>(::renddx9abi::engineAlloc(at<int>(0x220)*4+4));
+        at<int>(0x220)=static_cast<int>(capacityTime*psmDescriptor4<float>(descriptor,0x10)+10.0);
+        at<float**>(0x24)=static_cast<float**>(::renddx9abi::engineAlloc(at<int>(0x220)*kPsmPointerSize+kPsmPointerSize));
         at<float**>(0x24)[0]=0;
         at<Vec3>(0x18)={0,0,0};
         at<Vec3>(0xFC)={0,0,0}; at<Vec3>(0x108)={0,0,0};
@@ -85,20 +86,22 @@ public:
         { at<Vec3>(offset)={0,1,0}; at<float>(offset+12)=0; }
         at<unsigned char>(4)=0;
     }
+    // PE 0x1017C840
     ~ParticleInstanceType4() override
     {
         ParticleSystemManager* const manager=reinterpret_cast<ParticleSystemManager*>(g_ParticleSystemManager);
         float** particles=at<float**>(0x24);
         for (unsigned int i=0;particles[i];++i)
         {
-            psmRuntimeField<void*>(particles[i],0)=manager->m_type4FreeList;
-            --psmRuntimeField<int>(manager,0x8BA0);
+            psmRecordLink(particles[i], 4)=manager->m_type4FreeList;
+            --manager->m_type4LiveCount;
             manager->m_type4FreeList=particles[i];
         }
         ::renddx9abi::engineFree(particles);
     }
     static void operator delete(void* self) { ::renddx9abi::engineFree(self); }
     int reserved01() const override { return 4; }
+    // PE 0x1017CA10
     void reserved02() const override
     {
         ParticleInstanceType4* self=const_cast<ParticleInstanceType4*>(this);
@@ -108,8 +111,8 @@ public:
         {
             float** array=self->at<float**>(0x24); float* particle=array[0];
             array[0]=array[--self->at<unsigned int>(0x28)]; array[self->at<unsigned int>(0x28)]=0;
-            psmRuntimeField<void*>(particle,0)=manager->m_type4FreeList;
-            manager->m_type4FreeList=particle; --psmRuntimeField<int>(manager,0x8BA0);
+            psmRecordLink(particle, 4)=manager->m_type4FreeList;
+            manager->m_type4FreeList=particle; --manager->m_type4LiveCount;
         }
         self->at<float>(0x21C)=0; self->at<unsigned char>(0x218)=0; self->at<unsigned char>(0x219)=0;
         self->at<unsigned int>(0x140)=0; self->at<unsigned int>(0x28)=0; self->at<float>(0x120)=0;
@@ -126,10 +129,10 @@ public:
         if (!at<unsigned char>(4)) psmAddActive(manager,this,firstPerson);
         at<unsigned char>(0x14C)=1; at<unsigned char>(0x224)=1; at<unsigned char>(0x226)=0;
         void* const descriptor=at<void*>(0x2C);
-        at<float>(0xE0)=psmRuntimeField<float>(descriptor,0x1C4);
-        at<float>(0xE4)=psmRuntimeField<float>(descriptor,0x1CC);
+        at<float>(0xE0)=psmDescriptor4<float>(descriptor,0x1C4);
+        at<float>(0xE4)=psmDescriptor4<float>(descriptor,0x1CC);
         at<float>(0xE8)=0; at<float>(0xF0)=0; at<float>(0xF4)=0;
-        at<float>(0xF8)=psmRuntimeField<float>(descriptor,0xC);
+        at<float>(0xF8)=psmDescriptor4<float>(descriptor,0xC);
         psmType4RefreshTransform(this);
         dx9rend::IRenderView* const view=dx9rend::rendererGetRenderViewDup();
         const float oldFar=view->getFarPlane();
@@ -151,38 +154,66 @@ public:
     }
     void reserved04() override { at<unsigned char>(0x14C)=0; at<unsigned char>(0x224)=0; at<float>(0xE0)=0; }
     bool reserved05() const override { return at<unsigned char>(0x14C)!=0; }
+    // PE 0x1017EAC0 (shared with the ordinary instance).
     void setPaused(bool value) override { at<unsigned char>(0x225)=value; }
     bool reserved07() const override { return at<unsigned char>(0x225)!=0; }
     void reserved08() override { at<unsigned char>(0x14)=1; at<void*>(0x10)=0; at<void*>(0xC)=0; at<void*>(0x30)=0; }
+    // PE 0x1017EAE0 (shared with the ordinary instance).
     void reserved09(bool value) override { at<unsigned char>(0x128)=value; }
     bool reserved10() const override { return at<unsigned char>(0x128)!=0; }
-    void reserved11(int value) override { at<int>(0x10)=value; }
-    int reserved12() const override { return at<int>(0x10); }
-    void reserved13(int value) override { at<int>(0x30)=value; }
+    void reserved11(intptr_t value) override { at<intptr_t>(0x10)=value; }
+    intptr_t reserved12() const override { return at<intptr_t>(0x10); }
+    void reserved13(intptr_t value) override { at<intptr_t>(0x30)=value; }
     void* reserved14(const void* value) override { at<Mat4>(0x34)=*static_cast<const Mat4*>(value); return &at<Mat4>(0x34); }
     const void* reserved15() const override { return &at<Mat4>(0x34); }
+    // PE 0x1017CBC0
     void reserved16(const Vec3& value) override { at<Vec3>(0xCC)=value; }
     const Vec3& reserved17() const override { return at<Vec3>(0xCC); }
+    // PE 0x1017DA00. Capture all inputs before the destination or normalization can overlap them.
     void reserved18(const void* value) override
-    { at<Vec3>(0x208)=*static_cast<const Vec3*>(value); psmNormalize3(&at<float>(0x208)); at<float>(0x214)=static_cast<const float*>(value)[3]; }
+    {
+        const float* coordinates = static_cast<const float*>(value);
+        const float z = psmCopyStoredFloat(coordinates[2]);
+        unsigned int x;
+        ::memcpy(&x, coordinates, sizeof(x));
+        const float y = psmCopyStoredFloat(coordinates[1]);
+        unsigned int distance;
+        ::memcpy(&distance, coordinates + 3, sizeof(distance));
+        at<float>(0x20C) = y;
+        at<float>(0x210) = z;
+        at<unsigned int>(0x208) = x;
+        psmNormalize3(&at<float>(0x208));
+        at<unsigned int>(0x214) = distance;
+    }
+    // PE 0x1017C9F0
     void reserved19(float value) override { at<float>(0xDC)=value; }
     float reserved20() const override { return at<float>(0xDC); }
     void reserved21(int,int) override { at<float>(0x15C)=1; }
+    // PE 0x1017C930
     void reserved22(float value) override { at<float>(0x160)=value; }
     float reserved23() const override { return at<float>(0x160); }
+    // PE 0x1017C950
     void reserved24(float value) override { at<float>(0x138)=value; }
     float reserved25() const override { return at<float>(0x138); }
+    // PE 0x10181060 (shared with the ordinary instance).
     void reserved26(float value) override { at<float>(0x13C)=value; }
     float reserved27() const override { return at<float>(0x13C); }
     void reserved28(const Vec3& value) override { at<Vec3>(0x150)=value; }
     const Vec3& reserved29() const override { return at<Vec3>(0x150); }
+    // PE 0x1017C970
     void reserved30(float value) override { at<float>(0x12C)=value; }
     float reserved31() const override { return at<float>(0x12C); }
+    // PE 0x1017C9D0
     void reserved32(float value) override { at<float>(0xD8)=value; }
     float reserved33() const override { return at<float>(0xD8); }
     int reserved34() const override { return at<int>(0x220); }
     IParticleSystemTemplate* getTemplate() const override { return at<IParticleSystemTemplate*>(0x2C); }
-    void reserved36(const Vec3& value) override { at<Vec3>(0x18)=value; }
+    // PE 0x1017EB20 (shared with the ordinary instance).
+    void reserved36(const Vec3& value) override
+    {
+        const float z=value.z,y=value.y,x=value.x;
+        at<float>(0x1C)=y; at<float>(0x18)=x; at<float>(0x20)=z;
+    }
     void reserved37() override { psmType4NewParticle(this); }
     float reserved38() const override
     {
@@ -199,10 +230,11 @@ public:
     int reserved39() const override { return at<int>(0x28); }
     const Vec3& getPosition() const override { return at<Vec3>(0xB4); }
     void reserved41(float value) override { psmType4Update(this,value); }
+    // PE 0x1017C8D0
     void reserved42(bool value) override
     {
-        if (at<unsigned char>(4) && value!=static_cast<bool>(at<unsigned char>(6)))
-        { at<unsigned char>(7)=value; psmReclassification(reinterpret_cast<ParticleSystemManager*>(g_ParticleSystemManager)).insert(reinterpret_cast<unsigned int>(this)); }
+        if (at<unsigned char>(4) && static_cast<unsigned char>(value)!=at<unsigned char>(6))
+        { at<unsigned char>(7)=value; psmReclassification(reinterpret_cast<ParticleSystemManager*>(g_ParticleSystemManager)).insert(this); }
     }
     // Proven retail shared constant/null bodies: 1017A510/100E13B0/100ED3B0/10082D40.
     float getGasCloudRadius() const override { return 1.0f; }
@@ -211,11 +243,15 @@ public:
     void setMaterial(int) override {}
     int getMaterial() const override { return -1; }
     void setEffectController(world::IEffectController* value) override
-    { at<world::IEffectController*>(0xC)=value; reserved11(reinterpret_cast<int>(value ? value->getObject() : 0)); }
+    { at<world::IEffectController*>(0xC)=value; reserved11(reinterpret_cast<intptr_t>(value ? value->getObject() : 0)); }
     world::IEffectController* getEffectController() const override { return at<world::IEffectController*>(0xC); }
     bool getWaterSide() const override { return false; }
 };
+#if defined(_M_IX86)
 static_assert(sizeof(ParticleInstanceType4)==0x228,"NSA particle instance PE1017D430 layout");
+#else
+static_assert(sizeof(ParticleInstanceType4)==kPsmInstanceSize,"x64 instance layout, ParticleRawLayout.h");
+#endif
 
 IParticleSystemInstance* psmCreateType4Instance(IParticleSystemTemplate* descriptor)
 {

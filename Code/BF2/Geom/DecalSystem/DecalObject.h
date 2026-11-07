@@ -187,6 +187,7 @@ private:
     void pushStatic(DecalRecord* record);
     void pushRing(DecalRecord* record);
     DecalRecord* popRing();
+    void removeStaticAt(DecalRecord* record, unsigned int index);   // PE 0x101AC6C0, unreferenced
 
     // add's two geometry builders and the projection they share (thiscall in the image;
     //      `this` is passed and unused)
@@ -197,6 +198,9 @@ private:
                         world::ICollisionMesh* collisionMesh,
                         world::CollisionFaceInfo* faceInfo);                    // (retn 18h)
     bool getTerrainPatch(float x, float z, Vec3* vertices, unsigned int* face); // (retn 10h)
+    void collectClipPlanes(unsigned int face, const Vec3& direction, float maxAngle,
+                           world::ICollisionMesh* collisionMesh, int depth,
+                           world::CollisionFaceInfo* faceInfo);                  // PE 0x101ADB50 (retn 18h), unreferenced
     void projectOntoFace(unsigned int face, const Vec3& direction, const DecalVertex* quad,
                          DecalRecord* record, float maxAngle, int depth,
                          const Vec3* vertices, const DecalFace* faces, int faceCount,
@@ -244,11 +248,12 @@ private:
 // either object crosses the host boundary, so the layout is the same in both RendDX9 flavours.
 struct DecalObjectLayoutCheck
 {
+    // The host's collision-face array is read through this view: every architecture.
+    static_assert(sizeof(DecalFace) == 8, "the collision face stride is 8 ([face*8])");
 #if defined(_M_IX86)
     static_assert(sizeof(DecalVertex) == 0x14, "the decal vertex stride is 20 (lea [n+n*4]*4)");
     static_assert(offsetof(DecalVertex, u) == 0x0C, "u at +0x0C");
     static_assert(offsetof(DecalVertex, v) == 0x10, "v at +0x10");
-    static_assert(sizeof(DecalFace) == 8, "the collision face stride is 8 ([face*8])");
     static_assert(sizeof(DecalRecord) == 0x58, "the pool stride is 0x58 (sub_10124450)");
     static_assert(offsetof(DecalRecord, position) == 0x04, "+0x04");
     static_assert(offsetof(DecalRecord, diffuse) == 0x14, "+0x14");
@@ -302,7 +307,7 @@ bool         decalsEnabled();                   // +0x2A6 byte (VideoOptions::ap
 // The free-list pop add inlines (0x101AE55B..0x101AE56B): `head = head ? head->next : 0` and the
 // OLD head is answered unchecked - an exhausted pool hands back 0 and add writes its +0x50 at once.
 DecalRecord* allocateRecord();                  // +0x290
-// DecalManager::freeRecord [D2's name] - 0x101AC620 (53 B, retn 4, thiscall on the manager), the
+// DecalManager::freeRecord [D2's name] - PE 0x101AC620 (53 B, retn 4, thiscall on the manager), the
 // out-of-line copy of the inline member clear, remove, update and add's eviction all inline:
 //     if (record->vertices) { delete record->vertices; record->vertices = 0; }
 //     record->next = m_freeRecords; m_freeRecords = record;                     // +0x290
@@ -329,10 +334,10 @@ float           frameCountXReciprocal(const IDecalTemplate* decalTemplate); // +
 const Vec2&     uvExtent(const IDecalTemplate* decalTemplate);         // +0xA0 (D2 m_uvExtent)
 }
 
-// PE 0x1009EF30 (lcgrand_step) on the renderer-local Random at the ONE stream the
-// particle system and the decals draw from. The tree keeps that stream file-static in
-// ParticleSystemManager.cpp's anonymous namespace (psmType0Random / psmEmissionRaw); the integrator
-// exposes it under this name. Declared, not defined.
+// One lcgrand_step (Geom/LcgRandom.h's lcgrandStep, the same retail function) on the renderer-local
+// Random at the ONE stream the particle system and the decals draw from. The tree keeps that stream
+// file-static in ParticleSystemManager.cpp's anonymous namespace (psmType0Random / psmEmissionRaw);
+// the integrator exposes it under this name. Declared, not defined.
 unsigned int rendererRandomRaw();
 
 } // namespace geom

@@ -37,7 +37,7 @@ public:
     virtual void  setRandomColorIntensity(float intensity) = 0;          // +0x18 / +0x04
     virtual float getRandomColorIntensity() const = 0;                    // +0x1C
     virtual void  setColor(const Vec3& color) = 0;                        // +0x20 / +0x08
-    virtual Vec3  getColor() const = 0;                                   // +0x24 101AF4C0 (hidden ptr)
+    virtual Vec3  getColor() const = 0;                                   // +0x24 (hidden ptr); body DecalTemplate::getColor
     virtual void  setIsStatic(bool isStatic) = 0;                         // +0x28 / +0x20
     virtual bool  getIsStatic() const = 0;                                // +0x2C
     virtual void  setUsedOnTransparentMaterials(bool used) = 0;           // +0x30 / +0x21

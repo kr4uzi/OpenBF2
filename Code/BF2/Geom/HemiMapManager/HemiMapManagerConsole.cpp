@@ -9,7 +9,6 @@
 #include "../../Core/ConsoleObjects.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
 
-#if BF2_PLUGIN_ABI_NATIVE
 
 namespace dice {
 namespace hfe {
@@ -24,6 +23,7 @@ BF2_CONSOLE_OBJECT("HemiMapManager", 2, 0)
 class HemiMapManagerSetBaseBinding : public ConsoleObjectBaseImpl
 {
 public:
+    // Binding constructor: PE 0x100C42FD.
     HemiMapManagerSetBaseBinding()
     {
         m_objectName = consoleDefaultName();
@@ -51,6 +51,8 @@ public:
         return g_HemiMapManager != 0;
     }
 
+    // PE 0x100C43E0: three arguments default the falloff to 500; the name is copy-constructed before the call
+    // (the c_str() conversion below is the host-string boundary of the native port).
     void executeObjectMethod() override
     {
         if (m_argCount != 3 && m_argCount != 4)
@@ -64,6 +66,7 @@ public:
         g_HemiMapManager->setBaseHemiMap(name, position, range, falloff);
     }
 
+    // PE 0x100C4491
     void setArgFromString(int index, const std::string& value) override
     {
         BF2_CC_CONVERT(std::string, 1)
@@ -83,6 +86,7 @@ HemiMapManagerSetBaseBinding s_hemiMapManagerSetBaseBinding;
 class HemiMapManagerMakeHemiMapBinding : public ConsoleObjectBaseImpl
 {
 public:
+    // Binding constructor: PE 0x100C45D6.
     HemiMapManagerMakeHemiMapBinding()
     {
         m_objectName = consoleDefaultName();
@@ -110,6 +114,7 @@ public:
         return g_HemiMapManager != 0;
     }
 
+    // PE 0x100C46AF
     void executeObjectMethod() override
     {
         if (m_argCount != 4)
@@ -123,6 +128,7 @@ public:
         m_returnValue = g_HemiMapManager->makeHemiMap(resolution, name, position, orthoExtent);
     }
 
+    // PE 0x100C4735
     void setArgFromString(int index, const std::string& value) override
     {
         BF2_CC_CONVERT(unsigned long, 1)
@@ -139,6 +145,11 @@ private:
 };
 
 HemiMapManagerMakeHemiMapBinding s_hemiMapManagerMakeHemiMapBinding;
+
+// Initializer 0x101D1EC4 follows makeHemiMap.
+// PE 0x100C487A, 0x100C48EB, 0x100C4938: constructor, argument conversion, executor.
+BF2_CONSOLE_PROPERTY(hemiLerpBias, float, g_HemiMapManager,
+                     setHemiLerpBias, getHemiLerpBias, kHemiMapManagerConsoleTag)
 
 } // anonymous namespace
 
@@ -158,5 +169,4 @@ bool unregisterHemiMapManagerConsoleObjects()
 } // namespace hfe
 } // namespace dice
 
-#endif // BF2_PLUGIN_ABI_NATIVE
 #endif // BF2_IMAGE_RENDDX9

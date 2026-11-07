@@ -10,7 +10,11 @@
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "LightmapGeneration.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h"
+#endif
 #include "ILightSampleable.h"
+#include "MeshLightSampling.h"              // MeshSampleTriangle - LightSampleBlock::triangles' element
 #include "../IGeometryTemplate.h"
 #include "../ITerrainEditable.h"
 #include "../StaticMesh.h"                  // m_template, staticMeshRootParent
@@ -19,6 +23,8 @@
 
 #include "../../Core/System.h"
 #include "../../Math/Frustum.h"
+#include "../../Math/Ray3.h"
+#include "../../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
 #include "../../Math/Mat4.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../RendDX9/ShaderParameter.h"
@@ -26,19 +32,15 @@
 #include "../../RendMisc/IRenderView.h"
 #include "../../RendMisc/IRenderer.h"
 #include "../../../RendDX9Abi/BfMemory.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/PluginAbi.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
-#include "../../../RendDX9Abi/Vc71String.h"
-#include "../../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 
 // The engine interfaces below are imported for their virtual order; in the retail flavour the
 // renderer's own IBase/IClassManager (HfeAbi.h) stand in for the host headers, exactly as
 // XpLightManager.cpp brackets the same includes.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_IBASE_H
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../../Game/Objects/IObject.h"
 #include "../../Game/Objects/IObjectTemplate.h"
 #include "../../Game/Objects/ObjectLayoutAccess.h"
@@ -47,10 +49,6 @@
 #include "../../Physics/Heightmap.h"
 #include "../../Physics/HeightmapCluster.h"
 #include "../../Scene/Object/ObjectManager.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#undef CORE_IBASE_H
-#endif
 
 #include <cfloat>
 #include <cmath>
@@ -60,12 +58,7 @@
 #include <cstring>
 #include <map>
 #include <new>
-
-// The D3DX sphere factory (d3dx9_25 exports undecorated names, XpLightManager.cpp's bridge).
-extern "C" HRESULT WINAPI D3DXCreateSphere(
-    IDirect3DDevice9* device, float radius, unsigned int slices,
-    unsigned int stacks, IUnknown** mesh, void** adjacency);
-#pragma comment(linker, "/alternatename:_D3DXCreateSphere@24=_D3DXCreateSphere")
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -82,7 +75,7 @@ extern void* g_bufferManager;
 // BufferManager.cpp, StateManager.cpp and RendDX9Draw.cpp seams, declared per TU as the other
 // geometry classes declare them.
 void* createVertexBuffer(void* bufferManager, unsigned int count, unsigned int stride,
-                         const vc71::string& name, unsigned int usage);
+                         const std::string& name, unsigned int usage);
 int   bufferManagerSwapPool(int value);
 void* vertexBufferLock(void* wrapper, unsigned int offsetVerts, unsigned int countVerts,
                        unsigned int flags);
@@ -103,8 +96,8 @@ extern LightManager* g_LightManager;
 
 // GeomMisc/FontSystem/FontSystem.cpp - Font::Ported and its +0x10 load / +0x18 drawText slots.
 IBase* createFontPortedDirect();
-bool   fontPortedLoad(IBase* font, const vc71::string& path);
-void   fontPortedDrawText(IBase* font, float x, float y, const vc71::string& text);
+bool   fontPortedLoad(IBase* font, const std::string& path);
+void   fontPortedDrawText(IBase* font, float x, float y, const std::string& text);
 
 LightmapGeneration* g_LightmapGeneration = 0;
 
@@ -133,36 +126,12 @@ const unsigned int kUnsetBits = 0xBF800000u;                  // -1.0f: "use the
 const unsigned int kTargetSize = 0x400u;                      // the 1024 x 1024 target
 const unsigned int kFormatA8R8G8B8 = 21u;
 const unsigned int kFormatD24S8 = 75u;
-
-// The mesh sampler's triangle record as far as the back-face test reads it (the
-// LightSampleBlock::triangles vector's element).
-struct SampleTriangle
-{
-    unsigned char unread00[0x24];
-    Vec3          normal[3];        // +0x24 / +0x30 / +0x3C
-    unsigned char unread48[0x14];
-};
-
-// The ID3DXMesh slots the generator calls, in d3dx9mesh.h order (the prefix XpLightManager.cpp
-// declares as RendD3dxMesh; the build carries no D3DX headers).
-struct LightmapD3dxMesh : public IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE DrawSubset(DWORD attributeId) = 0;       // +0x0C
-    virtual DWORD STDMETHODCALLTYPE GetNumFaces() = 0;                         // +0x10
-    virtual DWORD STDMETHODCALLTYPE GetNumVertices() = 0;                      // +0x14
-    virtual DWORD STDMETHODCALLTYPE GetFVF() = 0;                              // +0x18
-    virtual HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9*) = 0;  // +0x1C
-    virtual DWORD STDMETHODCALLTYPE GetNumBytesPerVertex() = 0;                // +0x20
-    virtual DWORD STDMETHODCALLTYPE GetOptions() = 0;                          // +0x24
-    virtual HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**) = 0;       // +0x28
-    virtual HRESULT STDMETHODCALLTYPE CloneMeshFVF(
-        DWORD options, DWORD fvf, IDirect3DDevice9* device, IUnknown** clone) = 0;    // +0x2C
-    virtual HRESULT STDMETHODCALLTYPE CloneMesh(
-        DWORD options, const D3DVERTEXELEMENT9* declaration,
-        IDirect3DDevice9* device, IUnknown** clone) = 0;                       // +0x30
-    virtual HRESULT STDMETHODCALLTYPE GetVertexBuffer(IDirect3DVertexBuffer9**) = 0; // +0x34
-    virtual HRESULT STDMETHODCALLTYPE GetIndexBuffer(IDirect3DIndexBuffer9**) = 0;   // +0x38
-};
+// The count word an occluder node's children array carries ahead of the four nodes (4 bytes in
+// retail). [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): padded to
+// pointer size so the nodes, which hold pointers, stay pointer-aligned.
+const unsigned int kChildCountHeader =
+    sizeof(void*) > sizeof(unsigned int) ? static_cast<unsigned int>(sizeof(void*))
+                                         : static_cast<unsigned int>(sizeof(unsigned int));
 
 // The light marker clone's declaration: one FLOAT3 position.
 const D3DVERTEXELEMENT9 kLightMeshDeclaration[2] =
@@ -171,10 +140,6 @@ const D3DVERTEXELEMENT9 kLightMeshDeclaration[2] =
     { 0xFF, 0, D3DDECLTYPE_UNUSED, 0, 0, 0 }
 };
 
-#if defined(_M_IX86)
-static_assert(sizeof(SampleTriangle) == 92, "the trace divides the triangle vector by 92");
-#endif
-
 inline bool isUnset(float value)
 {
     unsigned int bits;
@@ -182,51 +147,26 @@ inline bool isUnset(float value)
     return bits == kUnsetBits;
 }
 
-// Host strings: the retail flavour's references are VC7.1 strings; only the static spelling of
-// the reference changes (NametagManager.cpp / XpLightManager.cpp).
-#if BF2_PLUGIN_ABI_NATIVE
+// Host strings are this image's std::string; these keep the call sites' host-string spelling
+// (NametagManager.cpp / XpLightManager.cpp).
 inline const std::string& hostStdString(const ::renddx9abi::HostString& value) { return value; }
 inline const ::renddx9abi::HostString& fromHostStdString(const std::string& value) { return value; }
-#else
-inline const std::string& hostStdString(const ::renddx9abi::HostString& value)
-{
-    return *reinterpret_cast<const std::string*>(&value);
-}
-inline const ::renddx9abi::HostString& fromHostStdString(const std::string& value)
-{
-    return *reinterpret_cast<const ::renddx9abi::HostString*>(&value);
-}
-#endif
 
 // The light and object template reads XpLightManager.cpp makes: the retail flavour reads the
 // retail layout's fields, the native flavour the rebuilt classes' accessors.
 inline const world::LightSourceTemplate* lightSourceTemplatePointer(const world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<const world::LightSourceTemplate*>(light->getTemplate());
-#else
-    return *reinterpret_cast<const world::LightSourceTemplate* const*>(
-        reinterpret_cast<const unsigned char*>(light) + 0x144);
-#endif
 }
 
 inline unsigned int lightSourceFlags(const world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return light->getFlags();
-#else
-    return *reinterpret_cast<const unsigned int*>(reinterpret_cast<const unsigned char*>(light) + 0x04);
-#endif
 }
 
 inline const world::IObjectTemplate* objectTemplatePointer(const world::IObject* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return object->getTemplate();
-#else
-    return *reinterpret_cast<const world::IObjectTemplate* const*>(
-        reinterpret_cast<const unsigned char*>(object) + 0x14);
-#endif
 }
 
 inline world::IHeightmapCluster* heightmapClusterByName()
@@ -255,7 +195,7 @@ inline IDirect3DDevice9* renderDevice()
 // tree; each slot is reached through the instance's table (OverGrowthLoad.cpp's precedent).
 inline void* geometrySlot(void* geometry, unsigned int offset)
 {
-    return (*reinterpret_cast<void***>(geometry))[offset / sizeof(void*)];
+    return (*reinterpret_cast<void***>(geometry))[offset / 4];
 }
 inline void geometryDrawSilhouette(void* geometry, void* renderView, int legacyArm)   // +0x1C
 {
@@ -296,7 +236,7 @@ inline int geometryGetLodCount(void* geometry)                                  
 }
 
 // The image's printf-into-a-string helper (TerrainLightSampling.cpp carries the same body).
-void formatString(vc71::string& out, const char* format, ...)
+void formatString(std::string& out, const char* format, ...)
 {
     char buffer[0x1000];
     va_list args;
@@ -313,7 +253,7 @@ void formatString(vc71::string& out, const char* format, ...)
 
 // "%dmin %dsec", or "%dsec" under a minute; the seconds are unsigned. The trace inlines the
 // same body four times.
-void formatTime(vc71::string& out, unsigned int seconds)
+void formatTime(std::string& out, unsigned int seconds)
 {
     const unsigned int minutes = seconds / 60u;
     if (minutes)
@@ -376,6 +316,25 @@ int normalize2(float* v)
 // FLT_EPSILON of unit length, zeroed below FLT_EPSILON, otherwise scaled.
 int normalize3(float* v)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the squared-length spill and retained inverse.
+    const bf2x87::Real x(v[0]), y(v[1]), z(v[2]);
+    const float lengthSquared = bf2x87::store(bf2x87::add(bf2x87::add(
+        bf2x87::mul(x, x), bf2x87::mul(y, y)), bf2x87::mul(z, z)));
+    if (bf2x87::less(bf2x87::abs(bf2x87::sub(bf2x87::Real(lengthSquared), bf2x87::Real(1))), bf2x87::Real(FLT_EPSILON)))
+        return 0;
+    if (bf2x87::less(bf2x87::abs(bf2x87::Real(lengthSquared)), bf2x87::Real(FLT_EPSILON)))
+    {
+        v[0] = 0.0f;
+        v[1] = 0.0f;
+        v[2] = 0.0f;
+        return -20001;
+    }
+    const bf2x87::Real inverse = bf2x87::div(bf2x87::Real(1), bf2x87::squareRoot(bf2x87::Real(lengthSquared)));
+    v[0] = bf2x87::store(bf2x87::mul(inverse, bf2x87::Real(v[0])));
+    v[1] = bf2x87::store(bf2x87::mul(inverse, bf2x87::Real(v[1])));
+    v[2] = bf2x87::store(bf2x87::mul(inverse, bf2x87::Real(v[2])));
+#else
     const float lengthSquared = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     if (std::fabs(lengthSquared - 1.0f) < FLT_EPSILON)
         return 0;
@@ -390,10 +349,12 @@ int normalize3(float* v)
     v[0] = inverse * v[0];
     v[1] = inverse * v[1];
     v[2] = inverse * v[2];
+#endif
     return 0;
 }
 
 // The summed component distance of two Vec4s is within FLT_EPSILON (w first).
+// PE 0x100A6070
 inline bool vec4ApproxEqual(const float* a, const float* b)
 {
     const float distance = ((std::fabs(a[3] - b[3]) + std::fabs(a[2] - b[2]))
@@ -402,6 +363,7 @@ inline bool vec4ApproxEqual(const float* a, const float* b)
 }
 
 // Row by row.
+// PE 0x100A60C0
 inline bool mat4ApproxEqual(const Mat4& a, const Mat4& b)
 {
     return vec4ApproxEqual(a.m, b.m) && vec4ApproxEqual(a.m + 4, b.m + 4)
@@ -439,22 +401,6 @@ inline void transformPoint(const Mat4& matrix, const Vec3& in, Vec3& out)
     out.z = z;
 }
 
-// a x b, in the shipped operand order.
-inline void cross(float* out, const float* a, const float* b)
-{
-    out[0] = b[2] * a[1] - b[1] * a[2];
-    out[1] = b[0] * a[2] - a[0] * b[2];
-    out[2] = a[0] * b[1] - b[0] * a[1];
-}
-
-// out = transpose(in).
-inline void mat4Transpose(Mat4& out, const Mat4& in)
-{
-    for (int row = 0; row < 4; ++row)
-        for (int column = 0; column < 4; ++column)
-            out.m[row * 4 + column] = in.m[column * 4 + row];
-}
-
 // out = a * b, each element with the shipped association and store order.
 void mat4Mult(Mat4& out, const Mat4& left, const Mat4& right)
 {
@@ -479,50 +425,6 @@ void mat4Mult(Mat4& out, const Mat4& left, const Mat4& right)
     o[15] = ((b[11] * a[14] + b[15] * a[15]) + b[7] * a[13]) + a[12] * b[3];
 }
 
-// The image's look-at: rows 0..2 are right, up and forward, the translation `eye`.
-// A forward vector shorter than FLT_EPSILON leaves the identity; one within FLT_EPSILON of +-up
-// keeps identity right/up rows and a zero translation.
-void lookAt(Mat4& out, const Vec3& eye, const Vec3& target, const Vec3& up)
-{
-    float* const m = out.m;
-    for (int i = 0; i < 16; ++i)
-        m[i] = 0.0f;
-    m[0] = 1.0f;
-    m[5] = 1.0f;
-    m[10] = 1.0f;
-    m[15] = 1.0f;
-    const float fx = target.x - eye.x;
-    const float fy = target.y - eye.y;
-    const float fz = target.z - eye.z;
-    m[10] = fz;
-    m[8] = fx;
-    m[9] = fy;
-    const float length = std::sqrt((m[8] * m[8] + m[9] * m[9]) + m[10] * m[10]);
-    if (length < FLT_EPSILON)
-    {
-        m[1] = 0.0f; m[2] = 0.0f; m[3] = 0.0f; m[0] = 1.0f;
-        m[5] = 1.0f; m[4] = 0.0f; m[6] = 0.0f; m[7] = 0.0f;
-        m[10] = 1.0f; m[8] = 0.0f; m[9] = 0.0f; m[11] = 0.0f;
-        m[15] = 1.0f; m[13] = 0.0f; m[14] = 0.0f; m[12] = 0.0f;
-        return;
-    }
-    const float inverse = 1.0f / length;
-    m[8] = inverse * m[8];
-    m[9] = inverse * m[9];
-    m[10] = inverse * m[10];
-    if (std::fabs(((m[10] * up.z + m[9] * up.y) + m[8] * up.x) - 1.0f) < FLT_EPSILON)
-        return;
-    if (std::fabs(((m[10] * up.z + m[9] * up.y) + m[8] * up.x) + 1.0f) < FLT_EPSILON)
-        return;
-    cross(m, &up.x, m + 8);
-    normalize3(m);
-    cross(m + 4, m + 8, m);
-    normalize3(m + 4);
-    m[12] = eye.x;
-    m[13] = eye.y;
-    m[14] = eye.z;
-}
-
 // Grows the box to hold `p` (max tested before min on each axis), then dirties it.
 void expandBox(TerrainAabb& box, const Vec3& p)
 {
@@ -536,12 +438,14 @@ void expandBox(TerrainAabb& box, const Vec3& p)
 }
 
 // The box's radius and centre, refreshed while dirty.
+// PE 0x100A61F0
 inline float boxRadius(TerrainAabb& box)
 {
     if (box.dirty)
         box.refresh();
     return box.radius;
 }
+// PE 0x100A6210
 inline const Vec3& boxCentre(TerrainAabb& box)
 {
     if (box.dirty)
@@ -550,6 +454,7 @@ inline const Vec3& boxCentre(TerrainAabb& box)
 }
 
 // Does the sphere's bounding cube overlap the box? (min at +0, max at +0xC only).
+// PE 0x100A6630
 bool aabbSphereOverlap(const TerrainAabb& box, Vec3 centre, float radius)
 {
     const float low[3]  = { centre.x - radius, centre.y - radius, centre.z - radius };
@@ -639,8 +544,57 @@ bool cornersInsideFrustum(const float* corners, const Frustum& frustum)
 }
 
 // The phong response curve: the value raised to 0.1, 0.15, 0.2, 0.25 or 0.3 (the image's double
-// constants) for modes 1..5, unchanged otherwise.
-float responseCurve(int mode, float value)
+// constants) for modes 1..5, unchanged otherwise. Each arm of the image's body (responseCurve below)
+// is fld value, fld the exponent, _CIpow, and the unrounded x87 result is returned in ST0; the
+// callers clamp it with an fcom pair (1.0f, then 0.0f, a NaN passes), scale it where they scale, and
+// narrow only at the store.
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Apple arm: the result stays bf2x87::Real until the caller's store.
+// Apple silicon has no x87 _CIpow; it uses binary64 libm, the presentation-transcendental policy.
+inline bf2x87::Real responsePow(float value, double exponent)
+{
+#if defined(__aarch64__)
+    return bf2x87::Real(std::pow(static_cast<double>(value), exponent));
+#else
+    return std::pow(static_cast<long double>(value), static_cast<long double>(exponent));
+#endif
+}
+
+typedef bf2x87::Real ResponseValue;
+
+ResponseValue responseCurve(int mode, float value)
+{
+    switch (mode)
+    {
+    case 1: return responsePow(value, 0.10000000149011612);
+    case 2: return responsePow(value, 0.15000000596046448);
+    case 3: return responsePow(value, 0.20000000298023224);
+    case 4: return responsePow(value, 0.25);
+    case 5: return responsePow(value, 0.30000001192092896);
+    default: return bf2x87::Real(value);
+    }
+}
+
+// The callers' fcom clamp on ST0: above 1 becomes 1, below 0 becomes 0, a NaN passes.
+inline ResponseValue clampResponse(ResponseValue value)
+{
+    if (bf2x87::greater(value, bf2x87::Real(1.0f)))
+        return bf2x87::Real(1.0f);
+    if (bf2x87::less(value, bf2x87::Real(0.0f)))
+        return bf2x87::Real(0.0f);
+    return value;
+}
+
+inline float storeResponse(ResponseValue value) { return bf2x87::store(value); }
+inline float storeResponse(ResponseValue value, float scale)
+{
+    return bf2x87::store(bf2x87::mul(value, bf2x87::Real(scale)));
+}
+#else
+typedef float ResponseValue;
+
+// PE 0x100A6230
+ResponseValue responseCurve(int mode, float value)
 {
     switch (mode)
     {
@@ -653,7 +607,13 @@ float responseCurve(int mode, float value)
     }
 }
 
+inline ResponseValue clampResponse(ResponseValue value) { return clampUnit(value); }
+inline float storeResponse(ResponseValue value) { return value; }
+inline float storeResponse(ResponseValue value, float scale) { return value * scale; }
+#endif
+
 // The device's current viewport, field by field.
+// PE 0x100A6370
 void getViewport(unsigned int& x, unsigned int& y, unsigned int& width, unsigned int& height,
                  float& minZ, float& maxZ)
 {
@@ -667,7 +627,8 @@ void getViewport(unsigned int& x, unsigned int& y, unsigned int& width, unsigned
     maxZ = viewport.MaxZ;
 }
 
-// The trace's inline viewport stores, gathered into one helper.
+// The trace's inline viewport stores, gathered into one helper (the traces inline it).
+// PE 0x100A6320 (the image's out-of-line copy is unreachable in 1.50: no code or data references)
 inline void setViewport(unsigned int x, unsigned int y, unsigned int width, unsigned int height,
                         float minZ, float maxZ)
 {
@@ -682,6 +643,7 @@ inline void setViewport(unsigned int x, unsigned int y, unsigned int width, unsi
 }
 
 // The last light of the published generator (the global, not the caller), or null.
+// PE 0x100A7150
 LightInfo* lastLight()
 {
     LightmapGeneration* const generator = g_LightmapGeneration;
@@ -693,6 +655,7 @@ LightInfo* lastLight()
 // The sky light's azimuth in radians: its direction reversed onto the xz plane,
 // normalised, acos of the z component, mirrored to 2*pi - angle on the negative x side. Zero
 // without a sky light.
+// PE 0x100A6740
 float sunAzimuth()
 {
     if (!g_LightManager->getSkyLight())                                       // +0x28
@@ -708,6 +671,7 @@ float sunAzimuth()
 
 // The first block whose box holds `position` (x and z inclusive, y within -9999..9999), else 0.
 // The shipped body is a member that never reads its object.
+// PE 0x100A67E0
 unsigned int nearestBlock(const Vec3& position, ILightSampling* sampler)
 {
     for (unsigned int i = 0; i < sampler->getBlockCount(); ++i)
@@ -733,6 +697,17 @@ unsigned int nearestBlock(const Vec3& position, ILightSampling* sampler)
 // its geometry, the geometry box's corners in world space, the box centre in world space and its
 // radius (capped at 20000). False for objects farther than 10000 from the origin and objects
 // without geometry. The shipped body is a member that never reads its object.
+// PE 0x10093B70 [INFERRED] the out-of-line Vec3 += (receiver in ECX, `retn 4`): each component
+// becomes add + v, x, y, z in that order. Its only caller is fillObjectRecord (0x100A6C0F).
+Vec3& addAssign(Vec3& v, const Vec3& add)
+{
+    v.x = add.x + v.x;
+    v.y = add.y + v.y;
+    v.z = add.z + v.z;
+    return v;
+}
+
+// PE 0x100A6B30
 bool fillObjectRecord(world::IObject* object, OccluderRecord* record)
 {
     if (!object)
@@ -748,22 +723,80 @@ bool fillObjectRecord(world::IObject* object, OccluderRecord* record)
     if (!geometry)
         return false;
     const Vec3& p = record->position;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The sum, FSQRT and comparison have no float spill.
+    const bf2x87::Real x(p.x), y(p.y), z(p.z);
+    if (bf2x87::greater(bf2x87::squareRoot(bf2x87::add(bf2x87::add(
+        bf2x87::mul(x, x), bf2x87::mul(y, y)), bf2x87::mul(z, z))), bf2x87::Real(10000)))
+#else
     if (std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z) > 10000.0f)       // a NaN distance passes
+#endif
         return false;
     aabbCorners(record->corners, &geometryLocalBounds(geometry)->min.x);
     transformCorners(record->corners, record->transform);
     record->centre = boxCentre(*geometryLocalBounds(geometry));
     rotateInPlace(record->transform, record->centre);
-    record->centre.x = record->centre.x + record->position.x;
-    record->centre.y = record->centre.y + record->position.y;
-    record->centre.z = record->centre.z + record->position.z;
+    addAssign(record->centre, record->position);
     record->radius = boxRadius(*geometryLocalBounds(geometry));
+#if defined(__APPLE__)
+    if (bf2x87::greater(bf2x87::Real(record->radius), bf2x87::Real(20000)))
+#else
     if (record->radius > 20000.0f)
+#endif
         record->radius = 20000.0f;
     return true;
 }
 
+// A box's eight corners, zeroed and then taken from its min and max (aabbCorners). [INFERRED] name.
+struct LightmapBoxCorners
+{
+    float corners[24];
+
+    // Its only caller is lightmapBoxFrustumClass, itself without a caller.
+    // PE 0x100AE170 (unreachable in 1.50: no code or data references reach its caller)
+    explicit LightmapBoxCorners(const TerrainAabb& box)
+    {
+        for (int i = 0; i < 24; ++i)
+            corners[i] = 0.0f;
+        aabbCorners(corners, &box.min.x);
+    }
+};
+
 } // anonymous namespace
+
+
+// Does the ray meet the sphere? True when the ray starts inside or on it (the squared distance less
+// the squared radius, stored as a float, is not positive; a NaN goes on); otherwise the normalised
+// direction must point toward the centre (projection negative; a NaN goes on) and the squared
+// projection must reach that stored value (ordered). [INFERRED] name; the receiver is
+// [CHOSEN, not recovered] Ray3: the body reads an origin at +0x00 and a direction at +0x0C, which is
+// Ray3's proven layout, and no image (retail, RendDX9_r) has a caller that could name the type.
+// PE 0x100A6580 (unreachable in 1.50: no code or data references)
+bool lightmapRayHitsSphere(const Ray3& ray, const Vec3& centre, float radius)
+{
+    const float dx = ray.origin.x - centre.x;
+    const float dy = ray.origin.y - centre.y;
+    const float dz = ray.origin.z - centre.z;
+    const float inside = (dz * dz + dx * dx + dy * dy) - radius * radius;
+    if (inside <= 0.0f)
+        return true;
+    Vec3 direction = ray.direction;
+    rendmath::normalize(direction);
+    const float projection = direction.z * dz + dx * direction.x + direction.y * dy;
+    if (projection >= 0.0f)
+        return false;
+    return projection * projection >= inside;
+}
+
+// 1 when the frustum holds the box's corners (cornersInsideFrustum), else 2. [INFERRED] name; the
+// box is [CHOSEN, not recovered] TerrainAabb: the corner builder reads only a min at +0x00 and a max
+// at +0x0C, and no image (retail, RendDX9_r) has a caller that could name the type.
+// PE 0x100A66C0 (unreachable in 1.50: no code or data references)
+int lightmapBoxFrustumClass(const Frustum& frustum, const TerrainAabb& box)
+{
+    const LightmapBoxCorners corners(box);
+    return cornersInsideFrustum(corners.corners, frustum) ? 1 : 2;
+}
 
 
 // vector<bool>::resize(count, false). [CHOSEN, not recovered] the word handling follows VC7.1's
@@ -795,6 +828,7 @@ void LightFacingBits::resize(unsigned int count)
 // The debug defaults: position (1360, 118, 700), radius 10, a directional light toward
 // normalise(0, 0.3, 1), intensity 1, shadow 0.8, a 8 degree view of 150 m, self-shadowing, 100
 // occluders. colorRed stays unset.
+// PE 0x100A77F0
 LightInfo::LightInfo()
 {
     position.x = 1360.0f;
@@ -846,39 +880,50 @@ LightInfo::LightInfo(const LightInfo& other)
 {
 }
 
-// Releases the render view's reference, then the back-face bits.
+// Releases the render view's reference, then the back-face bits. The destructions inline it.
+// PE 0x100A7880 (the image's out-of-line copy is unreachable in 1.50: no code or data references)
 LightInfo::~LightInfo()
 {
     if (renderView)
         renderView->release();
 }
 
+// PE 0x100A6B00 (unreachable in 1.50: no code or data references)
 void LightInfo::setDirection(const Vec3& value)
 {
     direction = value;
     normalize3(&direction.x);
 }
 const Vec3& LightInfo::getDirection() const { return direction; }
+// PE 0x100A6480 (unreachable in 1.50: no code or data references)
 void  LightInfo::setShadowIntensity(float value) { shadowIntensity = value; }
 float LightInfo::getShadowIntensity() const { return shadowIntensity; }
+// PE 0x100A64A0 (unreachable in 1.50: no code or data references)
 void  LightInfo::setIntensity(float value) { intensity = value; }
 float LightInfo::getIntensity() const { return intensity; }
+// PE 0x100A64C0 (unreachable in 1.50: no code or data references)
 void  LightInfo::setFov(float value) { fov = value; }
 float LightInfo::getFov() const { return fov; }
+// PE 0x100A64E0 (unreachable in 1.50: no code or data references)
 void  LightInfo::setSelfShadowing(bool value) { selfShadowing = value; }
 bool  LightInfo::getSelfShadowing() const { return selfShadowing != 0; }
+// PE 0x100A6500 (unreachable in 1.50: no code or data references)
 void  LightInfo::setObjectShadows(bool value) { objectShadows = value; }
 bool  LightInfo::getObjectShadows() const { return objectShadows != 0; }
+// PE 0x100A6520 (unreachable in 1.50: no code or data references)
 void  LightInfo::setViewDistance(float value) { viewDistance = value; }
 float LightInfo::getViewDistance() const { return viewDistance; }
+// PE 0x100A6540 (unreachable in 1.50: no code or data references)
 void  LightInfo::setSoftness(float value) { softness = value; }
 float LightInfo::getSoftness() const { return softness; }
+// PE 0x100A6560 (unreachable in 1.50: no code or data references)
 void  LightInfo::setMaxOccluders(int value) { maxOccluders = value; }
 int   LightInfo::getMaxOccluders() const { return maxOccluders; }
 
 
 // A zero position, the identity transformation, a zero box; object and geometry stay
 // unset (fillObjectRecord writes them).
+// PE 0x100AE260 (the zeroed corners are OcclusionBoxCorners::OcclusionBoxCorners, PE 0x100AE110)
 OccluderRecord::OccluderRecord()
 {
     position.x = 0.0f;
@@ -900,6 +945,7 @@ OccluderRecord::OccluderRecord()
 
 
 // An empty dirty box, zero corners and sphere, no children, no records.
+// PE 0x100A7060
 OccluderNode::OccluderNode()
     : children(0)
 {
@@ -920,18 +966,20 @@ OccluderNode::OccluderNode()
 
 // The four children (array form: the count word ahead of them, destroyed last to
 // first, freed with the word), then the record list.
+// PE 0x100A70D0
 OccluderNode::~OccluderNode()
 {
     if (children)
     {
-        unsigned int* const cookie = reinterpret_cast<unsigned int*>(children) - 1;
-        for (unsigned int i = *cookie; i-- > 0; )
+        unsigned char* const cookie = reinterpret_cast<unsigned char*>(children) - kChildCountHeader;
+        for (unsigned int i = *reinterpret_cast<unsigned int*>(cookie); i-- > 0; )
             children[i].~OccluderNode();
         ::renddx9abi::engineFree(cookie);
     }
 }
 
 
+// PE 0x100A7F80
 LightmapGeneration::LightmapGeneration()
     : m_refCount(1),
       m_occluderTree(0),
@@ -988,7 +1036,7 @@ LightmapGeneration::LightmapGeneration()
     m_giLightsBaseDir.x = 0.0f; m_giLightsBaseDir.y = 0.5f; m_giLightsBaseDir.z = -0.5f;
 
     m_font = createFontPortedDirect();
-    fontPortedLoad(m_font, vc71::string("Fonts/BF1942.font"));                // Font::Ported +0x10
+    fontPortedLoad(m_font, std::string("Fonts/BF1942.font"));                // Font::Ported +0x10
 
     // Two render targets in the default pool, then two system-memory read-back copies.
     const int savedManaged = dx9rend::textureManagerSwapManaged(0);
@@ -1017,13 +1065,13 @@ LightmapGeneration::LightmapGeneration()
     }
 
     // The light marker: a 0.1 m sphere, cloned to a position-only declaration (D3DXMESH_MANAGED).
-    D3DXCreateSphere(renderDevice(), 0.1f, 20, 20, &m_lightMesh, 0);
-    IUnknown* clone = 0;
-    static_cast<LightmapD3dxMesh*>(m_lightMesh)->CloneMesh(0x220, kLightMeshDeclaration,
-                                                            renderDevice(), &clone);
+    D3DXCreateSphere(renderDevice(), 0.1f, 20, 20, reinterpret_cast<ID3DXMesh**>(&m_lightMesh), 0);
+    ID3DXMesh* clone = 0;
+    static_cast<ID3DXMesh*>(m_lightMesh)->CloneMesh(0x220, kLightMeshDeclaration,
+                                                     renderDevice(), &clone);
     m_lightMesh->Release();
     m_lightMesh = clone;
-    LightmapD3dxMesh* const mesh = static_cast<LightmapD3dxMesh*>(m_lightMesh);
+    ID3DXMesh* const mesh = static_cast<ID3DXMesh*>(m_lightMesh);
     mesh->GetVertexBuffer(&m_lightMeshVertices);
     mesh->GetIndexBuffer(&m_lightMeshIndices);
     m_lightMeshVertexCount = mesh->GetNumVertices();
@@ -1031,7 +1079,7 @@ LightmapGeneration::LightmapGeneration()
 
     m_lightEffect = static_cast<dx9rend::Effect*>(
         dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "shaders/LightGeom"));
-    dx9rend::effectSetTechniqueByName(m_lightEffect, vc71::string("Pointlight"));
+    dx9rend::effectSetTechniqueByName(m_lightEffect, std::string("Pointlight"));
 
     // A two-triangle screen quad of Vec2 positions (written in the default pool).
     m_quadVertexCount = 6;
@@ -1039,12 +1087,12 @@ LightmapGeneration::LightmapGeneration()
     const int savedPool = dx9rend::bufferManagerSwapPool(0);
     m_quadBytes = m_quadVertexCount * m_quadStride;
     m_quadVertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager, m_quadVertexCount,
-                                                     m_quadStride, vc71::string("LightmapGeneration"),
+                                                     m_quadStride, std::string("LightmapGeneration"),
                                                      D3DUSAGE_WRITEONLY);
     dx9rend::bufferManagerSwapPool(savedPool);
     m_quadEffect = static_cast<dx9rend::Effect*>(
         dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "shaders/QuadGeom"));
-    dx9rend::effectSetTechniqueByName(m_quadEffect, vc71::string("TexturedQuad"));
+    dx9rend::effectSetTechniqueByName(m_quadEffect, std::string("TexturedQuad"));
     float* const quad = static_cast<float*>(dx9rend::vertexBufferLock(m_quadVertexBuffer, 0, 6, 0));
     if (!quad)
         ::renddx9abi::logf("LightmapGeneration.cpp:746: Failed to lock vertex buffer");
@@ -1060,6 +1108,7 @@ LightmapGeneration::LightmapGeneration()
 
 // The two effects keep the references the shader manager handed out (shipped); the
 // tree is destroyed but its pointer left set.
+// PE 0x100A8500
 LightmapGeneration::~LightmapGeneration()
 {
     if (m_occluderTree)
@@ -1069,17 +1118,17 @@ LightmapGeneration::~LightmapGeneration()
     }
     if (m_font)
         m_font->release();
-    dx9rend::EngineTexture* const textures[4] =
-        { m_targetTexture, m_targetTexture2, m_sysMemTargetTexture, m_sysMemTargetTexture2 };
-    for (int i = 0; i < 4; ++i)
-    {
-        dx9rend::EngineTexture* const texture = textures[i];
+    const auto releaseTexture = [](dx9rend::EngineTexture* texture) {
         if (texture && --texture->refCount == 0)
         {
             dx9rend::textureDtor(texture);
             ::renddx9abi::engineFree(texture);
         }
-    }
+    };
+    releaseTexture(m_targetTexture);
+    releaseTexture(m_targetTexture2);
+    releaseTexture(m_sysMemTargetTexture);
+    releaseTexture(m_sysMemTargetTexture2);
     if (m_depthStencil)
         m_depthStencil->Release();
     if (m_lightMeshVertices)
@@ -1099,6 +1148,7 @@ void LightmapGeneration::addRef() { ++m_refCount; }
 int  LightmapGeneration::getRef() { return m_refCount; }
 
 // Answers the count after the decrement; zero destroys and frees.
+// PE 0x100B04E0
 int LightmapGeneration::release()
 {
     const int count = --m_refCount;
@@ -1111,6 +1161,7 @@ int LightmapGeneration::release()
 }
 
 // IBase (1) and IID_ILightmapGeneration answer the object.
+// PE 0x100B0490
 void* LightmapGeneration::queryInterface(unsigned int iid) const
 {
     LightmapGeneration* const self = const_cast<LightmapGeneration*>(this);
@@ -1119,24 +1170,37 @@ void* LightmapGeneration::queryInterface(unsigned int iid) const
     return iid == kIIDLightmapGeneration ? self : 0;
 }
 
+// PE 0x100B04C0
 void LightmapGeneration::setProgressCallback(LightmapProgressCallback callback, void* user)
 {
     m_progressCallback = callback;
     m_progressUser = user;
 }
 
+// The 2006 console's accessors. 1.50 keeps the setters (each getter follows its setter in the image)
+// without a caller. The owner is attested by RendDX9_r.dll: its onlyNearest, blockSize, sampleOffset,
+// shadowsNearCamera, skyColor, ambientColor and giLightColor bindings call the same bodies on the
+// published LightmapGeneration singleton (the _r global the singleton creator writes), and the
+// written offsets are the generator's fields that the traces read.
+
+// PE 0x100A63D0 (unreachable in 1.50: no code or data references)
 void  LightmapGeneration::setOnlyNearest(bool value) { m_onlyNearest = value; }
 bool  LightmapGeneration::getOnlyNearest() const { return m_onlyNearest != 0; }
+// PE 0x100A63F0 (unreachable in 1.50: no code or data references)
 void  LightmapGeneration::setFirstBlock(int value) { m_firstBlock = value; }
 int   LightmapGeneration::getFirstBlock() const { return m_firstBlock; }
+// PE 0x100A6410 (unreachable in 1.50: no code or data references)
 void  LightmapGeneration::setBlockSize(int value) { m_blockSize = value; }
 int   LightmapGeneration::getBlockSize() const { return m_blockSize; }
+// PE 0x100A6430 (unreachable in 1.50: no code or data references)
 void  LightmapGeneration::setSampleOffset(float value) { m_sampleOffset = value; }
 float LightmapGeneration::getSampleOffset() const { return m_sampleOffset; }
+// PE 0x100A6450 (unreachable in 1.50: no code or data references)
 void  LightmapGeneration::setShadowsNearCamera(float value) { m_shadowsNearCamera = value; }
 float LightmapGeneration::getShadowsNearCamera() const { return m_shadowsNearCamera; }
 
 // Store, then clamp each component to [0, 1].
+// PE 0x100A68A0 (unreachable in 1.50: no code or data references)
 void LightmapGeneration::setSkyColor(const Vec3& value)
 {
     m_skyColor = value;
@@ -1144,6 +1208,7 @@ void LightmapGeneration::setSkyColor(const Vec3& value)
     m_skyColor.y = clampUnit(m_skyColor.y);
     m_skyColor.z = clampUnit(m_skyColor.z);
 }
+// PE 0x100A6960 (unreachable in 1.50: no code or data references)
 void LightmapGeneration::setAmbientColor(const Vec3& value)
 {
     m_ambientColor = value;
@@ -1151,6 +1216,7 @@ void LightmapGeneration::setAmbientColor(const Vec3& value)
     m_ambientColor.y = clampUnit(m_ambientColor.y);
     m_ambientColor.z = clampUnit(m_ambientColor.z);
 }
+// PE 0x100A6A20 (unreachable in 1.50: no code or data references)
 void LightmapGeneration::setGILightColor(const Vec3& value)
 {
     m_giLightColor = value;
@@ -1159,6 +1225,8 @@ void LightmapGeneration::setGILightColor(const Vec3& value)
     m_giLightColor.z = clampUnit(m_giLightColor.z);
 }
 
+// PE 0x100A86B0 (the temporary LightInfo's render-view reference and vector storage are released
+// by its destructor).
 void LightmapGeneration::pushDefaultLight()
 {
     m_lights.push_back(LightInfo());
@@ -1167,6 +1235,7 @@ void LightmapGeneration::pushDefaultLight()
 
 // Nothing while a generator exists; otherwise allocate and construct one (a failed
 // allocation publishes null) and register it as the simple singleton "LightmapGeneration".
+// PE 0x100A8700
 void createLightmapGenerationSingleton()
 {
     if (g_LightmapGeneration)
@@ -1177,7 +1246,7 @@ void createLightmapGenerationSingleton()
         ::renddx9abi::HostString("LightmapGeneration"), g_LightmapGeneration);  // ClassManager +0x50
 }
 
-// The registration is left in place, as shipped.
+// PE 0x100A8770. The registration is left in place, as shipped.
 void destroyLightmapGenerationSingleton()
 {
     if (LightmapGeneration* const generator = g_LightmapGeneration)
@@ -1191,83 +1260,19 @@ void destroyLightmapGenerationSingleton()
 
 namespace {
 
-// vector<OccluderRecord*>::operator=. [CHOSEN, not recovered] storage handling:
-// an empty source frees the target, otherwise the target is refilled in order.
-void assignRecords(Vc71Vec<OccluderRecord*>& to, const Vc71Vec<OccluderRecord*>& from)
-{
-    if (&to == &from)
-        return;
-    if (from.size() == 0)
-    {
-        to.clear();
-        return;
-    }
-    to.resize(0);
-    for (unsigned int i = 0; i < from.size(); ++i)
-        to.push_back(from[i]);
-}
-
 // ObjectManager +0xB4, getAllRegisteredObjects - copied into a TU-local map in key order (the
 // shipped traceAllObjects copy-constructs it). The retail flavour walks the host's VC7.1 tree
 // (OverGrowthLoad.cpp's HostObjectWalk over +0x34 is the same walk).
-#if !BF2_PLUGIN_ABI_NATIVE
-struct HostObjectNode
-{
-    HostObjectNode* left;      // +0x00
-    HostObjectNode* parent;    // +0x04
-    HostObjectNode* right;     // +0x08
-    unsigned int    key;       // +0x0C
-    world::IObject* object;    // +0x10
-    unsigned char   color;     // +0x14
-    unsigned char   isNil;     // +0x15
-};
-struct HostObjectMap
-{
-    void*           comp;      // +0x00
-    HostObjectNode* head;      // +0x04
-    unsigned int    size;      // +0x08
-};
-
-HostObjectNode* nextNode(HostObjectNode* node)
-{
-    if (node->isNil)
-        return node;
-    HostObjectNode* right = node->right;
-    if (!right->isNil)
-    {
-        while (!right->left->isNil)
-            right = right->left;
-        return right;
-    }
-    HostObjectNode* parent = node->parent;
-    while (!parent->isNil && node == parent->right)
-    {
-        node = parent;
-        parent = parent->parent;
-    }
-    return parent;
-}
-#endif
 
 void copyRegisteredObjects(std::map<unsigned int, world::IObject*>& out)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     out = hostObjectManager()->getAllRegisteredObjects();
-#else
-    typedef HostObjectMap* (__thiscall* GetAllFn)(void*);
-    void* const manager = ::dice::hfe::objectManager;
-    HostObjectMap* const map =
-        reinterpret_cast<GetAllFn>((*static_cast<void***>(manager))[0xB4 / 4])(manager);
-    for (HostObjectNode* node = map->head->left; node != map->head; node = nextNode(node))
-        out.insert(out.end(), std::make_pair(node->key, node->object));
-#endif
 }
 
 // The registered objects one by one, in key order, without a copy (rebuildOccluders' walk).
 class RegisteredObjectWalk
 {
 public:
-#if BF2_PLUGIN_ABI_NATIVE
     RegisteredObjectWalk()
         : m_map(hostObjectManager()->getAllRegisteredObjects()), m_it(m_map.begin()) {}
     bool done() const { return m_it == m_map.end(); }
@@ -1276,21 +1281,6 @@ public:
 private:
     const std::map<unsigned int, world::IObject*>& m_map;
     std::map<unsigned int, world::IObject*>::const_iterator m_it;
-#else
-    RegisteredObjectWalk()
-    {
-        typedef HostObjectMap* (__thiscall* GetAllFn)(void*);
-        void* const manager = ::dice::hfe::objectManager;
-        m_map = reinterpret_cast<GetAllFn>((*static_cast<void***>(manager))[0xB4 / 4])(manager);
-        m_node = m_map->head->left;
-    }
-    bool done() const { return m_node == m_map->head; }
-    world::IObject* object() const { return m_node->object; }
-    void next() { m_node = nextNode(m_node); }
-private:
-    HostObjectMap*  m_map;
-    HostObjectNode* m_node;
-#endif
     RegisteredObjectWalk(const RegisteredObjectWalk&);
     RegisteredObjectWalk& operator=(const RegisteredObjectWalk&);
 };
@@ -1302,7 +1292,8 @@ private:
 // gets four children (new[4]) quartering x and z - the y half extent is multiplied by 0, and each
 // child then takes the node's own y range - and each child splits the records whose sphere
 // touches its box (aabbSphereOverlap). Otherwise the node keeps the records.
-void LightmapGeneration::splitOccluderNode(const Vc71Vec<OccluderRecord*>& records,
+// PE 0x100A71A0
+void LightmapGeneration::splitOccluderNode(const std::vector<OccluderRecord*>& records,
                                            OccluderNode* node, int depth)
 {
     aabbCorners(node->corners, &node->bounds.min.x);
@@ -1310,7 +1301,7 @@ void LightmapGeneration::splitOccluderNode(const Vc71Vec<OccluderRecord*>& recor
     node->radius = boxRadius(node->bounds);
     if (!records.data() || records.size() <= 16u || depth >= 11)
     {
-        assignRecords(node->records, records);
+        node->records = records;                                // vector<OccluderRecord*>::operator=
         return;
     }
 
@@ -1319,12 +1310,12 @@ void LightmapGeneration::splitOccluderNode(const Vc71Vec<OccluderRecord*>& recor
     const float halfZ = node->bounds.extent.z * 0.5f;
     const float halfY = node->bounds.extent.y * 0.0f;
     const float halfX = node->bounds.extent.x * 0.5f;
-    void* const block = ::renddx9abi::engineAlloc(4 + 4 * sizeof(OccluderNode));
+    void* const block = ::renddx9abi::engineAlloc(kChildCountHeader + 4 * sizeof(OccluderNode));
     OccluderNode* children = 0;
     if (block)
     {
         *static_cast<unsigned int*>(block) = 4;
-        children = reinterpret_cast<OccluderNode*>(static_cast<unsigned int*>(block) + 1);
+        children = reinterpret_cast<OccluderNode*>(static_cast<unsigned char*>(block) + kChildCountHeader);
         for (int i = 0; i < 4; ++i)
             new (&children[i]) OccluderNode();                     // `eh vector constructor iterator`
     }
@@ -1353,7 +1344,7 @@ void LightmapGeneration::splitOccluderNode(const Vc71Vec<OccluderRecord*>& recor
     }
     for (int i = 0; i < 4; ++i)
     {
-        Vc71Vec<OccluderRecord*> inside;
+        std::vector<OccluderRecord*> inside;
         for (unsigned int r = 0; r < records.size(); ++r)
         {
             OccluderRecord* const record = records[r];
@@ -1367,8 +1358,9 @@ void LightmapGeneration::splitOccluderNode(const Vc71Vec<OccluderRecord*>& recor
 // A node's own records are taken unconditionally; a child is entered when the frustum holds its
 // sphere (Frustum::inside) and its corners (cornersInsideFrustum). The fourth argument is passed
 // on as 0 and never read.
+// PE 0x100A7580
 void LightmapGeneration::queryOccluderNode(const Frustum& frustum, OccluderNode* node,
-                                           Vc71Vec<OccluderRecord*>* out, int unused)
+                                           std::vector<OccluderRecord*>* out, int unused)
 {
     (void)unused;
     for (unsigned int i = 0; i < node->records.size(); ++i)
@@ -1378,7 +1370,7 @@ void LightmapGeneration::queryOccluderNode(const Frustum& frustum, OccluderNode*
     for (int i = 0; i < 4; ++i)
     {
         OccluderNode* const child = &node->children[i];
-        if (frustum.inside(child->centre, child->radius) && cornersInsideFrustum(child->corners, frustum))
+        if (rendmath::frustumInside(frustum, child->centre, child->radius) && cornersInsideFrustum(child->corners, frustum))
             queryOccluderNode(frustum, child, out, 0);
     }
 }
@@ -1386,9 +1378,10 @@ void LightmapGeneration::queryOccluderNode(const Frustum& frustum, OccluderNode*
 // The tree's candidates land in a function-local static list (freed at exit) that is emptied,
 // not freed, on every call; each candidate whose object `out` does not hold yet is appended when
 // the frustum holds its sphere and its corners.
-void LightmapGeneration::occludersInFrustum(const Frustum& frustum, Vc71Vec<OccluderRecord*>* out)
+// PE 0x100A79C0
+void LightmapGeneration::occludersInFrustum(const Frustum& frustum, std::vector<OccluderRecord*>* out)
 {
-    static Vc71Vec<OccluderRecord*> s_candidates;
+    static std::vector<OccluderRecord*> s_candidates;
     s_candidates.resize(0);
     queryOccluderNode(frustum, m_occluderTree, &s_candidates, 0);
     for (unsigned int i = 0; i < s_candidates.size(); ++i)
@@ -1405,16 +1398,77 @@ void LightmapGeneration::occludersInFrustum(const Frustum& frustum, Vc71Vec<Occl
         }
         if (listed)
             continue;
-        if (frustum.inside(candidate->centre, candidate->radius)
+        if (rendmath::frustumInside(frustum, candidate->centre, candidate->radius)
             && cornersInsideFrustum(candidate->corners, frustum))
             out->push_back(candidate);
+    }
+}
+
+// Every record under `node` whose sphere overlaps the query sphere (the squared centre distance less
+// the squared sum of the radii is negative; a NaN fails), the node's own records first; a child is
+// entered by the same test on its sphere. The object is passed on and never read.
+// PE 0x100A7680 (reached only from occludersInSphere, which has no caller in 1.50)
+void LightmapGeneration::queryOccluderSphere(OccluderNode* node, const Vec3& position, float radius,
+                                             std::vector<OccluderRecord*>* out)
+{
+    const Vec3 centre = position;
+    for (std::vector<OccluderRecord*>::iterator it = node->records.begin();
+         it != node->records.end(); ++it)
+    {
+        const OccluderRecord* const record = *it;
+        const float dx = record->centre.x - centre.x;
+        const float dy = record->centre.y - centre.y;
+        const float dz = record->centre.z - centre.z;
+        const float reach = radius + record->radius;
+        if (dz * dz + dy * dy + dx * dx - reach * reach < 0.0f)
+            out->push_back(*it);
+    }
+    if (!node->children)
+        return;
+    for (int i = 0; i < 4; ++i)
+    {
+        OccluderNode* const child = &node->children[i];
+        const float dx = child->centre.x - centre.x;
+        const float dy = child->centre.y - centre.y;
+        const float dz = child->centre.z - centre.z;
+        const float reach = radius + child->radius;
+        if (dz * dz + dy * dy + dx * dx - reach * reach < 0.0f)
+            queryOccluderSphere(child, position, radius, out);
+    }
+}
+
+// The tree's records near the sphere land in a function-local static list (freed at exit) that is
+// emptied, not freed, on every call; each one whose object `out` does not hold yet is appended.
+// PE 0x100A7AD0 (unreachable in 1.50: no code or data references)
+void LightmapGeneration::occludersInSphere(const Vec3& position, float radius,
+                                           std::vector<OccluderRecord*>* out)
+{
+    static std::vector<OccluderRecord*> s_candidates;
+    s_candidates.resize(0);
+    queryOccluderSphere(m_occluderTree, position, radius, &s_candidates);
+    for (std::vector<OccluderRecord*>::iterator it = s_candidates.begin();
+         it != s_candidates.end(); ++it)
+    {
+        bool listed = false;
+        for (std::vector<OccluderRecord*>::iterator known = out->begin(); known != out->end();
+             ++known)
+        {
+            if ((*it)->object == (*known)->object)
+            {
+                listed = true;
+                break;
+            }
+        }
+        if (!listed)
+            out->push_back(*it);
     }
 }
 
 // Every record goes into a TU-local ordered map keyed by its squared distance to
 // `position` less its squared radius (floored at 0); the map is then destroyed and nothing is
 // written back, so the occluder list keeps its full length (shipped).
-void LightmapGeneration::sortOccluders(Vc71Vec<OccluderRecord*>* records, const Vec3& position,
+// PE 0x100A7BC0
+void LightmapGeneration::sortOccluders(std::vector<OccluderRecord*>* records, const Vec3& position,
                                        int maxCount)
 {
     (void)maxCount;
@@ -1435,7 +1489,8 @@ void LightmapGeneration::sortOccluders(Vc71Vec<OccluderRecord*>* records, const 
 // The root is replaced (a failed allocation publishes null); with records, its box
 // starts at +-9999999 and grows over every record sphere's two extreme corners, then the root is
 // split over m_occluderList (the argument only feeds the box).
-void LightmapGeneration::buildOccluderTree(Vc71Vec<OccluderRecord*>* records)
+// PE 0x100A78C0
+void LightmapGeneration::buildOccluderTree(std::vector<OccluderRecord*>* records)
 {
     void* const storage = ::renddx9abi::engineAlloc(sizeof(OccluderNode));
     m_occluderTree = storage ? new (storage) OccluderNode() : 0;
@@ -1463,7 +1518,8 @@ void LightmapGeneration::buildOccluderTree(Vc71Vec<OccluderRecord*>* records)
     splitOccluderNode(m_occluderList, m_occluderTree, 0);
 }
 
-void LightmapGeneration::addOccluder(world::IObject* object, Vc71Vec<OccluderRecord>* records)
+// PE 0x100A7C90
+void LightmapGeneration::addOccluder(world::IObject* object, std::vector<OccluderRecord>* records)
 {
     if (!object)
         return;
@@ -1480,6 +1536,7 @@ void LightmapGeneration::addOccluder(world::IObject* object, Vc71Vec<OccluderRec
 
 // Roads and meshes flagged doNotGenerateLightmaps cast no shadow; the previous tree is
 // not released (the trace only rebuilds a missing one).
+// PE 0x100A7D00
 void LightmapGeneration::rebuildOccluders()
 {
     m_occluders.clear();
@@ -1507,6 +1564,33 @@ void LightmapGeneration::rebuildOccluders()
     buildOccluderTree(&m_occluderList);
 }
 
+// rebuildOccluders over the objects the host's grid holds within `radius` of `centre` (ObjectManager
+// +0x44 into its temporary vector, +0xA8) instead of every registered object, skipping objects
+// without the grid flag and `exclude`'s own object, and without the road and doNotGenerateLightmaps
+// filter. Like rebuildOccluders it does not release the previous tree. [INFERRED] name; `exclude` is
+// [CHOSEN, not recovered] an OccluderRecord: the body reads only its first word, compared with an
+// object pointer, and the image has no caller that could name the type.
+// PE 0x100A7E70 (unreachable in 1.50: no code or data references)
+void LightmapGeneration::rebuildNearbyOccluders(const OccluderRecord* exclude, const Vec3& centre,
+                                                float radius)
+{
+    m_occluders.clear();
+    m_occluderList.clear();
+    std::vector<world::IObject*>& objects = hostObjectManager()->getObjectTempVector();   // +0xA8
+    hostObjectManager()->getObjectsFromGrid(centre, radius, objects, 0);                 // +0x44
+    for (std::vector<world::IObject*>::iterator it = objects.begin(); it != objects.end(); ++it)
+    {
+        world::IObject* const object = *it;
+        // shipped: the flag word is read before the null test
+        if ((world::object_detail::LayoutAccess::flags(object) & world::IObject::OFHasGrid)
+            && object != exclude->object && object)
+            addOccluder(object, &m_occluders);
+    }
+    for (unsigned int i = 0; i < m_occluders.size(); ++i)
+        m_occluderList.push_back(&m_occluders[i]);
+    buildOccluderTree(&m_occluderList);
+}
+
 
 // Scene lights from the light manager (getLightsByMask 0x1F15): enabled lights whose
 // root is enabled. A directional light becomes a reversed-direction view of 500 m (the template
@@ -1514,15 +1598,12 @@ void LightmapGeneration::rebuildOccluders()
 // `bounds` (its y range widened to -9999..9999) become local lights. Then the GI lights: a top light
 // for one GI light or useGITopLight, and a ring of numberOfGILights around the sky light's azimuth.
 // The scene lights are appended through the published generator's last light (lastLight).
+// PE 0x100A87A0
 void LightmapGeneration::gatherLights(TerrainAabb* bounds)
 {
-    vc71::vector_layout lights;
-    lights.first = 0;
-    lights.last = 0;
-    lights.end = 0;
+    std::vector<world::LightSource*> lights;
     g_LightManager->getLightsByMask(lights, 0x1F15u, 0u);                  // +0x14
-    for (world::LightSource** it = reinterpret_cast<world::LightSource**>(lights.first);
-         it != reinterpret_cast<world::LightSource**>(lights.last); ++it)
+    for (world::LightSource** it = lights.data(); it != lights.data() + lights.size(); ++it)
     {
         world::LightSource* const light = *it;
         const world::LightSourceTemplate* const tmpl = lightSourceTemplatePointer(light);
@@ -1582,7 +1663,7 @@ void LightmapGeneration::gatherLights(TerrainAabb* bounds)
             info->intensity = tmpl->getIntensity();
             info->viewDistance = 500.0f;
             info->softness = tmpl->getSoftness();
-            const vc71::string sunlight("sunlight");
+            const std::string sunlight("sunlight");
             const bool isSun = _stricmp(fromHostStdString(tmpl->getName()).c_str(),
                                         sunlight.c_str()) == 0;
             if (isSun)
@@ -1645,8 +1726,6 @@ void LightmapGeneration::gatherLights(TerrainAabb* bounds)
             }
         }
     }
-    if (lights.first)
-        ::renddx9abi::engineFree(lights.first);
 }
 
 
@@ -1655,13 +1734,14 @@ void LightmapGeneration::gatherLights(TerrainAabb* bounds)
 // an ASSERT line came since the last status line; "failed!" or a pending ASSERT reopen it for
 // tracing - and close the scan's file twice (shipped). Then "Rendering object <name>" or the
 // record's done!/failed! line is appended; the append's fopen is not checked (shipped).
+// PE 0x100A6C50
 bool LightmapGeneration::updateResumeLog(OccluderRecord* record, bool succeeded, bool starting)
 {
     if (m_logPath.empty())
         return true;
-    vc71::string name("");
+    std::string name("");
     if (record && record->object)
-        name = fromHostStdString(objectTemplatePointer(record->object)->getName()).c_str();  // +0x28
+        name = fromHostStdString(objectTemplatePointer(record->object)->getName());          // +0x28
 
     if (starting)
     {
@@ -1729,6 +1809,7 @@ bool LightmapGeneration::updateResumeLog(OccluderRecord* record, bool succeeded,
 }
 
 
+// PE 0x100ADBE0
 bool LightmapGeneration::traceRecord(OccluderRecord* record, int objectIndex, int objectCount,
                                      int block)
 {
@@ -1749,6 +1830,7 @@ bool LightmapGeneration::traceRecord(OccluderRecord* record, int objectIndex, in
     return traceColour(record, objectIndex, objectCount, block);
 }
 
+// PE 0x100ADC60
 bool LightmapGeneration::traceTerrain(int patch)
 {
     if (m_enableIntensityLightmaps)
@@ -1759,6 +1841,7 @@ bool LightmapGeneration::traceTerrain(int patch)
 // Geoms (+0x74 count, +0x6C select) and their lods (+0x80 count, +0x78 select) are
 // walked from the last; a lightmapOverride template skips the (geom, lod) pairs whose lightmap
 // size is 0.
+// PE 0x100ADCA0
 bool LightmapGeneration::traceObjectRecord(OccluderRecord* record, int objectIndex,
                                            int objectCount, int block)
 {
@@ -1789,6 +1872,7 @@ bool LightmapGeneration::traceObjectRecord(OccluderRecord* record, int objectInd
 // The registered objects are copied, the ones without a sampleable geometry removed,
 // and the rest traced in key order with their index and the remaining count; a callback abort
 // stops after the current object. Always true.
+// PE 0x100ADDA0
 bool LightmapGeneration::traceAllObjects()
 {
     g_traceAborted = false;
@@ -1832,6 +1916,7 @@ bool LightmapGeneration::traceAllObjects()
     return true;
 }
 
+// PE 0x100ADF60
 bool LightmapGeneration::traceActiveObjectProgress(int index, int count)
 {
     OccluderRecord record;
@@ -1842,6 +1927,7 @@ bool LightmapGeneration::traceActiveObjectProgress(int index, int count)
 }
 
 // The object the name hash finds (ObjectManager +0x24).
+// PE 0x100ADFD0 (only the name lookup differs from the active-object arm)
 bool LightmapGeneration::traceObject(const LightmapGenerationString& name)
 {
     OccluderRecord record;
@@ -1857,6 +1943,7 @@ bool LightmapGeneration::traceActiveObject()
     return traceActiveObjectProgress(-1, -1);
 }
 
+// PE 0x100A8DD0.
 // The colour trace (enableIntensityLightmaps 0). `record` null traces the terrain (block -1: every
 // block from m_firstBlock - 1, or the camera's block with onlyNearest); otherwise the record's
 // geometry in its current (geom, lod). A missing terrain or ITerrainEditable fails it. Per batch,
@@ -1923,7 +2010,8 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
     const unsigned int capacity =
         0x100000u / (static_cast<unsigned int>(m_blockSize) * static_cast<unsigned int>(m_blockSize)) + 1;
     LightSample* samples = 0;
-    if (void* const storage = ::renddx9abi::engineAlloc(144 * capacity))
+    if (void* const storage = ::renddx9abi::engineAlloc(
+            static_cast<unsigned int>(3 * sizeof(LightSample)) * capacity))   // 144 * capacity
     {
         samples = static_cast<LightSample*>(storage);
         for (unsigned int i = 0; i < 3 * capacity; ++i)
@@ -1938,7 +2026,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
     dx9rend::IRenderView* const savedViewDup = renderer()->getRenderViewDup();    // +0x50
     unsigned int firstBlock = static_cast<unsigned int>(m_firstBlock - 1);
     unsigned int occluderPeak = 0;
-    Vc71Vec<OccluderRecord*> occluders;
+    std::vector<OccluderRecord*> occluders;
     unsigned int totalSamples = 0;
     const Vec3& cameraPosition = *reinterpret_cast<const Vec3*>(&savedView->getViewMatrixPtr()->m[12]);
     if (block != -1)
@@ -1951,9 +2039,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
         Vec3 relative;
         if (record)
         {
-            relative.x = cameraPosition.x - record->position.x;
-            relative.y = cameraPosition.y - record->position.y;
-            relative.z = cameraPosition.z - record->position.z;
+            relative = rendmath::minus(cameraPosition, record->position);    // PE 0x100793F0
         }
         firstBlock = nearestBlock(record ? relative : cameraPosition, sampler);
         totalSamples = sampler->getBlock(firstBlock).sampleCount;
@@ -2061,7 +2147,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                             else
                             {
                                 const Vec3 up = { 0.0f, 1.0f, 0.0f };
-                                lookAt(view, Vec3::getZero(), light->direction, up);
+                                rendmath::calcLookAtMatrix(view, rendmath::zeroVector(), light->direction, up);
                             }
                             light->renderView->setViewMatrix(view.m);               // +0x60
                             directionalSeen = true;
@@ -2114,7 +2200,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                             if (m_noPhongAngle)
                                 results[slot] = facingLight > 0.1f ? 1.0f : 0.0f;
                             else
-                                results[slot] = clampUnit(responseCurve(m_phongAngleMode, facingLight));
+                                results[slot] = storeResponse(clampResponse(responseCurve(m_phongAngleMode, facingLight)));
 
                             // The sample's tile of the target.
                             rendered = true;
@@ -2136,15 +2222,15 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                                 if (m_noPhongAngle)
                                     results[slot] = attenuation;
                                 else
-                                    results[slot] = clampUnit(responseCurve(
+                                    results[slot] = storeResponse(clampResponse(responseCurve(
                                         m_phongAngleMode,
                                         (toLightY * sample.normal.y + toLightZ * sample.normal.z)
-                                            + toLightX * sample.normal.x)) * attenuation;
+                                            + toLightX * sample.normal.x)), attenuation);
                                 const Vec3 target = { toLightX + sample.position.x,
                                                       toLightY + sample.position.y,
                                                       toLightZ + sample.position.z };
                                 const Vec3 up = { 0.0f, 1.0f, 0.0f };
-                                lookAt(view, sample.position, target, up);
+                                rendmath::calcLookAtMatrix(view, sample.position, target, up);
                             }
                             else
                             {
@@ -2197,13 +2283,13 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                                 lightSourceTemplatePointer(light->source);
                             if (tmpl->getLightTypeEnum() == 1)
                                 dx9rend::effectSetTechniqueByName(m_lightEffect,
-                                                                  vc71::string("Pointlight"));
+                                                                  std::string("Pointlight"));
                             else if (tmpl->getLightTypeEnum() == 2)
                             {
                                 float coneAngle = light->source->getConeAngleRads2();   // +0x1C0
                                 Mat4 basis = light->source->getAbsoluteTransformation();
                                 const Mat4 copy = basis;
-                                mat4Transpose(basis, copy);
+                                rendmath::setTranspose(basis, copy);
                                 const Vec3& direction = light->source->getAbsoluteDirection();  // +0x180
                                 const float* const m = basis.m;
                                 Vec3 spotDirection;
@@ -2214,13 +2300,13 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                                 spotDirection.z = (m[2] * direction.x + m[10] * direction.z)
                                                   + m[6] * direction.y;
                                 dx9rend::effectSetTechniqueByName(m_lightEffect,
-                                                                  vc71::string("Spotlight"));
+                                                                  std::string("Spotlight"));
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("WorldView"))->setValue(&worldView, 0);
+                                    m_lightEffect, std::string("WorldView"))->setValue(&worldView, 0);
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("SpotDir"))->setValue(&spotDirection, 0);
+                                    m_lightEffect, std::string("SpotDir"))->setValue(&spotDirection, 0);
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("ConeAngle"))->setValue(&coneAngle, 0);
+                                    m_lightEffect, std::string("ConeAngle"))->setValue(&coneAngle, 0);
                             }
                             // The scale replaces the WorldView diagonal (shipped).
                             worldView.m[0] = light->source->getScale().x;           // +0x1D4
@@ -2229,12 +2315,15 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                             mat4Mult(worldViewProjection, worldView,
                                      *light->renderView->getProjectionMatrixPtr());  // +0x6C
                             dx9rend::effectGetShaderParameterBorrowedTyped(
-                                m_lightEffect, vc71::string("WorldViewProj"))
+                                m_lightEffect, std::string("WorldViewProj"))
                                 ->setValue(&worldViewProjection, 0);
                             const Vec3& colour = light->source->getColor();
-                            const float lightColour[4] = { colour.x, colour.y, colour.z, 1.0f };
+                            // 0x1008DD80 inlined (0x100AA12F..0x100AA1BB): the pack writes the
+                            // shared static (dword_1024B100) and the local copy handed on.
+                            const float* const packed = staticMeshPackVec4(&colour.x, 1.0f);
+                            const float lightColour[4] = { packed[0], packed[1], packed[2], packed[3] };
                             dx9rend::effectGetShaderParameterBorrowedTyped(
-                                m_lightEffect, vc71::string("LightColor"))->setValue(lightColour, 0);
+                                m_lightEffect, std::string("LightColor"))->setValue(lightColour, 0);
                             dx9rend::stateManagerSetStreamSource(0, m_lightMeshVertices, 0, 12);
                             dx9rend::stateManagerSetIndices(m_lightMeshIndices);
                             dx9rend::effectBegin(m_lightEffect);
@@ -2254,9 +2343,9 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                     if (m_quadVertexBuffer)
                     {
                         dx9rend::stateManagerPush();
-                        dx9rend::effectSetTechniqueByName(m_quadEffect, vc71::string("TexturedQuad"));
+                        dx9rend::effectSetTechniqueByName(m_quadEffect, std::string("TexturedQuad"));
                         dx9rend::effectGetShaderParameterBorrowedTyped(
-                            m_quadEffect, vc71::string("TEXLAYER0"))->setValue(m_targetTexture, 0);
+                            m_quadEffect, std::string("TEXLAYER0"))->setValue(m_targetTexture, 0);
                         dx9rend::vertexBufferBindStream(m_quadVertexBuffer, 0);
                         dx9rend::effectBegin(m_quadEffect);
                         dx9rend::effectBeginPass(m_quadEffect, 0);
@@ -2411,12 +2500,12 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                     {
                         LightmapGenerationProgress progress;
                         progress.percentDone = percent;
-                        vc71::string total;
-                        vc71::string left;
-                        vc71::string line;
+                        std::string total;
+                        std::string left;
+                        std::string line;
                         if (objectIndex != -1 && objectCount != -1)
                         {
-                            vc71::string head;
+                            std::string head;
                             formatString(head, "Object %d/%d :", objectIndex + 1, objectCount);
                             formatTime(total, static_cast<unsigned int>(
                                 static_cast<int>(g_system->getWallClockTime())));
@@ -2447,7 +2536,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                         const unsigned int white[3] = { 255, 255, 255 };
                         renderer()->beginScene(white, 1);                            // +0xC8
                         float y = 30.0f;
-                        vc71::string text;
+                        std::string text;
                         formatString(text, "%.2f%%  Lights:%d", static_cast<double>(percent),
                                      m_lights.size());
                         fontPortedDrawText(m_font, 50.0f, 30.0f, text);
@@ -2475,8 +2564,8 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
                                      static_cast<int>(static_cast<float>(count) * rate));
                         fontPortedDrawText(m_font, 50.0f, y, text);
                         y = y + 40.0f;
-                        vc71::string total;
-                        vc71::string left;
+                        std::string total;
+                        std::string left;
                         formatTime(total, static_cast<unsigned int>(
                             static_cast<int>(g_system->getWallClockTime())));
                         formatTime(left, static_cast<unsigned int>(static_cast<int>(remainingSeconds)));
@@ -2514,6 +2603,7 @@ bool LightmapGeneration::traceColour(OccluderRecord* record, int objectIndex, in
     return sampleable->destroyLightSampler(sampler);
 }
 
+// PE 0x100AB3C0.
 // The intensity trace. `record` null traces the terrain (block -1: every block from
 // m_firstBlock - 1, or the camera's block with onlyNearest); otherwise the record's geometry in its
 // current (geom, lod). Per block: the block's lights are gathered and per-triangle back-face bits
@@ -2582,7 +2672,8 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
     const unsigned int capacity =
         0x100000u / (static_cast<unsigned int>(m_blockSize) * static_cast<unsigned int>(m_blockSize)) + 1;
     LightSample* samples = 0;
-    if (void* const storage = ::renddx9abi::engineAlloc(144 * capacity))
+    if (void* const storage = ::renddx9abi::engineAlloc(
+            static_cast<unsigned int>(3 * sizeof(LightSample)) * capacity))   // 144 * capacity
     {
         samples = static_cast<LightSample*>(storage);
         for (unsigned int i = 0; i < 3 * capacity; ++i)
@@ -2597,7 +2688,7 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
     dx9rend::IRenderView* const savedViewDup = renderer()->getRenderViewDup();    // +0x50
     unsigned int firstBlock = static_cast<unsigned int>(m_firstBlock - 1);
     unsigned int occluderPeak = 0;
-    Vc71Vec<OccluderRecord*> occluders;
+    std::vector<OccluderRecord*> occluders;
     unsigned int totalSamples = 0;
     const Vec3& cameraPosition = *reinterpret_cast<const Vec3*>(&savedView->getViewMatrixPtr()->m[12]);
     if (block != -1)
@@ -2610,9 +2701,7 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
         Vec3 relative;
         if (record)
         {
-            relative.x = cameraPosition.x - record->position.x;
-            relative.y = cameraPosition.y - record->position.y;
-            relative.z = cameraPosition.z - record->position.z;
+            relative = rendmath::minus(cameraPosition, record->position);    // PE 0x100793F0
         }
         firstBlock = nearestBlock(record ? relative : cameraPosition, sampler);
         totalSamples = sampler->getBlock(firstBlock).sampleCount;
@@ -2658,13 +2747,13 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
 
             // Per light: a back-face bit per sampler triangle (the terrain has none - one clear bit),
             // and each local light's index in the sampler (the table is never freed - shipped).
-            const vc71::vector_layout* const triangleVector =
-                static_cast<const vc71::vector_layout*>(blockInfo.triangles);
+            const std::vector<MeshSampleTriangle>* const triangleVector =
+                static_cast<const std::vector<MeshSampleTriangle>*>(blockInfo.triangles);
             int triangleCount = 0;
-            if (triangleVector && triangleVector->first)
-                triangleCount = static_cast<int>((triangleVector->last - triangleVector->first) / 92);
-            const SampleTriangle* const triangles = triangleVector
-                ? reinterpret_cast<const SampleTriangle*>(triangleVector->first) : 0;
+            if (triangleVector && !triangleVector->empty())
+                triangleCount = static_cast<int>(triangleVector->size());
+            const MeshSampleTriangle* const triangles = triangleVector
+                ? triangleVector->data() : 0;
             int* lightIndex = static_cast<int*>(::renddx9abi::engineAlloc(4 * m_lights.size()));
             for (unsigned int l = 0; l < m_lights.size(); ++l, ++lightIndex)
             {
@@ -2793,7 +2882,7 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                             else
                             {
                                 const Vec3 up = { 0.0f, 1.0f, 0.0f };
-                                lookAt(view, Vec3::getZero(), light->direction, up);
+                                rendmath::calcLookAtMatrix(view, rendmath::zeroVector(), light->direction, up);
                             }
                             light->renderView->setViewMatrix(view.m);               // +0x60
                             if (!light->isGI && !light->isLocal)
@@ -2855,7 +2944,7 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                             if (m_noPhongAngle)
                                 results[slot] = facingLight > 0.1f ? 1.0f : 0.0f;
                             else
-                                results[slot] = clampUnit(responseCurve(m_phongAngleMode, facingLight));
+                                results[slot] = storeResponse(clampResponse(responseCurve(m_phongAngleMode, facingLight)));
 
                             // The sample's tile of the target.
                             setViewport((slot % tilesPerRow) * tileSize, (slot / tilesPerRow) * tileSize,
@@ -2877,15 +2966,15 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                                 if (m_noPhongAngle)
                                     results[slot] = attenuation;
                                 else
-                                    results[slot] = attenuation * clampUnit(responseCurve(
+                                    results[slot] = storeResponse(clampResponse(responseCurve(
                                         m_phongAngleMode,
                                         (sample.normal.x * toLightX + toLightZ * sample.normal.z)
-                                            + toLightY * sample.normal.y));
+                                            + toLightY * sample.normal.y)), attenuation);
                                 const Vec3 target = { sample.position.x + toLightX,
                                                       toLightY + sample.position.y,
                                                       toLightZ + sample.position.z };
                                 const Vec3 up = { 0.0f, 1.0f, 0.0f };
-                                lookAt(view, sample.position, target, up);
+                                rendmath::calcLookAtMatrix(view, sample.position, target, up);
                             }
                             else
                             {
@@ -2936,13 +3025,13 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                                 lightSourceTemplatePointer(light->source);
                             if (tmpl->getLightTypeEnum() == 1)
                                 dx9rend::effectSetTechniqueByName(m_lightEffect,
-                                                                  vc71::string("Pointlight"));
+                                                                  std::string("Pointlight"));
                             else if (tmpl->getLightTypeEnum() == 2)
                             {
                                 float coneAngle = light->source->getConeAngleRads2();   // +0x1C0
                                 Mat4 basis = light->source->getAbsoluteTransformation();
                                 const Mat4 copy = basis;
-                                mat4Transpose(basis, copy);
+                                rendmath::setTranspose(basis, copy);
                                 const Vec3& direction = light->source->getAbsoluteDirection();  // +0x180
                                 const float* const m = basis.m;
                                 Vec3 spotDirection;
@@ -2953,13 +3042,13 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                                 spotDirection.z = (m[2] * direction.x + m[10] * direction.z)
                                                   + m[6] * direction.y;
                                 dx9rend::effectSetTechniqueByName(m_lightEffect,
-                                                                  vc71::string("Spotlight"));
+                                                                  std::string("Spotlight"));
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("WorldView"))->setValue(&worldView, 0);
+                                    m_lightEffect, std::string("WorldView"))->setValue(&worldView, 0);
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("SpotDir"))->setValue(&spotDirection, 0);
+                                    m_lightEffect, std::string("SpotDir"))->setValue(&spotDirection, 0);
                                 dx9rend::effectGetShaderParameterBorrowedTyped(
-                                    m_lightEffect, vc71::string("ConeAngle"))->setValue(&coneAngle, 0);
+                                    m_lightEffect, std::string("ConeAngle"))->setValue(&coneAngle, 0);
                             }
                             // The scale replaces the WorldView diagonal (shipped).
                             worldView.m[0] = light->source->getScale().x;           // +0x1D4
@@ -2968,12 +3057,15 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                             mat4Mult(worldViewProjection, worldView,
                                      *light->renderView->getProjectionMatrixPtr());  // +0x6C
                             dx9rend::effectGetShaderParameterBorrowedTyped(
-                                m_lightEffect, vc71::string("WorldViewProj"))
+                                m_lightEffect, std::string("WorldViewProj"))
                                 ->setValue(&worldViewProjection, 0);
                             const Vec3& colour = light->source->getColor();
-                            const float lightColour[4] = { colour.x, colour.y, colour.z, 1.0f };
+                            // 0x1008DD80 (call at 0x100ACA68): the pack writes the shared static
+                            // (dword_1024B100), copied into the local handed on.
+                            const float* const packed = staticMeshPackVec4(&colour.x, 1.0f);
+                            const float lightColour[4] = { packed[0], packed[1], packed[2], packed[3] };
                             dx9rend::effectGetShaderParameterBorrowedTyped(
-                                m_lightEffect, vc71::string("LightColor"))->setValue(lightColour, 0);
+                                m_lightEffect, std::string("LightColor"))->setValue(lightColour, 0);
                             dx9rend::stateManagerSetStreamSource(0, m_lightMeshVertices, 0, 12);
                             dx9rend::stateManagerSetIndices(m_lightMeshIndices);
                             dx9rend::effectBegin(m_lightEffect);
@@ -3160,12 +3252,12 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                     {
                         LightmapGenerationProgress progress;
                         progress.percentDone = percent;
-                        vc71::string total;
-                        vc71::string left;
-                        vc71::string line;
+                        std::string total;
+                        std::string left;
+                        std::string line;
                         if (objectIndex != -1 && objectCount != -1)
                         {
-                            vc71::string head;
+                            std::string head;
                             formatString(head, "Object %d/%d :", objectIndex + 1, objectCount);
                             formatTime(total, static_cast<unsigned int>(
                                 static_cast<int>(g_system->getWallClockTime())));
@@ -3196,7 +3288,7 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                         const unsigned int white[3] = { 255, 255, 255 };
                         renderer()->beginScene(white, 1);                            // +0xC8
                         float y = 30.0f;
-                        vc71::string text;
+                        std::string text;
                         formatString(text, "%.2f%%  Lights:%d", static_cast<double>(percent),
                                      m_lights.size());
                         fontPortedDrawText(m_font, 50.0f, 30.0f, text);
@@ -3224,8 +3316,8 @@ bool LightmapGeneration::traceIntensity(OccluderRecord* record, int objectIndex,
                                      static_cast<int>(static_cast<float>(count) * rate));
                         fontPortedDrawText(m_font, 50.0f, y, text);
                         y = y + 40.0f;
-                        vc71::string total;
-                        vc71::string left;
+                        std::string total;
+                        std::string left;
                         formatTime(total, static_cast<unsigned int>(
                             static_cast<int>(g_system->getWallClockTime())));
                         formatTime(left, static_cast<unsigned int>(static_cast<int>(remainingSeconds)));

@@ -12,73 +12,18 @@ namespace {
 float settingsFloat(const char* name, float defaultValue)
 {
     const renddx9abi::HostString key(name);
-#if BF2_PLUGIN_ABI_NATIVE
     return settings->floatGet(key, defaultValue);
-#else
-    void* const repository = settings;
-    typedef const float& (__thiscall* FloatGetFn)(void*, const renddx9abi::HostString&,
-                                                  const float&);
-    return reinterpret_cast<FloatGetFn>((*reinterpret_cast<void***>(repository))[0x20 / 4])(
-        repository, key, defaultValue);
-#endif
 }
 
 // Returns the player's kit as its primary IObject face across the host ABI boundary.
 world::IObject* hudPlayerKit(IBase* hud, world::IPlayer* player)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return reinterpret_cast<hud::BF2HudManager*>(hud)->getPlayerKit(player);
-#else
-    typedef world::IObject* (__thiscall* GetPlayerKitFn)(void*, world::IPlayer*);
-    return reinterpret_cast<GetPlayerKitFn>((*reinterpret_cast<void***>(hud))[0x90 / 4])(hud, player);
-#endif
 }
 
 void hudEnableVOHelpMessage(IBase* hud, int message)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     reinterpret_cast<hud::BF2HudManager*>(hud)->enableVOHelpMessage(message);
-#else
-    typedef void (__thiscall* EnableVOHelpMessageFn)(void*, int);
-    reinterpret_cast<EnableVOHelpMessageFn>((*reinterpret_cast<void***>(hud))[0xF8 / 4])(hud, message);
-#endif
-}
-
-// sub_10103CB0 - the object, then its +0x28 parents, asking each for IID_IPlayerControlObject
-// (ds:10208CF0 = 50373); the first answer. (SkinnedMesh.cpp, BundledMeshDraw.cpp, XpLightManager.cpp
-// and NameTagRendererDraw.inl each carry a TU-local copy of this 20-byte body; the tree has no shared
-// declaration to call.)
-world::IPlayerControlObject* owningControlObject(world::IObject* object)
-{
-    for (; object; object = world::object_detail::LayoutAccess::parent(object))
-    {
-        void* const found = object->queryInterface(world::IID_IPlayerControlObject);
-        if (found)
-            return static_cast<world::IPlayerControlObject*>(found);
-    }
-    return 0;
-}
-
-// sub_100777A0 - normalise in place unless |v|^2 is already within FLT_EPSILON (flt_10208958) of 1;
-// a vector with |v|^2 below FLT_EPSILON is zeroed and -20001 answered. A NaN length fails both tests
-// and normalises to NaN. (SkyDome.cpp's vec3Normalize and SkinnedMesh.cpp keep TU-local copies.)
-int nametagNormalizeVec3(Vec3& v)
-{
-    const float lengthSquared = v.x * v.x + v.y * v.y + v.z * v.z;
-    if (std::fabs(lengthSquared - 1.0f) < 1.1920929e-07f)
-        return 0;
-    if (std::fabs(lengthSquared) < 1.1920929e-07f)
-    {
-        v.x = 0.0f;
-        v.y = 0.0f;
-        v.z = 0.0f;
-        return -20001;
-    }
-    const float scale = 1.0f / std::sqrt(lengthSquared);
-    v.x = scale * v.x;
-    v.y = scale * v.y;
-    v.z = scale * v.z;
-    return 0;
 }
 
 // sub_1000ED40, __stdcall, `retn 0Ch` (value, low, high): `fcomi high; fcmovnb` then
@@ -136,12 +81,14 @@ void parkTransformation(float* transformations, int slot)
 class NametagRootIgnorePredicator : public world::ObjectPredicator
 {
 public:
+    // PE 0x101C7F20
     NametagRootIgnorePredicator(unsigned int flags, world::IObject* object)
         : m_flags(flags)
         , m_root(static_cast<world::IObject*>(rootParent(object)))
     {
     }
 
+    // PE 0x101C7F50
     virtual bool predicate(world::IObject* object)
     {
         if (rootParent(object) == m_root)
@@ -157,10 +104,8 @@ public:
 };
 
 
-// Iterates a by-value copy of the host's seat map in key order.
-// Native builds copy std::map; compatibility builds copy the VC7.1 tree on the engine heap.
+// Iterates a by-value copy of the host's seat map (the std::map getPcos() answers) in key order.
 
-#if BF2_PLUGIN_ABI_NATIVE
 class NametagSeatCopy
 {
 public:
@@ -181,40 +126,14 @@ private:
     SeatMap                 m_seats;
     SeatMap::const_iterator m_it;
 };
-#else
-class NametagSeatCopy
-{
-public:
-    explicit NametagSeatCopy(world::IPlayerControlObject* pco)
-    {
-        m_seats.construct();
-        m_seats.copyFrom(*reinterpret_cast<const SeatLayout*>(pco->getPcos())); // +0x60,
-        m_node = m_seats.begin();
-    }
-    ~NametagSeatCopy()
-    {
-        m_seats.destroy();                                                      // 0x10132280 + free
-    }
-    bool atEnd() const { return m_node == m_seats.end(); }
-    world::IPlayerControlObject* seat() const { return m_node->value; }
-    void next() { m_node = SeatLayout::next(m_node); }
-
-private:
-    NametagSeatCopy(const NametagSeatCopy&);
-    NametagSeatCopy& operator=(const NametagSeatCopy&);
-
-    typedef vc71::int_map_layout<world::IPlayerControlObject*> SeatLayout;
-    SeatLayout        m_seats;
-    SeatLayout::node* m_node;
-};
-#endif
 
 } // anonymous namespace
 
 
-// Advances tag selection, positions, fade and text while buffering is enabled.
+// PE 0x10130360: advances tag selection, positions, fade and text while buffering is enabled.
 // Requires the Game singleton; crosshair refresh and item updates share the same due timestamp.
-
+// The retail phase product is a float store whose st0 stays double; [CHOSEN, not recovered] the
+// float conversion below stands for the 24-bit x87 precision the Direct3D device sets.
 void NametagManager::update()
 {
     if (!m_bufferingEnabled)
@@ -251,13 +170,13 @@ void NametagManager::update()
 
     // the manager's own frustum: the render view's, re-projected to (0, 2000]
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();    // Renderer +0x48
-    m_frustum = *view->getFrustumPtr();                                      // +0x74
-    m_frustum.setPerspective(m_frustum.getFov(), m_frustum.m_aspect, 0.0f, 2000.0f,
-                             m_frustum.m_transformation);
+    rendmath::frustumAssign(m_frustum, *view->getFrustumPtr());                                      // +0x74
+    rendmath::frustumSetPerspective(m_frustum, m_frustum.getFov(), m_frustum.m_aspect, 0.0f,
+                                    2000.0f, m_frustum.m_transformation);   // PE 0x1007A460
 
-    for (NametagItemMap::node* it = m_items.begin(); it != m_items.end(); it = NametagItemMap::next(it))
+    for (NametagItemMap::iterator it = m_items.begin(); it != m_items.end(); ++it)
     {
-        NametagItem* const item = it->value;
+        NametagItem* const item = it->second;
 
         tickItemTimer(item);                                                 // 0x1012CB00, inlined
         updateItemPosition(item);                                            // 0x1012E8D0, inlined
@@ -287,7 +206,7 @@ void NametagManager::update()
         {
             frustum = &m_frustum;
         }
-        item->m_inView = frustum->inside(item->m_worldPosition);
+        item->m_inView = rendmath::frustumInside(*frustum, item->m_worldPosition);   // PE 0x10079970, call 0x101305F9
 
         // out of view: only a squad member, or a specialist the local player has called for
         if (!(item->m_flags & NIF_SquadMember) && !item->m_inView)
@@ -403,10 +322,23 @@ bool NametagManager::isPlayerSoldierDown(world::IPlayer* player)
 // x/y to the centre of the pixel it falls in:
 //     x = (floor((x + 1) / (1 / (width / 2))) - 0.5) * (1 / (width / 2)) - 1      (and y by height)
 // getViewport (+0x14) is asked twice, once per axis. floor is MSVCR71's double floor
-// (ds:101DB2D8); the half-pixel subtraction and everything after it are float.
+// (ds:101DB2D8); X spills after the half-pixel subtraction, Y stays in x87 until its final store.
 
+// PE 0x1012C510
 void NametagManager::projectOntoView(Vec4& position, dx9rend::IRenderView* view)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain the x87 expressions and their explicit float/double spills.
+    using namespace bf2x87;
+    const float invHalfWidth = store(div(wide(1), mul(wide(view->getViewport()[2]), wide(0.5f))));
+    const float invHalfHeight = store(div(wide(1), mul(wide(view->getViewport()[3]), wide(0.5f))));
+    const double floorX = std::floor(storeDouble(div(add(wide(position.x), wide(1)), wide(invHalfWidth))));
+    const float pixelX = store(sub(wide(floorX), wide(0.5f)));
+    const double floorY = std::floor(storeDouble(div(add(wide(position.y), wide(1)), wide(invHalfHeight))));
+    const Real pixelY = sub(wide(floorY), wide(0.5f));
+    position.x = store(sub(mul(wide(pixelX), wide(invHalfWidth)), wide(1)));
+    position.y = store(sub(mul(pixelY, wide(invHalfHeight)), wide(1)));
+#else
     const float invHalfWidth  = 1.0f / (view->getViewport()[2] * 0.5f);     // [ebp-4]
     const float invHalfHeight = 1.0f / (view->getViewport()[3] * 0.5f);     // [ebp-8]
     const float pixelX = static_cast<float>(
@@ -415,6 +347,7 @@ void NametagManager::projectOntoView(Vec4& position, dx9rend::IRenderView* view)
         std::floor(static_cast<double>((position.y + 1.0f) / invHalfHeight)) - 0.5f);
     position.x = pixelX * invHalfWidth - 1.0f;
     position.y = pixelY * invHalfHeight - 1.0f;
+#endif
 }
 
 
@@ -425,6 +358,7 @@ void NametagManager::projectOntoView(Vec4& position, dx9rend::IRenderView* view)
 // The camera is used with no null test (0x1012CBA5), unlike findCrosshairTarget / isInViewCone.
 // The eye point is copied out of the camera matrix before the target is asked for its position.
 
+// PE 0x1012CB40.
 bool NametagManager::isLineOfSightClear(world::IObject* target)
 {
     world::IPlayer* const local = localHumanPlayer();
@@ -542,11 +476,19 @@ void NametagManager::updateObjectItem(NametagItem* item)
 
     const float dx = vehiclePosition.x - position.x;
     const float dz = vehiclePosition.z - position.z;
+#if defined(__APPLE__)
+    const int distance = bf2x87::toIntTruncate(std::sqrt(dz * dz + dx * dx));     // fistp, truncating
+#else
     const int distance = static_cast<int>(std::sqrt(dz * dz + dx * dx));     // fistp, truncating
+#endif
     if (distanceChanged(distance, item->m_distance))
     {
         item->m_dirty = true;
+#if defined(__APPLE__)
+        item->m_distance = bf2x87::toIntTruncate(static_cast<float>(distance) + 0.5f);
+#else
         item->m_distance = static_cast<int>(static_cast<float>(distance) + 0.5f);
+#endif
     }
 }
 
@@ -653,7 +595,7 @@ bool NametagManager::isInViewCone(world::IObject* object, float dotLimit)
         toObject.x = position.x - eye.m[12];
         toObject.y = position.y - eye.m[13];
         toObject.z = position.z - eye.m[14];
-        nametagNormalizeVec3(toObject);
+        rendmath::normalize(toObject);
         dot = toObject.z * forward.z + toObject.y * forward.y + toObject.x * forward.x;
     }
     return dot > dotLimit;
@@ -745,7 +687,8 @@ void NametagManager::updateHudTarget(world::IPlayer* local, world::IPlayer* play
         world::IObject* const soldier = player->getDefaultVehicle();        // PE +0xA0
         if (!vehicle || vehicle != soldier)
             return;
-        world::IPlayerControlObject* const control = owningControlObject(soldier);
+        world::IPlayerControlObject* const control =
+            static_cast<world::IPlayerControlObject*>(staticMeshControlObject(soldier));   // sub_10103CB0
         if (!control)
             return;
         world::IWeaponObject* const weapon = queryWeaponObject(soldierDefaultWeapon(control));
@@ -789,11 +732,7 @@ void NametagManager::updateHudTarget(world::IPlayer* local, world::IPlayer* play
 
 IBase* NametagManager::soldierDefaultWeapon(world::IPlayerControlObject* control)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<world::Soldier*>(control)->m_weapon2;
-#else
-    return retailField<IBase*>(control, 0x74);
-#endif
 }
 
 
@@ -801,6 +740,7 @@ IBase* NametagManager::soldierDefaultWeapon(world::IPlayerControlObject* control
 // Every link is null-tested; update (0x101305A3) and the object fade (0x1012E703) inline the same
 // test on items of every type.
 
+// PE 0x1012D7D0.
 bool NametagItem::isUAV()
 {
     if (m_type != TTObject)
@@ -859,7 +799,7 @@ void NametagManager::updateItemSelection(NametagItem* item)
 double NametagManager::calcFog(double distance)
 {
     const float* const fogRange = reinterpret_cast<const float*>(
-        static_cast<const unsigned char*>(dx9rend::g_raShaderConstants) + 0xA8);
+        dx9rend::raShaderConstantsAt(0xA8));                                 // FogRange, 4 floats
     const float nearScaled = static_cast<float>(fogRange[0] * distance);    // [ebp+8] as a float
     const float nearTerm = nearScaled + fogRange[2];                         // [ebp-10h]
     const float farTerm = static_cast<float>(distance * fogRange[1] + fogRange[3]);   // [ebp-0Ch]
@@ -887,7 +827,8 @@ void NametagManager::updatePlayerItemPosition(NametagItem* item)
     if (player != viewer)
     {
         world::IObject* const vehicle = player->getVehicle();               // PE +0x44
-        Mat4 cameraMatrix = Mat4::getIdentity();
+        Mat4 cameraMatrix;
+        rendmath::constructIdentity(cameraMatrix);                           // 0x1012E55E
         if (viewer->getCamera())                                             // PE +0x17C
             cameraMatrix = viewer->getCamera()->getTransformation(0.0f);
         if (vehicle)
@@ -895,7 +836,11 @@ void NametagManager::updatePlayerItemPosition(NametagItem* item)
             const Vec3& vehiclePosition = vehicle->getAbsolutePosition();    // PE +0x68
             const float dx = cameraMatrix.m[12] - vehiclePosition.x;
             const float dz = cameraMatrix.m[14] - vehiclePosition.z;
+#if defined(__APPLE__)
+            const int distance = bf2x87::toIntTruncate(std::sqrt(dz * dz + dx * dx));   // fistp
+#else
             const int distance = static_cast<int>(std::sqrt(dz * dz + dx * dx));   // fistp
+#endif
             if (distanceChanged(distance, item->m_distance))
             {
                 item->m_distance = distance;
@@ -903,7 +848,8 @@ void NametagManager::updatePlayerItemPosition(NametagItem* item)
             }
         }
 
-        Mat4 vehicleMatrix = Mat4::getIdentity();
+        Mat4 vehicleMatrix;
+        rendmath::constructIdentity(vehicleMatrix);                          // 0x1012E630
         float vehicleForwardY;
         if (vehicle)
         {
@@ -1107,7 +1053,7 @@ void NametagManager::updatePlayerItemFade(NametagItem* item)
 // getPcos() map are occupied (+0x18 isOccupied), in key order.
 // Unlike isPrimaryOccupant, a null seat is NOT skipped - it is dispatched on, as shipped.
 // `pco` itself is not null-tested. Its only callers (0x1012FD6A, 0x1012FFBE) hand it
-//   owningControlObject(rootParent(vehicle)) unguarded; update reaches both only for a player tag
+//   staticMeshControlObject(rootParent(vehicle)) unguarded; update reaches both only for a player tag
 //   that kept NIF_PrimaryOccupant this frame - which needs a vehicle whose root answers
 //   IPlayerControlObject - so a null does not arrive on the shipped path.
 
@@ -1137,7 +1083,7 @@ void NametagManager::updateLocalVehicleSeats(NametagItem* item)
     world::IPlayer* const local = localHumanPlayer();
     if (local != player || !local)
         return;
-    const int others = countSeats(owningControlObject(static_cast<world::IObject*>(
+    const int others = countSeats(static_cast<world::IPlayerControlObject*>(staticMeshControlObject(
                            rootParent(local->getVehicle())))) - 1;
     if (others != s_lastSeatCount)                                           // dword_1025CEA0
     {
@@ -1157,8 +1103,8 @@ void NametagManager::rebuildItemText(NametagItem* item)
     case TTPlayer:
     {
         world::IPlayer* const player = static_cast<PlayerNametagItem*>(item)->m_player.get();
-        vc71::string passengers;                                             // [ebp-1Ch]
-        const int others = countSeats(owningControlObject(static_cast<world::IObject*>(
+        std::string passengers;                                             // [ebp-1Ch]
+        const int others = countSeats(static_cast<world::IPlayerControlObject*>(staticMeshControlObject(
                                rootParent(player->getVehicle())))) - 1;
         if (others != 0)
             passengers = nametagFormatString("  [+%d]", others);
@@ -1171,14 +1117,14 @@ void NametagManager::rebuildItemText(NametagItem* item)
                  && static_cast<double>(item->m_distance) <= s_cullDistances[TTPlayer].y)
         {
             const renddx9abi::HostString& name = fromHostStdString(player->getName());   // PE +0x20
-            vc71::string label(nametagFormatString("[%dm]  %s", item->m_distance, name.c_str()));
+            std::string label(nametagFormatString("[%dm]  %s", item->m_distance, name.c_str()));
             label += passengers;
             item->m_name = label;
         }
         else
         {
             const renddx9abi::HostString& name = fromHostStdString(player->getName());
-            vc71::string label(renddx9abi::toVc71String(name));
+            std::string label(renddx9abi::fromHostString(name));
             label += passengers;
             item->m_name = label;
         }
@@ -1203,7 +1149,7 @@ void NametagManager::rebuildItemText(NametagItem* item)
         world::IObject* const object = static_cast<ObjectNametagItem*>(item)->m_object.get();
         if (item->isUAV())
         {
-            item->m_name = renddx9abi::toVc71String(
+            item->m_name = renddx9abi::fromHostString(
                 fromHostStdString(object->getName()));                       // PE +0x60
         }
         else if (object && !item->m_arrowMode && (item->m_flags & NIF_Bit2))

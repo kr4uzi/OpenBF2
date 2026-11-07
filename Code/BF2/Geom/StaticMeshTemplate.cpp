@@ -1,30 +1,33 @@
 // Path: attested by RendDX9.dll __FILE__ at 0x1021C2B8.
 // Static mesh loading, properties and lifetime, recovered from RendDX9.dll 1.50 (PE only).
 // Material merging and vertex-buffer construction live in StaticMeshMaterial.cpp;
-// base readers live in MeshTemplate.cpp. Named [FRONTIER] bodies remain explicit.
+// base readers live in MeshTemplate.cpp.
 
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "../../RendDX9Abi/HfeAbi.h"
+#include "../RendDX9/RendDX9Math.h"   // rendmath::normalize (sub_100777A0)
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/PluginAbi.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
-#include "../../RendDX9Abi/Vc71Map.h"
+#include <string>
 #include "../RendDX9/RendDX9Base.h"
 #include "../RendDX9/Ra/RaShader.h"
 #include "../RendDX9/Ra/RaShaderPermutator.h"
 #include "../Game/Main/IVideoOptions.h"
 #include "StaticMeshTemplate.h"
 #include "StaticMesh.h"
+#include "../Core/StringUtil.h"      // eraseSubString (PE 0x10074BA0)
 
 #include <map>
 #include <new>
+#include <sstream>
 #include <string.h>
 #include <math.h>                        // loadOccluders' normalize (sub_100777A0)
-#include <stdlib.h>                      // loadOccluders' numeric scans - see OccScanner
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -66,18 +69,21 @@ namespace geom {
 // flag table dword_1023A9D0 and the per-quality mask read - is declared in StaticMeshTemplate.h.
 
 
+// byte_1023982C: ships as 1, the technique initialiser clears it on success, and
+// GeometryTemplateManager::slot_0x48 (0x1015D53B) sets it again when the shader set changes.
+unsigned char g_staticMeshTechniquesPending = 1;
+
 namespace {
 
 
-// Renderer fields read by byte offset, exactly as the shipped bodies do. BufferManager.cpp reaches
-// into g_Renderer the same way; the Renderer's full layout is not recovered.
+// Renderer integer fields, named by their retail byte offset through BF2Render.cpp's tail
+// accessor; the Renderer's full layout is not recovered.
 
 int rendererField(unsigned int byteOffset)
 {
     if (!::dice::hfe::dx9rend::g_Renderer)
         return 0;
-    return *reinterpret_cast<int*>(
-        reinterpret_cast<unsigned char*>(::dice::hfe::dx9rend::g_Renderer) + byteOffset);
+    return ::dice::hfe::dx9rend::rendererTailInt(byteOffset);
 }
 
 // readLods: g_Renderer + 2020 (0x7E4) and + 2028 (0x7EC) - the renderer-level lod-skip settings.
@@ -106,19 +112,10 @@ bool resourceLoadingDeferred()
 
 const unsigned int kNpos = 0xFFFFFFFFu;
 
-// sub_1007B220 - the shared unit scale the constructor publishes into both +0x138 and +0x144.
-// MeshTemplate.cpp carries the same file-local helper with the full evidence note (a VC7.1
-// magic-static Vec3(1,1,1) at dword_10247BFC); both copies are file-scope, as the shipped one is.
-const Vec3& unitScale()
+unsigned int findCaseInsensitive(const std::string& haystack, const std::string& needle)
 {
-    static Vec3 value = { 1.0f, 1.0f, 1.0f };
-    return value;
-}
-
-unsigned int findCaseInsensitive(const vc71::string& haystack, const vc71::string& needle)
-{
-    vc71::string lowerHaystack(haystack.c_str());
-    vc71::string lowerNeedle(needle.c_str());
+    std::string lowerHaystack(haystack.c_str());
+    std::string lowerNeedle(needle.c_str());
     ::dice::hfe::dx9rend::pathToLower(lowerHaystack);
     ::dice::hfe::dx9rend::pathToLower(lowerNeedle);
 
@@ -129,7 +126,7 @@ unsigned int findCaseInsensitive(const vc71::string& haystack, const vc71::strin
 }
 
 // std::string::find(const char*, 0, len) - the case-sensitive one load() uses for "vegitation".
-unsigned int findCaseSensitive(const vc71::string& haystack, const char* needle)
+unsigned int findCaseSensitive(const std::string& haystack, const char* needle)
 {
     const char* found = ::strstr(haystack.c_str(), needle);
     if (!found)
@@ -138,421 +135,17 @@ unsigned int findCaseSensitive(const vc71::string& haystack, const char* needle)
 }
 
 
-// VC7.1 std::vector helpers. Element type and growth policy are read from the shipped bodies
-// (sub_1011F230, sub_1011CAA0, sub_1004E420): the buffer comes from the engine allocator, growth is
-// "half again, clamped up to what was asked for", and the allocator word at +0x00 is never touched.
-// These are source-level container operations, not a transcription of allocator internals.
-
-
-unsigned int vectorSizeBytes(const vc71::vector_layout& v)
+// sub_1011D380's fill element - vector<StaticMeshLod>::resize(count, StaticMeshLod()). The by-value
+// element on the stack is 104 bytes with +0x04..+0x23 zeroed and the MeshBounds `dirty` byte at
+// +0x24 set to 1; the shipped +0x00 (nodeCount) is left uninitialised, which readLods memsets away
+// before any read, so it is zeroed here rather than copied indeterminate.
+StaticMeshLod staticMeshLodFill()
 {
-    return v.first ? static_cast<unsigned int>(v.last - v.first) : 0u;
+    StaticMeshLod lod;
+    ::memset(&lod, 0, sizeof(lod));
+    lod.bounds.dirty = 1;
+    return lod;
 }
-
-unsigned int vectorCapacityBytes(const vc71::vector_layout& v)
-{
-    return v.first ? static_cast<unsigned int>(v.end - v.first) : 0u;
-}
-
-// The common grow half of the three resize bodies: reserve `neededElems`, memcpy the old bytes
-// over (every element type resized here is trivially relocatable - the geom/lod/float records hold
-// no owning members at the point any of these run), free the old block.
-void vectorReserveRaw(vc71::vector_layout& v, unsigned int elemSize, unsigned int neededElems)
-{
-    const unsigned int sizeElems = vectorSizeBytes(v) / elemSize;
-    const unsigned int capElems  = vectorCapacityBytes(v) / elemSize;
-    if (capElems >= neededElems)
-        return;
-
-    unsigned int newCap = capElems + (capElems >> 1);
-    if (newCap < neededElems)
-        newCap = neededElems;
-
-    char* buffer = static_cast<char*>(::renddx9abi::engineAlloc(newCap * elemSize));
-    if (!buffer)
-        return;
-
-    if (v.first && sizeElems)
-        ::memcpy(buffer, v.first, sizeElems * elemSize);
-    if (v.first)
-        ::renddx9abi::engineFree(v.first);
-
-    v.first = buffer;
-    v.last  = buffer + sizeElems * elemSize;
-    v.end   = buffer + newCap * elemSize;
-}
-
-// sub_1011E640 - destroy [first, last) of the 32-byte StaticMeshGeom. The second vector (+0x10,
-// buffer at +0x14) is freed first and the first (+0x00, buffer at +0x04) second, and both are then
-// zeroed; the allocator words are left as they are.
-void staticMeshGeomsDestroyRange(char* first, char* last)
-{
-    for (char* p = first; p != last; p += sizeof(StaticMeshGeom))
-    {
-        vc71::vector_layout* distances = reinterpret_cast<vc71::vector_layout*>(p + 0x10);
-        if (distances->first)
-            ::renddx9abi::engineFree(distances->first);
-        distances->first = 0;
-        distances->last  = 0;
-        distances->end   = 0;
-
-        vc71::vector_layout* lods = reinterpret_cast<vc71::vector_layout*>(p);
-        if (lods->first)
-            ::renddx9abi::engineFree(lods->first);
-        lods->first = 0;
-        lods->last  = 0;
-        lods->end   = 0;
-    }
-}
-
-// sub_1011F870 - vector<StaticMeshGeom>::resize(count, StaticMeshGeom()). The by-value element the
-// call site builds on the stack is a zeroed 32-byte block with the two allocator words left alone,
-// which is what a default-constructed pair of empty vectors is.
-void staticMeshGeomsResize(vc71::vector_layout& v, unsigned int count)
-{
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(StaticMeshGeom);
-    if (sizeElems >= count)
-    {
-        if (!v.first || count >= sizeElems)
-            return;
-        char* newLast = v.first + count * sizeof(StaticMeshGeom);
-        if (newLast == v.last)
-            return;
-        staticMeshGeomsDestroyRange(newLast, v.last);
-        v.last = newLast;
-        return;
-    }
-
-    vectorReserveRaw(v, sizeof(StaticMeshGeom), count);
-    if (!v.first)
-        return;
-    for (unsigned int i = sizeElems; i < count; ++i)
-    {
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(v.first) + i;
-        g->lods.first = 0;         g->lods.last = 0;         g->lods.end = 0;
-        g->lodDistances.first = 0; g->lodDistances.last = 0; g->lodDistances.end = 0;
-    }
-    v.last = v.first + count * sizeof(StaticMeshGeom);
-}
-
-// sub_1011D380 - vector<StaticMeshLod>::resize(count, StaticMeshLod()). The by-value element on the
-// stack is 104 bytes with +0x04..+0x23 zeroed and the MeshBounds `dirty` byte at +0x24 set to 1;
-// +0x00 (nodeCount) is left uninitialised, which readLods then memsets away anyway. There is no
-// destructor: the record is trivially destructible.
-void staticMeshLodsResize(vc71::vector_layout& v, unsigned int count)
-{
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(StaticMeshLod);
-    if (sizeElems >= count)
-    {
-        if (!v.first || count >= sizeElems)
-            return;
-        char* newLast = v.first + count * sizeof(StaticMeshLod);
-        if (newLast != v.last)
-            v.last = newLast;
-        return;
-    }
-
-    vectorReserveRaw(v, sizeof(StaticMeshLod), count);
-    if (!v.first)
-        return;
-    for (unsigned int i = sizeElems; i < count; ++i)
-    {
-        StaticMeshLod* lod = reinterpret_cast<StaticMeshLod*>(v.first) + i;
-        ::memset(reinterpret_cast<char*>(lod) + 4, 0, sizeof(StaticMeshLod) - 4);
-        lod->bounds.dirty = 1;
-    }
-    v.last = v.first + count * sizeof(StaticMeshLod);
-}
-
-// sub_100EC600 - vector<float>::resize(count, value). Shrinking is the shipped `memmove(dst, last,
-// 0)` no-op that only moves _Last, which is how a POD vector shrinks.
-void floatVectorResize(vc71::vector_layout& v, unsigned int count, float value)
-{
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(float);
-    if (sizeElems >= count)
-    {
-        if (!v.first || count >= sizeElems)
-            return;
-        char* newLast = v.first + count * sizeof(float);
-        if (newLast != v.last)
-            v.last = newLast;
-        return;
-    }
-
-    vectorReserveRaw(v, sizeof(float), count);
-    if (!v.first)
-        return;
-    for (unsigned int i = sizeElems; i < count; ++i)
-        reinterpret_cast<float*>(v.first)[i] = value;
-    v.last = v.first + count * sizeof(float);
-}
-
-// sub_100EE010 -> sub_100EDCB0 - vector<vector<float>>::resize(count, vector<float>()). 16-byte
-// elements; the grown tail is a run of empty vectors with their allocator words untouched.
-void floatVectorVectorResize(vc71::vector_layout& v, unsigned int count)
-{
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(vc71::vector_layout);
-    if (sizeElems >= count)
-    {
-        if (!v.first || count >= sizeElems)
-            return;
-        char* newLast = v.first + count * sizeof(vc71::vector_layout);
-        if (newLast == v.last)
-            return;
-        for (char* p = newLast; p != v.last; p += sizeof(vc71::vector_layout))
-        {
-            vc71::vector_layout* inner = reinterpret_cast<vc71::vector_layout*>(p);
-            if (inner->first)
-                ::renddx9abi::engineFree(inner->first);
-            inner->first = 0; inner->last = 0; inner->end = 0;
-        }
-        v.last = newLast;
-        return;
-    }
-
-    vectorReserveRaw(v, sizeof(vc71::vector_layout), count);
-    if (!v.first)
-        return;
-    for (unsigned int i = sizeElems; i < count; ++i)
-    {
-        vc71::vector_layout* inner = reinterpret_cast<vc71::vector_layout*>(v.first) + i;
-        inner->first = 0; inner->last = 0; inner->end = 0;
-    }
-    v.last = v.first + count * sizeof(vc71::vector_layout);
-}
-
-
-// sub_1011FB40 / sub_1011E5F0 / sub_10120D40 - the occluder-group vector's teardown, 48 bytes per
-// group. One group is three 16-byte vectors at +0x00, +0x10 and +0x20; the third and second are
-// freed outright, and the first's 32-byte elements each own one further vector at +0x14
-// (sub_1011E5F0 frees only that one - it does not touch the element's +0x04 vector, unlike
-// sub_1011E640). The .occ loader that fills any of this is the frontier below, so in this sitting
-// the vector is always empty.
-
-void occluderGroupDestroy(char* group)
-{
-    vc71::vector_layout* third = reinterpret_cast<vc71::vector_layout*>(group + 0x20);
-    if (third->first)
-        ::renddx9abi::engineFree(third->first);
-    third->first = 0; third->last = 0; third->end = 0;
-
-    vc71::vector_layout* second = reinterpret_cast<vc71::vector_layout*>(group + 0x10);
-    if (second->first)
-        ::renddx9abi::engineFree(second->first);
-    second->first = 0; second->last = 0; second->end = 0;
-
-    vc71::vector_layout* firstVec = reinterpret_cast<vc71::vector_layout*>(group);
-    if (firstVec->first)
-    {
-        for (char* p = firstVec->first; p != firstVec->last; p += 32)
-        {
-            vc71::vector_layout* inner = reinterpret_cast<vc71::vector_layout*>(p + 0x10);
-            if (inner->first)
-                ::renddx9abi::engineFree(inner->first);
-            inner->first = 0; inner->last = 0; inner->end = 0;
-        }
-        ::renddx9abi::engineFree(firstVec->first);
-    }
-    firstVec->first = 0; firstVec->last = 0; firstVec->end = 0;
-}
-
-// sub_10120D40 - destroy every 48-byte group, free the buffer, zero the three pointers.
-void occluderGroupsDestroy(vc71::vector_layout& v)
-{
-    if (v.first)
-    {
-        for (char* p = v.first; p != v.last; p += 48)
-            occluderGroupDestroy(p);
-        ::renddx9abi::engineFree(v.first);
-    }
-    v.first = 0;
-    v.last  = 0;
-    v.end   = 0;
-}
-
-
-// Live-instance set uses 20-byte nodes.
-// [CHOSEN, not recovered] Ordering and duplicate rejection are preserved without red-black
-// rebalancing (RW-74). Header allocation failure still reaches unguarded flag stores.
-vc71::set_node* setConstructHead()
-{
-    vc71::set_node* node =
-        static_cast<vc71::set_node*>(::renddx9abi::engineAlloc(sizeof(vc71::set_node)));
-    if (node)
-        node->left = 0;
-    if (node)
-        node->parent = 0;
-    if (node)
-        node->right = 0;
-    node->color = 1;
-    node->isNil = 0;
-    return node;
-}
-
-// sub_100FFB10 - _Erase(node): recurse right, free, walk left. Same shape as the recovered walk in
-// GeometryTemplateManager.cpp; the set owns no values, so nothing is destroyed but the node.
-void setEraseSubtree(vc71::set_node* node)
-{
-    while (node && !node->isNil)
-    {
-        setEraseSubtree(node->right);
-        vc71::set_node* left = node->left;
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-}
-
-// Clears the entire set; partial-range erase is not implemented here.
-void setClear(vc71::set_layout& s)
-{
-    if (!s.head)
-        return;
-    setEraseSubtree(s.head->parent);
-    s.head->parent = s.head;
-    s.size = 0;
-    s.head->left  = s.head;
-    s.head->right = s.head;
-}
-
-// sub_1011BEC0 - insert(value). Its descent (walk from head->parent, remember the last node and
-// which way we turned, reject a duplicate) is exactly what vc71::set_layout::insert already
-// carries, so the shared helper is used rather than a second copy; its RW-74 caveat above applies
-// unchanged.
-bool setInsert(vc71::set_layout& s, void* value)
-{
-    return s.insert(reinterpret_cast<unsigned int>(value));
-}
-
-
-// Unsigned-to-float compatibility map with 24-byte nodes; string-key map helpers do not fit.
-
-
-struct FloatMapNode
-{
-    FloatMapNode* left;     // +0x00
-    FloatMapNode* parent;   // +0x04
-    FloatMapNode* right;    // +0x08
-    unsigned int  key;      // +0x0C
-    float         value;    // +0x10
-    unsigned char color;    // +0x14
-    unsigned char isNil;    // +0x15
-    unsigned char pad[2];   // +0x16
-};
-
-// sub_10049650 - find(key): descend remembering the last node not less than the key, then reject
-// it if it is the header or if the key really is smaller. Returns the header on a miss.
-FloatMapNode* floatMapFind(const vc71::map_layout& m, unsigned int key)
-{
-    FloatMapNode* head = reinterpret_cast<FloatMapNode*>(m.head);
-    if (!head)
-        return 0;
-
-    FloatMapNode* best = head;
-    FloatMapNode* node = head->parent;
-    while (!node->isNil)
-    {
-        if (node->key >= key)
-        {
-            best = node;
-            node = node->left;
-        }
-        else
-        {
-            node = node->right;
-        }
-    }
-    if (best == head || key < best->key)
-        return head;
-    return best;
-}
-
-// sub_100EC4A0 - operator[](key): the same descent, and on a miss a fresh node with a zero value
-// is linked in and its value slot returned.
-float* floatMapAt(vc71::map_layout& m, unsigned int key)
-{
-    FloatMapNode* head = reinterpret_cast<FloatMapNode*>(m.head);
-    if (!head)
-        return 0;
-
-    FloatMapNode* best = head;
-    FloatMapNode* node = head->parent;
-    while (!node->isNil)
-    {
-        if (node->key >= key)
-        {
-            best = node;
-            node = node->left;
-        }
-        else
-        {
-            node = node->right;
-        }
-    }
-    if (best != head && key >= best->key)
-        return &best->value;
-
-    FloatMapNode* fresh =
-        static_cast<FloatMapNode*>(::renddx9abi::engineAlloc(sizeof(FloatMapNode)));
-    if (!fresh)
-        return 0;
-    fresh->left = head;
-    fresh->right = head;
-    fresh->key = key;
-    fresh->value = 0.0f;
-    fresh->color = 0;
-    fresh->isNil = 0;
-    fresh->pad[0] = 0;
-    fresh->pad[1] = 0;
-
-    if (head->parent == head)
-    {
-        fresh->parent = head;
-        head->parent = fresh;
-        head->left   = fresh;
-        head->right  = fresh;
-    }
-    else
-    {
-        FloatMapNode* attach = head->parent;
-        FloatMapNode* attachParent = head;
-        bool left = true;
-        while (!attach->isNil)
-        {
-            attachParent = attach;
-            left = key < attach->key;
-            attach = left ? attach->left : attach->right;
-        }
-        fresh->parent = attachParent;
-        if (left)
-        {
-            attachParent->left = fresh;
-            if (attachParent == head->left)
-                head->left = fresh;
-        }
-        else
-        {
-            attachParent->right = fresh;
-            if (attachParent == head->right)
-                head->right = fresh;
-        }
-    }
-    ++m.size;
-    return &fresh->value;
-}
-
-// sub_100EB890 - insert(pair(key, value)). Its descent is byte-for-byte sub_1011BEC0's with the
-// 24-byte node's flag offsets; where the key is already present nothing is written, which is why
-// setMaterialValue's insert arm can silently do nothing on a repeat.
-void floatMapInsert(vc71::map_layout& m, unsigned int key, float value)
-{
-    // The only call site has already established that the key is absent (its find returned end),
-    // so this is always the creating path; _Tree::insert's "leave a duplicate alone" arm cannot be
-    // reached from here and is therefore not modelled separately.
-    float* slot = floatMapAt(m, key);
-    if (slot)
-        *slot = value;
-}
-
 
 // The D3D "preload" seam behind slot +0xAC. sub_10014610 (vertex buffer), sub_10014400 (index
 // buffer) and sub_10014920 (texture) are comdat-identical: `if (wrapper[2]) wrapper[2]->vtbl[9]()`,
@@ -567,6 +160,8 @@ struct D3DResourceWrapper
     IDirect3DResource9*  resource;  // +0x08
 };
 
+// PE 0x10014400, with its comdat-identical copies 0x10014610 and 0x10014920 (listings read: null test of +0x08,
+// then virtual slot 9 on the resource).
 void resourcePreload(void* wrapper)
 {
     D3DResourceWrapper* self = static_cast<D3DResourceWrapper*>(wrapper);
@@ -577,10 +172,8 @@ void resourcePreload(void* wrapper)
 
 // Technique tables initialized before material loading.
 
-// byte_1023982C is the once-gate: it ships as 1 and the initialiser clears it on success.
-
-
-unsigned char g_staticMeshTechniquesPending = 1;        // byte_1023982C, initial value 1
+// byte_1023982C is the once-gate (g_staticMeshTechniquesPending, defined above the anonymous
+// namespace so GeometryTemplateManager::slot_0x48 can re-arm it).
 
 
 // Private technique registry keyed by unsigned mask. Its nodes are not shared across
@@ -590,39 +183,28 @@ typedef std::map<unsigned int, ::dice::hfe::dx9rend::Ra::RaShader*> StaticMeshTe
 
 StaticMeshTechniqueMap g_staticMeshTechniques;
 
-// Unsigned-vector helpers for shader-quality masks, allocated on the engine heap.
+// The shader-quality mask vector operations the shared builder below performs (StaticMesh,
+// BundledMesh and SkinnedMesh all hand in a std::vector).
 
-void unsignedVectorPushBack(vc71::vector_layout& v, unsigned int value)
+void maskVectorPushBack(std::vector<unsigned int>& v, unsigned int value)
 {
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(unsigned int);
-    vectorReserveRaw(v, sizeof(unsigned int), sizeElems + 1u);
-    if (!v.first)
-        return;
-    reinterpret_cast<unsigned int*>(v.first)[sizeElems] = value;
-    v.last = v.first + (sizeElems + 1u) * sizeof(unsigned int);
+    v.push_back(value);
 }
 
-void unsignedVectorResize(vc71::vector_layout& v, unsigned int count, unsigned int value)
+void maskVectorResize(std::vector<unsigned int>& v, unsigned int count, unsigned int value)
 {
-    const unsigned int sizeElems = vectorSizeBytes(v) / sizeof(unsigned int);
-    if (sizeElems >= count)
-    {
-        if (!v.first || count >= sizeElems)
-            return;
-        char* newLast = v.first + count * sizeof(unsigned int);
-        if (newLast != v.last)
-            v.last = newLast;
-        return;
-    }
-
-    vectorReserveRaw(v, sizeof(unsigned int), count);
-    if (!v.first)
-        return;
-    for (unsigned int i = sizeElems; i < count; ++i)
-        reinterpret_cast<unsigned int*>(v.first)[i] = value;
-    v.last = v.first + count * sizeof(unsigned int);
+    v.resize(count, value);
 }
 
+unsigned int maskVectorSize(const std::vector<unsigned int>& v)
+{
+    return static_cast<unsigned int>(v.size());
+}
+
+unsigned int* maskVectorData(std::vector<unsigned int>& v)
+{
+    return v.data();
+}
 
 // Shader feature names in bit order: each entry encodes 1 << index.
 
@@ -637,7 +219,8 @@ const char* const kStaticMeshShaderBitNames[] =
 // Returns 1 << index for a name in the null-terminated table, or zero without logging.
 // names must be nonnull. The shift counter retains its byte-width wrap behavior.
 
-unsigned int shaderBitFromName(const char* const* names, const vc71::string& name)
+// PE 0x10191C20 (ecx = names, edx = name)
+unsigned int shaderBitFromName(const char* const* names, const std::string& name)
 {
     unsigned char shift = 0;
 
@@ -649,7 +232,7 @@ unsigned int shaderBitFromName(const char* const* names, const vc71::string& nam
     {
         // The shipped body copy-constructs a std::string from the table entry for every probe and
         // destroys it again; sub_10075000 is _stricmp on the two c_str()s.
-        const vc71::string candidate(*it);
+        const std::string candidate(*it);
         const bool match = ::_stricmp(name.c_str(), candidate.c_str()) == 0;
         if (match)
             break;
@@ -663,15 +246,29 @@ unsigned int shaderBitFromName(const char* const* names, const vc71::string& nam
     return 1u << shift;
 }
 
+// PE 0x10191C90 (ecx = result, edx = names, mask on the stack): the inverse of shaderBitFromName -
+// the table entry of the lowest set bit as a string, an empty string for a zero mask. Unreachable
+// in 1.50: no code or data references.
+std::string shaderNameFromBit(const char* const* names, unsigned int mask)
+{
+    if (mask == 0)
+        return std::string();
+
+    unsigned int index = 0;
+    while ((mask >> index & 1u) == 0)
+        ++index;
+    return std::string(names[index]);
+}
+
 
 // Builds per-quality masks and registered techniques from a MetaFx.
 // bitNames is a NUL-terminated feature-name table.
 
-bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
-                                   const vc71::string& techniquePrefix,
+bool staticMeshBuildTechniqueMasks(const std::string& mfxPath,
+                                   const std::string& techniquePrefix,
                                    const char* const* bitNames,
                                    StaticMeshTechniqueMap& techniqueMap,
-                                   vc71::vector_layout& maskVector)
+                                   std::vector<unsigned int>& maskVector)
 {
     // sub_100EB1E0(head->parent), the recursive _Erase of the whole tree,
     // then the four header stores that relink it empty. That is map::clear() on 24-byte nodes; see
@@ -693,10 +290,10 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
     if (deprecation)
     {
         // sub_100AEFF0(0, 0) on the mask vector: resize(0), i.e. clear.
-        unsignedVectorResize(maskVector, 0u, 0u);
+        maskVectorResize(maskVector, 0u, 0u);
 
         unsigned int accumulated = 0;                       // var_8
-        unsignedVectorPushBack(maskVector, 0xFFFFFFFFu);    // 0x10192254, sub_100E22D0(&-1)
+        maskVectorPushBack(maskVector, 0xFFFFFFFFu);        // 0x10192254, sub_100E22D0(&-1)
         unsigned int passCount = 1;                         // arg_10, reused as the counter
 
         // Each row adds features to drop; lower quality levels inherit all previous exclusions.
@@ -712,13 +309,13 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
             }
 
             accumulated |= groupFlags;
-            unsignedVectorPushBack(maskVector, ~accumulated);
+            maskVectorPushBack(maskVector, ~accumulated);
             ++passCount;
         }
 
         // 0x101922FC - `if (passCount < 4) passCount = 4; resize(passCount, -1)`. An empty
         // deprecation list reaches this with passCount == 1 by falling through 0x10192304.
-        unsignedVectorResize(maskVector, passCount < 4u ? 4u : passCount, 0xFFFFFFFFu);
+        maskVectorResize(maskVector, passCount < 4u ? 4u : passCount, 0xFFFFFFFFu);
     }
 
     // 0x10192316 - `quality = g_Renderer[0x6CC]; if (maskVector.size() < quality) quality = size`.
@@ -727,7 +324,7 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
     // index at or past the number of mask entries indexes one element past the end, twice, just
     // below. Preserved: it is the shipped comparison (`cmp eax, esi; jnb short`).
     unsigned int quality = rendererShaderQuality();
-    const unsigned int maskCount = vectorSizeBytes(maskVector) / sizeof(unsigned int);
+    const unsigned int maskCount = maskVectorSize(maskVector);
     if (maskCount < quality)
         quality = maskCount;
 
@@ -735,26 +332,24 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
     // resulting zero mask intentionally leaves the shadow bit set.
     if (!::dice::hfe::dx9rend::rendererGetVideoOptions()->getQuality(4))
     {
-        const vc71::string hasShadow("hasshadow");
+        const std::string hasShadow("hasshadow");
 
         // The shipped body computes the element address before the call (0x10192361) and applies
         // the AND after it. Kept in that order because the element address is taken from the
         // vector's _First as it stands at that instant.
-        unsigned int* const slot =
-            reinterpret_cast<unsigned int*>(maskVector.first) + quality;
+        unsigned int* const slot = maskVectorData(maskVector) + quality;
         *slot &= ~shaderBitFromName(bitNames, hasShadow);
     }
 
-    const unsigned int mask =
-        reinterpret_cast<const unsigned int*>(maskVector.first)[quality];
+    const unsigned int mask = maskVectorData(maskVector)[quality];
 
     // Numeric bit masks key permutations, collapsing duplicates before ordered registration.
-    std::map<unsigned int, vc71::string> techniqueList;
+    std::map<unsigned int, std::string> techniqueList;
 
     if (fx->buildPermutationBits(techniqueList, bitNames))
     {
         // the ordinary in-order walk from _Myhead->_Left to _Myhead.
-        for (std::map<unsigned int, vc71::string>::const_iterator it = techniqueList.begin();
+        for (std::map<unsigned int, std::string>::const_iterator it = techniqueList.begin();
              it != techniqueList.end(); ++it)
         {
             const unsigned int bits = it->first;
@@ -767,7 +362,7 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
             {
                 // 0x1019240E - `string(prefix) += name`, then a copy for the call argument. The
                 // shipped pair of temporaries is the inlining of `techniquePrefix + name`.
-                vc71::string techniqueName(techniquePrefix);
+                std::string techniqueName(techniquePrefix);
                 techniqueName += it->second;
 
                 // 0x1019243D - `mov ecx, dword_1023E408; call sub_10041F20` with skipFileCheck
@@ -799,7 +394,7 @@ bool staticMeshBuildTechniqueMasks(const vc71::string& mfxPath,
 
 void staticMeshRegisterTechnique(const char* name, unsigned int flags)
 {
-    const vc71::string techniqueName(name);
+    const std::string techniqueName(name);
     ::dice::hfe::dx9rend::Ra::RaShader* const shader =
         ::dice::hfe::dx9rend::Ra::getShader(
             static_cast< ::dice::hfe::dx9rend::Ra::RaShaderTable*>(
@@ -821,8 +416,8 @@ void staticMeshInitTechniques()
     if (g_staticMeshTechniquesPending)                  // byte_1023982C, 0x10116EAC
     {
         attempted = true;
-        vc71::string prefix("STM");
-        vc71::string mfx("shaders/RaShaderSTM.mfx");
+        std::string prefix("STM");
+        std::string mfx("shaders/RaShaderSTM.mfx");
         built = staticMeshBuildTechniqueMasks(mfx, prefix, kStaticMeshShaderBitNames,
                                               g_staticMeshTechniques,
                                               g_staticMeshQualityMasks);
@@ -885,32 +480,25 @@ void staticMeshInitTechniques()
 
 } // anonymous namespace
 
-
-// Exposed for Geom/StaticMesh.cpp's post-load (sub_100FC190), which resizes the instance's own two
-// per-geom vectors with these same two shipped bodies. In retail these are std::vector<T>::resize
-// instantiations, so there is no single "real" function to move here - a thin forward keeps the one
-// implementation in the file that recovered it. [CHOSEN, not recovered] - plumbing only.
-
-void staticMeshFloatVectorResize(vc71::vector_layout& v, unsigned int count, float value)
+// GeometryTemplateManager::slot_0x48 (0x1015D582) calls 0x10116EA0 with ecx = the temp_rel
+// template it just created; the body saves ecx only to pass it on to meshBuildTechniqueMasks
+// (0x10116EEA), which overwrites ecx before any read, so the template is not an input.
+// [CHOSEN, not recovered] bridge name: the initializer stays file-local to its gate's owner.
+void staticMeshPrimeTechniques()
 {
-    floatVectorResize(v, count, value);
-}
-
-void staticMeshUnsignedVectorResize(vc71::vector_layout& v, unsigned int count, unsigned int value)
-{
-    unsignedVectorResize(v, count, value);
+    staticMeshInitTechniques();
 }
 
 
 // The factory registered under "dice.hfe.geom.GeometryTemplate.StaticMesh".
-// PE 0x100B064C (RefFactory_geom_GeometryTemplate_StaticMesh).
+// PE 0x100B064C (RefFactory_geom_GeometryTemplate_StaticMesh), retail allocation 0x2CC.
 
 IBase* __fastcall createStaticMeshTemplate(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
 
-    void* storage = ::renddx9abi::engineAlloc(0x2CC);
+    void* storage = ::renddx9abi::engineAlloc(sizeof(StaticMeshTemplate));
     StaticMeshTemplate* self = 0;
     if (storage)
         self = new (storage) StaticMeshTemplate();
@@ -928,27 +516,14 @@ IBase* __fastcall createStaticMeshTemplate(unsigned int iid, IBase* outer)
 // the two vtable slots, then the members in shipped order. The last store is `m_keepData = 0`,
 // which reaches back into the base.
 
+// PE 0x10119E00
 StaticMeshTemplate::StaticMeshTemplate()
-    : MeshTemplate()
+    : MeshTemplate(), m_refCount(1)
 {
-    m_refCount = 1;                       // +0xC8
+    // m_materials (+0xCC), m_geoms (+0xDC) and m_occluderGroups (+0x2BC) are default-constructed
+    // empty by the compiler.
 
-    m_materials.first = 0;                // +0xD0 .. +0xD8; the allocator word is NOT written
-    m_materials.last  = 0;
-    m_materials.end   = 0;
-
-    m_geoms.first = 0;                    // +0xE0 .. +0xE8; ditto
-    m_geoms.last  = 0;
-    m_geoms.end   = 0;
-
-    // sub_1011B6F0 on &m_instances, then the header node is made the nil sentinel and self-linked.
-    // The comparator word at +0xEC is never written, exactly as shipped.
-    m_instances.head = setConstructHead();
-    m_instances.head->isNil  = 1;
-    m_instances.head->parent = m_instances.head;
-    m_instances.head->left   = m_instances.head;
-    m_instances.head->right  = m_instances.head;
-    m_instances.size = 0;                 // +0xF4
+    // m_instances (+0xEC, its head node from sub_1011B6F0) is default-constructed empty.
 
     // +0xFC MeshBounds - eleven zero dwords with ONE byte store in the middle: the `dirty` flag at
     // +0x11C (this + 284) is set to 1, exactly as meshBoundsExpand would leave it. The three pad
@@ -962,10 +537,10 @@ StaticMeshTemplate::StaticMeshTemplate()
     m_bounds.center.x = 0.0f; m_bounds.center.y = 0.0f; m_bounds.center.z = 0.0f;
 
     // sub_1007B220 - the function-local `static const Vec3(1,1,1)` MeshTemplate.cpp names
-    // unitScale(). The PE calls it twice, once per scale, and copies z, y, x in that order; both
+    // rendmath::unitScale(). The PE calls it twice, once per scale, and copies z, y, x in that order; both
     // calls are kept. (MeshTemplate.cpp's copy is file-local, so this one is too.)
-    m_decompressScale = unitScale();                 // +0x138
-    m_compressScale   = unitScale();                 // +0x144
+    m_decompressScale = rendmath::unitScale();                 // +0x138
+    m_compressScale   = rendmath::unitScale();                 // +0x144
     // +0x150 m_uvDecompress is NOT written by the constructor.
 
     m_vertexStream = 0;                   // +0x154
@@ -995,11 +570,7 @@ StaticMeshTemplate::StaticMeshTemplate()
     m_dword2B4 = 0;                       // +0x2B4
     m_dword2B8 = 0;                       // +0x2B8
 
-    m_occluderGroups.first = 0;           // +0x2C0 .. +0x2C8
-    m_occluderGroups.last  = 0;
-    m_occluderGroups.end   = 0;
-
-    m_uvStreams[0] = 0;                   // +0x158 .. +0x168 - stored after the tail above
+    m_uvStreams[0] = 0;                  // +0x158 .. +0x168 - stored after the tail above
     m_uvStreams[1] = 0;
     m_uvStreams[2] = 0;
     m_uvStreams[3] = 0;
@@ -1011,44 +582,37 @@ StaticMeshTemplate::StaticMeshTemplate()
 }
 
 
-// sub_10115FA0 - the first half of the destructor: release every material's shader record, then
+// The first half of the destructor: release every material's shader record, then
 // drop the six vertex streams and the tangent stream.
-
-// The material walk is driven by the base's +0x50 lod-count vector, not by the material containers
-// themselves: geoms = (m_lodCounts.last - m_lodCounts.first) / 4, and for each geom it visits
-// m_lodCounts[geom] lods. A shader record is released through IBase slot +0x08 (see the file
-// header for the corrected vtable reading).
 
 namespace {
 
+// The material walk is driven by the base's +0x50 lod-count vector, not by the material containers
+// themselves: geoms = m_lodCounts.size(), and for each geom it visits
+// m_lodCounts[geom] lods. A shader record is released through IBase slot +0x08 (see the file
+// header for the corrected vtable reading).
+// PE 0x10115FA0.
 void staticMeshReleaseShadersAndStreams(StaticMeshTemplate* self)
 {
-    const unsigned int geomCount =
-        self->m_lodCounts.first
-            ? static_cast<unsigned int>(self->m_lodCounts.last - self->m_lodCounts.first) >> 2
-            : 0u;
+    const unsigned int geomCount = static_cast<unsigned int>(self->m_lodCounts.size());
 
     for (unsigned int geom = 0; geom < geomCount; ++geom)
     {
-        const int lodCount = reinterpret_cast<int*>(self->m_lodCounts.first)[geom];
+        const int lodCount = self->m_lodCounts[geom];
         if (!lodCount)
             continue;
 
-        vc71::vector_layout* lodVectors =
-            reinterpret_cast<vc71::vector_layout*>(
-                reinterpret_cast<vc71::vector_layout*>(self->m_materials.first)[geom].first);
+        StaticMeshMaterialList* lodVectors = self->m_materials.data()[geom].data();
 
         for (int lod = 0; lod < lodCount; ++lod)
         {
-            vc71::vector_layout& materials = lodVectors[lod];
-            if (!materials.first)
+            StaticMeshMaterialList& materials = lodVectors[lod];
+            if (!materials.data())
                 continue;
-            const unsigned int count =
-                static_cast<unsigned int>(materials.last - materials.first) / 516u;
+            const unsigned int count = static_cast<unsigned int>(materials.size());
             for (unsigned int i = 0; i < count; ++i)
             {
-                StaticMeshMaterial* material =
-                    reinterpret_cast<StaticMeshMaterial*>(materials.first + 516u * i);
+                StaticMeshMaterial* material = materials.data() + i;
                 if (material->m_shaderMaterial)
                     reinterpret_cast<IBase*>(material->m_shaderMaterial)->release();
             }
@@ -1071,38 +635,20 @@ void staticMeshReleaseShadersAndStreams(StaticMeshTemplate* self)
 } // anonymous namespace
 
 
-// Destructor body - PE 0x10119FF0. Both vtable slots are restored first (MSVC's usual
+// PE 0x10119FF0: destructor body. Both vtable slots are restored first (MSVC's usual
 // destructor preamble), then the members go down in shipped order: shader records and streams,
-// the occluder groups, the instance set, the geom vector, the material vector, base.
-
+// the occluder groups, the instance set, the geom vector, the material vector, base. The storage
+// is freed afterwards without a C++ destructor, so the std members are destroyed explicitly.
 void StaticMeshTemplate::destroyMembers()
 {
     staticMeshReleaseShadersAndStreams(this);
-    occluderGroupsDestroy(m_occluderGroups);                      // sub_10120D40 on +0x2BC
+    m_occluderGroups.~OccluderGroupVector();                      // sub_10120D40 on +0x2BC
 
-    setClear(m_instances);                                        // sub_101006E0(begin, end)
-    ::renddx9abi::engineFree(m_instances.head);
-    m_instances.head = 0;
-    m_instances.size = 0;
+    m_instances.~InstanceSet();                                   // sub_101006E0(begin, end)
 
-    if (m_geoms.first)
-    {
-        staticMeshGeomsDestroyRange(m_geoms.first, m_geoms.last);
-        ::renddx9abi::engineFree(m_geoms.first);
-    }
-    m_geoms.first = 0;
-    m_geoms.last  = 0;
-    m_geoms.end   = 0;
+    m_geoms.~GeomVector();                                        // sub_1011E640 per geom
 
-    if (m_materials.first)
-    {
-        staticMeshMaterialsDestroyGeoms(reinterpret_cast<unsigned char*>(m_materials.first),
-                                        reinterpret_cast<unsigned char*>(m_materials.last));
-        ::renddx9abi::engineFree(m_materials.first);
-    }
-    m_materials.first = 0;
-    m_materials.last  = 0;
-    m_materials.end   = 0;
+    m_materials.~StaticMeshMaterialTree();     // every material through its destructor, then the storage
 
     MeshTemplate::destroyMembers();
 }
@@ -1159,21 +705,19 @@ unsigned int StaticMeshTemplate::getClassId() const
 }
 
 
-// createInstance - PE 0x10116E00.
-
+// PE 0x10116E00, 0x1011BEC0: createInstance, with the m_instances insert instantiation
+// (std::set<StaticMesh*>::insert) retail emitted as its own function.
 void* StaticMeshTemplate::createInstance()
 {
-    void* storage = ::renddx9abi::engineAlloc(0x37C);
+    void* storage = ::renddx9abi::engineAlloc(sizeof(StaticMesh));    // retail 0x37C
     void* instance = 0;
     if (storage)
     {
-        // sub_100FDC20 with ecx = the allocation and the template pushed.  ;
-        // see Geom/StaticMesh.cpp.  The 0x37C here and the class's own static_assert are the same
-        // number checked from both sides.
+        // sub_100FDC20 with ecx = the allocation and the template pushed; see Geom/StaticMesh.cpp.
         instance = staticMeshConstruct(storage, this);
     }
 
-    setInsert(m_instances, instance);                             // sub_1011BEC0 into +0xEC
+    m_instances.insert(static_cast<StaticMesh*>(instance));       // sub_1011BEC0 into +0xEC
 
     if (!m_loaded && !resourceLoadingDeferred())
         load();                                                   // through the +0x2C slot
@@ -1186,7 +730,7 @@ void* StaticMeshTemplate::createInstance()
 // Loads <path>Meshes/<name>.staticMesh; returns false when already loaded.
 // Both candidate paths intentionally use the same expression and are tested separately.
 // The occluder path omits the Meshes/ component.
-
+// PE 0x1011A6A0.
 bool StaticMeshTemplate::load()
 {
     if (m_loaded)
@@ -1194,12 +738,12 @@ bool StaticMeshTemplate::load()
 
     static const char* const kMeshesFolder = "Meshes/";           // unk_10263DD4
 
-    vc71::string candidateA(m_path.c_str());
+    std::string candidateA(m_path.c_str());
     candidateA += kMeshesFolder;
     candidateA += m_name;
     candidateA += ".staticMesh";
 
-    vc71::string candidateB(m_path.c_str());
+    std::string candidateB(m_path.c_str());
     candidateB += kMeshesFolder;
     candidateB += m_name;
     candidateB += ".staticMesh";
@@ -1218,14 +762,14 @@ bool StaticMeshTemplate::load()
         static_cast<unsigned char>(findCaseSensitive(candidateA, "vegitation") != kNpos);
     m_isWater =
         static_cast<unsigned char>(findCaseInsensitive(candidateA,
-                                                       vc71::string("objects/water/")) != kNpos);
+                                                       std::string("objects/water/")) != kNpos);
     m_isRoad =
         static_cast<unsigned char>(findCaseInsensitive(candidateA,
-                                                       vc71::string("objects/roads/")) != kNpos);
+                                                       std::string("objects/roads/")) != kNpos);
     if (m_isRoad)
         m_roadNoBlend =
             static_cast<unsigned char>(findCaseInsensitive(candidateA,
-                                                           vc71::string("noBlend")) != kNpos);
+                                                           std::string("noBlend")) != kNpos);
 
     m_dword8C = 0;
 
@@ -1249,7 +793,7 @@ bool StaticMeshTemplate::load()
 
     m_loaded = 1;
 
-    vc71::string occPath(m_path.c_str());                           // sub_10001920: path + name
+    std::string occPath(m_path.c_str());                           // sub_10001920: path + name
     occPath += m_name;
     occPath += ".occ";
 
@@ -1265,12 +809,9 @@ bool StaticMeshTemplate::load()
 
     // Walk the live instances and hand each the freshly loaded template. The set is empty until
     // createInstance has run, and the callback belongs to the unrecovered instance class.
-    for (vc71::set_node* node = m_instances.head ? m_instances.head->left : 0;
-         node && node != m_instances.head;
-         node = vc71::set_layout::next(node))
+    for (InstanceSet::const_iterator node = m_instances.begin(); node != m_instances.end(); ++node)
     {
-        // The set stores the instance pointer in its node's `key` word (set_node +0x0C).
-        StaticMesh* const instance = reinterpret_cast<StaticMesh*>(node->key);
+        StaticMesh* const instance = *node;
         if (instance)
             instance->postLoad();
     }
@@ -1279,10 +820,9 @@ bool StaticMeshTemplate::load()
 }
 
 
-// setLodDistance - PE 0x10119110. Two arms: with a loaded geom vector it writes into the geom's
+// PE 0x10119110: setLodDistance. Two arms: with a loaded geom vector it writes into the geom's
 // own lodDistances (shifted down by the number of lods readLods skipped); without one it grows the
 // base's +0x60 vector<vector<float>> and pre-fills the defaults.
-
 void StaticMeshTemplate::setLodDistance(int geom, int lod, float distance)
 {
     if (geom < 0 || lod < 0 || distance < 0.0f)
@@ -1292,9 +832,9 @@ void StaticMeshTemplate::setLodDistance(int geom, int lod, float distance)
         return;
     }
 
-    if (m_geoms.first && ((m_geoms.last - m_geoms.first) >> 5) != 0)
+    if (!m_geoms.empty())
     {
-        const int geomCount = static_cast<int>((m_geoms.last - m_geoms.first) >> 5);
+        const int geomCount = static_cast<int>(m_geoms.size());
         if (geom >= geomCount)
         {
             ::renddx9abi::logf("StaticMeshTemplate.cpp:563:  Invalid Subgeometry %s",
@@ -1302,68 +842,63 @@ void StaticMeshTemplate::setLodDistance(int geom, int lod, float distance)
             return;
         }
 
-        const int skipped = reinterpret_cast<int*>(m_geomInts.first)[geom];
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
-        const int stored  = static_cast<int>(vectorSizeBytes(g->lodDistances) / sizeof(float));
+        const int skipped = m_geomInts[geom];
+        StaticMeshGeom& g = m_geoms[geom];
+        const int stored  = static_cast<int>(g.lodDistances.size());
         const int limit   = skipped + stored;                       // sub_1004E300 == size()
 
         if (lod >= limit)
         {
-            // The decompiler shuffles the three inserted values across phantom stack slots; the
-            // literal text and its operands are recovered, the exact interleave is [INFERRED].
+            // The listing streams ' Invalid lodSwitch ', lod, ' must be smaller than ', limit,
+            // ' in ', then the name string.
             ::renddx9abi::logf("StaticMeshTemplate.cpp:571:  Invalid lodSwitch %d must be smaller "
-                               "than %d %s", lod, limit, m_name.c_str());
+                               "than %d in %s", lod, limit, m_name.c_str());
             return;
         }
 
         if (lod >= skipped)
-            reinterpret_cast<float*>(g->lodDistances.first)[lod - skipped] = distance;
+            g.lodDistances[lod - skipped] = distance;
         return;
     }
 
     // the not-yet-loaded arm
     bool grewOuter = false;
-    const unsigned int outerSize = vectorSizeBytes(m_lodDistances) / sizeof(vc71::vector_layout);
-    if (outerSize < static_cast<unsigned int>(geom + 1))
+    if (m_lodDistances.size() < static_cast<unsigned int>(geom + 1))
     {
-        floatVectorVectorResize(m_lodDistances, static_cast<unsigned int>(geom + 1));
+        m_lodDistances.resize(static_cast<unsigned int>(geom + 1));        // sub_100EE010
         grewOuter = true;
     }
 
-    vc71::vector_layout* inner =
-        reinterpret_cast<vc71::vector_layout*>(m_lodDistances.first) + geom;
-    const unsigned int innerSize = vectorSizeBytes(*inner) / sizeof(float);
-    if (innerSize < static_cast<unsigned int>(lod + 1))
+    std::vector<float>& inner = m_lodDistances[geom];
+    if (inner.size() < static_cast<unsigned int>(lod + 1))
     {
-        floatVectorResize(*inner, static_cast<unsigned int>(lod + 1), 0.0f);
+        inner.resize(static_cast<unsigned int>(lod + 1), 0.0f);           // sub_100EC600
         if (grewOuter)
         {
             // The shipped fill is unrolled four wide (25/50/75/100, then +100 per group) with a
             // scalar tail whose seed is `25 * (i + 1)`. Both forms compute the same sequence.
-            float* values = reinterpret_cast<float*>(inner->first);
+            float* values = inner.data();
             for (int i = 0; i < lod; ++i)
                 values[i] = static_cast<float>((i + 1) * 25);
         }
     }
 
-    reinterpret_cast<float*>(
-        (reinterpret_cast<vc71::vector_layout*>(m_lodDistances.first) + geom)->first)[lod] = distance;
+    m_lodDistances[geom][lod] = distance;
 }
 
 // Unlike the setter, the getter does NOT shift by the skipped-lod count.
+// PE 0x101160F0
 float StaticMeshTemplate::getLodDistance(int geom, int lod)
 {
-    if (m_geoms.first && ((m_geoms.last - m_geoms.first) >> 5) != 0)
-    {
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
-        return reinterpret_cast<float*>(g->lodDistances.first)[lod];
-    }
+    if (!m_geoms.empty())
+        return m_geoms[geom].lodDistances[lod];
     return -1.0f;
 }
 
 
 // The base's +0x80 map<unsigned, float>, keyed (geom << 16) | (lod << 8) | material. Only the LOW
 // byte of geom and lod reaches the key - the shipped body loads each through a byte register.
+// find (sub_10049650), then insert (sub_100EB890) on a miss or operator[] (sub_100EC4A0) on a hit.
 
 namespace {
 
@@ -1378,113 +913,100 @@ unsigned int materialValueKey(int geom, int lod, unsigned char material)
 } // anonymous namespace
 
 
+// PE 0x10117330
 void StaticMeshTemplate::setMaterialValue(int geom, int lod, unsigned char material, float value)
 {
     const unsigned int key = materialValueKey(geom, lod, material);
 
-    if (floatMapFind(m_materialValues, key) == reinterpret_cast<FloatMapNode*>(m_materialValues.head))
-        floatMapInsert(m_materialValues, key, value);
+    if (m_materialValues.find(key) == m_materialValues.end())
+        m_materialValues.insert(MaterialValueMap::value_type(key, value));
     else
-        *floatMapAt(m_materialValues, key) = value;
+        m_materialValues[key] = value;
 }
 
 
+// PE 0x101173B0
 float StaticMeshTemplate::getMaterialValue(int geom, int lod, unsigned char material)
 {
     const unsigned int key = materialValueKey(geom, lod, material);
 
-    if (floatMapFind(m_materialValues, key) == reinterpret_cast<FloatMapNode*>(m_materialValues.head))
+    if (m_materialValues.find(key) == m_materialValues.end())
         return 15.0f;
-    return *floatMapAt(m_materialValues, key);
+    return m_materialValues[key];
 }
 
 
 // The flag accessors. Each is one or two instructions in the image; the addresses are on the line.
 
 bool StaticMeshTemplate::isWater() const                       { return m_isWater != 0; }
-void StaticMeshTemplate::setDoNotGenerateLightmaps(bool value) { m_doNotGenerateLightmaps = value ? 1 : 0; }
+void StaticMeshTemplate::setDoNotGenerateLightmaps(bool value) { m_doNotGenerateLightmaps = value ? 1 : 0; } // PE 0x10121140 (getter 0x10121150)
 bool StaticMeshTemplate::getDoNotGenerateLightmaps() const     { return m_doNotGenerateLightmaps != 0; }
 void StaticMeshTemplate::setLightmapOverride(bool value)       { m_lightmapOverride = value ? 1 : 0; }
 bool StaticMeshTemplate::getLightmapOverride() const           { return m_lightmapOverride != 0; }
-void StaticMeshTemplate::setCompressVertexData(bool value)     { m_compressVertexData = value ? 1 : 0; }
+void StaticMeshTemplate::setCompressVertexData(bool value)     { m_compressVertexData = value ? 1 : 0; } // PE 0x10121160 (getter 0x10121170)
 bool StaticMeshTemplate::getCompressVertexData() const         { return m_compressVertexData != 0; }
-void StaticMeshTemplate::setMaxTextureRepeat(int value)        { m_maxTextureRepeat = value; }
+void StaticMeshTemplate::setMaxTextureRepeat(int value)        { m_maxTextureRepeat = value; } // PE 0x10121180 (getter 0x10121190)
 int  StaticMeshTemplate::getMaxTextureRepeat() const           { return m_maxTextureRepeat; }
 
 // The write only happens with the lightmap override set, and when it is clear the
 // shipped body returns an uninitialised eax - harmless here because the slot is void.
+// PE 0x10115820
 void StaticMeshTemplate::setLightmapSize(int a, int b, int size)
 {
     if (m_lightmapOverride)
         m_lightmapSizes[b + 8 * a] = size;
 }
 
-// no range check, no override test.
+// no range check, no override test. PE 0x10115850
 int StaticMeshTemplate::getLightmapSize(int a, int b)
 {
     return m_lightmapSizes[8 * a + b];
 }
 
 
-// getMaterialCount - PE 0x10115DE0. Sums the material count of `lod` across every geom.
-
+// PE 0x10115DE0: getMaterialCount. Sums the material count of `lod` across every geom.
 int StaticMeshTemplate::getMaterialCount(unsigned int lod)
 {
     int total = 0;
     unsigned int geom = 0;
     for (;;)
     {
-        if (!m_geoms.first ||
-            geom >= static_cast<unsigned int>((m_geoms.last - m_geoms.first) >> 5))
+        if (geom >= m_geoms.size())
             return total;
 
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
-        if (g->lods.first &&
-            lod < static_cast<unsigned int>(g->lods.last - g->lods.first) / sizeof(StaticMeshLod))
+        if (lod < m_geoms[geom].lods.size())
         {
-            vc71::vector_layout* lodVectors =
-                reinterpret_cast<vc71::vector_layout*>(
-                    reinterpret_cast<vc71::vector_layout*>(m_materials.first)[geom].first);
-            vc71::vector_layout& materials = lodVectors[lod];
-            if (materials.first)
-                total += static_cast<int>(
-                    static_cast<unsigned int>(materials.last - materials.first) / 516u);
+            StaticMeshMaterialList& materials = m_materials.data()[geom].data()[lod];
+            if (materials.data())
+                total += static_cast<int>(materials.size());
         }
         ++geom;
     }
 }
 
 
-// getLodPrimitiveCount - PE 0x10115EB0. The same walk, summing each material's own
+// PE 0x10115EB0: getLodPrimitiveCount. The same walk, summing each material's own
 // getPrimitiveCount (StaticMeshMaterial vtable +0x10).
-
 int StaticMeshTemplate::getLodPrimitiveCount(unsigned int lod)
 {
     int total = 0;
     unsigned int geom = 0;
     for (;;)
     {
-        if (!m_geoms.first ||
-            geom >= static_cast<unsigned int>((m_geoms.last - m_geoms.first) >> 5))
+        if (geom >= m_geoms.size())
             return total;
 
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
-        if (g->lods.first &&
-            lod < static_cast<unsigned int>(g->lods.last - g->lods.first) / sizeof(StaticMeshLod))
+        if (lod < m_geoms[geom].lods.size())
         {
-            vc71::vector_layout* lodVectors =
-                reinterpret_cast<vc71::vector_layout*>(
-                    reinterpret_cast<vc71::vector_layout*>(m_materials.first)[geom].first);
-            vc71::vector_layout& materials = lodVectors[lod];
+            StaticMeshMaterialList& materials = m_materials.data()[geom].data()[lod];
             unsigned int index = 0;
             for (;;)
             {
-                if (!materials.first)
+                if (!materials.data())
                     break;
-                if (index >= static_cast<unsigned int>(materials.last - materials.first) / 516u)
+                if (index >= static_cast<unsigned int>(materials.size()))
                     break;
-                StaticMeshMaterial* material =
-                    reinterpret_cast<StaticMeshMaterial*>(materials.first + 516u * index);
+                StaticMeshMaterial* material = materials.data() + index;
                 total += material->getPrimitiveCount();
                 ++index;
             }
@@ -1494,10 +1016,9 @@ int StaticMeshTemplate::getLodPrimitiveCount(unsigned int lod)
 }
 
 
-// decompressPosition - PE 0x10115A70. Multiply by the compress scale, truncate TO INT, multiply by
+// PE 0x10115A70: decompressPosition. Multiply by the compress scale, truncate TO INT, multiply by
 // the decompress scale. The y and z products are computed before x is stored; that order is kept
 // because the (int) truncation makes it observable.
-
 Vec3* StaticMeshTemplate::decompressPosition(Vec3* out, const Vec3* in)
 {
     const float y = static_cast<float>(static_cast<int>(m_compressScale.y * in->y));
@@ -1511,32 +1032,17 @@ Vec3* StaticMeshTemplate::decompressPosition(Vec3* out, const Vec3* in)
 }
 
 
-// Slot +0xAC - PE 0x10118170. See the file header: this is a preload pass, not a release.
-
+// PE 0x10118170: slot +0xAC. See the file header: this is a preload pass, not a release.
 // The once-initialised static vector at unk_1025B8B8 collects the distinct textures of the shader
 // records of geom 0, lod 0 only (the shipped walk never advances past the first lod of the first
 // geom) and preloads each. The template's +0x08 is then stamped with the renderer's frame ordinal.
-
-namespace {
-
-vc71::vector_layout g_preloadTextures = { 0, 0, 0, 0 };        // unk_1025B8B8
-bool                g_preloadTexturesReady = false;            // dword_1025B8C8 bit 0
-
-} // anonymous namespace
-
 void StaticMeshTemplate::releaseDeviceResources()
 {
-    if (!g_preloadTexturesReady)
-    {
-        g_preloadTexturesReady = true;
-        g_preloadTextures.first = 0;
-        g_preloadTextures.last  = 0;
-        g_preloadTextures.end   = 0;
-        // atexit(sub_101D95D0) - the static vector's teardown. The rebuild's process teardown
-        // releases the heap wholesale, so the registration is not reproduced.
-    }
+    // unk_1025B8B8, constructed on first use behind dword_1025B8C8 bit 0 and torn down at exit
+    // (atexit sub_101D95D0) - a function-local static.
+    static std::vector<void*> s_preloadTextures;
 
-    g_preloadTextures.last = g_preloadTextures.first;          // sub_100EBAD0(0, 0) - resize(0)
+    s_preloadTextures.clear();                                 // sub_100EBAD0(0, 0) - resize(0)
 
     if (m_vertexStream)
         resourcePreload(m_vertexStream);
@@ -1549,16 +1055,13 @@ void StaticMeshTemplate::releaseDeviceResources()
     // No null test, exactly as shipped - see resourcePreload's note.
     resourcePreload(m_indexBuffer);
 
-    if (m_materials.first && ((m_materials.last - m_materials.first) >> 4) != 0)
+    if (!m_materials.empty())
     {
-        vc71::vector_layout* lodVectors =
-            reinterpret_cast<vc71::vector_layout*>(
-                reinterpret_cast<vc71::vector_layout*>(m_materials.first)[0].first);
-        char* first = lodVectors[0].first;
-        char* last  = lodVectors[0].last;
-        for (char* p = first; p != last; p += 516)
+        StaticMeshMaterialList* lodVectors = m_materials.data()[0].data();
+        StaticMeshMaterial* const first = lodVectors[0].data();
+        StaticMeshMaterial* const last  = lodVectors[0].data() + lodVectors[0].size();
+        for (StaticMeshMaterial* material = first; material != last; ++material)
         {
-            StaticMeshMaterial* material = reinterpret_cast<StaticMeshMaterial*>(p);
             void** textures = material->m_shaderMaterial->textures;      // +0x28, eight slots
             for (int slot = 0; slot < 8; ++slot)
             {
@@ -1567,8 +1070,9 @@ void StaticMeshTemplate::releaseDeviceResources()
                     continue;
 
                 bool seen = false;
-                for (char* q = g_preloadTextures.first; q != g_preloadTextures.last; q += 4)
-                    if (*reinterpret_cast<void**>(q) == texture)
+                for (std::vector<void*>::const_iterator q = s_preloadTextures.begin();
+                     q != s_preloadTextures.end(); ++q)
+                    if (*q == texture)
                     {
                         seen = true;
                         break;
@@ -1576,201 +1080,66 @@ void StaticMeshTemplate::releaseDeviceResources()
                 if (seen)
                     continue;
 
-                const unsigned int used = vectorSizeBytes(g_preloadTextures) / 4;
-                if (g_preloadTextures.first && used < vectorCapacityBytes(g_preloadTextures) / 4)
-                {
-                    *reinterpret_cast<void**>(g_preloadTextures.last) = texture;
-                    g_preloadTextures.last += 4;
-                }
-                else
-                {
-                    vectorReserveRaw(g_preloadTextures, 4, used + 1);
-                    if (g_preloadTextures.first)
-                    {
-                        *reinterpret_cast<void**>(g_preloadTextures.last) = texture;
-                        g_preloadTextures.last += 4;
-                    }
-                }
+                s_preloadTextures.push_back(texture);
             }
         }
     }
 
-    for (char* q = g_preloadTextures.first; q != g_preloadTextures.last; q += 4)
-        resourcePreload(*reinterpret_cast<void**>(q));
+    for (std::vector<void*>::const_iterator q = s_preloadTextures.begin();
+         q != s_preloadTextures.end(); ++q)
+        resourcePreload(*q);
 
     m_dword08 = static_cast<int>(::dice::hfe::dx9rend::rendererFrameOrdinal());   // +0x08
 }
 
-// the occluder-group accessors, 48 bytes per group.
+// the occluder-group accessors.
 int StaticMeshTemplate::getOccluderGroupCount()
 {
-    if (!m_occluderGroups.first)
-        return 0;
-    return static_cast<int>((m_occluderGroups.last - m_occluderGroups.first) / 48);
+    return static_cast<int>(m_occluderGroups.size());
 }
 
+// PE 0x10116D90
 void* StaticMeshTemplate::getOccluderGroup(unsigned int index)
 {
-    if (m_occluderGroups.first &&
-        (m_occluderGroups.last - m_occluderGroups.first) / 48 != 0 &&
-        m_occluderGroups.first &&
-        index < static_cast<unsigned int>((m_occluderGroups.last - m_occluderGroups.first) / 48))
-        return m_occluderGroups.first + 48 * index;
+    if (!m_occluderGroups.empty() && index < m_occluderGroups.size())
+        return &m_occluderGroups[index];
     return 0;
 }
 
 // load stock .occ groups into m_occluderGroups.
 // The header token is ignored; corner indices are read as int then truncated to byte,
-// and vertex x is negated. Record vectors transfer ownership; scratch storage is freed.
-// Preserve the missing allocation/range guards and VC7.1 vector allocator words.
+// and vertex x is negated. Group vectors are copied; scratch storage is freed.
+// Preserve the missing allocation/range guards and the stream failure state.
 
 namespace {
-
-// [CHOSEN, not recovered] Scanner matching the compatibility stream's extraction rules.
-// EOF is set even when the final token was extracted; failed numeric reads leave the
-// destination unchanged. The backing buffer includes a private NUL terminator.
-class OccScanner
-{
-public:
-    OccScanner(const char* buffer, unsigned int size)
-        : m_p(buffer), m_end(buffer + size), m_eof(false) {}
-
-    bool eof() const { return m_eof; }
-
-    // std::operator>>(istream&, string&). The token is returned as a range into the buffer: both
-    // uses here either compare it or throw it away, so nothing is copied and there is no length
-    // limit to get wrong.
-    bool token(const char** begin, const char** end)
-    {
-        skipSpace();
-        if (m_p >= m_end)
-        {
-            m_eof = true;                  // eofbit, and failbit - nothing was extracted
-            return false;
-        }
-        *begin = m_p;
-        while (m_p < m_end && !isSpace(*m_p))
-            ++m_p;
-        *end = m_p;
-        if (m_p >= m_end)
-            m_eof = true;                  // eofbit even though a token was extracted
-        return true;
-    }
-
-    bool tokenIs(const char* literal)
-    {
-        const char* begin = 0;
-        const char* end   = 0;
-        if (!token(&begin, &end))
-            return false;
-        const unsigned int n = static_cast<unsigned int>(end - begin);
-        return ::strlen(literal) == n && ::memcmp(begin, literal, n) == 0;
-    }
-
-    // operator>>(int&) / operator>>(float&): on failure the destination is left alone.
-    bool readInt(int* out)
-    {
-        skipSpace();
-        if (m_p >= m_end)
-        {
-            m_eof = true;
-            return false;
-        }
-        char* stop = 0;
-        const long value = ::strtol(m_p, &stop, 10);
-        if (stop == m_p)
-            return false;
-        m_p = stop;
-        *out = static_cast<int>(value);
-        if (m_p >= m_end)
-            m_eof = true;
-        return true;
-    }
-
-    bool readFloat(float* out)
-    {
-        skipSpace();
-        if (m_p >= m_end)
-        {
-            m_eof = true;
-            return false;
-        }
-        char* stop = 0;
-        const double value = ::strtod(m_p, &stop);
-        if (stop == m_p)
-            return false;
-        m_p = stop;
-        *out = static_cast<float>(value);
-        if (m_p >= m_end)
-            m_eof = true;
-        return true;
-    }
-
-private:
-    // The "C" locale's space|blank set, written out so no locale or signed-char question arises.
-    static bool isSpace(char c)
-    {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
-    }
-
-    void skipSpace()
-    {
-        while (m_p < m_end && isSpace(*m_p))
-            ++m_p;
-    }
-
-    const char* m_p;
-    const char* m_end;
-    bool        m_eof;
-};
-
-// sub_100777A0 - Vec3 normalize in place, with the shipped |v|^2 within-epsilon short circuits.
-// The same three-line body StaticMesh.cpp and StaticMeshMaterial.cpp each carry at their own file
-// scope; repeated here for the same reason - all of them are file-local in the image.
-void occNormalizeInPlace(float* v)
-{
-    const float lengthSquared = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-    if (::fabs(static_cast<double>(lengthSquared) - 1.0) < 0.00000011920929)
-        return;
-    if (::fabs(static_cast<double>(lengthSquared)) < 0.00000011920929)
-    {
-        v[0] = 0.0f; v[1] = 0.0f; v[2] = 0.0f;
-        return;
-    }
-    const float inverse = static_cast<float>(1.0 / ::sqrt(static_cast<double>(lengthSquared)));
-    v[0] *= inverse; v[1] *= inverse; v[2] *= inverse;
-}
 
 
 // Finds or creates an edge and appends its reference to the plane.
 // Reversed orientation matches; same orientation logs an error and keeps searching.
 // The stored index is narrowed to a byte, with a separate new-edge flag.
 
-void addOccluderEdge(unsigned char* group, unsigned char* plane,
+// PE 0x10118320
+void addOccluderEdge(StaticMeshOccluderGroup& group, StaticMeshOccluderPlane& plane,
                      unsigned char a, unsigned char b)
 {
-    vc71::vector_layout& edges = *reinterpret_cast<vc71::vector_layout*>(group + 0x20);
-    vc71::vector_layout& refs  = *reinterpret_cast<vc71::vector_layout*>(plane + 0x10);
+    std::vector<StaticMeshOccluderEdge>& edges = group.edges;
+    std::vector<unsigned short>& refs = plane.edgeReferences;
 
-    const unsigned int count = edges.first
-        ? static_cast<unsigned int>(edges.last - edges.first) / 4u
-        : 0u;
+    const unsigned int count = static_cast<unsigned int>(edges.size());
 
     for (unsigned int i = 0; i < count; ++i)
     {
-        const unsigned char* const edge =
-            reinterpret_cast<const unsigned char*>(edges.first) + 4u * i;
+        const StaticMeshOccluderEdge& edge = edges[i];
 
-        if (edge[0] == a && edge[1] == b)
+        if (edge.points[0] == a && edge.points[1] == b)
         {
             // StaticMeshTemplate.cpp:310, Debug type 6 - and it does NOT stop.
             ::renddx9abi::logf("StaticMeshTemplate.cpp:310: EDGE ERROR");
         }
 
-        if (edge[0] == b && edge[1] == a)
+        if (edge.points[0] == b && edge.points[1] == a)
         {
-            const unsigned short ref = static_cast<unsigned short>(static_cast<unsigned char>(i));
-            vc71::vectorPushBackIn(refs, 2u, &ref);
+            refs.push_back(static_cast<unsigned short>(static_cast<unsigned char>(i)));
             return;
         }
     }
@@ -1778,205 +1147,207 @@ void addOccluderEdge(unsigned char* group, unsigned char* plane,
     // Not there. The index is taken before the push, so it is the slot the new edge lands in.
     const unsigned char newIndex = static_cast<unsigned char>(count);
 
-    unsigned char edge[4];
-    edge[0] = a;
-    edge[1] = b;
+    StaticMeshOccluderEdge edge;
+    edge.points[0] = a;
+    edge.points[1] = b;
     // warning: the shipped element's upper two bytes are the caller's register leftovers - the
     // record is pushed straight out of the argument dword before BYTE2/BYTE3 are rewritten.
-    // Nothing ever reads them (the plane pass reads [0] and [1], and the consumer does not touch
-    // the edge list at all), so they are zeroed here rather than copied indeterminate.
-    edge[2] = 0;
-    edge[3] = 0;
-    vc71::vectorPushBackIn(edges, 4u, edge);
+    // The loader never reads them and ObjectDrawer rewrites them before reading, so they are
+    // zeroed here rather than copied indeterminate.
+    edge.marks[0] = 0;
+    edge.marks[1] = 0;
+    edges.push_back(edge);
 
-    const unsigned short ref =
-        static_cast<unsigned short>(static_cast<unsigned short>(newIndex) | 0x0100u);
-    vc71::vectorPushBackIn(refs, 2u, &ref);
+    refs.push_back(static_cast<unsigned short>(static_cast<unsigned short>(newIndex) | 0x0100u));
 }
 
 } // namespace
 
+// PE 0x1011A0C0
 void StaticMeshTemplate::loadOccluders(::renddx9abi::HostStream* stream)
 {
     // 0x1011A0DB -> the stream's own +0x1C, operator new, then the whole-file read.
     const unsigned int size = static_cast<unsigned int>(stream->getAvailableBytes());   // +0x1C
-    char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(size + 1u));
+    char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(size));
     stream->read(buffer, size);                                                         // +0x10
-    buffer[size] = '\0';
 
-    OccScanner scanner(buffer, size);
+    std::istringstream input(std::string(buffer, size));
 
     // The version line, read and dropped. warning: its state is NOT tested (0x1011A179 is
     // followed straight by the second string's constructor) - only the marker read below is.
-    const char* tokenBegin = 0;
-    const char* tokenEnd   = 0;
-    scanner.token(&tokenBegin, &tokenEnd);
+    std::string version;
+    input >> version;
 
-    // EOF is checked before matching, so a final token without trailing whitespace is skipped.
-    bool isGroup = scanner.tokenIs("GROUP");
-
-    int corner = 0;        // var_68: NOT pre-zeroed per read by the shipped body; it persists
-
-    while (!scanner.eof() && isGroup)
     {
-        // The 48-byte group record, built on the stack exactly as the shipped body builds it.
-        // The nine stores at 0x1011A1EB..0x1011A203 leave all three allocator words untouched;
-        // zeroing the whole record avoids copying indeterminate bytes into the vector and is
-        // otherwise identical - the same choice StaticMesh.cpp makes for its 36-byte record.
-        unsigned char group[48];
-        for (unsigned int z = 0; z < sizeof(group); ++z)
-            group[z] = 0;
+        // EOF is checked before matching, so a final token without trailing whitespace is skipped.
+        std::string marker;
+        input >> marker;
 
-        vc71::vector_layout& planes = *reinterpret_cast<vc71::vector_layout*>(group + 0x00);
-        vc71::vector_layout& points = *reinterpret_cast<vc71::vector_layout*>(group + 0x10);
-        vc71::vector_layout& edges  = *reinterpret_cast<vc71::vector_layout*>(group + 0x20);
+        int corner;            // Not initialized before extraction; retained between corner reads.
 
-        // the quad corner indices, into a scratch byte vector (0x1011A230..0x1011A28E)
-        // This fourth vector is not part of the record; it is freed at the end of the group.
-        vc71::vector_layout cornerBytes;
-        cornerBytes.alloc = 0;
-        cornerBytes.first = 0;
-        cornerBytes.last  = 0;
-        cornerBytes.end   = 0;
-
-        int quadCount = 0;
-        scanner.readInt(&quadCount);
-
-        for (int k = 0; k < 4 * quadCount; ++k)
+        while (!input.eof() && marker == "GROUP")
         {
-            scanner.readInt(&corner);
-            const unsigned char index = static_cast<unsigned char>(corner);
-            vc71::vectorPushBackIn(cornerBytes, 1u, &index);
-        }
+            // The group record, built on the stack exactly as the shipped body builds it
+            // (0x1011A1EB..0x1011A203), then copied into the template below.
+            StaticMeshOccluderGroup group;
+            std::vector<StaticMeshOccluderPlane>& planes = group.planes;
+            std::vector<Vec3>&                    points = group.points;
+            std::vector<StaticMeshOccluderEdge>&  edges  = group.edges;
 
-        // the vertices (0x1011A290..0x1011A2FE)
-        int vertexCount = 0;
-        scanner.readInt(&vertexCount);
+            // the quad corner indices, into a scratch byte vector (0x1011A230..0x1011A28E)
+            // This fourth vector is not part of the record; it is freed at the end of the group.
+            std::vector<unsigned char> cornerBytes;
 
-        for (int v = 0; v < vertexCount; ++v)
-        {
-            float position[3];
-            position[0] = 0.0f;                 // pre-zeroed every iteration, as shipped
-            position[1] = 0.0f;
-            position[2] = 0.0f;
-            scanner.readFloat(&position[0]);
-            scanner.readFloat(&position[1]);
-            scanner.readFloat(&position[2]);
-            position[0] = -position[0];         // X, and only X
-            vc71::vectorPushBackIn(points, 12u, position);
-        }
+            int quadCount;
+            input >> quadCount;
 
-        // one plane per quad, four edges per plane (0x1011A314..0x1011A3D1)
-        for (int quad = 0; quad < quadCount; ++quad)
-        {
-            // The 32-byte template: the shipped body zeroes the normal and the nested vector's
-            // three words and leaves `d` and the allocator word alone (0x1011A314..0x1011A332 is
-            // six stores, not eight). `d` is overwritten by the plane pass below for every
-            // element, so zeroing all 32 changes nothing observable.
-            unsigned char blank[32];
-            for (unsigned int z = 0; z < sizeof(blank); ++z)
-                blank[z] = 0;
-            vc71::vectorPushBackIn(planes, 32u, blank);
-
-            for (int c = 0; c < 4; ++c)
+            for (int k = 0; k < 4 * quadCount; ++k)
             {
-                const int next = (c == 3) ? 0 : c + 1;
-                const unsigned char* const quadCorners =
-                    reinterpret_cast<const unsigned char*>(cornerBytes.first) + 4 * quad;
-
-                // Recomputed per corner, as shipped: planes.last - 32 is the element just added.
-                unsigned char* const plane =
-                    reinterpret_cast<unsigned char*>(planes.last) - 32;
-
-                addOccluderEdge(group, plane, quadCorners[c], quadCorners[next]);
+                input >> corner;
+                cornerBytes.push_back(static_cast<unsigned char>(corner));
             }
-        }
 
-        // Edge 0 and edge 1 intentionally use opposite direction-flag conventions.
-        // The plane anchor always uses edge 0's v0, independently of that flag.
-        if (planes.first && (static_cast<unsigned int>(planes.last - planes.first) >> 5) != 0)
-        {
-            const unsigned int planeCount =
-                static_cast<unsigned int>(planes.last - planes.first) >> 5;
+            // the vertices (0x1011A290..0x1011A2FE)
+            int vertexCount;
+            input >> vertexCount;
 
-            for (unsigned int p = 0; p < planeCount; ++p)
+            for (int v = 0; v < vertexCount; ++v)
             {
-                unsigned char* const plane =
-                    reinterpret_cast<unsigned char*>(planes.first) + 32u * p;
-                const vc71::vector_layout& refs =
-                    *reinterpret_cast<const vc71::vector_layout*>(plane + 0x10);
-
-                const unsigned char* const ref =
-                    reinterpret_cast<const unsigned char*>(refs.first);
-                const unsigned char* const edgeBase =
-                    reinterpret_cast<const unsigned char*>(edges.first);
-                const float* const pointBase = reinterpret_cast<const float*>(points.first);
-
-                // edge 0 -> the first tangent, and the anchor
-                const unsigned char* const edge0 = edgeBase + 4u * ref[0];
-                const float* firstA;
-                const float* secondA;
-                if (ref[1] != 0)
-                {
-                    firstA  = pointBase + 3u * edge0[0];
-                    secondA = pointBase + 3u * edge0[1];
-                }
-                else
-                {
-                    firstA  = pointBase + 3u * edge0[1];
-                    secondA = pointBase + 3u * edge0[0];
-                }
-                const float ax = firstA[0] - secondA[0];
-                const float ay = firstA[1] - secondA[1];
-                const float az = firstA[2] - secondA[2];
-                const float* const anchor = pointBase + 3u * edge0[0];
-
-                // edge 1 -> the second tangent
-                const unsigned char* const edge1 = edgeBase + 4u * ref[2];
-                const float* firstB;
-                const float* secondB;
-                if (ref[3] == 0)
-                {
-                    firstB  = pointBase + 3u * edge1[0];
-                    secondB = pointBase + 3u * edge1[1];
-                }
-                else
-                {
-                    firstB  = pointBase + 3u * edge1[1];
-                    secondB = pointBase + 3u * edge1[0];
-                }
-                const float bx = firstB[0] - secondB[0];
-                const float by = firstB[1] - secondB[1];
-                const float bz = firstB[2] - secondB[2];
-
-                // cross(a, b), written in the shipped operand order so the rounding matches:
-                // 0x1011A50x emits y first (v51), then x, then z.
-                float normal[3];
-                normal[1] = az * bx - bz * ax;
-                normal[0] = bz * ay - by * az;
-                normal[2] = by * ax - ay * bx;
-
-                occNormalizeInPlace(normal);
-
-                float* const out = reinterpret_cast<float*>(plane);
-                out[0] = normal[0];
-                out[1] = normal[1];
-                out[2] = normal[2];
-                // The shipped grouping, z and y first: -((nz*p.z + ny*p.y) + nx*p.x).
-                out[3] = -((normal[2] * anchor[2] + normal[1] * anchor[1]) + normal[0] * anchor[0]);
+                float position[3];
+                position[0] = 0.0f;                 // pre-zeroed every iteration, as shipped
+                position[1] = 0.0f;
+                position[2] = 0.0f;
+                input >> position[0] >> position[1] >> position[2];
+                position[0] = -position[0];         // X, and only X
+                const Vec3 point = { position[0], position[1], position[2] };
+                points.push_back(point);
             }
+
+            // one plane per quad, four edges per plane (0x1011A314..0x1011A3D1)
+            for (int quad = 0; quad < quadCount; ++quad)
+            {
+                // The shipped template element zeroes the normal and the nested vector and leaves `d`
+                // alone (0x1011A314..0x1011A332). `d` is overwritten by the plane pass below for every
+                // element, so zeroing it too changes nothing observable.
+                StaticMeshOccluderPlane blank;
+                blank.plane[0] = 0.0f;
+                blank.plane[1] = 0.0f;
+                blank.plane[2] = 0.0f;
+                blank.plane[3] = 0.0f;
+                planes.push_back(blank);
+
+                for (int c = 0; c < 4; ++c)
+                {
+                    const int next = (c == 3) ? 0 : c + 1;
+                    const unsigned char* const quadCorners = cornerBytes.data() + 4 * quad;
+
+                    // Recomputed per corner, as shipped: the element just added.
+                    StaticMeshOccluderPlane& plane = planes.back();
+
+                    addOccluderEdge(group, plane, quadCorners[c], quadCorners[next]);
+                }
+            }
+
+            // Edge 0 and edge 1 intentionally use opposite direction-flag conventions.
+            // The plane anchor always uses edge 0's v0, independently of that flag. Each reference is
+            // the edge index in its low byte and the created-here flag in its high byte.
+            if (!planes.empty())
+            {
+                const unsigned int planeCount = static_cast<unsigned int>(planes.size());
+
+                for (unsigned int p = 0; p < planeCount; ++p)
+                {
+                    StaticMeshOccluderPlane& plane = planes[p];
+                    const unsigned short* const ref = plane.edgeReferences.data();
+
+                    // edge 0 -> the first tangent, and the anchor
+                    const StaticMeshOccluderEdge& edge0 = edges[ref[0] & 0xFFu];
+                    const Vec3* firstA;
+                    const Vec3* secondA;
+                    if ((ref[0] >> 8) != 0)
+                    {
+                        firstA  = &points[edge0.points[0]];
+                        secondA = &points[edge0.points[1]];
+                    }
+                    else
+                    {
+                        firstA  = &points[edge0.points[1]];
+                        secondA = &points[edge0.points[0]];
+                    }
+    #if defined(__APPLE__)
+                    // [CHOSEN, not recovered] Only the first tangent's z spills before the cross product.
+                    using namespace bf2x87;
+                    const Real ax = sub(wide(firstA->x), wide(secondA->x));
+                    const Real ay = sub(wide(firstA->y), wide(secondA->y));
+                    const float az = store(sub(wide(firstA->z), wide(secondA->z)));
+    #else
+                    const float ax = firstA->x - secondA->x;
+                    const float ay = firstA->y - secondA->y;
+                    const float az = firstA->z - secondA->z;
+    #endif
+                    const Vec3& anchorPoint = points[edge0.points[0]];
+                    const float anchor[3] = { anchorPoint.x, anchorPoint.y, anchorPoint.z };
+
+                    // edge 1 -> the second tangent
+                    const StaticMeshOccluderEdge& edge1 = edges[ref[1] & 0xFFu];
+                    const Vec3* firstB;
+                    const Vec3* secondB;
+                    if ((ref[1] >> 8) == 0)
+                    {
+                        firstB  = &points[edge1.points[0]];
+                        secondB = &points[edge1.points[1]];
+                    }
+                    else
+                    {
+                        firstB  = &points[edge1.points[1]];
+                        secondB = &points[edge1.points[0]];
+                    }
+    #if defined(__APPLE__)
+                    const Real bx = sub(wide(firstB->x), wide(secondB->x));
+                    const Real by = sub(wide(firstB->y), wide(secondB->y));
+                    const Real bz = sub(wide(firstB->z), wide(secondB->z));
+    #else
+                    const float bx = firstB->x - secondB->x;
+                    const float by = firstB->y - secondB->y;
+                    const float bz = firstB->z - secondB->z;
+    #endif
+
+                    // cross(a, b), written in the shipped operand order so the rounding matches:
+                    // 0x1011A50x emits y first (v51), then x, then z.
+                    float normal[3];
+    #if defined(__APPLE__)
+                    normal[1] = store(sub(mul(wide(az), bx), mul(bz, ax)));
+                    normal[0] = store(sub(mul(bz, ay), mul(by, wide(az))));
+                    normal[2] = store(sub(mul(by, ax), mul(ay, bx)));
+    #else
+                    normal[1] = az * bx - bz * ax;
+                    normal[0] = bz * ay - by * az;
+                    normal[2] = by * ax - ay * bx;
+    #endif
+
+                    rendmath::normalize(*reinterpret_cast<Vec3*>(normal));
+
+                    float* const out = plane.plane;
+                    out[0] = normal[0];
+                    out[1] = normal[1];
+                    out[2] = normal[2];
+                    // The shipped grouping, z and y first: -((nz*p.z + ny*p.y) + nx*p.x).
+    #if defined(__APPLE__)
+                    out[3] = store(-add(add(mul(wide(normal[2]), wide(anchor[2])),
+                        mul(wide(normal[1]), wide(anchor[1]))), mul(wide(normal[0]), wide(anchor[0]))));
+    #else
+                    out[3] = -((normal[2] * anchor[2] + normal[1] * anchor[1]) + normal[0] * anchor[0]);
+    #endif
+                }
+            }
+
+            // The three vectors are copied before the local buffers are released.
+            m_occluderGroups.push_back(group);
+
+            // the next marker (0x1011A5FE..0x1011A63D)
+            marker.clear();
+            input >> marker;
         }
-
-        // the record goes in, and only then do the buffers get released
-        // Ownership of the three record vectors moves here - see the header note. The scratch
-        // corner bytes are not part of the record, so they are freed.
-        vc71::vectorPushBackIn(m_occluderGroups, 48u, group);
-
-        if (cornerBytes.first)
-            ::renddx9abi::engineFree(cornerBytes.first);
-
-        // the next marker (0x1011A5FE..0x1011A63D)
-        isGroup = scanner.tokenIs("GROUP");
     }
 
     // the file buffer, and then the stream objects unwind.
@@ -1987,14 +1358,12 @@ void StaticMeshTemplate::loadOccluders(::renddx9abi::HostStream* stream)
 // Reads each geometry's LODs, overwriting skipped records before retaining later LODs.
 // Header zero with version <10 uses legacy bounds; other files use min/max bounds.
 
+// PE 0x10119450 (compared with the listing for gates, constants, call order and field offsets; the compiler-unrolled distance loop was not compared instruction by instruction)
 void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
 {
-    const unsigned int geomCount =
-        m_lodCounts.first
-            ? static_cast<unsigned int>(m_lodCounts.last - m_lodCounts.first) >> 2
-            : 0u;
+    const unsigned int geomCount = static_cast<unsigned int>(m_lodCounts.size());
 
-    staticMeshGeomsResize(m_geoms, geomCount);
+    m_geoms.resize(geomCount);                                     // sub_1011F870
     if (!geomCount)
         return;
 
@@ -2013,7 +1382,7 @@ void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
         else if (geom == 1)
             cap = m_maxSkipWreckLods;                             // +0xC4
 
-        const int lodCount = reinterpret_cast<int*>(m_lodCounts.first)[geom];
+        const int lodCount = m_lodCounts[geom];
         if (cap < budget)
             budget = cap;
 
@@ -2021,23 +1390,21 @@ void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
         if (skip >= budget)
             skip = budget;
 
-        reinterpret_cast<int*>(m_geomInts.first)[geom] = skip;     // +0x70 remembers the skip
+        m_geomInts[geom] = skip;                                   // +0x70 remembers the skip
         const int kept = lodCount - skip;
-        reinterpret_cast<int*>(m_lodCounts.first)[geom] = kept;
+        m_lodCounts[geom] = kept;
 
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
-        staticMeshLodsResize(g->lods, static_cast<unsigned int>(kept));
-        floatVectorResize(g->lodDistances, static_cast<unsigned int>(kept - 1), 0.0f);
+        StaticMeshGeom& g = m_geoms[geom];
+        g.lods.resize(static_cast<unsigned int>(kept), staticMeshLodFill());       // sub_1011D380
+        g.lodDistances.resize(static_cast<unsigned int>(kept - 1), 0.0f);         // sub_100EC600
 
         int remainingSkips = skip;
         int lodIndex = 0;
-        int byteOffset = 0;
         if (kept > 0)
         {
             do
             {
-                StaticMeshLod* lod =
-                    reinterpret_cast<StaticMeshLod*>(g->lods.first + byteOffset);
+                StaticMeshLod* lod = g.lods.data() + lodIndex;
                 ::memset(lod, 0, sizeof(StaticMeshLod));
 
                 if (m_head || m_version >= 10u)
@@ -2056,9 +1423,7 @@ void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
                 {
                     --remainingSkips;
                     --lodIndex;
-                    byteOffset -= static_cast<int>(sizeof(StaticMeshLod));
                 }
-                byteOffset += static_cast<int>(sizeof(StaticMeshLod));
                 ++lodIndex;
             }
             while (lodIndex < kept);
@@ -2070,24 +1435,21 @@ void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
         // the entry at index lod. That asymmetry is in the instructions (0x101198ED stores from
         // [ebx+eax] with ebx = 4*(lod+skip), 0x10119900 adds [edx+ecx*4] with ecx = lod); it is
         // preserved rather than tidied.
-        const int skipped = reinterpret_cast<int*>(m_geomInts.first)[geom];
+        const int skipped = m_geomInts[geom];
         const int distanceCount = kept - 1;
         float accumulator = static_cast<float>((skipped + 1) * 25);
 
         for (int lod = 0; lod < distanceCount; ++lod)
         {
-            float* destination = reinterpret_cast<float*>(g->lodDistances.first);
+            float* destination = g.lodDistances.data();
 
             bool haveStored = false;
-            if (m_lodDistances.first &&
-                static_cast<unsigned int>((m_lodDistances.last - m_lodDistances.first) >> 4) > geom)
+            if (m_lodDistances.size() > geom)
             {
-                vc71::vector_layout* inner =
-                    reinterpret_cast<vc71::vector_layout*>(m_lodDistances.first) + geom;
-                const unsigned int innerSize = vectorSizeBytes(*inner) / sizeof(float);
-                if (static_cast<int>(innerSize) > lod)
+                const std::vector<float>& inner = m_lodDistances[geom];
+                if (static_cast<int>(inner.size()) > lod)
                 {
-                    const float* stored = reinterpret_cast<const float*>(inner->first);
+                    const float* stored = inner.data();
                     destination[lod] = stored[lod + skipped];
                     accumulator += stored[lod];
                     haveStored = true;
@@ -2106,7 +1468,7 @@ void StaticMeshTemplate::readLods(::renddx9abi::HostNonlinearStream* stream)
 
 // Builds techniques and reads materials with mip class 10, compacting kept LOD data.
 // Versions below 11 compute bounds from vertices; newer versions read min/max bounds.
-
+// PE 0x1011AAA0
 void StaticMeshTemplate::readMaterials(::renddx9abi::HostNonlinearStream* stream)
 {
     const int savedMipClass = ::dice::hfe::dx9rend::textureManagerDefaultMipClass();
@@ -2114,46 +1476,38 @@ void StaticMeshTemplate::readMaterials(::renddx9abi::HostNonlinearStream* stream
 
     staticMeshInitTechniques();
 
-    const unsigned int geomCount =
-        m_lodCounts.first
-            ? static_cast<unsigned int>(m_lodCounts.last - m_lodCounts.first) >> 2
-            : 0u;
+    const unsigned int geomCount = static_cast<unsigned int>(m_lodCounts.size());
 
-    staticMeshMaterialsResizeGeoms(m_materials, geomCount);
+    m_materials.resize(geomCount);
 
     unsigned int droppedVertices = 0;
     unsigned int droppedIndices  = 0;
 
     for (unsigned int geom = 0; geom < geomCount; ++geom)
     {
-        const int lodCount = reinterpret_cast<int*>(m_lodCounts.first)[geom];
-        int remainingSkips = reinterpret_cast<int*>(m_geomInts.first)[geom];
+        const int lodCount = m_lodCounts[geom];
+        int remainingSkips = m_geomInts[geom];
 
-        vc71::vector_layout& geomMaterials =
-            reinterpret_cast<vc71::vector_layout*>(m_materials.first)[geom];
-        staticMeshMaterialsResizeLods(geomMaterials, static_cast<unsigned int>(lodCount));
+        StaticMeshLodMaterialLists& geomMaterials = m_materials.data()[geom];
+        geomMaterials.resize(static_cast<unsigned int>(lodCount));
         if (lodCount <= 0)
             continue;
 
-        StaticMeshGeom* g = reinterpret_cast<StaticMeshGeom*>(m_geoms.first) + geom;
+        StaticMeshGeom& g = m_geoms[geom];
 
-        int lodIndex = 0;
-        int lodByteOffset = 0;          // 104 * destination lod
-        int materialByteOffset = 0;     //  16 * destination lod
+        int lodIndex = 0;               // the destination lod
 
         for (;;)
         {
-            StaticMeshLod* lod =
-                reinterpret_cast<StaticMeshLod*>(g->lods.first + lodByteOffset);
-            vc71::vector_layout& lodMaterials =
-                *reinterpret_cast<vc71::vector_layout*>(geomMaterials.first + materialByteOffset);
+            StaticMeshLod* lod = g.lods.data() + lodIndex;
+            StaticMeshMaterialList& lodMaterials = geomMaterials.data()[lodIndex];
 
             unsigned int materialCount = 0;
             stream->read(&materialCount, 4);                       // +0x10
 
             // The shipped call builds a default StaticMeshMaterial on the stack and passes it by
-            // value; the tree's helper takes only the count and default-constructs internally.
-            staticMeshMaterialsResize(lodMaterials, materialCount);
+            // value; resize default-constructs each new material.
+            lodMaterials.resize(materialCount);
 
             m_skippingLods = static_cast<unsigned char>(remainingSkips > 0);
             lod->primitiveCount = 0;
@@ -2166,7 +1520,7 @@ void StaticMeshTemplate::readMaterials(::renddx9abi::HostNonlinearStream* stream
             while (materialCount)
             {
                 StaticMeshMaterial* material =
-                    reinterpret_cast<StaticMeshMaterial*>(lodMaterials.first + 516u * materialIndex);
+                    lodMaterials.data() + materialIndex;
 
                 stream->read(&material->m_alphaMode, 4);           // +0x17C
                 if (material->m_alphaMode == 1)
@@ -2284,13 +1638,9 @@ void StaticMeshTemplate::readMaterials(::renddx9abi::HostNonlinearStream* stream
 
             if (remainingSkips > 0)
             {
-                materialByteOffset -= 16;
                 --remainingSkips;
                 --lodIndex;
-                lodByteOffset -= static_cast<int>(sizeof(StaticMeshLod));
             }
-            materialByteOffset += 16;
-            lodByteOffset += static_cast<int>(sizeof(StaticMeshLod));
             if (++lodIndex >= lodCount)
                 break;
         }
@@ -2304,15 +1654,57 @@ void StaticMeshTemplate::readMaterials(::renddx9abi::HostNonlinearStream* stream
 }
 
 
-// [FRONTIER] Serializes mesh-template overrides as console commands.
-// Remains a stopping boundary until output ordering is implemented and validated.
-
+// PE 0x10116140, IConsoleSaveable secondary-this entry.
 bool StaticMeshTemplate::makeScript(::dice::hfe::io::IStream* stream)
 {
-    (void)stream;
-    RD9_FRONTIER("dice::hfe::geom::StaticMeshTemplate::makeScript (0x10116140, the editor .con "
-                 "writer; its ostream insertion order is not legibly recovered)", 0x00);
-    return false;
+    MeshTemplate::makeScript(stream); // The base write result is discarded, as shipped.
+    std::ostringstream out;
+    const unsigned int geomCount = static_cast<unsigned int>(m_geoms.size());
+    for (unsigned int geom = 0; geom < geomCount; ++geom)
+    {
+        const std::vector<float>& distances = m_geoms[geom].lodDistances;
+        int defaultDistance = 25;
+        for (unsigned int lod = 0; lod < distances.size(); ++lod, defaultDistance += 25)
+        {
+            if (distances[lod] != static_cast<float>(defaultDistance))
+                out << "GeometryTemplate.setSubGeometryLodDistance " << geom << " "
+                    << lod << " " << distances[lod] << std::endl;
+        }
+    }
+
+    for (MaterialValueMap::const_iterator value = m_materialValues.begin();
+         value != m_materialValues.end(); ++value)
+    {
+        out << "GeometryTemplate.setMaterialParallaxHeightScale "
+            << static_cast<unsigned int>(static_cast<int>(value->first) >> 16) << " "
+            << ((value->first >> 8) & 255u) << " " << (value->first & 255u) << " "
+            << value->second << std::endl;
+    }
+    out << "GeometryTemplate.doNotGenerateLightmaps "
+        << (m_doNotGenerateLightmaps != 0) << std::endl;
+    out << "GeometryTemplate.lightmapOverride " << (m_lightmapOverride != 0) << std::endl;
+    if (m_lightmapOverride)
+    {
+        for (unsigned int geom = 0; geom < geomCount; ++geom)
+        {
+            const unsigned int lodCount = static_cast<unsigned int>(m_lodCounts[geom]);
+            for (unsigned int lod = 0; lod < lodCount; ++lod)
+            {
+                const int size = m_lightmapSizes[8 * geom + lod];
+                if (size >= 0)
+                    out << "GeometryTemplate.setLightmapSizeAll " << geom << " "
+                        << lod << " " << size << std::endl;
+            }
+        }
+    }
+    out << "GeometryTemplate.compressVertexData " << (m_compressVertexData != 0) << std::endl;
+    out << "GeometryTemplate.maxTextureRepeat " << m_maxTextureRepeat << std::endl;
+    out << "GeometryTemplate.glowing " << (m_byte2A5 != 0) << std::endl;
+    out << "GeometryTemplate.noLighting " << (m_byte2B0 != 0) << std::endl;
+
+    const std::string script = out.str();
+    const unsigned int length = static_cast<unsigned int>(script.size());
+    return stream->write(script.c_str(), length) == length;
 }
 
 
@@ -2322,9 +1714,9 @@ bool StaticMeshTemplate::makeScript(::dice::hfe::io::IStream* stream)
 // name table.  Reproduced as written.  A bit above the twelve named ones reads past the table's
 // terminator in the shipped body too; no recovered caller passes one.
 
-void staticMeshShaderBitsToName(vc71::string& out, unsigned int bits)
+void staticMeshShaderBitsToName(std::string& out, unsigned int bits)
 {
-    vc71::string names("");
+    std::string names("");
     for (unsigned int i = 0; i < 32u; ++i)
     {
         const unsigned int bit = bits & (1u << i);
@@ -2345,7 +1737,7 @@ void staticMeshShaderBitsToName(vc71::string& out, unsigned int bits)
 
 // Returns the shader for bits, falling back to the default mask after logging a miss.
 // Returns null and logs if the default is absent.
-
+// PE 0x10116C20.
 ::dice::hfe::dx9rend::Ra::RaShader* staticMeshFindShaderBits(unsigned int bits)
 {
     StaticMeshTechniqueMap::const_iterator found = g_staticMeshTechniques.find(bits);
@@ -2353,7 +1745,7 @@ void staticMeshShaderBitsToName(vc71::string& out, unsigned int bits)
         return found->second;
 
     {
-        vc71::string names("");
+        std::string names("");
         staticMeshShaderBitsToName(names, bits);
         ::renddx9abi::logf("StaticMeshTemplate.cpp:2076 Couldn't find shader bits: %u looked up "
                            "name: %s", bits, names.c_str());
@@ -2368,13 +1760,83 @@ void staticMeshShaderBitsToName(vc71::string& out, unsigned int bits)
 }
 
 
-// Shared technique-mask builder used by static and skinned mesh templates.
+// [INFERRED] name and signature for the three retail bodies below that have no callers or are only
+// reached through an inlined copy in StaticMesh.cpp; each is declared here only to give it external
+// linkage without a header change.
+void staticMeshEraseDeprecatedFeatureNames(std::string& text, unsigned int levelCount);
+void staticMeshInsertTechnique(unsigned int bits, ::dice::hfe::dx9rend::Ra::RaShader* shader);
+bool staticMeshTemplateLightmapsEnabled(const StaticMeshTemplate* tmpl);
 
-bool meshBuildTechniqueMasks(const vc71::string& mfxPath,
-                             const vc71::string& techniquePrefix,
+// Removes from `text` the first occurrence of every deprecation token (one erase per token) in the
+// first `levelCount` rows of the RaShaderSTM metashader's deprecation list.
+// unreachable in 1.50: no code or data references
+// The shipped body logs a missing metashader and then reads the list through the null pointer;
+// [CHOSEN, not recovered] here it returns after the log (null dereference, memory-safety exception),
+// and a row count beyond the list is clamped (the shipped body reads past the vector).
+// PE 0x10115CF0.
+void staticMeshEraseDeprecatedFeatureNames(std::string& text, unsigned int levelCount)
+{
+    ::dice::hfe::dx9rend::Ra::MetaFx* const fx =
+        ::dice::hfe::dx9rend::effectManagerGetMetaFx(std::string("shaders/RaShaderSTM.mfx"));
+    if (!fx)
+    {
+        // StaticMeshTemplate.cpp:2044, Debug type 6.
+        ::renddx9abi::logf("StaticMeshTemplate.cpp:2044 Couldn't find metashader "
+                           "shaders/RaShaderSTM.mfx");
+        return;
+    }
+
+    for (unsigned int level = 0; level < levelCount; ++level)
+    {
+        const std::vector< ::dice::hfe::dx9rend::Ra::MetaFxStringArray>& rows =
+            fx->getDeprecationList();
+        if (level >= rows.size())
+            break;
+        const ::dice::hfe::dx9rend::Ra::MetaFxStringArray& row = rows[level];
+        for (::dice::hfe::dx9rend::Ra::MetaFxStringArray::const_iterator name = row.begin();
+             name != row.end(); ++name)
+        {
+            eraseSubString(text, *name);
+        }
+    }
+}
+
+
+// Inserts (bits, shader) into the shared technique map; an existing key is kept.
+// unreachable in 1.50: no code or data references
+// The shipped body returns the address of its own dead stack pair; no result is modelled.
+// PE 0x10116E70.
+void staticMeshInsertTechnique(unsigned int bits, ::dice::hfe::dx9rend::Ra::RaShader* shader)
+{
+    g_staticMeshTechniques.insert(std::make_pair(bits, shader));
+}
+
+
+// Whether the finished template's materials carry lightmap uvs: water always, otherwise the
+// lighting quality above 1, otherwise the expansion pack. Unlike StaticMesh.cpp's
+// staticMeshTemplateUsesLightmaps there is no null test on the template.
+// PE 0x1011AFF0.
+bool staticMeshTemplateLightmapsEnabled(const StaticMeshTemplate* tmpl)
+{
+    if (!tmpl->m_finished)                                                     // +0x185
+        return false;
+    if (tmpl->m_isWater)                                                       // +0x2A4
+        return true;
+    if (::dice::hfe::dx9rend::rendererGetVideoOptions()->getQuality(2) > 1)    // +0x74, +0x04
+        return true;
+    return ::dice::hfe::dx9rend::rendererIsExpansionPack();                    // +0xAC
+}
+
+
+// Shared technique-mask builder used by the bundled and skinned mesh templates.
+// [CHOSEN, not recovered] - plumbing only.
+
+
+bool meshBuildTechniqueMasks(const std::string& mfxPath,
+                             const std::string& techniquePrefix,
                              const char* const* bitNames,
                              std::map<unsigned int, ::dice::hfe::dx9rend::Ra::RaShader*>& techniqueMap,
-                             vc71::vector_layout& maskVector)
+                             std::vector<unsigned int>& maskVector)
 {
     return staticMeshBuildTechniqueMasks(mfxPath, techniquePrefix, bitNames,
                                          techniqueMap, maskVector);
@@ -2403,34 +1865,27 @@ void StaticMeshTemplate::mergeShadowIndexRanges()
 
     if (m_primitiveType == 4u)
     {
-        const unsigned int geomCount = m_lodCounts.first
-            ? static_cast<unsigned int>(m_lodCounts.last - m_lodCounts.first) >> 2
-            : 0u;
+        const unsigned int geomCount = static_cast<unsigned int>(m_lodCounts.size());
         for (unsigned int g = 0; g < geomCount; ++g)
         {
-            const int lodCount = reinterpret_cast<const int*>(m_lodCounts.first)[g];
+            const int lodCount = m_lodCounts[g];
             if (!lodCount)
                 continue;
 
-            const vc71::vector_layout* const lodRecords =
-                reinterpret_cast<const vc71::vector_layout*>(
-                    reinterpret_cast<const vc71::vector_layout*>(m_materials.first)[g].first);
-            StaticMeshLod* const lods = reinterpret_cast<StaticMeshLod*>(
-                reinterpret_cast<const StaticMeshGeom*>(m_geoms.first)[g].lods.first);
+            const StaticMeshMaterialList* const lodRecords = m_materials.data()[g].data();
+            StaticMeshLod* const lods = m_geoms[g].lods.data();
 
             for (int l = 0; l < lodCount; ++l)
             {
-                const vc71::vector_layout& record = lodRecords[l];
+                const StaticMeshMaterialList& record = lodRecords[l];
                 StaticMeshLod& lod = lods[l];
                 if (lod.byte5C)
                     continue;
 
-                StaticMeshMaterial* const first =
-                    reinterpret_cast<StaticMeshMaterial*>(record.first);
+                StaticMeshMaterial* const first = const_cast<StaticMeshMaterial*>(record.data());
                 if (!first)
                     continue;
-                const unsigned int materialCount =
-                    static_cast<unsigned int>(record.last - record.first) / 516u;
+                const unsigned int materialCount = static_cast<unsigned int>(record.size());
                 if (!materialCount)
                     continue;
 

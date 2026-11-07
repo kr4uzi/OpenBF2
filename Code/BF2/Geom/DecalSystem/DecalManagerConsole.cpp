@@ -6,14 +6,13 @@
 
 #include "../../../RendDX9Abi/PluginAbi.h"
 
-#if BF2_PLUGIN_ABI_NATIVE
 
 #include "DecalManager.h"
 
 #include "../../Core/ConsoleObjectMacro.h"
 #include "../../Core/ConsoleObjects.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
-#include "../../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #include <string>
 
@@ -59,25 +58,34 @@ void  setFadeOutPercentage(float value) { decalManager()->setFadeOutAtPercentage
 // with no argument: generateTexture(std::string("DecalAtlas")); the bool is the reply.
 bool generateDecalAtlas()
 {
-    return decalManager()->generateTexture(vc71::string("DecalAtlas"));
+    return decalManager()->generateTexture(std::string("DecalAtlas"));
 }
 
 BF2_CONSOLE_OBJECT("DecalManager", 2, 0)
 
+// PE 0x100BC08D, 0x100BC10A, 0x100BC157: constructor, argument conversion, executor.
 BF2_CONSOLE_PROPERTY_FN(drawStats, bool, decalManager() != 0,
                         getDrawStats(), setDrawStats, kDecalManagerConsoleTag)
+// PE 0x100BC1A8, 0x100BC219: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(decalNormalOffset, float, decalManager() != 0,
                         getDecalNormalOffset(), setDecalNormalOffset, kDecalManagerConsoleTag)
+// PE 0x100BC2AC, 0x100BC31D: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(decalGeomClipAngle, float, decalManager() != 0,
                         getDecalGeomClipAngle(), setDecalGeomClipAngle, kDecalManagerConsoleTag)
+// PE 0x100BC3B0, 0x100BC421: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(fadeDistance, float, decalManager() != 0,
                         getFadeDistance(), setFadeDistance, kDecalManagerConsoleTag)
+// PE 0x100BC4B7, 0x100BC528: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(startFadePercentageOfFadeDistancel, float, decalManager() != 0,
                         getStartFadePercentage(), setStartFadePercentage, kDecalManagerConsoleTag)
+// PE 0x100BC5BE, 0x100BC62F: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(timeToLive, float, decalManager() != 0,
                         getTimeToLive(), setTimeToLive, kDecalManagerConsoleTag)
+// PE 0x100BC6C5, 0x100BC736: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(fadeOutAtPercentageOfTimeToLive, float, decalManager() != 0,
                         getFadeOutPercentage(), setFadeOutPercentage, kDecalManagerConsoleTag)
+// generateTexture: binding constructor PE 0x100BC7CC (Boolean result, no arguments).
+// PE 0x100BC81F: executor.
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(generateTexture, generateDecalAtlas, bool, decalManager() != 0,
                                 kDecalManagerConsoleTag)
 
@@ -100,5 +108,4 @@ bool unregisterDecalManagerConsoleObjects()
 } // namespace hfe
 } // namespace dice
 
-#endif // BF2_PLUGIN_ABI_NATIVE
 #endif // BF2_IMAGE_RENDDX9

@@ -56,7 +56,12 @@ public:
     void         setMatrixPointerArray(const void* const* matrices, unsigned int count);
     unsigned int getTypeCode() const;
 
+    // sub_100218E0 - the current owner is released (when set) and `owner` is taken with a
+    // counted reference. Not a virtual slot.
+    void         setOwner(ParameterOwner* owner);
+
 private:
+    friend class Effect;
     int             m_refCount; // +0x04
     ParameterOwner* m_owner;    // +0x08
 };

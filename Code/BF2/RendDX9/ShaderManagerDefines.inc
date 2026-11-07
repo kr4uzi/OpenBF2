@@ -1,7 +1,9 @@
 // Shader preprocessor vocabulary: D3D enums and engine detail/render-path symbols.
 // Unspecified feature values use the string "0", not an empty expansion.
 
-const ShaderDefine kShaderDefines[120] =
+// 120 entries and the {0, 0} terminator that ends the retail table at 0x101DEF90; D3DXCreateEffect
+// reads to that terminator when DiceEffect::compile passes the table as pDefines.
+const ShaderDefine kShaderDefines[121] =
 {
     { "USEPARTIALPRECISIONTYPES", "0" },
     { "PS2_EXT", "ps_2_0" },
@@ -123,4 +125,5 @@ const ShaderDefine kShaderDefines[120] =
     { "D3DBLEND_FORCE_DWORD", "0x7ffffff" },
     { "D3DXFX_DONOTSAVESTATE", "1" },
     { "D3DXFX_DONOTSAVESHADERSTATE", "2" },
+    { 0, 0 },
 };

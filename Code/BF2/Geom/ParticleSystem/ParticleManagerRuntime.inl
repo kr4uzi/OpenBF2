@@ -5,31 +5,50 @@
 template<class T> T& psmRuntimeField(void* object, unsigned int offset)
 { return *reinterpret_cast<T*>(static_cast<unsigned char*>(object) + offset); }
 
-vc71::set_layout& psmReclassification(ParticleSystemManager* self)
-{ return *reinterpret_cast<vc71::set_layout*>(self->m_pendingReclassificationTree); }
-
-void psmPush(ParticleSystemInstanceList& list, IParticleSystemInstance* instance)
-{ vc71::vectorRef<IParticleSystemInstance*>(&list).push_back(instance); }
-
-// The renderer Debug stream is still a named boundary on the shipped invalid-state assertions.
-// Valid scheduling does not pass through these sites. [FRONTIER]
-void psmRuntimeError(ParticleSystemManager* self, const char* message)
+// PE 0x1017A2B0. Grow the instance bounds {min x, y, z, max x, y, z} to include a point: per axis the
+// maximum is tested before the minimum, with ordered compares, so NaN never moves a bound.
+void psmIncludeBoundsPoint(float* bounds, float x, float y, float z)
 {
-    RD9_FRONTIER_AT(message, self, 0);
-    std::abort();
+    if (x > bounds[3]) bounds[3] = x;
+    if (x < bounds[0]) bounds[0] = x;
+    if (y > bounds[4]) bounds[4] = y;
+    if (y < bounds[1]) bounds[1] = y;
+    if (z > bounds[5]) bounds[5] = z;
+    if (z < bounds[2]) bounds[2] = z;
+}
+
+std::set<IParticleSystemInstance*>& psmReclassification(ParticleSystemManager* self)
+{ return self->m_pendingReclassification; }
+
+// [INFERRED] Private name for the existing guarded reclassification insertion.
+// PE 0x100D3650
+void psmQueueReclassification(ParticleSystemManager* self,IParticleSystemInstance* instance)
+{
+    if (psmInstance<unsigned char>(instance,4))
+        psmReclassification(self).insert(instance);
+}
+
+void psmPush(ParticleSystemInstanceVector& list, IParticleSystemInstance* instance)
+{ list.push_back(instance); }
+
+// Shared source-level spelling for the type-6 diagnostics in PE 0x100D3FB0/0x100D4500/0x100D4820.
+void psmRuntimeError(unsigned int line, const char* message)
+{
+    ::renddx9abi::Debug(DebugTypeError,
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\ParticleSystem\\ParticleSystemManager.cpp",
+        static_cast<int>(line), "") << message;
 }
 
 // Add first, then classify. A trail forcibly clears both first-person flags.
 void psmAddActive(ParticleSystemManager* self, IParticleSystemInstance* instance, bool firstPerson)
 {
-    if (psmRuntimeField<unsigned char>(instance, 4))
-        psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::addActiveInstance "
-                             "(Debug: Trying to add instance twice)");
+    if (psmInstance<unsigned char>(instance, 4))
+        psmRuntimeError(555, "Trying to add instance twice");
     if (instance->getEffectController())
         instance->getEffectController()->addNumEmittersPlaying();
-    psmRuntimeField<unsigned char>(instance, 4) = 1;
-    psmRuntimeField<unsigned char>(instance, 6) = firstPerson;
-    psmRuntimeField<unsigned char>(instance, 7) = firstPerson;
+    psmInstance<unsigned char>(instance, 4) = 1;
+    psmInstance<unsigned char>(instance, 6) = firstPerson;
+    psmInstance<unsigned char>(instance, 7) = firstPerson;
     const bool water = instance->getWaterSide();
     const int type = instance->reserved01();
     int bucket;
@@ -40,21 +59,20 @@ void psmAddActive(ParticleSystemManager* self, IParticleSystemInstance* instance
     case 2: bucket = 5 + water; break;
     case 4: bucket = firstPerson ? 8 : 0; break;
     default:
-        psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::addActiveInstance "
-                             "(Debug: Invalid template type)");
+        psmRuntimeError(634, "trying to push unknown instance");
         return;
     }
-    ParticleSystemInstanceList& list = self->m_renderBuckets[bucket];
+    ParticleSystemInstanceVector& list = self->m_renderBuckets[bucket];
     if (!firstPerson || type == 2)
-        for (IParticleSystemInstance** cursor = list.first; cursor != list.last; ++cursor)
+        for (ParticleSystemInstanceVector::iterator cursor = list.begin(); cursor != list.end(); ++cursor)
             if (*cursor == instance)
-                psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::addActiveInstance "
-                                     "(Debug: Blah already added)");
+                psmRuntimeError(type == 0 || type == 3 ? 579 : type == 1 ? 596 : type == 2 ? 609 : 621,
+                                "Blah already added");
     psmPush(list, instance);
     if (type == 2)
     {
-        psmRuntimeField<unsigned char>(instance, 6) = 0;
-        psmRuntimeField<unsigned char>(instance, 7) = 0;
+        psmInstance<unsigned char>(instance, 6) = 0;
+        psmInstance<unsigned char>(instance, 7) = 0;
     }
 }
 
@@ -63,27 +81,29 @@ void psmQueueInactive(ParticleSystemManager* self, IParticleSystemInstance* inst
 { psmPush(self->m_pendingClassification, instance); }
 
 // Pending-list end and selected bucket storage are reread after callbacks.
+// PE 0x100D4500
 void psmRemoveActive(ParticleSystemManager* self, bool preserveReclassification)
 {
-    for (IParticleSystemInstance** cursor = self->m_pendingClassification.first;
-         cursor != self->m_pendingClassification.last; ++cursor)
+    // PE keeps ESI across pending entries. A suppressed first-person-trail error reuses it.
+    ParticleSystemInstanceVector* selected = 0;
+    for (IParticleSystemInstance** cursor = self->m_pendingClassification.data();
+         cursor != self->m_pendingClassification.data() + self->m_pendingClassification.size();
+         ++cursor)
     {
         IParticleSystemInstance* const instance = *cursor;
-        int bucket;
-        if (psmRuntimeField<unsigned char>(instance, 6))
+        if (psmInstance<unsigned char>(instance, 6))
         {
             switch (instance->reserved01())
             {
-            case 0: case 3: bucket = 7; break;
-            case 1: bucket = 9; break;
-            case 4: bucket = 8; break;
+            case 0: case 3: selected = &self->m_renderBuckets[7]; break;
+            case 1: selected = &self->m_renderBuckets[9]; break;
+            case 4: selected = &self->m_renderBuckets[8]; break;
             case 2:
-                psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::removeActiveInstances "
-                                     "(Debug: Trail should not be 1p)");
-                return;
+                // Shipped defect: a suppressed diagnostic keeps the prior (possibly null) bucket.
+                psmRuntimeError(735, "Trail should not be 1p");
+                break;
             default:
-                psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::removeActiveInstances "
-                                     "(Debug: Invalid template type)");
+                psmRuntimeError(743, "trying to push unknown instance");
                 return;
             }
         }
@@ -92,73 +112,74 @@ void psmRemoveActive(ParticleSystemManager* self, bool preserveReclassification)
             const bool water = instance->getWaterSide();
             switch (instance->reserved01())
             {
-            case 0: case 3: bucket = 1 + water; break;
-            case 1: bucket = 3 + water; break;
-            case 2: bucket = 5 + water; break;
-            case 4: bucket = 0; break;
+            case 0: case 3: selected = &self->m_renderBuckets[1 + water]; break;
+            case 1: selected = &self->m_renderBuckets[3 + water]; break;
+            case 2: selected = &self->m_renderBuckets[5 + water]; break;
+            case 4: selected = &self->m_renderBuckets[0]; break;
             default:
-                psmRuntimeError(self, "dice::hfe::geom::ParticleSystemManager::removeActiveInstances "
-                                     "(Debug: Invalid template type)");
+                psmRuntimeError(717, "trying to push unknown instance");
                 return;
             }
         }
         if (!preserveReclassification)
-            vc71::setEraseValue(psmReclassification(self), instance);
-        ParticleSystemInstanceList& list = self->m_renderBuckets[bucket];
+            psmReclassification(self).erase(instance);
+        ParticleSystemInstanceVector& list = *selected;
         for (unsigned int i = 0; i < list.size(); ++i)
-            if (list.first[i] == instance)
+            if (list.data()[i] == instance)
             {
-                psmRuntimeField<unsigned char>(instance, 4) = 0;
+                psmInstance<unsigned char>(instance, 4) = 0;
                 if (instance->getEffectController())
                     instance->getEffectController()->decNumEmittersPlaying();
-                list.first[i] = list.last[-1];
-                if (list.size()) --list.last;
+                list.data()[i] = list.back();
+                if (list.size()) list.pop_back();
                 break;
             }
     }
-    self->m_pendingClassification.last = self->m_pendingClassification.first;
+    self->m_pendingClassification.clear();
 }
 
 // destroy only entries still present in the master list; duplicates are harmless.
 void psmDrainDestroy(ParticleSystemManager* self)
 {
-    for (IParticleSystemInstance** cursor = self->m_pendingDestroy.first;
-         cursor != self->m_pendingDestroy.last; ++cursor)
+    for (IParticleSystemInstance** cursor = self->m_pendingDestroy.data();
+         cursor != self->m_pendingDestroy.data() + self->m_pendingDestroy.size(); ++cursor)
     {
         IParticleSystemInstance* const instance = *cursor;
         for (unsigned int i = 0; i < self->m_instances.size(); ++i)
-            if (self->m_instances.first[i] == instance)
+            if (self->m_instances[i] == instance)
             {
-                self->m_instances.first[i] = self->m_instances.last[-1];
-                --self->m_instances.last;
+                self->m_instances[i] = self->m_instances.back();
+                self->m_instances.pop_back();
                 if (instance) instance->destroy();
                 break;
             }
     }
-    self->m_pendingDestroy.last = self->m_pendingDestroy.first;
+    self->m_pendingDestroy.clear();
 }
 
+// PE 0x100D4FD0
 void psmReclassify(ParticleSystemManager* self)
 {
-    vc71::set_layout& pending = psmReclassification(self);
-    for (vc71::set_node* n = pending.begin(); n != pending.end(); n = vc71::set_layout::next(n))
-        psmPush(self->m_pendingClassification, reinterpret_cast<IParticleSystemInstance*>(n->key));
+    std::set<IParticleSystemInstance*>& pending = psmReclassification(self);
+    for (std::set<IParticleSystemInstance*>::iterator n = pending.begin(); n != pending.end(); ++n)
+        psmPush(self->m_pendingClassification, *n);
     psmRemoveActive(self, true);
-    for (vc71::set_node* n = pending.begin(); n != pending.end(); n = vc71::set_layout::next(n))
+    for (std::set<IParticleSystemInstance*>::iterator n = pending.begin(); n != pending.end(); ++n)
     {
-        IParticleSystemInstance* const instance = reinterpret_cast<IParticleSystemInstance*>(n->key);
-        psmAddActive(self, instance, psmRuntimeField<unsigned char>(instance, 7) != 0);
+        IParticleSystemInstance* const instance = *n;
+        psmAddActive(self, instance, psmInstance<unsigned char>(instance, 7) != 0);
     }
     pending.clear();
 }
 
 // reverse snapshot traversal, reread storage per element, skip only byte +5.
-void psmUpdateBucket(ParticleSystemInstanceList& list, float dt)
+// PE 0x100D6310
+void psmUpdateBucket(ParticleSystemInstanceVector& list, float dt)
 {
     for (int i = static_cast<int>(list.size()) - 1; i >= 0; --i)
     {
-        IParticleSystemInstance* const instance = list.first[i];
-        if (!psmRuntimeField<unsigned char>(instance, 5)) instance->reserved41(dt);
+        IParticleSystemInstance* const instance = list.data()[i];
+        if (!psmInstance<unsigned char>(instance, 5)) instance->reserved41(dt);
     }
 }
 
@@ -167,7 +188,9 @@ struct PsmViewContext
     dx9rend::IRenderView* view;
     Vec3 position;
     float scaleX, scaleY;
-    explicit PsmViewContext(dx9rend::IRenderView* value) : view(value)
+    // PE 0x100D5D20
+    explicit PsmViewContext(dx9rend::IRenderView* value)
+        : view(value), position{0,0,0}, scaleX(0.0f), scaleY(0.0f)
     {
         const float* const matrix = reinterpret_cast<const float*>(view->getViewMatrixPtr());
         position.x = matrix[12]; position.y = matrix[13]; position.z = matrix[14];
@@ -182,52 +205,92 @@ struct PsmViewContext
     }
 };
 
-// PE 10176A50/10178310/101799C0, with the identical aabb test at 10175C80. These three
-// descriptor helpers differ only in their descriptor LOD-index offset (64/6C/68).
-double psmCoverage(IParticleSystemInstance* instance, const PsmViewContext& context,
-                   unsigned int lodOffset)
+// PE 0x10175C80
+bool psmCoverageContainsPoint(const Vec3& low, const Vec3& high, const Vec3& point)
 {
-    const float* const data = reinterpret_cast<const float*>(instance);
-    const Vec3& p = context.position;
-    if (p.x >= data[63] && p.y >= data[64] && p.z >= data[65]
-        && p.x <= data[66] && p.y <= data[67] && p.z <= data[68])
-        return 1.0;
-    const double height = static_cast<double>(data[67]) - data[64];
-    const float h = static_cast<float>(height), depth = data[68] - data[65];
-    const double radius = data[72] * static_cast<double>(
-        height > static_cast<double>(data[66]) - data[63] && h > depth
-            ? context.scaleY : context.scaleX);
-    const float dx = p.x - data[69];
-    const double dy = static_cast<double>(p.y) - data[70], dz = static_cast<double>(p.z) - data[71];
-    const float distance = static_cast<float>(::sqrt(dz * dz + dy * dy + static_cast<double>(dx) * dx));
-    void* const descriptor = psmRuntimeField<void*>(instance, 0x2C);
-    const int lod = psmRuntimeField<int>(descriptor, lodOffset);
-    ParticleSystemManager* const published = reinterpret_cast<ParticleSystemManager*>(g_ParticleSystemManager);
-    const float nearDistance = published->m_nearDistances[lod];
-    double nearCoverage = 1.0;
-    if (distance > nearDistance)
-    {
-        double amount = (static_cast<double>(distance) - nearDistance) * published->m_inverseNearRanges[lod];
-        if (amount > 1.0) amount = 1.0;
-        nearCoverage = (1.0 - amount) * (1.0 - amount);
-    }
-    const double result = radius / distance + nearCoverage;
-    return result > 1.0 ? 1.0 : result;
+    return point.x>=low.x && point.y>=low.y && point.z>=low.z
+        && point.x<=high.x && point.y<=high.y && point.z<=high.z;
 }
 
-void psmPrepareBucket(ParticleSystemInstanceList& list, const PsmViewContext& context, int type)
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Return the live x87 expression to the caller's float store.
+using PsmCoverageReal=bf2x87::Real;
+#else
+using PsmCoverageReal=double;
+#endif
+
+// PE 0x10176A50 / PE 0x10178310 / PE 0x101799C0. These three
+// descriptor helpers differ only in their descriptor LOD-index offset (64/6C/68).
+// boundsOffset is the retail offset of the instance's low corner: the high corner follows at +0xC, the
+// centre at +0x18 and the bounding radius at +0x24 (the trail instance at 0xF8 uses the same layout).
+PsmCoverageReal psmCoverage(IParticleSystemInstance* instance, const PsmViewContext& context,
+                   unsigned int lodOffset, unsigned int boundsOffset = 0xFC)
 {
-    IParticleSystemInstance** const end = list.last;
-    for (IParticleSystemInstance** cursor = list.first; cursor != end; ++cursor)
+    const Vec3& low=psmInstance<Vec3>(instance,boundsOffset);
+    const Vec3& high=psmInstance<Vec3>(instance,boundsOffset+0xC);
+    const Vec3& center=psmInstance<Vec3>(instance,boundsOffset+0x18);
+    const Vec3& p = context.position;
+    if (psmCoverageContainsPoint(low,high,p))
+        return 1.0;
+#if defined(__APPLE__)
+    using bf2x87::wide;
+#else
+    const auto wide=[](double value) { return value; };
+#endif
+    const PsmCoverageReal width=wide(high.x)-wide(low.x),height=wide(high.y)-wide(low.y);
+    const float h=static_cast<float>(height),depth=static_cast<float>(wide(high.z)-wide(low.z));
+    const PsmCoverageReal radius=wide(psmInstance<float>(instance,boundsOffset+0x24))*wide(
+        height > width && h > depth
+            ? context.scaleY : context.scaleX);
+    const float dx=static_cast<float>(wide(p.x)-wide(center.x));
+    const PsmCoverageReal dy=wide(p.y)-wide(center.y),dz=wide(p.z)-wide(center.z);
+    const PsmCoverageReal squared=dz*dz+dy*dy+wide(dx)*wide(dx);
+#if defined(__APPLE__)
+    const float distance=static_cast<float>(bf2x87::squareRoot(squared));
+#else
+    const float distance=static_cast<float>(::sqrt(squared));
+#endif
+    void* const descriptor = psmInstance<void*>(instance, 0x2C);
+    const int lod = psmDescriptor<int>(descriptor, lodOffset);
+    ParticleSystemManager* const published = reinterpret_cast<ParticleSystemManager*>(g_ParticleSystemManager);
+    const PsmCoverageReal projected=radius/wide(distance);
+    const float nearDistance = published->m_nearDistances[lod];
+    PsmCoverageReal nearCoverage=wide(1);
+    if (distance > nearDistance)
+    {
+        PsmCoverageReal amount=(wide(distance)-wide(nearDistance))*wide(published->m_inverseNearRanges[lod]);
+        if (amount > wide(1)) amount=wide(1);
+        const PsmCoverageReal remaining=wide(1)-amount;
+        nearCoverage=remaining*remaining;
+    }
+    const PsmCoverageReal result=projected+nearCoverage;
+    return result>wide(1) ? wide(1) : result;
+}
+
+// PE 0x10187B00. The trail instance's copy of the coverage helper: its bounds start at +0xF8 and its
+// descriptor LOD index is read at +0x68. Unreachable in 1.50: no code or data references. The name is
+// [CHOSEN, not recovered].
+PsmCoverageReal psmTrailCoverage(IParticleSystemInstance* instance, const PsmViewContext& context)
+{
+    return psmCoverage(instance, context, 0x68, 0xF8);
+}
+
+// PE 0x100D5DE0, 0x100D5E40, 0x100D5EA0: the ordinary, NSA and mesh copies (each calls its own
+// psmCoverage copy and stores +0x134 / +0x134 / +0x12C).
+void psmPrepareBucket(ParticleSystemInstanceVector& list, const PsmViewContext& context, int type)
+{
+    IParticleSystemInstance** const end = list.data() + list.size();
+    for (IParticleSystemInstance** cursor = list.data(); cursor != end; ++cursor)
         if ((*cursor)->reserved01() == type)
         {
             IParticleSystemInstance* const instance = *cursor;
             if (instance->reserved10() && instance->reserved05())
-                psmRuntimeField<float>(instance, type == 1 ? 0x12C : 0x134) = static_cast<float>(
+                psmInstance<float>(instance, type == 1 ? 0x12C : 0x134) = static_cast<float>(
                     psmCoverage(instance, context, type == 0 ? 0x64 : type == 4 ? 0x6C : 0x68));
         }
 }
 
+// PE 0x100D3350
 void psmPrepareClassifiedVectors(ParticleSystemManager* self, dx9rend::IRenderView* view)
 {
     const PsmViewContext context(view);

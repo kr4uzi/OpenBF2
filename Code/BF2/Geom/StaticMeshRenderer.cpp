@@ -3,11 +3,12 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 #include "../Core/EventManager.h"          // the ECCore registration
 #include "../RendDX9/RendDX9Base.h"
 #include "../RendDX9/ShaderParameter.h"
@@ -21,11 +22,15 @@
 #include "../RendDX9/TextureAtlas/TextureAtlas.h"
 
 #include <cstddef>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <list>
 #include <new>
 #include <string>
 #include <string.h>
+#include "../Core/ConsoleObjectMacro.h"
+#include "../Core/ConsoleObjects.h"
 
 namespace dice {
 namespace hfe {
@@ -46,7 +51,8 @@ extern IBase* g_StaticMeshRenderer;
 extern const unsigned int CID_StaticMeshRenderer  = 821014u;
 extern const unsigned int IID_IStaticMeshRenderer = 820013u;
 
-static const unsigned int kStaticMeshRendererSize = 0xA0u;     // factory alloc, 0x100B068E
+// The factory allocation, 0x100B068E (retail 0xA0).
+static const unsigned int kStaticMeshRendererSize = sizeof(StaticMeshRenderer);
 
 // Shared bundled-mesh shadow handles owned by StaticMeshRenderer.
 dx9rend::Effect* g_bundledShadowEffect = 0;
@@ -60,16 +66,18 @@ namespace {
 void setShadowTechnique(dx9rend::Effect* effect)
 {
     dx9rend::effectSetTechniqueByName(
-        effect, vc71::string(dx9rend::deviceCapsIsNvidia()
+        effect, std::string(dx9rend::deviceCapsIsNvidia()
                                 ? "DrawShadowMapNV"
                                 : "DrawShadowMap"));
 }
 
 dx9rend::ShaderParameter* getEffectParameter(dx9rend::Effect* effect, const char* semantic)
 {
-    return dx9rend::effectGetShaderParameterTyped(effect, vc71::string(semantic));
+    return dx9rend::effectGetShaderParameterTyped(effect, std::string(semantic));
 }
 
+// PE 0x10121A90 (the retail body also stores the two vtable pointers first; the object is freed
+// right after, so nothing observes them)
 void destroyStaticMeshRenderer(StaticMeshRenderer* self)
 {
     dx9rend::vertexDeclarationRelease(self->m_decl2C);
@@ -113,24 +121,18 @@ void destroyStaticMeshRenderer(StaticMeshRenderer* self)
     for (int i = 0; i < 10; ++i)
     {
         dx9rend::TextureAtlas* const atlas = self->m_lightmapAtlases[i];
-        typedef int (__fastcall* AtlasReleaseFn)(void*, void*);
+        typedef int (__thiscall* AtlasReleaseFn)(void*);
         reinterpret_cast<AtlasReleaseFn>(
-            static_cast<void**>(atlas->vptr)[0x08 / sizeof(void*)])(atlas, 0);
+            static_cast<void**>(atlas->vptr)[0x08 / 4])(atlas);
     }
-    self->m_name.~string();
+    self->m_name.~basic_string();
 }
 
-#define RD9_SMR_FRONTIER(name, qualified, slotOffset)                               \
-    void __fastcall name(void* self, void*)                                         \
-    {                                                                               \
-        RD9_FRONTIER_AT("dice::hfe::geom::StaticMeshRenderer::" qualified,           \
-                        self, slotOffset);                                          \
-    }
-
 // Primary spine - refcount at +0x28.
-int __fastcall smr_addRef(void* self, void*) { return ++static_cast<StaticMeshRenderer*>(self)->m_refCount; }
-int __fastcall smr_getRc (void* self, void*) { return   static_cast<StaticMeshRenderer*>(self)->m_refCount; }
-int __fastcall smr_release(void* self, void*)
+int RD9_THUNK smr_addRef(void* self RD9_THUNK_EDX) { return ++static_cast<StaticMeshRenderer*>(self)->m_refCount; }
+int RD9_THUNK smr_getRc (void* self RD9_THUNK_EDX) { return   static_cast<StaticMeshRenderer*>(self)->m_refCount; }
+// PE 0x10123980
+int RD9_THUNK smr_release(void* self RD9_THUNK_EDX)
 {
     StaticMeshRenderer* p = static_cast<StaticMeshRenderer*>(self);
     const int remaining = --p->m_refCount;
@@ -142,45 +144,45 @@ int __fastcall smr_release(void* self, void*)
     return remaining;
 }
 // accepts iid 1 and 820013, returns this.
-void* __fastcall smr_qi(void* self, void*, unsigned int iid)
+void* RD9_THUNK smr_qi(void* self RD9_THUNK_EDX, unsigned int iid)
 {
     if (iid == RD9_IID_IBASE || iid == IID_IStaticMeshRenderer)
         return self;
     return 0;
 }
 // +0x10 nullsub_53 (empty), +0x14 `return 0`.
-void __fastcall smr_null10(void*, void*) { }
-int  __fastcall smr_ret0  (void*, void*) { return 0; }
+void RD9_THUNK smr_null10(void* RD9_THUNK_EDX) { }
+int  RD9_THUNK smr_ret0  (void* RD9_THUNK_EDX) { return 0; }
 // +0x18 setEnabled (byte store at +0x04), +0x1C getEnabled.
-void __fastcall smr_setEnabled(void* self, void*, int v)
+void RD9_THUNK smr_setEnabled(void* self RD9_THUNK_EDX, int v)
 { static_cast<StaticMeshRenderer*>(self)->setEnabled(static_cast<unsigned char>(v)); }
-int  __fastcall smr_getEnabled(void* self, void*)
+int  RD9_THUNK smr_getEnabled(void* self RD9_THUNK_EDX)
 { return static_cast<StaticMeshRenderer*>(self)->getEnabled(); }
 // +0x24 getName - return the address of the embedded name string (this+0x08).
-void* __fastcall smr_getName(void* self, void*) { return &static_cast<StaticMeshRenderer*>(self)->m_name; }
+void* RD9_THUNK smr_getName(void* self RD9_THUNK_EDX) { return &static_cast<StaticMeshRenderer*>(self)->m_name; }
 
-// +0x20 setName (string::operator= at this+8). The argument's type (vc71::string* vs char*) is not
-// pinned and nothing recovered calls it on the singleton, so it is a named frontier rather than a
-// guess at the ABI.
-RD9_SMR_FRONTIER(smr_setName, "setName (0x10121A10)", 0x20)
-
-#undef RD9_SMR_FRONTIER
+// PE 0x10121A10 tail-jumps to basic_string::operator=(const basic_string&).
+std::string& RD9_THUNK smr_setName(void* self RD9_THUNK_EDX, const std::string& name)
+{
+    return static_cast<StaticMeshRenderer*>(self)->m_name = name;
+}
 
 
 // Releases loaded lightmap-atlas pages on CEUnloadLevel so the next level reloads them.
 // Requires all ten atlas objects; ignores other event categories and ids.
 
-void __fastcall smr_handleEvent(void* self, void*, int category, unsigned int id, void*, void*)
+// PE 0x10121A50
+void RD9_THUNK smr_handleEvent(void* self RD9_THUNK_EDX, int category, unsigned int id, void*, void*)
 {
     if (category != 5 || id != 13)                                     // ECCore / CEUnloadLevel
         return;
 
     StaticMeshRenderer* const renderer = reinterpret_cast<StaticMeshRenderer*>(
-        static_cast<unsigned char*>(self) - 0x24);
+        static_cast<unsigned char*>(self) - offsetof(StaticMeshRenderer, m_ehVptr));   // +0x24
     for (unsigned int i = 0; i < 10u; ++i)
     {
         dx9rend::TextureAtlas* const atlas = renderer->m_lightmapAtlases[i];   // [esi]
-        if (atlas->entries.size > 0u)                                          // [ecx+10h], jbe
+        if (dx9rend::textureAtlasEntryCount(atlas) > 0u)                       // [ecx+10h], jbe
             dx9rend::textureAtlasReleaseAll(atlas);
     }
 }
@@ -195,13 +197,13 @@ const void* const kPrimaryVtable[10] =
     reinterpret_cast<void*>(&smr_ret0),          // +0x14  return 0
     reinterpret_cast<void*>(&smr_setEnabled),    // +0x18  setEnabled([+4])
     reinterpret_cast<void*>(&smr_getEnabled),    // +0x1C  getEnabled
-    reinterpret_cast<void*>(&smr_setName),       // +0x20  setName            [FRONTIER]
+    reinterpret_cast<void*>(&smr_setName),       // +0x20  setName
     reinterpret_cast<void*>(&smr_getName),       // +0x24  getName -> this+8
 };
 
 const void* const kEventHandlerVtable[1] =
 {
-    reinterpret_cast<void*>(&smr_handleEvent),   // +0x00  handleECCoreEvent  [FRONTIER]
+    reinterpret_cast<void*>(&smr_handleEvent),   // +0x00  handleECCoreEvent
 };
 
 } // anonymous namespace
@@ -219,18 +221,48 @@ void staticMeshRendererSetHemiEnabled(unsigned char enabled)
     static_cast<StaticMeshRenderer*>(static_cast<void*>(g_StaticMeshRenderer))->setEnabled(enabled);
 }
 
-// geom_StaticMeshRenderer_ctor, 0x101220F0.  This recovers the shadow-load-bearing slice exactly:
-// five declarations; StaticMesh and first-use BundledMesh effects; LightManager registration;
-// technique choice; and retained parameters.  Cache/event/lightmap construction remains deferred.
 namespace {
+// PE 0x101220F0: geom_StaticMeshRenderer_ctor. In the shipped order: the name, the vtables and the
+// reference count; the lightmap switches; the ten lightmap atlases; the StaticMeshStateManager
+// singleton; the enabled byte; the five vertex declarations; the core-event registration; the
+// StaticMesh effect with its LightManager registration, technique and retained parameters; and the
+// first-use BundledMesh effect with its own.
 void constructStaticMeshRenderer(StaticMeshRenderer* self)
 {
     self->m_vptr = const_cast<const void**>(kPrimaryVtable);
-    self->m_enabled = 1;
-    self->m_pad05[0] = 0; self->m_pad05[1] = 0; self->m_pad05[2] = 0;
-    new (&self->m_name) vc71::string();
+    new (&self->m_name) std::string();
     self->m_ehVptr = const_cast<const void**>(kEventHandlerVtable);
     self->m_refCount = 1;
+    self->m_pad05[0] = 0; self->m_pad05[1] = 0; self->m_pad05[2] = 0;
+
+    self->m_flags60[0] = 1;
+    self->m_flags60[1] = 0;
+    self->m_flags60[2] = 1;
+    self->m_flags60[3] = 0;
+    self->m_flags60[4] = 1;
+    self->m_byte94  = 0;
+    self->m_dword98 = 9;
+    self->m_dword9C = 0;
+
+    // PE 0x10122159..0x1012218C - `10 times { engineAlloc(0x14); sub_10015E60 }`: the ten
+    // lightmap TextureAtlas objects at +0x68..+0x8C, constructed in order.  An allocation failure
+    // stores a null, as shipped.  ; see the header for the identification.
+    for (unsigned int i = 0; i < 10u; ++i)
+    {
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(dx9rend::TextureAtlas));
+        self->m_lightmapAtlases[i] = storage ? dx9rend::textureAtlasCtor(storage) : 0;
+    }
+
+    // PE 0x1012218C..0x101221B5, immediately after the ten engineAlloc(0x14) cache objects and
+    // before the vertex declarations: the StaticMeshStateManager singleton (retail 0x38 bytes) is
+    // created lazily, and an allocation failure publishes a NULL singleton rather than leaving the
+    // cell alone.
+    if (!g_staticMeshStateManager)
+    {
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(StaticMeshStateManager));
+        g_staticMeshStateManager = storage ? staticMeshStateManagerConstruct(storage) : 0;
+    }
+    self->m_enabled = 1;
 
     static const D3DVERTEXELEMENT9 kStaticDecl[] =
     {
@@ -260,9 +292,10 @@ void constructStaticMeshRenderer(StaticMeshRenderer* self)
         D3DDECL_END()
     };
 
+    // the shipped creation order is +0x2C, +0x34, +0x30
     self->m_decl2C = dx9rend::vertexDeclarationCreate(kStaticDecl);
-    self->m_decl30 = dx9rend::vertexDeclarationCreate(kLightMapDecl);
     self->m_decl34 = dx9rend::vertexDeclarationCreate(kStaticDecl);
+    self->m_decl30 = dx9rend::vertexDeclarationCreate(kLightMapDecl);
     self->m_decl38 = dx9rend::vertexDeclarationCreate(kFloatStreamDecl);
     self->m_decl3C = dx9rend::vertexDeclarationCreate(kShortStreamDecl);
 
@@ -300,33 +333,6 @@ void constructStaticMeshRenderer(StaticMeshRenderer* self)
             getEffectParameter(g_bundledShadowEffect, "matONEBONESKINNING");
         g_bundledViewI = getEffectParameter(g_bundledShadowEffect, "ViewI");
     }
-
-    self->m_flags60[0] = 1;
-    self->m_flags60[1] = 0;
-    self->m_flags60[2] = 1;
-    self->m_flags60[3] = 0;
-    self->m_flags60[4] = 1;
-    self->m_byte94  = 0;
-    self->m_dword98 = 9;
-    self->m_dword9C = 0;
-
-    // PE 0x10122159..0x1012218C - `10 times { engineAlloc(0x14); sub_10015E60 }`: the ten
-    // lightmap TextureAtlas objects at +0x68..+0x8C, constructed in order.  An allocation failure
-    // stores a null, as shipped.  ; see the header for the identification.
-    for (unsigned int i = 0; i < 10u; ++i)
-    {
-        void* const storage = ::renddx9abi::engineAlloc(sizeof(dx9rend::TextureAtlas));
-        self->m_lightmapAtlases[i] = storage ? dx9rend::textureAtlasCtor(storage) : 0;
-    }
-
-    // PE 0x1012218C..0x101221B5, immediately after the ten engineAlloc(0x14) cache objects and
-    // before the vertex declarations: the StaticMeshStateManager singleton is created lazily, and
-    // an allocation failure publishes a NULL singleton rather than leaving the cell alone.
-    if (!g_staticMeshStateManager)
-    {
-        void* const storage = ::renddx9abi::engineAlloc(0x38);
-        g_staticMeshStateManager = storage ? staticMeshStateManagerConstruct(storage) : 0;
-    }
 }
 } // anonymous namespace
 
@@ -340,22 +346,22 @@ void constructStaticMeshRenderer(StaticMeshRenderer* self)
 // (Texture.h: "{getRef-at+4, nullsub, addRef-at+4}" - slot +0x08 bumps the count at +0x04).
 
 bool staticMeshRendererTryLoadLightmapTexture(StaticMeshRenderer* self,
-                                              const vc71::string& directory,
-                                              const vc71::string& objectName,
+                                              const std::string& directory,
+                                              const std::string& objectName,
                                               float outOffset[4],
                                               dx9rend::EngineTexture** outTexture)
 {
     dx9rend::TextureAtlas* const atlas = self->m_lightmapAtlases[0];
-    if (atlas->entries.size == 0)
+    if (dx9rend::textureAtlasEntryCount(atlas) == 0)
     {
-        vc71::string taiPath(directory);
+        std::string taiPath(directory);
         taiPath += "LightmapAtlas.tai";
         if (!dx9rend::textureAtlasLoadTAI(atlas, taiPath))              // TextureAtlas_loadTAI
         {
             self->m_flags60[4] = 0;
-            const unsigned char* const base =
-                static_cast<const unsigned char*>(dx9rend::g_rendererBase);
-            if (!base[0x102])
+            const dx9rend::RendDX9Base* const base =
+                static_cast<const dx9rend::RendDX9Base*>(dx9rend::g_rendererBase);
+            if (!base->flag102)
             {
                 ::renddx9abi::logf("StaticMeshRenderer.cpp:355 No lightmapatlas found, no "
                                    "lightmaps will be used.");
@@ -365,7 +371,7 @@ bool staticMeshRendererTryLoadLightmapTexture(StaticMeshRenderer* self,
         ++self->m_atlasesLoaded;
     }
 
-    vc71::string name(directory);
+    std::string name(directory);
     name += objectName;
     name += ".dds";
     dx9rend::pathToLower(name);
@@ -386,54 +392,6 @@ bool staticMeshRendererTryLoadLightmapTexture(StaticMeshRenderer* self,
 
 namespace {
 
-#if !BF2_PLUGIN_ABI_NATIVE
-// The retail FileInfo list findFiles fills: a VC7.1 std::list (allocator word, head node, size) of
-// 64-byte records whose nodes the host allocates on the engine heap. The same carrier as
-// ResourceManager.cpp's, kept local to this file.
-struct LightmapFileInfo
-{
-    ::renddx9abi::HostString name;          // +0x00
-    bool                     isDirectory;   // +0x1C
-    unsigned char            pad1D[3];
-    unsigned int             size;          // +0x20
-    unsigned int             reserved;      // +0x24
-    unsigned int             times[6];      // +0x28
-};
-
-struct LightmapFileInfoList
-{
-    struct Node { Node* next; Node* prev; LightmapFileInfo value; };
-
-    unsigned int allocator;
-    Node*        head;
-    unsigned int size;
-
-    LightmapFileInfoList() : allocator(0), size(0)
-    {
-        head = static_cast<Node*>(::renddx9abi::engineAlloc(sizeof(Node)));
-        head->next = head;
-        head->prev = head;
-    }
-    ~LightmapFileInfoList()
-    {
-        Node* node = head->next;
-        while (node != head)
-        {
-            Node* const next = node->next;
-            node->value.~LightmapFileInfo();
-            ::renddx9abi::engineFree(node);
-            node = next;
-        }
-        ::renddx9abi::engineFree(head);
-    }
-
-private:
-    LightmapFileInfoList(const LightmapFileInfoList&);
-    LightmapFileInfoList& operator=(const LightmapFileInfoList&);
-};
-static_assert(sizeof(LightmapFileInfo) == 64, "retail FileInfo record");
-static_assert(sizeof(LightmapFileInfoList) == 12, "retail list header");
-#endif
 
 // The part after the last '\\' or '/', or the whole path when neither occurs.
 std::string lightmapBaseName(const std::string& path)
@@ -459,8 +417,8 @@ std::string lightmapStem(const std::string& path)
 
 // Appends directory + name when the listed file `name` is one of the lightmaps both atlas builders
 // pack (see StaticMeshRenderer.h).
-void collectLightmapFile(const std::string& name, unsigned int size, const vc71::string& directory,
-                         const std::string& extension, std::list<vc71::string>& files)
+void collectLightmapFile(const std::string& name, unsigned int size, const std::string& directory,
+                         const std::string& extension, std::list<std::string>& files)
 {
     if (size == 0)
         return;
@@ -474,37 +432,28 @@ void collectLightmapFile(const std::string& name, unsigned int size, const vc71:
     expected += extension;
     if (base.compare(expected) != 0)
         return;
-    vc71::string path(directory);
+    std::string path(directory);
     path += name.c_str();
     files.push_back(path);
 }
 
 // The builders' shared prologue: `directory` with a trailing '/' unless it already ends in a
 // separator, and the lightmap files listed under it (recursively, in the FileManager's order).
-void collectLightmapFiles(const vc71::string& directory, const vc71::string& extension,
-                          vc71::string& normalised, std::list<vc71::string>& files)
+void collectLightmapFiles(const std::string& directory, const std::string& extension,
+                          std::string& normalised, std::list<std::string>& files)
 {
     normalised = directory;
     if (normalised.size() != 0)
     {
         const char last = normalised.c_str()[normalised.size() - 1];
         if (last != '\\' && last != '/')
-            normalised += vc71::string("/");
+            normalised += std::string("/");
     }
     const std::string ext(extension.c_str(), extension.size());
-#if BF2_PLUGIN_ABI_NATIVE
     std::list<io::FileInfo> listed;
     fileManager->findFiles(std::string(normalised.c_str(), normalised.size()), true, listed);   // +0x34
     for (std::list<io::FileInfo>::const_iterator it = listed.begin(); it != listed.end(); ++it)
         collectLightmapFile(it->name, it->size, normalised, ext, files);
-#else
-    LightmapFileInfoList listed;
-    fileManager->findFiles(::renddx9abi::HostString(normalised.c_str()), true,
-                           *reinterpret_cast< ::renddx9abi::HostFileInfoList*>(&listed));   // +0x34
-    for (LightmapFileInfoList::Node* node = listed.head->next; node != listed.head; node = node->next)
-        collectLightmapFile(std::string(node->value.name.c_str(), node->value.name.size()),
-                            node->value.size, normalised, ext, files);
-#endif
 }
 
 // The batch limit: a batch's command line stays below this many characters.
@@ -512,36 +461,41 @@ const unsigned int kAtlasCommandLineLimit = 32300u;
 
 } // anonymous namespace
 
+// PE 0x10123510 (the file collection is inlined: 'LightmapAtlas' stem filter of length 13, then
+// the ' ERROR '-default Editor_LevelSavePath and textureAtlasBuild)
 bool staticMeshRendererLoadAllLightMapFilesDll(StaticMeshRenderer* self,
-                                               const vc71::string& directory,
-                                               const vc71::string& extension)
+                                               const std::string& directory,
+                                               const std::string& extension)
 {
-    vc71::string normalised;
-    std::list<vc71::string> files;
+    std::string normalised;
+    std::list<std::string> files;
     collectLightmapFiles(directory, extension, normalised, files);
 
-    vc71::string savePath;
+    std::string savePath;
     dx9rend::readStringSettingDefault("Editor_LevelSavePath", " ERROR ", savePath);
-    vc71::string atlasName(normalised);
+    std::string atlasName(normalised);
     atlasName += "LightmapAtlas";
     return dx9rend::textureAtlasBuild(self->m_lightmapAtlases[0], savePath, atlasName, savePath,
                                       files, false);
 }
 
+// PE 0x10122C90: lists the lightmaps under the directory and generates the atlas batches, one
+// dice_TextureAtlasTool command line of at most 32300 characters per batch (the command text is built
+// and discarded, as shipped); false as soon as one batch fails.
 bool staticMeshRendererLoadAllLightMapFiles(StaticMeshRenderer* self,
-                                            const vc71::string& directory,
-                                            const vc71::string& extension)
+                                            const std::string& directory,
+                                            const std::string& extension)
 {
-    vc71::string normalised;
-    std::list<vc71::string> files;
+    std::string normalised;
+    std::list<std::string> files;
     collectLightmapFiles(directory, extension, normalised, files);
 
-    vc71::string savePath;
+    std::string savePath;
     dx9rend::readStringSettingDefault("Editor_LevelSavePath", " ERROR ", savePath);
-    std::list<vc71::string>::const_iterator next = files.begin();
+    std::list<std::string>::const_iterator next = files.begin();
     for (int batch = 0; ; ++batch)
     {
-        std::list<vc71::string> batchFiles;
+        std::list<std::string> batchFiles;
         char number[256];
         std::sprintf(number, "%d", batch);
         std::string command("dice_TextureAtlasTool -maxres 2048 -o ");
@@ -561,9 +515,9 @@ bool staticMeshRendererLoadAllLightMapFiles(StaticMeshRenderer* self,
             ++next;
         }
 
-        vc71::string atlasName(normalised);
+        std::string atlasName(normalised);
         atlasName += "LightmapAtlas";
-        vc71::string batchName(atlasName);
+        std::string batchName(atlasName);
         batchName += number;
         if (!dx9rend::textureAtlasGenerate(self->m_lightmapAtlases[0], savePath, batchName, savePath,
                                            batchFiles, false))
@@ -585,10 +539,192 @@ IBase* __fastcall createStaticMeshRenderer(unsigned int iid, IBase* outer)
     StaticMeshRenderer* self = static_cast<StaticMeshRenderer*>(storage);
     constructStaticMeshRenderer(self);
 
-    void* itf = smr_qi(self, 0, iid);
+    void* itf = smr_qi(self RD9_THUNK_ARG, iid);
     if (!itf)
-        smr_release(self, 0);
+        smr_release(self RD9_THUNK_ARG);
     return static_cast<IBase*>(itf);
+}
+
+namespace {
+
+// [INFERRED] console placement. The native split keeps the ten properties before the atlas rows.
+const char kStaticMeshRendererPropertiesTag[] = "geom.staticMeshRenderer.properties";
+
+// PE 0x100B0D43: every activity test and execution looks the singleton up by name.
+StaticMeshRenderer* consoleStaticMeshRenderer()
+{
+    IBase* const found = classManager->getSingleton(::renddx9abi::HostString("StaticMeshRenderer"));
+    return static_cast<StaticMeshRenderer*>(static_cast<void*>(found));
+}
+
+bool getConsoleStaticRendering()
+{
+    StaticMeshRenderer* const self = consoleStaticMeshRenderer();
+    typedef int (__thiscall* Fn)(void*);
+    return reinterpret_cast<Fn>(const_cast<void*>(self->m_vptr[0x1C / 4]))(self) != 0;
+}
+
+void setConsoleStaticRendering(bool value)
+{
+    StaticMeshRenderer* const self = consoleStaticMeshRenderer();
+    typedef void (__thiscall* Fn)(void*, int);
+    reinterpret_cast<Fn>(const_cast<void*>(self->m_vptr[0x18 / 4]))(self, value);
+}
+
+int getConsoleMaxLightMappedLod() { return static_cast<int>(consoleStaticMeshRenderer()->m_dword98); }
+void setConsoleMaxLightMappedLod(int value)
+{
+    consoleStaticMeshRenderer()->m_dword98 = static_cast<unsigned int>(value);
+}
+
+bool getConsoleAllowAnisoFiltering()
+{
+    return *reinterpret_cast<const unsigned char*>(&consoleStaticMeshRenderer()->m_dword9C) != 0;
+}
+
+void setConsoleAllowAnisoFiltering(bool value)
+{
+    const unsigned char byte = value;
+    ::memcpy(&consoleStaticMeshRenderer()->m_dword9C, &byte, sizeof(byte));
+}
+
+// PE 0x10121C30. [INFERRED] name; ECX carries the string result, not a renderer receiver.
+std::string __fastcall convertStaticMeshLightmapName(std::string name)
+{
+    const std::string::size_type underscore = name.rfind('_');
+    if (underscore == std::string::npos)
+        return name;
+
+    const unsigned int first = static_cast<unsigned int>(underscore) + 1u;
+    unsigned int cursor = first;
+    if (name.c_str()[cursor] == '-')
+        ++cursor;
+    while (name.c_str()[cursor] != 0 && name.c_str()[cursor] != '-')
+        ++cursor;
+    if (name.c_str()[cursor] == 0)
+        return name;
+
+    const unsigned int second = ++cursor;
+    if (name.c_str()[cursor] == '-')
+        ++cursor;
+    while (name.c_str()[cursor] != 0 && name.c_str()[cursor] != '-')
+        ++cursor;
+    if (name.c_str()[cursor] == 0)
+        return name;
+
+    const unsigned int third = ++cursor;
+    if (name.c_str()[cursor] == '-')
+        ++cursor;
+    while (std::isdigit(name.c_str()[cursor]))
+        ++cursor;
+    if (name.c_str()[cursor] == 0)
+        return name;
+
+    if (static_cast<int>(first) < static_cast<int>(second)
+        && static_cast<int>(second) < static_cast<int>(third)
+        && static_cast<int>(third) < static_cast<int>(cursor))
+    {
+        const int x = std::atoi(name.substr(first, second - first).c_str());
+        const int y = std::atoi(name.substr(second, third - second).c_str());
+        const int z = std::atoi(name.substr(third, cursor - third).c_str());
+        // shipped defect: both writes are unbounded in the 24-byte buffer.
+        char converted[24];
+        std::sprintf(converted, "=00=%d=%d=%d", x, y, z);
+        ::strcat(converted, name.substr(cursor).c_str());
+        return name.substr(0, first - 1u) + converted;
+    }
+    return name;
+}
+
+BF2_CONSOLE_OBJECT("StaticMeshRenderer", 2, 0)
+
+// PE 0x100BA64D.
+// PE 0x100BA58F, 0x100BA600: constructor, argument conversion.
+BF2_CONSOLE_PROPERTY_FN(enableRendering, bool, consoleStaticMeshRenderer() != 0,
+                        getConsoleStaticRendering(), setConsoleStaticRendering,
+                        kStaticMeshRendererPropertiesTag)
+// PE 0x100BA760 / 0x100BA868 / 0x100BA96A.
+// PE 0x100BA6A2, 0x100BA713: constructor, argument conversion.
+BF2_CONSOLE_FIELD(noLods, bool, consoleStaticMeshRenderer(), m_byte94, kStaticMeshRendererPropertiesTag)
+// PE 0x100BA7AA, 0x100BA81B: constructor, argument conversion.
+BF2_CONSOLE_FIELD(materialCullingEnabled, bool, consoleStaticMeshRenderer(), m_flags60[0], kStaticMeshRendererPropertiesTag)
+// PE 0x100BA8AC, 0x100BA91D: constructor, argument conversion.
+BF2_CONSOLE_FIELD(enableLightMapAtlas, bool, consoleStaticMeshRenderer(), m_flags60[4], kStaticMeshRendererPropertiesTag)
+
+// setArgFromString keeps one persistent std::string token. The executor copies the argument before
+// publishing the return flag.
+class StaticMeshConvertLightmapNameBinding : public ConsoleObjectBaseImpl
+{
+public:
+    // PE 0x100BA9AE: binding constructor.
+    StaticMeshConvertLightmapNameBinding()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "convertLightmapName";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 1;
+        m_returnType = "std::string";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        m_argTypes[0] = "std::string";
+        m_argNeedsConversion[0] = 0;
+        consoleBindingList(kStaticMeshRendererPropertiesTag).push_back(this);
+    }
+    virtual bool isObjectActive() const { return consoleStaticMeshRenderer() != 0; }
+    // PE 0x100BAA2B
+    virtual void executeObjectMethod()
+    {
+        if (m_argCount != 1)
+            return;
+        const std::string value(BF2_CC_ARG(std::string, 0));
+        m_hasReturnValue = true;
+        consoleStaticMeshRenderer();
+        m_returnValue = convertStaticMeshLightmapName(value);
+    }
+    // PE 0x100BAA93
+    virtual void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(std::string, 1)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    std::string m_returnValue;
+};
+
+StaticMeshConvertLightmapNameBinding s_staticMeshConvertLightmapNameBinding;
+
+// PE 0x100BABC6 / 0x100BACD4.
+// PE 0x100BAB08, 0x100BAB79: constructor, argument conversion.
+BF2_CONSOLE_FIELD(enableNewLightmapNames, bool, consoleStaticMeshRenderer(), m_flags60[2], kStaticMeshRendererPropertiesTag)
+// PE 0x100BAC0A, 0x100BAC87: constructor, argument conversion.
+BF2_CONSOLE_FIELD(enableUnifiedIndexlist, bool, consoleStaticMeshRenderer(), m_flags60[3], kStaticMeshRendererPropertiesTag)
+// PE 0x100BADD6.
+// PE 0x100BAD18, 0x100BAD89, 0x100BFEDA: constructor, argument conversion, result formatting.
+BF2_CONSOLE_PROPERTY_FN(maxLightMappedLod, int, consoleStaticMeshRenderer() != 0,
+                        getConsoleMaxLightMappedLod(), setConsoleMaxLightMappedLod,
+                        kStaticMeshRendererPropertiesTag)
+// PE 0x100BAEDE / 0x100BAFE0. The latter accesses only the low byte at +0x9C.
+// PE 0x100BAE20, 0x100BAE91: constructor, argument conversion.
+BF2_CONSOLE_FIELD(enableLightIndexes, bool, consoleStaticMeshRenderer(), m_flags60[1], kStaticMeshRendererPropertiesTag)
+// PE 0x100BAF22, 0x100BAF93: constructor, argument conversion.
+BF2_CONSOLE_PROPERTY_FN(allowAnisoFiltering, bool, consoleStaticMeshRenderer() != 0,
+                        getConsoleAllowAnisoFiltering(), setConsoleAllowAnisoFiltering,
+                        kStaticMeshRendererPropertiesTag)
+
+} // anonymous namespace
+
+// Native per-file publication; ModuleGeom's original list also contained the two atlas rows.
+bool registerStaticMeshRendererPropertyConsoleObjects()
+{
+    return mainConsoleObjects->registerConsoleObjects(consoleBindingList(kStaticMeshRendererPropertiesTag));
+}
+
+bool unregisterStaticMeshRendererPropertyConsoleObjects()
+{
+    return mainConsoleObjects->unregisterConsoleObjects(consoleBindingList(kStaticMeshRendererPropertiesTag));
 }
 
 } // namespace geom

@@ -6,6 +6,7 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../../RendDX9Abi/ThunkAbi.h"
 #include "../../../RendDX9Abi/HfeAbi.h"
 #include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
@@ -14,30 +15,40 @@
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/Bink.h"
 #include "../../RendDX9/RendDX9Base.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
 
 #include <windows.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <cstdio>
+#include <cstdlib>
 #include <new>
+#if defined(__APPLE__)
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <unistd.h>
+#endif
+
+// [CHOSEN, not recovered] The images that play Bink movies: x86 imports binkw32.dll; the macOS
+// client and Windows x64 implement the same entry points on the vendored FFmpeg Bink decoders
+// (BF2_BINK_PORT: RendDX9Abi/BinkFFmpeg.cpp, docs/macos-c-bink.md; owner decision 2026-11-07).
+#if defined(_M_IX86) || BF2_BINK_PORT
+#define BF2_VIDEO_BINK 1
+#else
+#define BF2_VIDEO_BINK 0
+#endif
 
 namespace dice {
 namespace hfe {
 namespace dx9rend { void* renderDevice(); }     // RendDX9Base.h - the live IDirect3DDevice9
 namespace geom {
 
-// d3dx9_25.dll - the same decorated<->undecorated bridge Effect.cpp/TextureManager.cpp use. Eight
-// 4-byte parameters -> @32. The name is already in D3dx9_25.def.
-extern "C" long __stdcall D3DXCreateTexture(IDirect3DDevice9* dev, unsigned int w, unsigned int h,
-                                            unsigned int mips, unsigned long usage, unsigned int fmt,
-                                            unsigned int pool, IDirect3DTexture9** out);
-#pragma comment(linker, "/alternatename:_D3DXCreateTexture@32=_D3DXCreateTexture")
-
 // binkw32.dll exports decorated __stdcall names (_BinkOpen@8, ...). `lib /def` turns each def entry
 // into a thunk symbol with one extra leading underscore (__BinkOpen@8) while the DLL import name
 // stays correct, so a plain `extern "C" __stdcall BinkOpen` (symbol _BinkOpen@8) does not match the
-// lib's thunk. /alternatename bridges the two, exactly as Effect.cpp does for the undecorated D3DX
-// names - the opposite direction, but the same mechanism.
+// lib's thunk. /alternatename bridges the two. x86 only: the x64 image links the port instead.
+#if defined(_M_IX86)
 #pragma comment(linker, "/alternatename:_BinkOpen@8=__BinkOpen@8")
 #pragma comment(linker, "/alternatename:_BinkClose@4=__BinkClose@4")
 #pragma comment(linker, "/alternatename:_BinkWait@4=__BinkWait@4")
@@ -48,12 +59,13 @@ extern "C" long __stdcall D3DXCreateTexture(IDirect3DDevice9* dev, unsigned int 
 #pragma comment(linker, "/alternatename:_BinkPause@8=__BinkPause@8")
 #pragma comment(linker, "/alternatename:_BinkSetSoundSystem@8=__BinkSetSoundSystem@8")
 #pragma comment(linker, "/alternatename:_BinkOpenDirectSound@4=__BinkOpenDirectSound@4")
+#endif
 
-// [INFERRED] Local class IDs are chosen; creation resolves the identified class names.
-// Interface IDs match queryInterface and callers.
-extern const unsigned int CID_Video        = 81048u;
+// Class ids dword_1021AF38 / dword_1021AF34, which ModuleGeom::getClassList registers
+// (PE 0x100C8648 / 0x100C8609; Core/Ids.h agrees). Interface IDs match queryInterface and callers.
+extern const unsigned int CID_Video        = 0x3103A742u;
 extern const unsigned int IID_IVideo       = 0xB801DD04u;
-extern const unsigned int CID_VideoTarget  = 81049u;
+extern const unsigned int CID_VideoTarget  = 0x3103A741u;
 extern const unsigned int IID_IVideoTarget = 0xB801DD03u;
 
 typedef ::renddx9abi::HostString HostString;
@@ -67,19 +79,26 @@ const void** videoTargetListenerVtable();
 class VideoTarget
 {
 public:
-    // Registers the target listener at priority 1. [CHOSEN] Clears the surface description before first creation.
+    // Registers the target listener at priority 1.
+    // PE 0x1015A690. [CHOSEN, not recovered] The shipped constructor leaves the surface description
+    // (+0x10) uninitialised until create fills it; the memset keeps width()/height() defined if they
+    // run first (memory-safety exception, kept).
     VideoTarget() : m_vptr(videoTargetVtable()), m_listenerVptr(videoTargetListenerVtable()),
                     m_refCount(1), m_dynamic(0), m_texture(0), m_surface(0)
     {
+#if defined(_M_IX86)
         static_assert(offsetof(VideoTarget, m_listenerVptr) == 4,
                       "both VideoTarget listener bodies are handed this + 4");
+#endif
         ::memset(&m_desc, 0, sizeof(m_desc));
         // No test of the base global, as shipped.
         ::dice::hfe::dx9rend::registerDeviceLostResetListener(&m_listenerVptr, 1);
     }
 
     bool  create(unsigned int w, unsigned int h);       // sub_1015A6D0
+#if BF2_VIDEO_BINK
     void  copyFrame(::renddx9abi::HBINK hbink);          // the lock/copy/unlock triple of doFrame
+#endif
     unsigned int width() const  { return m_desc.Width; }    // vslot +0x10 sub_1015A620
     unsigned int height() const { return m_desc.Height; }   // vslot +0x14 sub_1015A630
     void* d3dTexture() const { return m_texture; }
@@ -89,6 +108,7 @@ public:
     int   getRef() const { return m_refCount; }
     int   release();
     void  dtor(char flags);                              // vslot +0x18 sub_1015A840
+    void  destructorBody();                              // 0x1015A5E0 [INFERRED] name, unreachable in 1.50
     void* queryInterface(unsigned int iid) const;
 
     void  onDeviceLost();                                // listener +0x00, 0x1015A640
@@ -96,7 +116,8 @@ public:
     // The listener bodies receive the subobject; this is the shipped `this - 4` (0x1015A7E5).
     static VideoTarget* fromListener(void* sub)
     {
-        return reinterpret_cast<VideoTarget*>(static_cast<char*>(sub) - 4);
+        return reinterpret_cast<VideoTarget*>(static_cast<char*>(sub)
+                                              - offsetof(VideoTarget, m_listenerVptr));
     }
 
 private:
@@ -154,6 +175,7 @@ bool VideoTarget::create(unsigned int w, unsigned int h)
 // binkcopyall (the whole frame every time - a discarded dynamic surface holds nothing from the
 // previous frame), destheight = the surface description's height (not the movie's), then unlock.
 // The shipped body does not test the lock result; reproduced as shipped.
+#if BF2_VIDEO_BINK
 void VideoTarget::copyFrame(::renddx9abi::HBINK hbink)
 {
     D3DLOCKED_RECT lr;
@@ -163,6 +185,7 @@ void VideoTarget::copyFrame(::renddx9abi::HBINK hbink)
                                    ::renddx9abi::BINK_COPYALL | ::renddx9abi::BINK_SURFACE_32BGRA);
     m_surface->UnlockRect();
 }
+#endif
 
 void VideoTarget::destroyTexture()
 {
@@ -220,6 +243,19 @@ void VideoTarget::dtor(char flags)
         ::renddx9abi::engineFree(this);
 }
 
+// PE 0x1015A5E0: the destructor body without the deleting flag (vslot +0x18's 0x1015A840 runs the same
+// sequence and then frees): restore the vtables, unregister the listener, release surface and texture.
+// Unreachable in 1.50: no code or data references. [CHOSEN, not recovered] null guards of destroyTexture.
+void VideoTarget::destructorBody()
+{
+    m_vptr         = videoTargetVtable();
+    m_listenerVptr = videoTargetListenerVtable();
+    // Unguarded, as shipped.
+    ::dice::hfe::dx9rend::unregisterDeviceLostResetListener(&m_listenerVptr);
+    destroyTexture();
+}
+
+// PE 0x1015A7F0
 void* VideoTarget::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IVideoTarget)
@@ -228,14 +264,14 @@ void* VideoTarget::queryInterface(unsigned int iid) const
 }
 
 namespace {
-void  __fastcall vt_addRef(void* s, void*)  { static_cast<VideoTarget*>(s)->addRef(); }
-int   __fastcall vt_getRef(void* s, void*)  { return static_cast<VideoTarget*>(s)->getRef(); }
-int   __fastcall vt_release(void* s, void*) { return static_cast<VideoTarget*>(s)->release(); }
-void* __fastcall vt_queryInterface(void* s, void*, unsigned int iid)
+void  RD9_THUNK vt_addRef(void* s RD9_THUNK_EDX)  { static_cast<VideoTarget*>(s)->addRef(); }
+int   RD9_THUNK vt_getRef(void* s RD9_THUNK_EDX)  { return static_cast<VideoTarget*>(s)->getRef(); }
+int   RD9_THUNK vt_release(void* s RD9_THUNK_EDX) { return static_cast<VideoTarget*>(s)->release(); }
+void* RD9_THUNK vt_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return static_cast<VideoTarget*>(s)->queryInterface(iid); }
-unsigned int __fastcall vt_getWidth(void* s, void*)  { return static_cast<VideoTarget*>(s)->width(); }
-unsigned int __fastcall vt_getHeight(void* s, void*) { return static_cast<VideoTarget*>(s)->height(); }
-void* __fastcall vt_dtor(void* s, void*, char flags)
+unsigned int RD9_THUNK vt_getWidth(void* s RD9_THUNK_EDX)  { return static_cast<VideoTarget*>(s)->width(); }
+unsigned int RD9_THUNK vt_getHeight(void* s RD9_THUNK_EDX) { return static_cast<VideoTarget*>(s)->height(); }
+void* RD9_THUNK vt_dtor(void* s RD9_THUNK_EDX, char flags)
 { static_cast<VideoTarget*>(s)->dtor(flags); return s; }
 
 // VideoTarget_vftable_primary 0x1021E7D4, seven slots in the shipped order.
@@ -251,9 +287,9 @@ const void* kVideoTargetVtable[7] =
 };
 
 // Listener adapters receive the secondary subobject; unused edx preserves the x86 call convention.
-void __fastcall vt_onDeviceLost(void* sub, void*)  { VideoTarget::fromListener(sub)->onDeviceLost(); }
-void __fastcall vt_onDeviceReset(void* sub, void*) { VideoTarget::fromListener(sub)->onDeviceReset(); }
-void __fastcall vt_onDeviceDestroy(void*, void*)   { /* 0x1015A680: ret */ }
+void RD9_THUNK vt_onDeviceLost(void* sub RD9_THUNK_EDX)  { VideoTarget::fromListener(sub)->onDeviceLost(); }
+void RD9_THUNK vt_onDeviceReset(void* sub RD9_THUNK_EDX) { VideoTarget::fromListener(sub)->onDeviceReset(); }
+void RD9_THUNK vt_onDeviceDestroy(void* RD9_THUNK_EDX)   { /* 0x1015A680: ret */ }
 
 const void* kVideoTargetListenerVtable[3] =
 {
@@ -275,11 +311,15 @@ class Video
 {
 public:
     // Initializes empty movie state, then registers the listener at priority 5. Requires the renderer registry.
+    // PE 0x1015A9F0
     Video() : m_vptr(videoVtable()), m_listenerVptr(videoListenerVtable()), m_refCount(1),
-              m_hbink(0), m_width(0), m_height(0), m_target(0), m_paused(false)
+              m_word0C(0), m_hbink(0), m_width(0), m_height(0), m_target(0), m_byte3C(0),
+              m_paused(false)
     {
+#if defined(_M_IX86)
         static_assert(offsetof(Video, m_listenerVptr) == 4,
                       "both Video listener bodies are handed this + 4");
+#endif
         ::dice::hfe::dx9rend::registerDeviceLostResetListener(&m_listenerVptr, 5);
     }
 
@@ -294,13 +334,14 @@ public:
     void         shutdownSound() {}                      // shipped sound-shutdown slot is empty
     bool         isDone() const;                         // vslot +0x30 sub_1015A920
     void         dtor(char flags);                       // vslot +0x34 sub_1015ACD0
+    void         destructorBody();                       // 0x1015AA50 [INFERRED] name, unreachable in 1.50
     void         onDeviceLost();                         // listener +0x00, 0x1015A890
     void         onDeviceReset();                        // listener +0x04, 0x1015A8B0
     // The listener bodies receive the subobject (`this + 4`; 0x1015A890 writes the paused byte as
     // [ecx+39h] = +0x3D and reads the handle as [ecx+28h] = +0x2C).
     static Video* fromListener(void* sub)
     {
-        return reinterpret_cast<Video*>(static_cast<char*>(sub) - 4);
+        return reinterpret_cast<Video*>(static_cast<char*>(sub) - offsetof(Video, m_listenerVptr));
     }
 
     void  addRef() { ++m_refCount; }
@@ -309,20 +350,27 @@ public:
     void* queryInterface(unsigned int iid) const;
 
 private:
+#if BF2_VIDEO_BINK
     bool  openUnderRoot(const char* root, const char* path);
+#endif
     void  close();
 
     const void** m_vptr;
     const void** m_listenerVptr;      // shipped +0x04: the DeviceLostResetListener subobject
     int          m_refCount;
+    // [CHOSEN, not recovered] names: +0x0C and +0x3C are stored zero by the constructor (0x1015AA17,
+    // 0x1015AA2E) and read by none of the Video members (0x1015A890..0x1015AD20).
+    unsigned int m_word0C;            // shipped +0x0C
     HostString   m_path;              // shipped +0x10
     ::renddx9abi::HBINK m_hbink;      // shipped +0x2C
     unsigned int m_width;             // shipped +0x30
     unsigned int m_height;            // shipped +0x34
     VideoTarget* m_target;            // shipped +0x38
+    unsigned char m_byte3C;           // shipped +0x3C
     bool         m_paused;            // shipped +0x3D
 };
 
+#if BF2_VIDEO_BINK
 namespace {
 
 // Borrows the file manager's host-ABI path list. Visit it through the per-flavor adapter, not this image's STL layout.
@@ -349,7 +397,11 @@ struct BinkOpenVisitor
         if (*opened)
             return;
         char candidate[512];
+#if defined(_WIN32)
         ::_snprintf_s(candidate, sizeof(candidate), _TRUNCATE, "%s%s%s", root, entry.c_str(), path);
+#else
+        std::snprintf(candidate, sizeof(candidate), "%s%s%s", root, entry.c_str(), path);
+#endif
         *opened = ::renddx9abi::BinkOpen(candidate, 0);
     }
 };
@@ -367,6 +419,7 @@ bool Video::openUnderRoot(const char* root, const char* path)
     m_hbink = opened;
     return m_hbink != 0;
 }
+#endif
 
 // Closes the previous movie, then searches executable-rooted mod paths. Missing files return false.
 // Target creation failure leaves the opened movie handle for later cleanup.
@@ -377,7 +430,17 @@ bool Video::open(const char* path)
     close();
     if (!path)
         return false;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // [FRONTIER] [TEMP] [CHOSEN, not recovered] See initSound: no Bink runtime outside Windows.
+    // [RETIRE-WHEN: posix-bink-decoder]
+    std::fprintf(stderr, "[FRONTIER] dice::hfe::geom::Video::open(\"%s\") reached: no Bink runtime "
+                         "on this platform\n", path);
+    std::fflush(stderr);
+    std::abort();
+#endif
 
+#if BF2_VIDEO_BINK
+#if defined(_WIN32)
     char exePath[MAX_PATH];
     exePath[0] = 0;
     ::GetModuleFileNameA(0, exePath, MAX_PATH);
@@ -413,6 +476,42 @@ bool Video::open(const char* path)
             openUnderRoot(cwd, path);
         }
     }
+#else
+    // [CHOSEN, not recovered] macOS: the same two roots, the executable's directory and then the
+    // working directory (the content root the client runs in), each with a '/' appended.
+    char exeDir[PATH_MAX + 1];
+    exeDir[0] = 0;
+    {
+        char exePath[PATH_MAX];
+        uint32_t size = sizeof(exePath);
+        if (::_NSGetExecutablePath(exePath, &size) == 0)
+        {
+            const char* cut = ::strrchr(exePath, '/');
+            if (cut)
+            {
+                const size_t n = static_cast<size_t>(cut - exePath) + 1;
+                ::memcpy(exeDir, exePath, n);
+                exeDir[n] = 0;
+            }
+        }
+    }
+    const char* rootUsed = "the executable directory";
+    if (!openUnderRoot(exeDir, path))
+    {
+        char cwd[PATH_MAX + 1];
+        if (::getcwd(cwd, PATH_MAX))
+        {
+            const size_t n = ::strlen(cwd);
+            if (n && cwd[n - 1] != '/')
+            {
+                cwd[n]     = '/';
+                cwd[n + 1] = 0;
+            }
+            rootUsed = "the working directory (RW-105 fallback)";
+            openUnderRoot(cwd, path);
+        }
+    }
+#endif
     if (!m_hbink)
     {
         ::renddx9abi::logf("Video::open(\"%s\"): BinkOpen found no .bik under the FileManager's %u "
@@ -440,6 +539,7 @@ bool Video::open(const char* path)
                        m_target->width() == m_width && m_target->height() == m_height
                            ? "exact-size" : "rounded");
     return true;
+#endif
 }
 
 // sub_1015A950: nothing while paused; BinkWait says whether the clock has reached the next frame;
@@ -447,53 +547,78 @@ bool Video::open(const char* path)
 // menu movie loops without any help from here.
 void Video::doFrame()
 {
+#if BF2_VIDEO_BINK
     if (m_paused || ::renddx9abi::BinkWait(m_hbink))
         return;
     ::renddx9abi::BinkDoFrame(m_hbink);
     m_target->copyFrame(m_hbink);
     ::renddx9abi::BinkNextFrame(m_hbink);
+#endif
 }
 
 // sub_1015A8F0 - the one-time Bink sound-system selection. FSMoviePlayer::load calls this slot
 // (+0x28) before open; SwiffRender's '?' arm does not, so a menu started with +restart (intros
-// skipped) plays its background silent, as retail does.
+// skipped) plays its background silent, as retail does. The shipped body answers true
+// unconditionally and no caller reads it.
+// [CHOSEN, not recovered] macOS and x64 select the port's sound output through the same call
+// (BinkFFmpeg.cpp: AudioQueue on macOS, DirectSound on x64).
 bool Video::initSound()
 {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // [FRONTIER] [TEMP] [CHOSEN, not recovered] Native POSIX ports have no Bink runtime (binkw32.dll
+    // is Windows-only), so a movie cannot be played. [RETIRE-WHEN: posix-bink-decoder] Replace with
+    // a licensed Bink runtime or a replacement decoder chosen by the owner (docs/macos-port.md, S2.8).
+    std::fprintf(stderr, "[FRONTIER] dice::hfe::geom::Video::initSound reached: no Bink runtime on "
+                         "this platform\n");
+    std::fflush(stderr);
+    std::abort();
+#endif
+#if BF2_VIDEO_BINK
     ::renddx9abi::BinkSetSoundSystem(
         reinterpret_cast<void*>(&::renddx9abi::BinkOpenDirectSound), 0);
+#endif
     return true;
 }
 
 // Returns an owned reference to the current frame target, or null before a successful open.
+// PE 0x1015A930
 VideoTarget* Video::acquireFrame() const
 {
     if (m_target)
-        m_target->addRef();
+        reinterpret_cast<IBase*>(m_target)->addRef();
     return m_target;
 }
 
 // sub_1015A920 - `FrameNum >= Frames`, read straight off the handle.
 bool Video::isDone() const
 {
+#if BF2_VIDEO_BINK
     return m_hbink->FrameNum >= m_hbink->Frames;
+#else
+    return true;
+#endif
 }
 
 // Pauses playback before the target texture is released; reset resumes it after target recreation.
 void Video::onDeviceLost()
 {
     m_paused = true;
+#if BF2_VIDEO_BINK
     if (m_hbink)
         ::renddx9abi::BinkPause(m_hbink, 1);
+#endif
 }
 
 void Video::onDeviceReset()
 {
     m_paused = false;
+#if BF2_VIDEO_BINK
     if (m_hbink)
         ::renddx9abi::BinkPause(m_hbink, 0);
+#endif
 }
 
-// The head of sub_1015AA90 and the middle of sub_1015ACD0: release the target, close the handle.
+// The head of open() and the middle of the destructor: release the target, close the handle.
 // The shipped open() releases the target without clearing the field and re-assigns it only after a
 // successful BinkOpen, so a second open() that fails would leave a released pointer for the
 // destructor; no caller re-opens a Video (both creators make a fresh one per movie), and this
@@ -501,7 +626,9 @@ void Video::onDeviceReset()
 void Video::close()
 {
     if (m_target) { m_target->release(); m_target = 0; }
+#if BF2_VIDEO_BINK
     if (m_hbink)  { ::renddx9abi::BinkClose(m_hbink); m_hbink = 0; }
+#endif
 }
 
 int Video::release()
@@ -526,7 +653,21 @@ void Video::dtor(char flags)
         ::renddx9abi::engineFree(this);
 }
 
+// PE 0x1015AA50: the destructor body without the deleting flag (vslot +0x34's 0x1015ACD0 runs the
+// same sequence and then frees): restore the vtables, unregister the listener, release the target, close
+// Bink and destroy the path. Unreachable in 1.50: no code or data references.
+void Video::destructorBody()
+{
+    m_vptr         = videoVtable();
+    m_listenerVptr = videoListenerVtable();
+    // Unguarded, as shipped.
+    ::dice::hfe::dx9rend::unregisterDeviceLostResetListener(&m_listenerVptr);
+    close();
+    m_path.~HostString();
+}
+
 // Accepts the base and movie interfaces without changing the object pointer.
+// PE 0x1015AC80
 void* Video::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IVideo)
@@ -535,24 +676,24 @@ void* Video::queryInterface(unsigned int iid) const
 }
 
 namespace {
-void  __fastcall vid_addRef(void* s, void*)  { static_cast<Video*>(s)->addRef(); }
-int   __fastcall vid_getRef(void* s, void*)  { return static_cast<Video*>(s)->getRef(); }
-int   __fastcall vid_release(void* s, void*) { return static_cast<Video*>(s)->release(); }
-void* __fastcall vid_queryInterface(void* s, void*, unsigned int iid)
+void  RD9_THUNK vid_addRef(void* s RD9_THUNK_EDX)  { static_cast<Video*>(s)->addRef(); }
+int   RD9_THUNK vid_getRef(void* s RD9_THUNK_EDX)  { return static_cast<Video*>(s)->getRef(); }
+int   RD9_THUNK vid_release(void* s RD9_THUNK_EDX) { return static_cast<Video*>(s)->release(); }
+void* RD9_THUNK vid_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return static_cast<Video*>(s)->queryInterface(iid); }
-unsigned int  __fastcall vid_getWidth(void* s, void*)  { return static_cast<Video*>(s)->width(); }
-unsigned int  __fastcall vid_getHeight(void* s, void*) { return static_cast<Video*>(s)->height(); }
-unsigned char __fastcall vid_open(void* s, void*, const HostString* path)
+unsigned int  RD9_THUNK vid_getWidth(void* s RD9_THUNK_EDX)  { return static_cast<Video*>(s)->width(); }
+unsigned int  RD9_THUNK vid_getHeight(void* s RD9_THUNK_EDX) { return static_cast<Video*>(s)->height(); }
+unsigned char RD9_THUNK vid_open(void* s RD9_THUNK_EDX, const HostString* path)
 { return static_cast<Video*>(s)->open(path ? path->c_str() : 0) ? 1 : 0; }
-void* __fastcall vid_getFrame(void* s, void*) { return static_cast<Video*>(s)->acquireFrame(); }
-void  __fastcall vid_doFrame(void* s, void*)  { static_cast<Video*>(s)->doFrame(); }
-const HostString* __fastcall vid_getPath(void* s, void*)
+void* RD9_THUNK vid_getFrame(void* s RD9_THUNK_EDX) { return static_cast<Video*>(s)->acquireFrame(); }
+void  RD9_THUNK vid_doFrame(void* s RD9_THUNK_EDX)  { static_cast<Video*>(s)->doFrame(); }
+const HostString* RD9_THUNK vid_getPath(void* s RD9_THUNK_EDX)
 { return &static_cast<Video*>(s)->path(); }
-unsigned char __fastcall vid_initSound(void* s, void*)
+unsigned char RD9_THUNK vid_initSound(void* s RD9_THUNK_EDX)
 { return static_cast<Video*>(s)->initSound() ? 1 : 0; }
-void  __fastcall vid_shutdownSound(void* s, void*) { static_cast<Video*>(s)->shutdownSound(); }
-int   __fastcall vid_isDone(void* s, void*) { return static_cast<Video*>(s)->isDone() ? 1 : 0; }
-void* __fastcall vid_dtor(void* s, void*, char flags)
+void  RD9_THUNK vid_shutdownSound(void* s RD9_THUNK_EDX) { static_cast<Video*>(s)->shutdownSound(); }
+int   RD9_THUNK vid_isDone(void* s RD9_THUNK_EDX) { return static_cast<Video*>(s)->isDone() ? 1 : 0; }
+void* RD9_THUNK vid_dtor(void* s RD9_THUNK_EDX, char flags)
 { static_cast<Video*>(s)->dtor(flags); return s; }
 
 // Video_vftable_primary 0x1021E81C, fourteen slots in the shipped order.
@@ -575,9 +716,9 @@ const void* kVideoVtable[14] =
 };
 
 // The DeviceLostResetListener table, 0x1021E810 (the three dwords before the primary table).
-void __fastcall vid_onDeviceLost(void* sub, void*)  { Video::fromListener(sub)->onDeviceLost(); }
-void __fastcall vid_onDeviceReset(void* sub, void*) { Video::fromListener(sub)->onDeviceReset(); }
-void __fastcall vid_onDeviceDestroy(void*, void*)   { /* 0x10037D40: ret, the shared nullsub */ }
+void RD9_THUNK vid_onDeviceLost(void* sub RD9_THUNK_EDX)  { Video::fromListener(sub)->onDeviceLost(); }
+void RD9_THUNK vid_onDeviceReset(void* sub RD9_THUNK_EDX) { Video::fromListener(sub)->onDeviceReset(); }
+void RD9_THUNK vid_onDeviceDestroy(void* RD9_THUNK_EDX)   { /* 0x10037D40: ret, the shared nullsub */ }
 
 const void* kVideoListenerVtable[3] =
 {
@@ -623,6 +764,11 @@ void* videoTargetD3DTexture(void* target)       { return static_cast<VideoTarget
 bool  videoOpen(void* video, const char* path) { return video && static_cast<Video*>(video)->open(path); }
 void  videoDoFrame(void* video)                { if (video) static_cast<Video*>(video)->doFrame(); }
 int   videoIsDone(void* video)                 { return video && static_cast<Video*>(video)->isDone() ? 1 : 0; }
+// PE 0x1015A9E0 (vslot +0x24, the stored path) compared with a name; SwiffRender::selectVideo's test.
+bool  videoPathEquals(void* video, const std::string& name)
+{
+    return static_cast<Video*>(video)->path() == name;
+}
 void* videoFrameD3DTexture(void* video)
 {
     if (!video) return 0;

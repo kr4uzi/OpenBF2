@@ -8,7 +8,7 @@
 #define BF2_GEOM_QUADPATCHEDITABLE_H
 
 #include "QuadPatch.h"
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #include <cstddef>
 
@@ -46,6 +46,11 @@ struct PatchDetailLayer
     void init(QuadPatchEditable* owner, int width);       // (inlined by PatchDetailLayers::init)
     void create();
     void assertCreated();                                 // a logged "TBM", never a stop
+    // The next four are unreachable in 1.50 (no code or data references); names [INFERRED].
+    void freeData();                                      // PE 0x1019B140: delete[] data when created
+    void copyFrom(const PatchDetailLayer* other);         // PE 0x1019B170: byteSize bytes from other's data
+    void fill(unsigned char value);                       // PE 0x1019BD20: assertCreated, then every byte
+    unsigned char* byteAt(int position);                  // PE 0x1019BAF0: a tail jump to at()
     unsigned char* at(int position);
     void  clearQuad(int x, int z);                        // one heightmap quad's texels to 0
     float averageWeight(int x, int z);
@@ -90,6 +95,9 @@ public:
     // clearLayerQuad) accepts layer 6, one past the six records, and only logs: the address is
     // answered for any layer.
     PatchDetailLayer* getLayer(int layer);
+    // PE 0x1019B280: a tail jump to getLayer. Unreachable in 1.50 (no code or data references);
+    // name [INFERRED].
+    PatchDetailLayer* layerRecord(int layer);
 
     PatchDetailLayer records[6];                                                // +0x04
 };
@@ -115,6 +123,10 @@ public:
     // not all created, else this set's own. (Its one caller, 0x1010B575, is an R2 brush.)
     PatchDetailLayer* getLayer(int layer);
 
+    // PE 0x1019B460: initializes the six records (the inlined PatchDetailLayer::init) and sets
+    // `source`. Unreachable in 1.50 (no code or data references); name [INFERRED].
+    void initWithSource(QuadPatchEditable* owner, int width, PatchDetailLayers* sourceSet);
+
     PatchDetailLayers* source;                                                  // +0x7C
 };
 
@@ -136,6 +148,9 @@ public:
     void importAllLayers();
     void importLayer(int layer);                                           // detail map channel -> weight map
     void rebuildLayerIndexBuffer(int layer);
+    // PE 0x1019B760: zeroes one layer's triangle count. Unreachable in 1.50 (no code or data
+    // references); name [INFERRED].
+    void clearLayerTriangleCount(int layer);
     void rebuildLowDetailMap();
     void debugTest(int value);                                             // (nullsub_12, `retn 4`)
     // The technique overlays TerrainEditable::setShaderTechnique creates and releases (techniques 4 / 5 /
@@ -159,15 +174,19 @@ public:
     void writeLayersBack(int x0, int x1, int z0, int z1, int layer);       // (the layer is not read)
     void paintDetail(float x, float z, float radius, int strength, int layer);
     void drawForLightmapGeneration();
-    void importBaseLayers(const vc71::string& directory);
-    void importLayerTile(int layer, const vc71::string& directory);
-    void importColormapTile(const vc71::string& directory);
+    void importBaseLayers(const std::string& directory);
+    void importLayerTile(int layer, const std::string& directory);
+    void importAllLayerTiles(const std::string& directory);                 // logs only; unreachable in 1.50
+    void importColormapTile(const std::string& directory);
     void commitColormapEdit();
     void revertLayer(int layer);
     void revertAllLayers();
     void releaseRoadMask();
     void reloadLightmap();
     void paintColor(float x, float z, float radius, int strength, unsigned int color);
+    // PE 0x1019DC80 (`retn 14h`): a colour brush on the low-detail map (+0x48) with no overlap or
+    // edit-copy gates. Unreachable in 1.50 (no code or data references); name [INFERRED].
+    void paintLowDetailColor(float x, float z, float radius, int strength, unsigned int color);
     // The two TerrainLightSampling reads. [INFERRED] names.
     // getFileIndices: (heightmapSize / patchSize) / 2 + grid position per axis, the "%02ix%02i" pair.
     // getWorldBounds: the patch's world box at height 0; only min and max are written.
@@ -181,9 +200,9 @@ public:
     void commitAllLayers();
 
     // R3: saving. Strings by reference (`retn 4`). [INFERRED] names.
-    void burnColormap(const vc71::string& base);                           // (`base` read only when not edited)
-    void saveDetailMaps(const vc71::string& suffix);
-    void saveLightmap(const vc71::string& base);
+    void burnColormap(const std::string& base);                           // (`base` read only when not edited)
+    void saveDetailMaps(const std::string& suffix);
+    void saveLightmap(const std::string& base);
     void removeCompDetailMaps();
     void saveEditedColormap();
     void makeCompDetailMaps();
@@ -202,7 +221,7 @@ public:
     int                     m_checkerCountV;         // +0x13C
     int                     m_fileIndexX;            // +0x140  gridX + patchCount / 2 - the "%02ix%02i" file name
     int                     m_fileIndexZ;            // +0x144
-    vc71::string            m_fileName;              // +0x148  "%02ix%02i"
+    std::string            m_fileName;              // +0x148  "%02ix%02i"
     PatchDetailLayers       m_detailLayers;          // +0x164  the imported weight maps
     PatchDetailLayers       m_detailLayersEdit;      // +0x1E0  the edited working copy (R2) [INFERRED]
     MergedPatchDetailLayers m_mergedLayers;          // +0x25C  source = +0x164 until its own maps exist
@@ -232,6 +251,10 @@ private:
     QuadPatchEditable& operator=(const QuadPatchEditable&);
 };
 
+// The brushes' upper texel bound: ceil of `value` through the CRT's double ceil, chopped to int
+// (QuadPatchEditable.cpp; SurroundingPatchEditable's brushes use it as well).
+int ceilChop(float value);
+
 #if defined(_M_IX86)
 static_assert(sizeof(PatchDetailLayer) == 0x14, "a weight map record is 20 bytes - see 0x1019B1A0");
 static_assert(offsetof(PatchDetailLayer, data) == 0x08, "record data at +0x08");
@@ -240,23 +263,6 @@ static_assert(sizeof(PatchDetailLayers) == 0x7C, "six records behind a vptr");
 static_assert(offsetof(PatchDetailLayers, records) == 0x04, "records at +0x04");
 static_assert(sizeof(MergedPatchDetailLayers) == 0x80, "the merged set's source at +0x7C");
 static_assert(offsetof(MergedPatchDetailLayers, source) == 0x7C, "source at +0x7C - QuadPatchEditable::init (0x1019F530) stores +0x2D8");
-static_assert(sizeof(QuadPatchEditable) == 0x32C, "TerrainEditable::init (0x1010ADA0) allocates 0x32C per patch");
-static_assert(offsetof(QuadPatchEditable, m_colormapEdit) == 0x120, "+0x120");
-static_assert(offsetof(QuadPatchEditable, editableTerrain) == 0x124, "+0x124");
-static_assert(offsetof(QuadPatchEditable, m_checkerLastU) == 0x128, "checker state at +0x128");
-static_assert(offsetof(QuadPatchEditable, m_fileIndexX) == 0x140, "+0x140");
-static_assert(offsetof(QuadPatchEditable, m_fileName) == 0x148, "+0x148");
-static_assert(offsetof(QuadPatchEditable, m_detailLayers) == 0x164, "+0x164");
-static_assert(offsetof(QuadPatchEditable, m_detailLayersEdit) == 0x1E0, "+0x1E0");
-static_assert(offsetof(QuadPatchEditable, m_mergedLayers) == 0x25C, "+0x25C");
-static_assert(offsetof(QuadPatchEditable, m_compDetailMap) == 0x2DC, "+0x2DC");
-static_assert(offsetof(QuadPatchEditable, m_undergrowthOverlay) == 0x2E4, "+0x2E4");
-static_assert(offsetof(QuadPatchEditable, m_roadMask) == 0x2F4, "+0x2F4 - see 0x1019F300");
-static_assert(offsetof(QuadPatchEditable, m_layerIndexBuffer) == 0x2F8, "+0x2F8");
-static_assert(offsetof(QuadPatchEditable, m_layerTriangleCount) == 0x310, "+0x310");
-static_assert(offsetof(QuadPatchEditable, m_detailMapsFromFile) == 0x328, "+0x328");
-static_assert(offsetof(QuadPatchEditable, m_importPending) == 0x329, "+0x329");
-static_assert(offsetof(QuadPatchEditable, m_colormapEdited) == 0x32A, "+0x32A");
 #endif
 
 } // namespace geom

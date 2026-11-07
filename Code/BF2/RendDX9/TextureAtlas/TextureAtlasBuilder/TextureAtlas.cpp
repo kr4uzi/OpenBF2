@@ -179,9 +179,15 @@ void TextureAtlas::build(ITextureAtlasConfiguration* configuration)
         int subGroupIndex = 0;
         while (m_pending.size() != 0)
         {
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Decimal conversion through the native CRT.
+            m_pages.push_back(Group(group->name + std::to_string(subGroupIndex), 0, 0,
+                                    group->format, group->miplevels, group->border));
+#else
             char buffer[16];
             m_pages.push_back(Group(group->name + _itoa(subGroupIndex, buffer, 10), 0, 0,
                                     group->format, group->miplevels, group->border));
+#endif
             Group& page = m_pages.back();
 
             if (m_sortMode == 1)
