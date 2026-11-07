@@ -110,7 +110,7 @@ BAPATrigger* newKeyTrigger(const WeaponInfo* weapon, int (WeaponInfo::*key)() co
 {
     return checkPointer(new BAPATrigger(static_cast<io::PlayerInputMap>((weapon->*key)()),
                                         checkPointer(new BAPConTrue()), checkPointer(new BAPConFalse()),
-                                        1 << (weapon->*key)(), patternId, 0.0, flag));
+                                        static_cast<int>(1 << (weapon->*key)()), patternId, 0.0, flag));
 }
 
 // The image's inlined plan-variable construction: `checkPointer(new BAPVariable<T>(context, value))`
@@ -355,7 +355,7 @@ BotScript* BBPMedicAssist::createPlan(Bot* bot)
             BAPATriggerContinously* const fire = checkPointer(new BAPATriggerContinously(
                 static_cast<io::PlayerInputMap>(weapon->getWeaponFire()),
                 checkPointer(new BAPConWeaponIsActive(weaponVariable)), checkPointer(new BAPConFalse()),
-                checkPointer(new BAPConFalse()), 1 << weapon->getWeaponFire(), m_id, 0.0));
+                checkPointer(new BAPConFalse()), static_cast<int>(1 << weapon->getWeaponFire()), m_id, 0.0));
             aim->addStatement(checkPointer(new BAPFlowCIf(
                 checkPointer(new BAPConObjectInFront(m_target[bot->getBotId()], 0.0f, 0.1f)), fire, 0, m_id, true, false)));
         }

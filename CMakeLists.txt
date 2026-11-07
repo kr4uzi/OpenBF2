@@ -504,7 +504,8 @@ endfunction()
 # own portability layer selects its Linux branch from _LINUX (gsPlatform.h, "Linux: _LINUX + _UNIX").
 function(bf2_configure_c_target target)
     if(MSVC)
-        target_compile_options("${target}" PRIVATE /W3 /wd4996)
+        # C5287 (comparing two different enum types) is GameSpy's own code, kept as the SDK ships it.
+        target_compile_options("${target}" PRIVATE /W3 /wd4996 /wd5287)
     else()
         target_compile_options("${target}" PRIVATE
             -fno-strict-aliasing

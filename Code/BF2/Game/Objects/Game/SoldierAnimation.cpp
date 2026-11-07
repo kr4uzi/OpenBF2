@@ -1312,7 +1312,8 @@ void Soldier::enableRagDoll()
             > sqrtf(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z) * 1.5f)
             velocity = local;
     }
-    if (WorldPref::getTickCount() < m_hitByVehicleSpeedTicks)
+    // ELF 0x081B67CF: an unsigned comparison (cmp, jae).
+    if (static_cast<unsigned int>(WorldPref::getTickCount()) < m_hitByVehicleSpeedTicks)
     {
         velocity = m_hitByVehicleSpeed;
         m_hitByVehicleSpeedTicks = 0;

@@ -994,7 +994,7 @@ void GameLogic::removeStrategicObject(world::IObject* object)
 // future-state arm. PE uses the single-precision reciprocal of 30; ELF divides by 30.
 float GameLogic::getTimeToNextStateChange()
 {
-    if (m_nextStateChangeAtTick > WorldPref::getTickCount())
+    if (m_nextStateChangeAtTick > static_cast<unsigned int>(WorldPref::getTickCount()))
     {
         const unsigned int ticks = m_nextStateChangeAtTick - WorldPref::getTickCount();
 #if defined(_WIN32)

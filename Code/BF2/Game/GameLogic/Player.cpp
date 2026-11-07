@@ -500,8 +500,9 @@ void Player::updateStateMask(unsigned int* mask)
         c->buff[149] = static_cast<unsigned char>(m_field160[4]);
 
     // heal / gave-ammo "recent" flags: set for the 10 ticks after the event (unsigned compare)
-    if (static_cast<unsigned int>(m_healRepairedAtTick + 10) > WorldPref::getTickCount()) *mask |= 0x80000u;
-    if (static_cast<unsigned int>(m_gaveAmmoAtTick + 10) > WorldPref::getTickCount()) *mask |= 0x100000u;
+    const unsigned int tick = static_cast<unsigned int>(WorldPref::getTickCount());
+    if (static_cast<unsigned int>(m_healRepairedAtTick + 10) > tick) *mask |= 0x80000u;
+    if (static_cast<unsigned int>(m_gaveAmmoAtTick + 10) > tick) *mask |= 0x100000u;
 
     // team -> buff[16] - bit 0x200, with a 20-frame re-send after a team change (mask[1]&2)
     slotDword(c, 16) = m_team;
