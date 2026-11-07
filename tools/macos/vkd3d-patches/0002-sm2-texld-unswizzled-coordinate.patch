@@ -1,0 +1,60 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+Shader model 2 texld/texldd take their coordinate without a swizzle. Keep texld
+coordinates in place (allocated from .x) and encode the in-order swizzle (.xyyy,
+.xyzz) as the identity; trailing components are not read by 2D/cube sampling.
+MojoShader refused 1128 BF2 pixel shaders with "TEXLD src0 must not swizzle".
+
+diff --git a/libs/vkd3d-shader/d3dbc.c b/libs/vkd3d-shader/d3dbc.c
+index da8f161..7c73204 100644
+--- a/libs/vkd3d-shader/d3dbc.c
++++ b/libs/vkd3d-shader/d3dbc.c
+@@ -2193,6 +2193,18 @@ static void d3dbc_write_instruction(struct d3dbc_compiler *compiler, const struc
+     token = info->sm1_opcode;
+     token |= VKD3D_SM1_INSTRUCTION_FLAGS_MASK & (ins->flags << VKD3D_SM1_INSTRUCTION_FLAGS_SHIFT);
+ 
++    /* Shader model 2 texld/texldd take the coordinate unswizzled. The register
++     * allocator keeps coordinates in place (.x first), so a swizzle that
++     * selects .x and .y in order only replicates unused trailing components. */
++    if (version->major == 2 && (ins->opcode == VSIR_OP_TEXLD || ins->opcode == VSIR_OP_TEXLDD)
++            && ins->src_count && vsir_swizzle_get_component(ins->src[0].swizzle, 0) == 0
++            && vsir_swizzle_get_component(ins->src[0].swizzle, 1) == 1)
++    {
++        struct vkd3d_shader_instruction *tex = (struct vkd3d_shader_instruction *)ins;
++
++        tex->src[0].swizzle = VKD3D_SHADER_NO_SWIZZLE;
++    }
++
+     token_position = put_u32(buffer, 0);
+ 
+     for (i = 0; i < ins->dst_count; ++i)
+diff --git a/libs/vkd3d-shader/ir.c b/libs/vkd3d-shader/ir.c
+index 8910f49..7b29436 100644
+--- a/libs/vkd3d-shader/ir.c
++++ b/libs/vkd3d-shader/ir.c
+@@ -12147,6 +12147,26 @@ static enum vkd3d_result track_liveness(struct vsir_program *program, struct liv
+             liveness_track_dst(tracker, &ins->dst[j], i, &program->shader_version, ins->opcode);
+         for (unsigned int j = 0; j < ins->src_count; ++j)
+             liveness_track_src(tracker, &ins->src[j], i);
++
++        /* Shader model 2 texture sampling cannot swizzle its coordinate:
++         * keep the coordinate where it was computed, starting in .x, so that
++         * the writer can use an identity swizzle. */
++        if (ins->src_count && program->shader_version.major == 2
++                && (ins->opcode == VSIR_OP_TEXLD || ins->opcode == VSIR_OP_TEXLDD))
++        {
++            const struct vsir_src_operand *src = &ins->src[0];
++            struct liveness_tracker_reg *reg = NULL;
++
++            if (src->reg.type == VSIR_REGISTER_SSA)
++                reg = &tracker->ssa_regs[src->reg.idx[0].offset];
++            else if (src->reg.type == VSIR_REGISTER_TEMP)
++                reg = &tracker->temp_regs[src->reg.idx[0].offset];
++            if (reg && reg->mask)
++            {
++                reg->mask = (1u << (vkd3d_log2i(reg->mask) + 1)) - 1;
++                reg->fixed_mask = true;
++            }
++        }
+     }
+ 
+     return VKD3D_OK;

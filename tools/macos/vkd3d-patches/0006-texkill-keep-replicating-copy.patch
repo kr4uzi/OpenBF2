@@ -1,0 +1,30 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+sm1/2 texkill tests a whole register: do not fold the .xxxx replicating copy of a
+scalar clip() condition into it (MojoShader: "TEXKILL writemask must be .xyzw").
+
+diff --git a/libs/vkd3d-shader/ir.c b/libs/vkd3d-shader/ir.c
+index 18ca3fa..27174bb 100644
+--- a/libs/vkd3d-shader/ir.c
++++ b/libs/vkd3d-shader/ir.c
+@@ -16838,13 +16838,17 @@ static enum vkd3d_result vsir_program_copy_propagation(struct vsir_program *prog
+ 
+             /* Shader model 2 texld/texldd cannot swizzle their coordinate: keep
+              * a copy that reorders components (see track_liveness()). */
+-            if (j == 0 && program->shader_version.major == 2
+-                    && (ins->opcode == VSIR_OP_TEXLD || ins->opcode == VSIR_OP_TEXLDD)
+-                    && mov_src->reg.type != VSIR_REGISTER_IMMCONST)
++            if (j == 0 && mov_src->reg.type != VSIR_REGISTER_IMMCONST
++                    && ((program->shader_version.major == 2
++                    && (ins->opcode == VSIR_OP_TEXLD || ins->opcode == VSIR_OP_TEXLDD))
++                    || (program->shader_version.major < 4 && ins->opcode == VSIR_OP_TEXKILL)))
+             {
++                /* texkill likewise tests a whole register (.xyzw): keep the
++                 * replicating copy that cast_discard_neg_conditions_to_vec4() made. */
++                unsigned int count = ins->opcode == VSIR_OP_TEXKILL ? 4 : 2;
+                 bool in_order = true;
+ 
+-                for (unsigned int k = 0; k < 2; ++k)
++                for (unsigned int k = 0; k < count; ++k)
+                 {
+                     unsigned int s = vsir_swizzle_get_component(src->swizzle, k);
+ 

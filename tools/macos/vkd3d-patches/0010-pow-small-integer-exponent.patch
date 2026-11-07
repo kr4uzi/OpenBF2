@@ -1,0 +1,70 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+pow(x, n) with a constant integer exponent 2..4 becomes repeated multiplication, as
+d3dx9 emits it (Decals: mul + mad for pow(x, 3)). exp2(n * log2(x)) loses the sign of a
+negative base: BF2's calcFog evaluates pow(fogVals.x, 3) with fogVals.x < 0 near the
+camera, and the GPU comparison showed the fog term change sign.
+
+diff --git a/libs/vkd3d-shader/hlsl.y b/libs/vkd3d-shader/hlsl.y
+index 480aebc..0daed6a 100644
+--- a/libs/vkd3d-shader/hlsl.y
++++ b/libs/vkd3d-shader/hlsl.y
+@@ -4579,6 +4579,59 @@ static bool intrinsic_pow(struct hlsl_ctx *ctx,
+     if (!elementwise_intrinsic_float_convert_args(ctx, params, loc))
+         return false;
+ 
++    /* d3dx9 expands small constant integer exponents into multiplications, which
++     * keeps the sign of a negative base (pow(x, 3) == x * x * x); BF2's fog uses it. */
++    {
++        const struct hlsl_ir_node *e = params->args[1];
++        const struct hlsl_ir_constant *c = NULL;
++        bool from_int = false;
++
++        if (e->type == HLSL_IR_EXPR && hlsl_ir_expr((struct hlsl_ir_node *)e)->op == HLSL_OP1_CAST
++                && hlsl_ir_expr((struct hlsl_ir_node *)e)->operands[0].node->type == HLSL_IR_CONSTANT)
++        {
++            e = hlsl_ir_expr((struct hlsl_ir_node *)e)->operands[0].node;
++            from_int = e->data_type->e.numeric.type != HLSL_TYPE_FLOAT && e->data_type->e.numeric.type != HLSL_TYPE_HALF;
++        }
++        if (e->type == HLSL_IR_CONSTANT && hlsl_is_numeric_type(e->data_type) && e->data_type->e.numeric.dimy == 1)
++            c = hlsl_ir_constant((struct hlsl_ir_node *)e);
++        if (c)
++        {
++            unsigned int i, dimx = e->data_type->e.numeric.dimx;
++            int n = 0;
++
++            for (i = 0; i < dimx; ++i)
++            {
++                float v;
++                int k;
++
++                if (from_int || e->data_type->e.numeric.type == HLSL_TYPE_INT)
++                    v = c->value.u[i].i;
++                else if (e->data_type->e.numeric.type == HLSL_TYPE_UINT || e->data_type->e.numeric.type == HLSL_TYPE_BOOL)
++                    v = c->value.u[i].u;
++                else
++                    v = c->value.u[i].f;
++                k = (int)v;
++                if ((float)k != v || k < 2 || k > 4 || (i && k != n))
++                {
++                    n = 0;
++                    break;
++                }
++                n = k;
++            }
++            if (n)
++            {
++                struct hlsl_ir_node *x = params->args[0], *r = x;
++
++                for (i = 1; i < (unsigned int)n; ++i)
++                {
++                    if (!(r = add_binary_arithmetic_expr(ctx, params->instrs, HLSL_OP2_MUL, r, x, loc)))
++                        return false;
++                }
++                return true;
++            }
++        }
++    }
++
+     if (!(log = add_unary_arithmetic_expr(ctx, params->instrs, HLSL_OP1_LOG2, params->args[0], loc)))
+         return NULL;
+ 

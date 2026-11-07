@@ -1,0 +1,126 @@
+--- a/mojoshader_effects.c
++++ b/mojoshader_effects.c
+@@ -798,11 +798,36 @@
+         const uint32 type = readui32(ptr, len);
+         const uint32 length = readui32(ptr, len);
+ 
+-        uint32 objectIndex;
++        // [CHOSEN, not recovered] Dynamic scalar state records carry an
++        // expression, not an object index (their literal row count is zero).
++        MOJOSHADER_effectValue *stateValue;
+         if (technique == -1)
+-            objectIndex = effect->params[index].value.valuesSS[state].value.valuesI[0];
++            stateValue = &effect->params[index].value.valuesSS[state].value;
+         else
+-            objectIndex = effect->techniques[technique].passes[index].states[state].value.valuesI[0];
++            stateValue = &effect->techniques[technique].passes[index].states[state].value;
++        if (stateValue->type.parameter_class != MOJOSHADER_SYMCLASS_OBJECT
++            || stateValue->value_count == 0)
++        {
++            const uint32 blocklen = (length + 3) & ~3u;
++            if (length == 0 || blocklen < length || blocklen > *len)
++            {
++                errorlist_add(errors, NULL, 0, "Invalid dynamic state expression length");
++                return;
++            }
++            stateValue->expression = m(length, d);
++            if (stateValue->expression == NULL)
++            {
++                errorlist_add(errors, NULL, 0, "Out of memory for dynamic state expression");
++                return;
++            }
++            memcpy(stateValue->expression, *ptr, length);
++            stateValue->expression_type = type;
++            stateValue->expression_length = length;
++            *ptr += blocklen;
++            *len -= blocklen;
++            continue;
++        }
++        const uint32 objectIndex = stateValue->valuesI[0];
+ 
+         MOJOSHADER_effectObject *object = &effect->objects[objectIndex];
+         if (object->type == MOJOSHADER_SYMTYPE_PIXELSHADER
+@@ -1148,6 +1173,7 @@
+ void freevalue(MOJOSHADER_effectValue *value, MOJOSHADER_free f, void *d)
+ {
+     int i;
++    f(value->expression, d);
+     f((void *) value->name, d);
+     f((void *) value->semantic, d);
+     freetypeinfo(&value->type, f, d);
+@@ -1299,6 +1325,13 @@
+     COPY_STRING(semantic)
+     copysymboltypeinfo(&dst->type, &src->type, m, d);
+     dst->value_count = src->value_count;
++    dst->expression_type = src->expression_type;
++    dst->expression_length = src->expression_length;
++    if (src->expression_length > 0)
++    {
++        dst->expression = m(src->expression_length, d);
++        memcpy(dst->expression, src->expression, src->expression_length);
++    }
+ 
+     if (dst->type.parameter_class == MOJOSHADER_SYMCLASS_SCALAR
+      || dst->type.parameter_class == MOJOSHADER_SYMCLASS_VECTOR
+@@ -1771,6 +1804,19 @@
+ } // MOJOSHADER_effectBegin
+ 
+ 
++// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: fx-state-expression-evaluator]
++// Retire after references/preshaders materialize typed render/sampler values and
++// runtime tests verify updates, state order and register bit patterns.
++static void require_literal_state(const MOJOSHADER_effectValue *value, const char *caller)
++{
++    if (value->expression_length > 0)
++    {
++        fprintf(stderr, "[FRONTIER] %s dynamic state expression evaluator reached\n", caller);
++        fflush(stderr);
++        abort();
++    }
++}
++
+ void MOJOSHADER_effectBeginPass(MOJOSHADER_effect *effect,
+                                 unsigned int pass)
+ {
+@@ -1793,6 +1839,7 @@
+     for (i = 0; i < curPass->state_count; i++)
+     {
+         state = &curPass->states[i];
++        require_literal_state(&state->value, "MOJOSHADER_effectBeginPass");
+         if (state->type == MOJOSHADER_RS_VERTEXSHADER)
+         {
+             rawVert = &effect->objects[*state->value.valuesI].shader;
+@@ -1966,6 +2013,19 @@
+             effect->state_changes->sampler_state_change_count = rawPixl->sampler_count;
+         } // if
+     } // if
++
++    // [CHOSEN, not recovered] Active sampler state expressions need the same
++    // evaluator as render state expressions, before publishing their values.
++    {
++        MOJOSHADER_effectShader *active[2] = { rawVert, rawPixl };
++        int stage;
++        for (stage = 0; stage < 2; stage++)
++            if (active[stage] != NULL)
++                for (i = 0; i < active[stage]->sampler_count; i++)
++                    for (j = 0; j < active[stage]->samplers[i].sampler_state_count; j++)
++                        require_literal_state(&active[stage]->samplers[i].sampler_states[j].value,
++                                              "MOJOSHADER_effectCommitChanges");
++    }
+ 
+     /* This is where parameters are copied into the constant buffers.
+      * If you're looking for where things slow down immensely, look at
+--- a/mojoshader.h
++++ b/mojoshader.h
+@@ -2586,6 +2586,11 @@
+     const char *semantic;
+     MOJOSHADER_symbolTypeInfo type;
+     unsigned int value_count;
++    /* [CHOSEN, not recovered] Retained FX2 dynamic state expression payload.
++     * A nonzero length requires an evaluator; values is not a literal value. */
++    unsigned int expression_type;
++    unsigned int expression_length;
++    void *expression;
+     MOJOSHADERNAMELESS union
+     {
+          /* Raw value types */

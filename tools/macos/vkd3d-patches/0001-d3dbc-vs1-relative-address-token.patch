@@ -1,0 +1,21 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+vs_1_x relative addressing (c[a0.x + n]) has no separate address token; a0.x is
+implied. vkd3d's own reader knows this (shader_sm1_read_param) but the writer always
+emitted the token, which MojoShader and the D3D9 runtime read as a bogus instruction
+("instruction token high bit must be zero"). BF2: skinning and indexed transforms.
+
+diff --git a/libs/vkd3d-shader/d3dbc.c b/libs/vkd3d-shader/d3dbc.c
+index 9ce1986..da8f161 100644
+--- a/libs/vkd3d-shader/d3dbc.c
++++ b/libs/vkd3d-shader/d3dbc.c
+@@ -2214,7 +2214,9 @@ static void d3dbc_write_instruction(struct d3dbc_compiler *compiler, const struc
+ 
+         src = &ins->src[i];
+         write_sm1_src_register(buffer, src);
+-        if (src->reg.idx_count && src->reg.idx[0].rel_addr)
++        /* vs_1_x relative addressing has no address token: a0.x is implied
++         * (see shader_sm1_read_param()). */
++        if (src->reg.idx_count && src->reg.idx[0].rel_addr && version->major >= 2)
+             write_sm1_src_register(buffer, src->reg.idx[0].rel_addr);
+     }
+ 
