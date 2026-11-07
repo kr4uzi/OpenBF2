@@ -24,7 +24,7 @@ namespace world {
 std::ostream& operator<<(std::ostream&, MaskObjectType);
 std::istream& operator>>(std::istream&, MaskObjectType&);
 
-class GameTemplateConsoleAccess;
+struct GameTemplateConsoleAccess;
 
 class MaskObjectTemplate : public AnimatedBundleTemplate
 {
@@ -41,7 +41,7 @@ public:
     MaskObjectType getMaskType() const;
 
 protected:
-    friend class GameTemplateConsoleAccess;
+    friend struct GameTemplateConsoleAccess;
     MaskObjectType m_maskType; // ELF +0x194 / PE +0x244; ctor MOTNoMask
     Vec3 m_maskOffset;         // ELF +0x198 / PE +0x248; ctor (0, -1.55, 0.08)
 };

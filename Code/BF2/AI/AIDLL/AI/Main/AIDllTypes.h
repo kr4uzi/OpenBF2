@@ -13,7 +13,7 @@ namespace hfe {
 
 namespace world {
 // AIEventCourier::eventMissileLock's second parameter. Passed by pointer only.
-class MissileLockMessage;
+struct MissileLockMessage;
 } // namespace world
 
 namespace ai {

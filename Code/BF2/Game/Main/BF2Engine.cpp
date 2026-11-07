@@ -3,6 +3,7 @@
 // Coordinates startup, the frame loop and shutdown. Preserve the explicit retail Debug line numbers.
 
 #include "BF2Engine.h"
+#include "PerformanceLogging.h"             // +0x74, deleted in shutdownGame and shutdownEngine (every image)
 #include "BF2EngineSetup.h"
 #include "BF2Log.h"                         // [INFERRED] path; Game/Main/BF2Log.cpp is attested
 #include "BF2Console.h"                     // [INFERRED] path
@@ -1407,7 +1408,7 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
 
     // [UNRESOLVED] One-byte game-present allocation; only nullness is tested.
     // The destructor frees it without accessing its contents.
-    delete dwordB0;                                     //  test / 0x8138b43 delete
+    ::operator delete(dwordB0);                         //  test / 0x8138b43 delete: a bare operator delete
     dwordB0 = new char;                                 // stored at 0x813830e
 
 #if !DEDICATED
@@ -1818,7 +1819,7 @@ void BF2Engine::closeLog()
 bool BF2Engine::shutdownEngine()
 {
     if (dwordB0)                    // +0xB0, trivial destructor: a bare operator delete
-        delete dwordB0;             // [UNRESOLVED] type - see startGame's note on offset 176
+        ::operator delete(dwordB0); // [UNRESOLVED] type - see startGame's note on offset 176
     dwordB0 = 0;
 
     delete performanceLogging;      // +0x74. Inlined destructor: stores &PerformanceLogging::VMT,
@@ -1836,12 +1837,19 @@ bool BF2Engine::shutdownEngine()
         delete demo;
     demo = 0;
 
+#if !DEDICATED
+    // The dedicated image never creates either object (BF2Engine::init's client branch does), so
+    // both pointers stay null there and its two virtual deletes never run. The client-only classes
+    // are not declared in a dedicated build.
     if (window)                     // +0x10, virtual delete (vtable +4 in the ELF's type - see BF2Window.h)
-        delete window;              // BF2Window: the game window, null in a dedicated image
+        delete window;              // BF2Window: the game window
+#endif
     window = 0;
 
+#if !DEDICATED
     if (bf2Render)                  // +0x18, virtual delete (vtable +4), 0x81394b0. type attested
         delete bf2Render;           //   from Demo::beginMainLoop's mangled parameter list;
+#endif
     bf2Render = 0;                  //   [INFERRED] the field name
 
     if (bf2Console)                 // +0x14, ~BF2Console followed by operator delete

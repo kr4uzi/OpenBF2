@@ -1162,7 +1162,7 @@ float AIStrategicArea::gravity(const Vec2& position, int side)
 // present-set find and the local object list are unused in the image.
 bool AIStrategicArea::retainBot(int side, int unit, ISAI*)
 {
-    m_presentUnits[side - 1].find(unit);
+    (void)m_presentUnits[side - 1].find(unit);
     Bot* const bot = IBotManager::instance->getBotFromId(unit);
     Information* const information = informationManager->getInformation(bot->getCurrentEquipment());
     if (!information || !information->getMobile() || !information->getUnit())

@@ -6,7 +6,9 @@
 #ifndef BF2_RENDDX9_RENDDX9BASE_H
 #define BF2_RENDDX9_RENDDX9BASE_H
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <d3d9.h>
 

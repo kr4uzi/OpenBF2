@@ -442,9 +442,9 @@ bool AIStrategicObject::bookBot(bool attacker, int side, std::set<int>::iterator
 {
     const int unit = *it;
     if (attacker)
-        m_availableAttackers[side - 1].find(unit);
+        (void)m_availableAttackers[side - 1].find(unit);
     else
-        m_availableDefenders[side - 1].find(unit);
+        (void)m_availableDefenders[side - 1].find(unit);
     Bot* const bot = IBotManager::instance->getBotFromId(unit);
     InformationManager* const manager = informationManager;
     Information* const information = manager->getInformation(bot->getCurrentEquipment());
