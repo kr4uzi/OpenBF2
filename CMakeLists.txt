@@ -504,7 +504,12 @@ endfunction()
 # own portability layer selects its Linux branch from _LINUX (gsPlatform.h, "Linux: _LINUX + _UNIX").
 function(bf2_configure_c_target target)
     if(MSVC)
-        target_compile_options("${target}" PRIVATE /W3 /wd4996)
+        # The SDK code stays as it ships. C5287: GameSpy compares two different enum types. On x64,
+        # C4244/C4267 are GameSpy's string, packet and buffer lengths (size_t, pointer differences)
+        # held in int or DWORD, and C4311/C4312 are buddy and block indices passed through a
+        # callback's void* user data and back (gpiBuddy.c, gpiProfile.c). Both round-trip losslessly at
+        # the sizes GameSpy handles, with the same 32-bit semantics as the x86 build.
+        target_compile_options("${target}" PRIVATE /W3 /wd4996 /wd5287 /wd4244 /wd4267 /wd4311 /wd4312)
     else()
         target_compile_options("${target}" PRIVATE
             -fno-strict-aliasing

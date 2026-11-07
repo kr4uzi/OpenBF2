@@ -661,8 +661,10 @@ void ResponsePhysicsManager::checkMeshObjectVsObjects(float dt, IObject* obj)
             if (s_obbTestMode > 0)
             {
                 ++s_obbStageEntered;
-                if (mesh->getVertexCount(1) > s_obbMinVertexCount &&          // slot 16
-                    otherMesh->getVertexCount(lod) > s_obbMinVertexCount)
+                // ELF 0x0837185B / 0x08371AB6: both counts compare signed (jg, jle) against the limit,
+                // which a console write can make negative.
+                if (static_cast<int>(mesh->getVertexCount(1)) > s_obbMinVertexCount &&          // slot 16
+                    static_cast<int>(otherMesh->getVertexCount(lod)) > s_obbMinVertexCount)
                 {
                     bool testObb = false;
                     if (s_obbTestMode == 1)
