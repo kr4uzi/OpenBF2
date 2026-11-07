@@ -63,29 +63,30 @@ jobs:
 
       # RendDX9.dll and TextureAtlasBuilder.dll, and so the client and the editor, build against the
       # April 2005 DirectX SDK or, on hosted runners without it, the D3DX fallback (Code/Build/dxsdk.cmd).
-      # Only when neither is usable are both images skipped with a notice and left out of the packages.
+      # Only when neither is usable are the client (and on x86 the editor) skipped with a notice and left
+      # out of the packages.
       - name: Locate the D3DX headers and import library
         id: dxsdk
-        if: matrix.arch == 'x86'
         run: |
           rem The same call renddx9.cmd and textureatlasbuilder.cmd make: the April 2005 SDK, or
           rem without it the D3DX fallback (BF2_D3DX=auto, Code/Build/dxsdk.cmd).
-          call Code\Build\dxsdk.cmd x86 fallback
+          call Code\Build\dxsdk.cmd ${{ matrix.arch }} fallback
           if errorlevel 1 (
-            echo ::notice title=No D3DX source::Neither the April 2005 DirectX SDK nor the D3DX fallback is usable; the x86 client and editor are not built or packaged on this runner.
+            echo ::notice title=No D3DX source::Neither the April 2005 DirectX SDK nor the D3DX fallback is usable; the ${{ matrix.arch }} client is not built on this runner.
             echo found=false>> "%GITHUB_OUTPUT%"
           ) else (
             echo found=true>> "%GITHUB_OUTPUT%"
           )
           exit /b 0
 
-      # Keep the client/plugin and editor builds sequential within this checkout.
-      - name: Build the x86 client with plugins
-        if: matrix.arch == 'x86' && steps.dxsdk.outputs.found == 'true'
+      # Keep the client/plugin and editor builds sequential within this checkout. The x64 client
+      # (RendDX9 x64 with the Bink port) is built as a check; its package stays server-only for now.
+      - name: Build the ${{ matrix.arch }} client with plugins
+        if: steps.dxsdk.outputs.found == 'true'
         run: |
-          call Code\Build\vsdevcmd.cmd x86
+          call Code\Build\vsdevcmd.cmd ${{ matrix.arch }}
           if errorlevel 1 exit /b 1
-          cmake --build out/build/ci-x86 --target bf2_client
+          cmake --build out/build/ci-${{ matrix.arch }} --target bf2_client
 
       - name: Build the x86 editor with its plugins
         if: matrix.arch == 'x86' && steps.dxsdk.outputs.found == 'true'
