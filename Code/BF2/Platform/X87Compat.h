@@ -8,7 +8,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#if (defined(__APPLE__) && defined(__aarch64__)) || defined(BF2_TEST_SOFT_EXTENDED)
+#include "ExtendedFloat.h"
+#endif
 namespace bf2x87 {
+#if (defined(__APPLE__) && defined(__aarch64__)) || defined(BF2_TEST_SOFT_EXTENDED)
+using Real = ExtendedFloat;
+inline bool isNaN(Real value) { return value.isNaN(); }
+inline bool isFinite(Real value) { return value.isFinite(); }
+// Presentation-only transcendentals use binary64 libm on Apple silicon.
+// See docs/macos-s2-10-numerics.md for the precision policy and tolerances.
+inline Real squareRoot(Real value) { return Real(std::sqrt(static_cast<double>(value))); }
+inline Real sinValue(Real value) { return Real(std::sin(static_cast<double>(value))); }
+inline Real cosValue(Real value) { return Real(std::cos(static_cast<double>(value))); }
+inline Real atanValue(Real a, Real b) { return Real(std::atan2(static_cast<double>(a), static_cast<double>(b))); }
+#else
 using Real = long double;
 inline bool isNaN(Real value) { return std::isnan(value); }
 inline bool isFinite(Real value) { return (std::isfinite)(value); } // (): tu_math.h defines an isfinite macro
@@ -17,22 +31,32 @@ inline Real squareRoot(Real value) { return std::sqrt(value); }
 inline Real sinValue(Real value) { return std::sin(value); }
 inline Real cosValue(Real value) { return std::cos(value); }
 inline Real atanValue(Real a, Real b) { return std::atan2(a,b); }
+#endif
 // Load exactly, round after each arithmetic operation, and narrow only at stores.
 template<class T> inline Real wide(T value)
 {
-    // [RETIRE-WHEN: native-x87-extended] Binary64 long-double ports still need
-    // validated extended arithmetic before entering the portable inverse helpers.
+#if !defined(__APPLE__) && !defined(BF2_TEST_SOFT_EXTENDED)
+    // [RETIRE-WHEN: native-x87-extended] Non-Apple binary64 long-double ports
+    // still need validated extended arithmetic before entering the S2.1 arms.
     if (std::numeric_limits<long double>::digits < 64) {
         std::fprintf(stderr, "[FRONTIER] bf2x87::wide requires x87 extended precision\n");
         std::fflush(stderr);
         std::abort();
     }
+#endif
     return Real(value);
 }
+#if (defined(__APPLE__) && defined(__aarch64__)) || defined(BF2_TEST_SOFT_EXTENDED)
+inline Real add(Real a, Real b) { return a + b; }
+inline Real sub(Real a, Real b) { return a - b; }
+inline Real mul(Real a, Real b) { return a * b; }
+inline Real div(Real a, Real b) { return a / b; }
+#else
 inline Real add(Real a, Real b) { volatile Real r = a + b; return r; }
 inline Real sub(Real a, Real b) { volatile Real r = a - b; return r; }
 inline Real mul(Real a, Real b) { volatile Real r = a * b; return r; }
 inline Real div(Real a, Real b) { volatile Real r = a / b; return r; }
+#endif
 inline float store(Real value) { volatile float r = static_cast<float>(value); return r; }
 inline double storeDouble(Real value) { volatile double r = static_cast<double>(value); return r; }
 
@@ -55,13 +79,17 @@ template<class T> inline T integer(Real value, bool truncate = true)
 {
     static_assert(std::numeric_limits<T>::is_signed && std::numeric_limits<T>::is_integer,
                   "signed FIST destination required");
+#if (defined(__APPLE__) && defined(__aarch64__)) || defined(BF2_TEST_SOFT_EXTENDED)
+    return value.integer<T>(truncate);
+#else
     const Real rounded = truncate ? std::trunc(value) : std::rint(value);
     const Real bound = std::ldexp(1.0L, std::numeric_limits<T>::digits);
     if (!(rounded >= -bound && rounded < bound)) {
         std::feraiseexcept(FE_INVALID);
-        return std::numeric_limits<T>::min();
+        return (std::numeric_limits<T>::min)(); // parenthesised: <windows.h> defines min
     }
     return static_cast<T>(rounded);
+#endif
 }
 inline std::int32_t toIntTruncate(Real value) { return integer<std::int32_t>(value); }
 inline std::int32_t toIntRound(Real value) { return integer<std::int32_t>(value, false); }

@@ -39,7 +39,7 @@
                                                                                     \
     void* Class::queryInterface(unsigned int iid) const                             \
     {                                                                               \
-        /* 0x10051840. Returns the RAW this with no adjustment for all three ids -  \
+        /* PE 0x10051840. Returns the RAW this with no adjustment for all three ids -  \
            reproduced with const_cast rather than a static_cast, because a          \
            static_cast to a base would be free to insert a this-adjustment under    \
            multiple inheritance and silently diverge from the binary on ModuleGeom. */ \

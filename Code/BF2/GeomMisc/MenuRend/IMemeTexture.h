@@ -1,5 +1,6 @@
 // Client texture and canvas interface to RendDX9. [INFERRED] Interface name and header placement.
-// Vector-taking methods require the caller and renderer to agree on the 32-bit MSVC STL ABI.
+// Vector-taking methods require the caller and renderer to share one STL (the rebuilt client and
+// its plugins do).
 #ifndef GEOM_MENUREND_IMEMETEXTURE_H
 #define GEOM_MENUREND_IMEMETEXTURE_H
 #include "../../Core/BuildConfig.h"
@@ -13,7 +14,13 @@ class IMemeTexture : public IBase
 {
 public:
     virtual void setTexture(const char* name, const char* prefix, int flags) = 0; // +10
-    virtual bool createTexture(unsigned int width, unsigned int height) = 0; // +14
+    // RendDX9 PE 0x10088860 returns with `retn 0Ch` (three stack arguments) and leaves no result
+    // in eax: void. The third argument is never read by the body, and no caller exists in any
+    // inspected image (BF2.exe has no IID 80032/CID 81032 immediate; the rebuilt Menu does not
+    // call this slot), so its type cannot be observed: `unsigned int` is [CHOSEN, not recovered]
+    // under the unobservable-type exception (AGENTS.md).
+    virtual void createTexture(unsigned int width, unsigned int height,
+                               unsigned int unread) = 0; // +14
     virtual bool drawUV(meme::Quad*, float u0, float v0, float u1, float v1) = 0; // +18
     virtual bool drawOther(IMemeTexture*, meme::Quad*) = 0; // +1C
     virtual const char* getName() const = 0;       // +20
@@ -33,27 +40,19 @@ public:
     virtual float getUvHeight() const = 0;       // +58
     virtual void releaseTexture() = 0;          // +5C
     virtual void unload() = 0;                  // +60
-    // The shipped body at +64 is dice's own unsupported-operation diagnostic
-    // (MemeTexture.cpp:291, "hmm") and returns a truthy integer.
-    virtual int unsupportedOperation() = 0;     // +64 [INFERRED] name
+    // The shipped body at +64 (PE 0x10088A20, plain `ret`) emits Debug type 6 "hmm"
+    // (MemeTexture.cpp:291), which the host treats as fatal, and returns nothing.
+    virtual void unsupportedOperation() = 0;    // +64 [INFERRED] name
 
-    // Canvas points use pairs of floats; the point array crosses the boundary by value in the VC7 vector carrier.
+    // Canvas points are pairs of floats. The point list crosses the boundary by value, as a
+    // std::vector the client and the renderer share (issue #7); the callee owns and frees its copy.
     typedef std::pair<float, float> CanvasPoint;
+    typedef std::vector<CanvasPoint> CanvasPointList;
 
-    // Transfers a canvas-point buffer using the 16-byte VC7.1 vector ABI: allocator word and three pointers.
-    // The callee frees the first pointer with engineFree. Supply compatible allocated storage, not a live STL vector.
-    struct CanvasPointSpan
-    {
-        void*  allocator;   // retail's allocator word; the callee never reads it
-        float* first;
-        float* last;
-        float* end;
-    };
-
-    virtual void plotOutline(CanvasPointSpan points,
+    virtual void plotOutline(CanvasPointList points,
                              unsigned char color) = 0; // +68
     virtual void fillCanvas(unsigned char color) = 0;  // +6C
-    virtual void plotAndFill(CanvasPointSpan points,
+    virtual void plotAndFill(CanvasPointList points,
                              unsigned char color) = 0; // +70 [INFERRED] name
     virtual void beginShape(unsigned char clearValue) = 0; // +74
     virtual void applyCanvas(short mode) = 0;               // +78

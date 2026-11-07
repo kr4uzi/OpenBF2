@@ -6,6 +6,10 @@
 // Implementation and helpers for SWF actions.
 
 
+// [CHOSEN, not recovered] issue #7: the script-object registry. Included before the gameswf headers:
+// MSVC's <unordered_set> pulls in <cmath>, whose isfinite template the fake isfinite() macro of
+// base/tu_math.h would otherwise rename.
+#include <unordered_set>
 #include "gameswf_action.h"
 // [TEMP] RW-89 diagnostic: the last member name ActionGetMember read, so the two 'invalid object'
 // errors below can say WHICH member came back undefined. Remove with the tracers.
@@ -4263,8 +4267,11 @@ namespace gameswf
 				// "[object Object]" - which is what makes the shipped operator== tell two clips
 				// apart. The function arms format "<c_function 0x%X>" / "<as_function 0x%X>" the
 				// same way there; they are not on any measured path and stay stock here.
+				// [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): %zX prints the
+				// whole address, so two objects never alias through their low 32 bits; on x86 it is
+				// the shipped %X of the 32-bit address. The three function/object arms share this.
 				char	buf[52];
-				_snprintf(buf, 50, "<object 0x%X>", (unsigned int) (uintptr_t) m_object_value);
+				_snprintf(buf, 50, "<object 0x%zX>", (size_t) (uintptr_t) m_object_value);
 				buf[50] = 0;
 				m_string_value = buf;
 			}
@@ -4272,13 +4279,13 @@ namespace gameswf
 		else if (m_type == C_FUNCTION)
 		{
 			char buffer[50];
-			snprintf(buffer, 50, "<c_function 0x%X>", (unsigned) m_c_function_value);
+			snprintf(buffer, 50, "<c_function 0x%zX>", (size_t) (uintptr_t) m_c_function_value);
 			m_string_value = buffer;
 		}
 		else if (m_type == AS_FUNCTION)
 		{
 			char buffer[50];
-			snprintf(buffer, 50, "<as_function 0x%X>", (unsigned) m_as_function_value);
+			snprintf(buffer, 50, "<as_function 0x%zX>", (size_t) (uintptr_t) m_as_function_value);
 			m_string_value = buffer;
 		}
 		else
@@ -4906,6 +4913,101 @@ namespace gameswf
 	}
 
 
+	void	as_environment::release_values(array<as_value>* held)
+	// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Only this
+	// environment's own storage is emptied; m_target, m_this_object, m_super_ctor and
+	// m_register_env hold no references.
+	{
+		for (int i = 0; i < m_stack.size(); i++)
+		{
+			hold_script_value(held, m_stack[i]);
+		}
+		m_stack.resize(0);
+		for (int i = 0; i < m_registers.size(); i++)
+		{
+			hold_script_value(held, m_registers[i]);
+		}
+		m_registers.resize(0);
+		for (stringi_hash<as_value>::iterator it = m_variables.begin(); it != m_variables.end(); ++it)
+		{
+			hold_script_value(held, it->second);
+		}
+		m_variables.clear();
+		for (int i = 0; i < m_local_frames.size(); i++)
+		{
+			hold_script_value(held, m_local_frames[i].m_value);
+		}
+		m_local_frames.resize(0);
+	}
+
+
+	// [CHOSEN, not recovered] issue #7: the live script objects, by address. Allocated on first
+	// use and never freed, so objects destroyed during static destruction still find it.
+	static std::unordered_set<as_object_interface*>*	s_script_objects = NULL;
+
+	void	register_script_object(as_object_interface* obj)
+	{
+		if (s_script_objects == NULL)
+		{
+			s_script_objects = new std::unordered_set<as_object_interface*>;
+		}
+		s_script_objects->insert(obj);
+	}
+
+	void	unregister_script_object(as_object_interface* obj)
+	{
+		if (s_script_objects != NULL)
+		{
+			s_script_objects->erase(obj);
+		}
+	}
+
+
+	void	release_script_objects()
+	// [CHOSEN, not recovered] issue #7 (https://github.com/B2BF/OpenBF2/issues/7). A movie's clips
+	// and objects reference each other from script state - `this` and `_parent` left in a register
+	// bank, a clip stored in another clip's variable or in a class's static property, a prototype
+	// and its constructor, a clip removed from its parent while its own scripts still reference
+	// it - so dropping the movie's last reference freed nothing. `held` keeps every registered
+	// object alive while the edges are cleared, so the registry does not change under the loop;
+	// its destruction then drops the last references to objects that no longer reference each
+	// other. Objects nobody counts (a zero reference count: s_sprite_builtins, stack temporaries)
+	// are left alone.
+	{
+		release_library_classes();
+		if (s_script_objects == NULL)
+		{
+			return;
+		}
+		array<as_value>	held;
+		for (std::unordered_set<as_object_interface*>::iterator it = s_script_objects->begin(); it != s_script_objects->end(); ++it)
+		{
+			if ((*it)->get_ref_count() > 0)
+			{
+				held.push_back(as_value(*it));
+			}
+		}
+		for (int i = 0, n = held.size(); i < n; i++)
+		{
+			as_object_interface*	obj = held[i].to_object();
+			if (obj == NULL)
+			{
+				continue;
+			}
+			if (character* ch = obj->cast_to_character())
+			{
+				ch->release_script_values(&held);
+			}
+			else if (as_object* ao = obj->cast_to_as_object())
+			{
+				ao->clear();
+				ao->m_getters.clear();
+				ao->m_setters.clear();
+			}
+		}
+	}
+
+
 	int	as_environment::find_local(const tu_string& varname) const
 	// Search the active frame for the named var; return its index
 	// in the m_local_frames stack if found.
@@ -5229,6 +5331,18 @@ namespace gameswf
 	// onDoublePress.
 	const tu_string&	event_id::get_function_name() const
 	{
+		// Bind the DICE events by enum value: the retained upstream socket-event
+		// enum has an extra entry absent from its positional name table below.
+		if (m_id == CONSTRUCT)
+		{
+			static const tu_string name("onConstruct");
+			return name;
+		}
+		if (m_id == DOUBLE_PRESS)
+		{
+			static const tu_string name("onDoublePress");
+			return name;
+		}
 		static tu_string	s_function_names[EVENT_COUNT] =
 		{
 			"INVALID",		 // INVALID

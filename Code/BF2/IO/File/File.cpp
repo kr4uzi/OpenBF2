@@ -5,6 +5,9 @@
 #include "FileManager.h"     // io::fileManager - open() goes through the virtual filesystem
 #include "../../Math/Vec3.h"
 #include <iostream>
+#if !defined(_WIN32)
+#include "../../Platform/Utf16.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -132,6 +135,7 @@ bool File::read(std::string& out, char delimiter)
 // ELF 0x48D050; engine 0x8435620 use sizeof(wchar_t) disk units.
 bool File::read(std::wstring& out, wchar_t delimiter)
 {
+#if defined(_WIN32) || defined(BF2_IMAGE_AIDLL)
     wchar_t buffer[4096];
     unsigned int count = 0;
     while (m_file->read(buffer + count, sizeof(wchar_t)) == sizeof(wchar_t)
@@ -139,6 +143,18 @@ bool File::read(std::wstring& out, wchar_t delimiter)
         ++count;
     buffer[count] = 0;
     out = buffer;
+#else
+    // [CHOSEN, not recovered] The native engine reads retail UTF-16LE game text.
+    // The AI DLL retains the ELF's native-wchar_t reader. See docs/macos-s2-10-threads.md.
+    // Preserve delimiter consumption, NUL truncation, EOF success and the original buffer bound.
+    char16_t buffer[4096];
+    unsigned int count = 0;
+    while (platform::readUtf16LE(*m_file, buffer[count])
+           && buffer[count] != delimiter)
+        ++count;
+    buffer[count] = 0;
+    out = platform::utf16ToWide(buffer);
+#endif
     return true;
 }
 

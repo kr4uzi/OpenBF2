@@ -13,6 +13,8 @@
 #include "../RendMisc/IRenderView.h"
 #include "../RendDX9/RendDX9Base.h"           // rendererGetRenderView, the effect / state / draw seams
 #include "../RendDX9/ShaderParameter.h"
+#include "../RendDX9/RendDX9Math.h"          // rendmath::transformPoint, PE 0x10079610
+#include "Debug.h"                              // renddx9abi::Debug, PE 0x10074300 / 0x10074690
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"        // renddx9abi::logf - dice's debug stream
 #include "../../RendDX9Abi/ModuleCommon.h"
@@ -32,7 +34,7 @@ extern void* g_shaderManager;       // dword_1023B97C - ShaderManager.cpp
 
 // BufferManager.cpp / StateManager.cpp, declared per TU as every other client does.
 void* createVertexBuffer(void* bufferManager, unsigned int count, unsigned int stride,
-                         const vc71::string& name, unsigned int usage);
+                         const std::string& name, unsigned int usage);
 void* vertexBufferLock(void* wrapper, unsigned int offsetVerts, unsigned int countVerts,
                        unsigned int flags);                                  // sub_10014630
 bool  vertexBufferUnlock(void* wrapper);                                     // sub_10014690
@@ -138,21 +140,11 @@ struct PickRay
 
 dx9rend::IRenderView* s_pickView = 0;                                       // dword_10267D0C
 
-// PE 0x10079610 (92 B) - transformPoint; z and y are formed before x is stored (out may alias in).
-void transformPoint(const Mat4& m, const Vec3& in, Vec3& out)
-{
-    const float z = m.m[2] * in.x + m.m[10] * in.z + m.m[6] * in.y + m.m[14];
-    const float y = m.m[1] * in.x + m.m[9] * in.z + m.m[5] * in.y + m.m[13];
-    out.x = m.m[8] * in.z + m.m[4] * in.y + in.x * m.m[0] + m.m[12];
-    out.y = y;
-    out.z = z;
-}
-
 // 0x101C30B0 (`retn 4`) - the origin through transformPoint (in place), the direction through the
 // 3x3 part: Z = (m10*dz + m6*dy) + m2*dx, Y likewise, X = (m8*dz + m4*dy) + dx*m0.
 void transformRay(PickRay& ray, const Mat4& m)
 {
-    transformPoint(m, ray.origin, ray.origin);
+    rendmath::transformPoint(m, ray.origin, ray.origin);              // PE 0x10079610
     const float dx = ray.direction.x;
     const float dy = ray.direction.y;
     const float dz = ray.direction.z;
@@ -164,8 +156,31 @@ void transformRay(PickRay& ray, const Mat4& m)
     ray.direction.z = z;
 }
 
+// Takes a view-space point to the world: the pick view's +0x68 matrix is copied twice and inverted
+// (fullInvert), then the point goes through that inverse with the sums formed left to right.
+// The returned pointer borrows static storage overwritten on the next call.
+// PE 0x101C3120. Unreachable in 1.50: no code or data references.
+const Vec3* viewPointToWorld(const Vec3* point)
+{
+    static Vec3 result = { 0.0f, 0.0f, 0.0f };
+    Mat4 inverse = *s_pickView->getInverseViewMatrixPtr();                   // +0x68
+    const Mat4 source = inverse;
+    fullInvert(source, inverse);
+    const float z = inverse.m[2] * point->x + inverse.m[6] * point->y + inverse.m[10] * point->z
+                  + inverse.m[14];
+    const float y = inverse.m[1] * point->x + inverse.m[5] * point->y + inverse.m[9] * point->z
+                  + inverse.m[13];
+    const float x = inverse.m[0] * point->x + inverse.m[4] * point->y + inverse.m[8] * point->z
+                  + inverse.m[12];
+    result.x = x;
+    result.y = y;
+    result.z = z;
+    return &result;
+}
+
 // pixels to [-1, 1]: x = sx / (w * 0.5) - 1, y = 1 - sy / (h * 0.5). The viewport is
 // asked for twice; the first answer supplies the height, the second the width.
+// PE 0x101C3350
 const Vec2* screenToNdc(const Vec2* screen)
 {
     static Vec2 result = { 0.0f, 0.0f };
@@ -180,6 +195,7 @@ const Vec2* screenToNdc(const Vec2* screen)
 
 // onto the z = 1 view plane: tan(fov / 2) scales both, x also divided by the aspect.
 // fptan's result is not rounded by the precision control; each product is.
+// PE 0x101C32D0
 const Vec2* ndcToViewPlane(const Vec2* ndc)
 {
     static Vec2 result = { 0.0f, 0.0f };
@@ -194,6 +210,7 @@ const Vec2* ndcToViewPlane(const Vec2* ndc)
 
 // the view-space ray from the near plane: origin (n*px, n*py, n), direction
 // (F*px - n*px, F*py - n*py, F - n) with F = far + near (sic - the far point is at far + near).
+// PE 0x101C31F0
 const PickRay* viewPlaneToViewRay(const Vec2* point)
 {
     static PickRay result = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
@@ -212,8 +229,9 @@ const PickRay* viewPlaneToViewRay(const Vec2* point)
     return &result;
 }
 
-// into the world: the view's +0x68 matrix copied twice and inverted (0x10078270), the
+// into the world: the view's +0x68 matrix copied twice and inverted (fullInvert), the
 // ray copied and transformed by the inverse.
+// PE 0x101C3490
 const PickRay* viewRayToWorld(const PickRay* ray)
 {
     static PickRay result = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
@@ -227,6 +245,7 @@ const PickRay* viewRayToWorld(const PickRay* ray)
 
 // Returns a world pick ray through the screen point, using the renderer's view when none is supplied.
 // The returned pointer borrows static storage overwritten on the next call.
+// PE 0x101C3570
 const PickRay* pickRayFromScreen(const Vec2* screen, dx9rend::IRenderView* view)
 {
     static PickRay result = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
@@ -240,7 +259,27 @@ const PickRay* pickRayFromScreen(const Vec2* screen, dx9rend::IRenderView* view)
     return &result;
 }
 
+// Returns the world pick ray through a point given as an offset from the viewport centre (x right,
+// y up, in pixels), using the renderer's view when none is supplied. The viewport is asked for
+// twice; the first answer supplies the height, the second the width.
+// PE 0x101C3660 (ecx = offset, edx = view). Unreachable in 1.50: no code or data references.
+const PickRay* pickRayFromCentreOffset(const Vec2* offset, dx9rend::IRenderView* view)
+{
+    if (!view)
+    {
+        IBase* const renderer = classManager->getSingleton(::renddx9abi::HostString("Renderer"));
+        view = static_cast<dx9rend::IRenderer*>(renderer)->getRenderView();
+    }
+    const float* const forHeight = view->getViewport();                      // +0x14
+    const float* const forWidth = view->getViewport();
+    Vec2 screen;
+    screen.x = forWidth[2] * 0.5f + offset->x;
+    screen.y = forHeight[3] * 0.5f - offset->y;
+    return pickRayFromScreen(&screen, view);
+}
+
 // Tests whether the forward ray passes within radius of centre. A NaN distance misses.
+// PE 0x101C33D0
 bool pickRayHitsSphere(const PickRay& ray, const Vec3& centre, float radius)
 {
     float dx = centre.x - ray.origin.x;
@@ -259,6 +298,45 @@ bool pickRayHitsSphere(const PickRay& ray, const Vec3& centre, float radius)
     return radius * radius >= distanceSquared;
 }
 
+
+// The heightmap-cell edge step's helpers [INFERRED placement and names, next to its file
+// neighbours]. Every product, difference and quotient is a float: the x87 runs under the
+// single-precision control word D3D9 sets for this device.
+
+const float kCellEdgeEpsilon = 1.1920928955078125e-7f;                     // flt_1020CDA0
+const float kCellEdgeMoveSquared = 1.1920928955078125e-4f;                 // flt_1020CE44
+
+// Moves `point` (x and z) onto the intersection of the line through it and `target` with the edge
+// line given by its cross term `edge` and its direction (`edgeX`, `edgeZ`), then snaps its height
+// to the terrain there (+0x68). Every input is read before the first store, as in the image.
+void intersectCellEdge(Vec3* point, const Vec3* target, float edge, float edgeX, float edgeZ)
+{
+    const float cross = target->z * point->x - point->z * target->x;
+    const float dx = point->x - target->x;
+    const float dz = point->z - target->z;
+    const float inverse = 1.0f / (edgeZ * dx - edgeX * dz);
+    point->x = (edgeX * cross - edge * dx) * inverse;
+    point->z = (edgeZ * cross - edge * dz) * inverse;
+    point->y = s_heightmapCluster->getHeightInWorldCoords(*point);
+}
+
+// The open-coded test of the first arm of each side: (point - original), z and y squared first.
+bool movedPastCellEdgeInline(const Vec3& point, const Vec3& original)
+{
+    const float dx = point.x - original.x;
+    const float dy = point.y - original.y;
+    const float dz = point.z - original.z;
+    return (dz * dz + dy * dy) + dx * dx > kCellEdgeMoveSquared;
+}
+
+// The shared tail's test: (original - point) through the image's out-of-line Vec3 difference,
+// x and y squared first.
+bool movedPastCellEdge(const Vec3& point, const Vec3& original)
+{
+    const Vec3 d = subtract(original, point);
+    return (d.x * d.x + d.y * d.y) + d.z * d.z > kCellEdgeMoveSquared;
+}
+
 } // anonymous namespace
 
 
@@ -267,6 +345,7 @@ bool pickRayHitsSphere(const PickRay& ray, const Vec3& centre, float radius)
 
 // Creates an empty spline and its rendering effect, caching the heightmap singleton on first use.
 // Unused fields remain uninitialized.
+// PE 0x1009D380.
 EditorSpline::EditorSpline(int order)
     : m_refCount(1)
     , m_stepSize(3.0f)
@@ -292,9 +371,9 @@ EditorSpline::EditorSpline(int order)
     m_effect = static_cast<dx9rend::Effect*>(
         dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "Shaders/SplineShader"));
     m_paramWorldViewProjection =
-        dx9rend::effectGetShaderParameterTyped(m_effect, vc71::string("WorldViewProjection"));
+        dx9rend::effectGetShaderParameterTyped(m_effect, std::string("WorldViewProjection"));
     m_paramDiffuseColor =
-        dx9rend::effectGetShaderParameterTyped(m_effect, vc71::string("DiffuseColor"));
+        dx9rend::effectGetShaderParameterTyped(m_effect, std::string("DiffuseColor"));
 
     if (!s_heightmapCluster)
     {
@@ -305,6 +384,8 @@ EditorSpline::EditorSpline(int order)
 }
 
 // Releases required effect parameters and effect before member teardown. The original leaves the ribbon buffer allocated.
+// PE 0x1009D500. Unreachable in 1.50: no code or data references; destroy (+0xB0) carries its own
+// inlined copy.
 EditorSpline::~EditorSpline()
 {
     m_paramDiffuseColor->release();
@@ -371,6 +452,7 @@ void EditorSpline::slot_0x14()
 
 // the ribbon width. +0x31 is set only when the width crosses zero (0 -> positive or
 // positive -> 0); +0x30 always.
+// PE 0x1009C020
 void EditorSpline::setLineWidth(float width)
 {
     if ((m_lineWidth == 0.0f && width > 0.0f) || (m_lineWidth > 0.0f && width == 0.0f))
@@ -382,6 +464,7 @@ void EditorSpline::setLineWidth(float width)
 float EditorSpline::getLineWidth()                  { return m_lineWidth; }
 
 // the step; both dirty bytes.
+// PE 0x1009C090
 void EditorSpline::setStepSize(float step)
 {
     m_stepSize = step;
@@ -392,6 +475,7 @@ void EditorSpline::setStepSize(float step)
 float EditorSpline::getStepSize()                   { return m_stepSize; }
 
 // a Vec4 copy; nothing is marked dirty (the colour is a shader constant).
+// PE 0x1009C730
 void EditorSpline::setColor(const Vec4& color)
 {
     m_color.x = color.x;
@@ -401,6 +485,7 @@ void EditorSpline::setColor(const Vec4& color)
 }
 
 const Vec4& EditorSpline::getColor()                { return m_color; }
+// PE 0x1009C0D0
 void EditorSpline::setSnapFlags(int flags)          { m_snapFlags = flags; }
 int  EditorSpline::getSnapFlags()                   { return m_snapFlags; }
 int  EditorSpline::getOrder()                       { return m_order; }
@@ -412,6 +497,84 @@ void EditorSpline::setOrder(int /*order*/)
     ::renddx9abi::logf("EditorSpline.cpp:834: Implement first order on request...");
 }
 
+// Replaces the ribbon buffer with a new `vertexCount`-vertex, 24-byte-stride one ("EditorSpline",
+// usage 8) and clears the second dirty byte. The old buffer's reference is dropped (freed at zero)
+// without clearing the member first.
+// PE 0x1009C170. Unreachable in 1.50: no code or data references.
+void EditorSpline::recreateVertexBuffer(unsigned int vertexCount)
+{
+    if (m_vertexBuffer)
+        dx9rend::vertexBufferRelease(m_vertexBuffer);
+    m_vertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager, vertexCount, 24u,
+                                                 std::string("EditorSpline"), 8u);
+    m_rebuildBuffer = 0;
+}
+
+// Steps `point` towards `target` in the XZ plane onto an edge of the primary-heightmap cell that
+// holds it (a point on a cell boundary moving towards lower x or z counts in the lower cell),
+// snaps its height to the terrain, and answers whether it moved further than the squared distance
+// 1.19e-4. Which edge is taken follows the image's sign tests against the cell corners
+// (x0, z0) - (x1, z1); the diagonal arms intersect with the cross term z0 * x0 - z1 * x1 (or
+// z1 * x1 - z0 * x0) as shipped. A target in none of the tested directions answers false and
+// leaves the point unchanged.
+// [INFERRED] name.
+// PE 0x1009C1D0. Unreachable in 1.50: no code or data references.
+bool stepToHeightmapCellEdge(Vec3* point, const Vec3* target)
+{
+    const Vec3 original = *point;
+    const Vec3& scale = s_heightmapCluster->getPrimaryScale();             // +0x54
+    const float cellX = scale.x;
+    const float cellZ = scale.z;
+    int column = static_cast<int>(std::floor(static_cast<double>(point->x / cellX)));
+    int row = static_cast<int>(std::floor(static_cast<double>(point->z / cellZ)));
+    if (std::fmod(static_cast<double>(point->x), static_cast<double>(cellX)) == 0.0
+        && target->x - point->x < 0.0f)
+        --column;
+    if (std::fmod(static_cast<double>(point->z), static_cast<double>(cellZ)) == 0.0
+        && target->z - point->z < 0.0f)
+        --row;
+
+    const float x0 = static_cast<float>(column) * cellX;
+    const float z0 = static_cast<float>(row) * cellZ;
+    const float z1 = static_cast<float>(row + 1) * cellZ;
+    const float x1 = static_cast<float>(column + 1) * cellX;
+    const float px = point->x;
+    const float pz = point->z;
+    const float tx = target->x;
+    const float tz = target->z;
+
+    // `< 0`: an unordered value takes the second side.
+    if ((x0 - px) * (z0 - pz) - (x1 - px) * (z1 - pz) < 0.0f)
+    {
+        if ((z0 - tz) * (x0 - tx) - (z1 - tz) * (x1 - tx) > kCellEdgeEpsilon)
+        {
+            intersectCellEdge(point, target, z0 * x0 - z1 * x1, x0 - x1, z1 - z0);
+            return movedPastCellEdgeInline(*point, original);
+        }
+        if ((x1 - tx) * (z0 - tz) - (x0 - tx) * (z0 - tz) > kCellEdgeEpsilon)
+            intersectCellEdge(point, target, z0 * x1 - z0 * x0, x1 - x0, z0 - z0);
+        else if ((x0 - tx) * (z1 - tz) - (x0 - tx) * (z0 - tz) > kCellEdgeEpsilon)
+            intersectCellEdge(point, target, z1 * x0 - z0 * x0, x0 - x0, z0 - z1);
+        else
+            return false;
+    }
+    else
+    {
+        if ((x1 - tx) * (z1 - tz) - (x0 - tx) * (z0 - tz) > kCellEdgeEpsilon)
+        {
+            intersectCellEdge(point, target, z1 * x1 - z0 * x0, x1 - x0, z0 - z1);
+            return movedPastCellEdgeInline(*point, original);
+        }
+        if ((x0 - tx) * (z1 - tz) - (x1 - tx) * (z1 - tz) > kCellEdgeEpsilon)
+            intersectCellEdge(point, target, z1 * x0 - z1 * x1, x0 - x1, z1 - z1);
+        else if ((x1 - tx) * (z0 - tz) - (x1 - tx) * (z1 - tz) > kCellEdgeEpsilon)
+            intersectCellEdge(point, target, z0 * x1 - z1 * x1, x1 - x1, z1 - z0);
+        else
+            return false;
+    }
+    return movedPastCellEdge(*point, original);
+}
+
 
 int EditorSpline::getControlPointCount()
 {
@@ -419,12 +582,14 @@ int EditorSpline::getControlPointCount()
 }
 
 // the record's address, unchecked.
+// PE 0x1009D000
 SplineControlPoint* EditorSpline::getControlPoint(int index)
 {
     return &pointAt(index);
 }
 
 // a copy of the name into the caller's return slot.
+// PE 0x1009EE80
 ::renddx9abi::HostString EditorSpline::getName()
 {
     return ::renddx9abi::toHostString(m_name);
@@ -433,13 +598,21 @@ SplineControlPoint* EditorSpline::getControlPoint(int index)
 // The per-point accessors, 0x1009CEE0..0x1009CF70 and 0x1009D010..0x1009D070 - one field each, no
 // range check, no dirty byte.
 void  EditorSpline::setControlPointSpeed(int index, float speed)      { pointAt(index).m_speed = speed; }
+// PE 0x1009CF00
 void  EditorSpline::setControlPointDelay(int index, float delay)      { pointAt(index).m_delay = delay; }
+// PE 0x1009CF20
 void  EditorSpline::setControlPointDirection(int index, int direction){ pointAt(index).m_direction = direction; }
+// PE 0x1009CF70
 void  EditorSpline::setControlPointFlag(int index, bool flag)         { pointAt(index).m_flag3C = flag ? 1 : 0; }
+// PE 0x1009D010
 float EditorSpline::getControlPointSpeed(int index)                   { return pointAt(index).m_speed; }
+// PE 0x1009D030
 float EditorSpline::getControlPointDelay(int index)                   { return pointAt(index).m_delay; }
+// PE 0x1009D050
 int   EditorSpline::getControlPointDirection(int index)               { return pointAt(index).m_direction; }
+// PE 0x1009D1A0
 void  EditorSpline::setControlPointType(int index, int type)          { pointAt(index).m_type = type; }
+// PE 0x1009D1C0
 int   EditorSpline::getControlPointType(int index)                    { return pointAt(index).m_type; }
 
 // 0x1009CF40 (`retn 20h`) - the sound arrives by value and is assigned to the record's string.
@@ -449,15 +622,20 @@ void EditorSpline::setControlPointSound(int index, ::renddx9abi::HostString soun
 }
 
 // a copy of the record's string into the caller's return slot.
+// PE 0x1009D070
 ::renddx9abi::HostString EditorSpline::getControlPointSound(int index)
 {
     return ::renddx9abi::toHostString(pointAt(index).m_sound);
 }
 
 // Updates the last point through virtual setters. Requires a nonempty spline; empty input is not guarded.
+// PE 0x1009C760
 void EditorSpline::setLastControlPointSpeed(float speed)           { setControlPointSpeed(pointCount() - 1, speed); }
+// PE 0x1009C790
 void EditorSpline::setLastControlPointDelay(float delay)           { setControlPointDelay(pointCount() - 1, delay); }
+// PE 0x1009C7C0
 void EditorSpline::setLastControlPointDirection(int direction)     { setControlPointDirection(pointCount() - 1, direction); }
+// PE 0x1009C840
 void EditorSpline::setLastControlPointFlag(bool flag)              { setControlPointFlag(pointCount() - 1, flag); }
 
 // 0x1009C7F0 (`retn 1Ch`): the count is taken, the by-value string copied for the callee, and the
@@ -473,6 +651,7 @@ void EditorSpline::setLastControlPointSound(::renddx9abi::HostString sound)
 
 
 // Appends a control point, optionally snapping height to terrain, and marks geometry dirty.
+// PE 0x1009E6B0
 void EditorSpline::addControlPoint(const Vec3& position)
 {
     Vec3 placed = position;
@@ -486,7 +665,8 @@ void EditorSpline::addControlPoint(const Vec3& position)
     m_dirty = 1;
 }
 
-// the points' _Tidy (every destructor, the block freed); both dirty bytes.
+// the points' clear (every destructor); both dirty bytes.
+// PE 0x1009E710
 void EditorSpline::clearControlPoints()
 {
     m_points.clear();
@@ -524,6 +704,7 @@ void EditorSpline::setAllControlPointTypes(bool visible)
 }
 
 // every point whose type is not 2 back to 2, through +0x60; the count is taken once.
+// PE 0x1009D1E0
 void EditorSpline::resetControlPointTypes()
 {
     const int count = pointCount();
@@ -535,6 +716,7 @@ void EditorSpline::resetControlPointTypes()
 }
 
 // Casts a normalized 300-metre, two-sided terrain ray and adds or moves a point on hit.
+// PE 0x1009CE00
 void EditorSpline::pickAndAddControlPoint(const Vec2& screen)
 {
     const PickRay* const ray = pickRayFromScreen(&screen, 0);
@@ -551,6 +733,7 @@ void EditorSpline::pickAndAddControlPoint(const Vec2& screen)
         addControlPoint(hit);
 }
 
+// PE 0x1009C870
 void EditorSpline::pickAndMoveControlPoint(int index, const Vec2& screen)
 {
     const PickRay* const ray = pickRayFromScreen(&screen, 0);
@@ -568,6 +751,7 @@ void EditorSpline::pickAndMoveControlPoint(int index, const Vec2& screen)
 }
 
 // Returns the hit control point nearest in view-space depth, or -1. Requeries the view matrix per hit.
+// PE 0x1009D0A0
 int EditorSpline::findNearestControlPoint(const Vec2& screen)
 {
     int best = -1;
@@ -594,7 +778,7 @@ int EditorSpline::findNearestControlPoint(const Vec2& screen)
 
 // Copies spline settings and control points, applying a lateral offset when requested.
 // A nonzero offset requires at least three points; the class factory must return a valid spline.
-
+// PE 0x1009D540
 IEditorSpline* EditorSpline::makeOffsetCopy(float offset)
 {
     EditorSpline* const copy = static_cast<EditorSpline*>(static_cast<IEditorSpline*>(
@@ -712,6 +896,7 @@ bool EditorSpline::nextSegment()
 
 // Writes the next sampled position and normal, including smoothing when enabled.
 // Returns false after the final sample.
+// PE 0x1009C9A0
 bool EditorSpline::nextSample(Vec3* position, Vec3* normal)
 {
     if (m_endState == 0)
@@ -780,6 +965,7 @@ bool EditorSpline::nextSample(Vec3* position, Vec3* normal)
 // stream 0, WorldViewProjection = (+0x68 matrix) x (+0x6C matrix) of the renderer view (the +0x6C
 // pointer is asked for first), DiffuseColor = the colour, and a triangle strip of (vertices - 2)
 // primitives when that is positive; then every point's sphere.
+// PE 0x1009E730
 void EditorSpline::draw()
 {
     dx9rend::stateManagerPush();                                             // sub_100261A0
@@ -787,7 +973,7 @@ void EditorSpline::draw()
         rebuild();
     if (m_vertexBuffer)
     {
-        dx9rend::effectSetTechniqueByName(m_effect, vc71::string("spline"));
+        dx9rend::effectSetTechniqueByName(m_effect, std::string("spline"));
         dx9rend::effectBegin(m_effect);                                      // sub_1001D780
         dx9rend::effectBeginPass(m_effect, 0);                               // sub_1001DBB0
         dx9rend::vertexBufferBindStream(m_vertexBuffer, 0);                  // sub_100146C0
@@ -809,9 +995,16 @@ void EditorSpline::draw()
 }
 
 
-// Rebuilds the ribbon vertex buffer from samples spaced by the configured step.
-// Requires at least two control points. Unsupported spline orders produce an empty buffer and diagnostics.
+namespace {
+// .rdata 0x1020CDE8, the file name of this TU's Debug emitters.
+const char kEditorSplineFile[] =
+    "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\GeomMisc\\EditorSpline.cpp";
+}
 
+// PE 0x1009DA40, called from draw (0x1009E730) while byte +0x30 is set; compared against the
+// listing instruction by instruction. Rebuilds the ribbon vertex buffer from samples spaced by
+// the configured step.
+// Requires at least two control points. Unsupported spline orders produce an empty buffer and diagnostics.
 void EditorSpline::rebuild()
 {
     if (!m_points.data())
@@ -836,12 +1029,14 @@ void EditorSpline::rebuild()
     }
     else
     {
-        ::renddx9abi::logf("EditorSpline.cpp:213: Implement first order on request...");
+        // Debug type 6 (fatal in retail, see MemeTexture::unsupportedOperation), PE 0x1009DBB7.
+        ::renddx9abi::Debug(DebugTypeError, kEditorSplineFile, 213, "")
+            << "Implement first order on request...";
     }
     if (m_snapFlags & 8)
         s_heightmapCluster->getPrimaryScale();                               // +0x54, unused
 
-    Vc71Vec<Vec3> vertices;
+    std::vector<Vec3> vertices;
     unsigned int vec3Count = 0;
     if (m_order == 1)
     {
@@ -962,11 +1157,13 @@ void EditorSpline::rebuild()
         vertices.push_back(capNormal);
 
         m_vertexCount = 0;
-        vec3Count = vertices.size();
+        vec3Count = static_cast<unsigned int>(vertices.size());
     }
     else
     {
-        ::renddx9abi::logf("EditorSpline.cpp:427: Implement first order on request...");
+        // Debug type 6 (fatal in retail), PE 0x1009E56D.
+        ::renddx9abi::Debug(DebugTypeError, kEditorSplineFile, 427, "")
+            << "Implement first order on request...";
     }
 
     const unsigned int vertexCount = vec3Count >> 1;
@@ -974,7 +1171,7 @@ void EditorSpline::rebuild()
     if (m_vertexBuffer)
         dx9rend::vertexBufferRelease(m_vertexBuffer);
     m_vertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager, vertexCount, 24u,
-                                                 vc71::string("EditorSpline"), 8u);
+                                                 std::string("EditorSpline"), 8u);
     m_rebuildBuffer = 0;
     void* const destination = dx9rend::vertexBufferLock(m_vertexBuffer, 0u, 0u, 0u);
     std::memcpy(destination, vertices.data(), vertexCount * 24u);
@@ -983,15 +1180,15 @@ void EditorSpline::rebuild()
 }
 
 
-// RefFactory 0x1007CEA0: refuse aggregation, 0xD4 bytes, construct with order 1, QI with no null test
-// on the object (shipped), release on refusal.
+// RefFactory 0x1007CEA0: refuse aggregation, the object (retail 0xD4 bytes), construct with order 1,
+// QI with no null test on the object (shipped), release on refusal.
 
 IBase* __fastcall createEditorSpline(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
 
-    void* const storage = ::renddx9abi::engineAlloc(0xD4);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(EditorSpline));
     EditorSpline* self = 0;
     if (storage)
         self = new (storage) EditorSpline(1);

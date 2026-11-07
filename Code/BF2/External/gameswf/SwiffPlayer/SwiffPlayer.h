@@ -13,6 +13,13 @@
 #include "gameswf/gameswf_types.h"
 #include "../../../../RendDX9Abi/HfeAbi.h"  // dice::hfe::IBase
 #include "../../../../RendDX9Abi/Frontier.h"
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] One native declaration for host and plugin dispatch.
+#include "../../../Menu/ISwiffPlayer.h"
+#endif
+
+#include <vector>
+#include <stdint.h>
 
 namespace dice {
 namespace hfe {
@@ -46,10 +53,13 @@ struct SwiffRenderHandler : public gameswf::render_handler
 {
     SwiffRenderHandler() {}
 
-    // NO data members - the subobject is exactly 4 bytes (its vtable ptr), matching the shipped
-    // layout (object is 1120 bytes). A Stage-3 forwarder reaches render_context the way the shipped
-    // code does: this subobject sits at object+4 and render_context at object+12, so the owner is
-    // reinterpret_cast<SwiffPlayer*>((char*)this - 4). No back-pointer member is stored.
+    // NO data members - the subobject is only its vtable ptr, as in the shipped layout. The handler
+    // is always SwiffPlayer::render_handler (retail: this subobject at object+4, render_context at
+    // object+12), so a forwarder reaches render_context through its owner, recovered from this
+    // member's offset by renderContext(). No back-pointer member is stored.
+
+    // The owning SwiffPlayer's render_context.
+    ISwiffRender* renderContext();
 
     virtual gameswf::bitmap_info* create_bitmap_info_empty();
     virtual gameswf::bitmap_info* create_bitmap_info_alpha(int w, int h, unsigned char* data);
@@ -93,9 +103,9 @@ struct SwiffRenderHandler : public gameswf::render_handler
     virtual void  text_detach(void* line);                                                  // 24 -> +0x74
     virtual void  text_draw(void* line, const gameswf::matrix* m, unsigned color, int flags); // 25 -> +0x78
     virtual bool  text_extent(void* line, int count, float* w, float* h);                   // 26 -> +0x7C
-    virtual bool  text_hit(void* line, int* outPos, int x, int y);                          // 27 -> +0x80
+    virtual bool  text_hit(void* line, int* outPos, float x, float y);                      // 27 -> +0x80 (0x10005E20: float x/y)
     virtual bool  text_selection(void* line, int* a, int* b);                               // 28 -> +0x84 (AL = has selection)
-    virtual bool  text_set_selection(void* line, int a, int b, int c, int d);               // 29 -> +0x88
+    virtual bool  text_set_selection(void* line, float x1, float y1, float x2, float y2);   // 29 -> +0x88 (0x10005E90: jmp, floats)
     virtual void  text_blur(void* line);                                                    // 30 -> +0x8C
     virtual void  text_set_size(void* line, float size, int flag);                          // 31 -> +0x90
     virtual void  text_caret(void* line, int pos);                                          // 32 -> +0x94
@@ -107,6 +117,7 @@ struct SwiffRenderHandler : public gameswf::render_handler
 // BF2.exe dispatches into it by raw byte offset (initMainMenuSwiff), so the declaration order here
 // must never change.
 
+#if defined(_MSC_VER)
 class ISwiffPlayer : public IBase
 {
 public:
@@ -152,15 +163,15 @@ public:
     // 23 +0x5C
     virtual ISwiffHost* getSwiffHost() = 0;
     // 24 +0x60
-    virtual char  renderCapability0(int a) = 0;
+    virtual char  renderCapability0(intptr_t a) = 0;
     // 25 +0x64
-    virtual char  renderCapability1(int a) = 0;
+    virtual char  renderCapability1(intptr_t a) = 0;
     // 26 +0x68
     virtual int   getMovieWidth() = 0;
     // 27 +0x6C
     virtual int   getMovieHeight() = 0;
     // 28 +0x70
-    virtual void  renderSetPairState(int a, int b) = 0;
+    virtual void  renderSetPairState(intptr_t a, int b) = 0;  // a: the texture name's address
     // 29 +0x74
     virtual void  legacyModeOff() = 0;
     // 30 +0x78
@@ -181,12 +192,13 @@ public:
 protected:
     ~ISwiffPlayer() {}
 };
+#endif
 
 
-// SwiffPlayer - the 1120-byte object. Member order and offsets match the IDB local type
-// dice_hfe_SwiffPlayer_BF2 exactly; static_asserts in the .cpp hold the size and the load-bearing
-// offsets. The ISwiffPlayer base supplies the +0 vtable; the SwiffRenderHandler member supplies the
-// +4 one.
+// SwiffPlayer - member order matches the IDB local type dice_hfe_SwiffPlayer_BF2 (the retail object
+// is 1120 bytes; the +N comments are its offsets). The queued-mouse storage is a std::vector
+// (https://github.com/B2BF/OpenBF2/issues/7), so the native object's size differs from retail. The
+// ISwiffPlayer base supplies the +0 vtable; the SwiffRenderHandler member supplies the +4 one.
 
 class SwiffPlayer : public ISwiffPlayer
 {
@@ -217,15 +229,28 @@ public:
     virtual void  notifyKeyState(int code, int down);
     virtual void  resetModifierState();
     virtual void  setTextInput(const char* text);
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Native images share the host declaration. The
+    // clipboard bodies keep their opaque storage helpers behind these adapters.
+    virtual void getTextInput0(std::string& out) override { getTextInput0(static_cast<void*>(&out)); }
+    virtual void getTextInput1(std::string& out) override { getTextInput1(static_cast<void*>(&out)); }
+    void getTextInput0(void* outStdString);
+    void getTextInput1(void* outStdString);
+#else
     virtual void  getTextInput0(void* outStdString);
     virtual void  getTextInput1(void* outStdString);
+#endif
     virtual void  setSwiffHost(ISwiffHost* host);
     virtual ISwiffHost* getSwiffHost();
-    virtual char  renderCapability0(int a);
-    virtual char  renderCapability1(int a);
+    virtual char  renderCapability0(intptr_t a);
+    virtual char  renderCapability1(intptr_t a);
     virtual int   getMovieWidth();
     virtual int   getMovieHeight();
-    virtual void  renderSetPairState(int a, int b);
+#if defined(_MSC_VER)
+    virtual void  renderSetPairState(intptr_t a, int b);
+#else
+    virtual void  renderSetPairState(const std::string& textureName, int techniqueIndex);
+#endif
     virtual void  legacyModeOff();
     virtual void  legacyModeOn();
     virtual char  getModeFlag();
@@ -236,7 +261,13 @@ public:
     virtual void  setVoipUpdateFlag(char v);
 
 private:
+    // A queued mouse sample (12 bytes), the element of the queued-mouse vector.
+    struct MouseState { int x; int y; int buttons; };
+
     void initKeyTranslation();     // SwiffPlayer_initKeyTranslation 0x10005410
+    // Drops the movie instance and definition, every script object and _global.
+    // [CHOSEN, not recovered] issue #7; see the definition.
+    void releaseMovie();
 
     // +4 - the embedded render handler. gameswf holds a pointer to it via set_render_handler.
     SwiffRenderHandler render_handler;
@@ -281,12 +312,10 @@ private:
     // +1100 (+3 pad)
     unsigned char legacy_flag_44c;
     unsigned char pad_44d[3];
-    // +1104..+1116 - the queued-mouse vector (aux/begin/end/capacity), grown on the engine heap.
-    void*         queued_mouse_aux;
-    void*         queued_mouse_begin;
-    void*         queued_mouse_end;
-    void*         queued_mouse_capacity;
+    // +1104 - the queued mouse samples (retail: a 16-byte VC7.1 vector).
+    std::vector<MouseState> queued_mouse;
 
+    friend struct SwiffRenderHandler;   // renderContext() reaches render_context
     friend IBase* __fastcall RefFactory_ui_SwiffPlayer(unsigned int iid, IBase* parent);
 };
 

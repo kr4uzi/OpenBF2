@@ -26,6 +26,22 @@ namespace dice {
 namespace hfe {
 namespace io {
 
+#if !defined(_WIN32)
+// [CHOSEN, not recovered] c-loopback: Darwin's struct timeval has a 32-bit tv_usec, so writing it
+// over a {long, long} TimeStamp left the upper half of tv_usec stale. A TimeStamp on the stack
+// then held garbage microseconds and the handshake timeout (state 1, 10 s) fired at random:
+// about one loopback join in three was dropped with reason 10. ELF and LP64 Linux timevals are
+// {long, long}, where this is the same as the shipped direct write.
+template <class Stamp>
+inline void gettimeofdayInto(Stamp& stamp)
+{
+    struct timeval now;
+    gettimeofday(&now, 0);
+    stamp.tv_sec  = now.tv_sec;
+    stamp.tv_usec = now.tv_usec;
+}
+#endif
+
 // Starts with one reference, 64 connections and a 10,000 ms timeout; init replaces the stock port.
 // [UNRESOLVED] Unmodeled reference-layout storage. Use named members rather than retail offsets.
 NetServer::NetServer()
@@ -74,7 +90,7 @@ NetServer::NetServer()
     m_initTime.tv_sec  = (long)(ticks / 10000000ULL);
     m_initTime.tv_usec = (long)((ticks % 10000000ULL) / 10ULL);
 #else
-    gettimeofday(reinterpret_cast<struct timeval*>(&m_initTime), 0);   // +0x498, as read
+    gettimeofdayInto(m_initTime);   // +0x498, as read
 #endif
 }
 
@@ -219,7 +235,7 @@ int NetServer::getTime() const
     now.tv_sec  = (long)(ticks / 10000000ULL);
     now.tv_usec = (long)((ticks % 10000000ULL) / 10ULL);
 #else
-    gettimeofday(reinterpret_cast<struct timeval*>(&now), 0);
+    gettimeofdayInto(now);
 #endif
 
     return (int)((now.tv_sec  - m_initTime.tv_sec)  * 1000
@@ -257,7 +273,7 @@ int NetServer::init(const std::string& address, unsigned int port, bool /* [UNRE
         m_initTime.tv_usec = (long)((ticks % 10000000ULL) / 10ULL);
     }
 #else
-    gettimeofday(reinterpret_cast<struct timeval*>(&m_initTime), 0);
+    gettimeofdayInto(m_initTime);
 #endif
 
     // 4. the server name is "<address>:<port>", and it is also what gets listened on.
@@ -332,7 +348,7 @@ unsigned int NetServer::elapsedMsSinceInit() const
     now.tv_sec  = (long)(ticks / 10000000ULL);
     now.tv_usec = (long)((ticks % 10000000ULL) / 10ULL);
 #else
-    gettimeofday(reinterpret_cast<struct timeval*>(&now), 0);
+    gettimeofdayInto(now);
 #endif
 
     // the ELF order: usec term first, then 1000 * sec. Transcribed as written - see the note above.
@@ -1092,7 +1108,7 @@ void NetServer::sendRawPacket(const char* address, unsigned short port, const ch
     sockaddr_in nativeAddress = {};
     nativeAddress.sin_addr.s_addr = ::inet_addr(address);
     nativeAddress.sin_family = AF_INET;
-    nativeAddress.sin_port = ::htons(port);
+    nativeAddress.sin_port = htons(port);   // unqualified: a macro on macOS
     ISocket::Address peer = {};
     std::memcpy(peer.sockaddr, &nativeAddress, 16);
     peer.length = 16;
@@ -1514,7 +1530,7 @@ bool NetServer::startReceiveThread()
 }
 
 // Sets both stop flags, then stops and deletes the receive thread.
-// Only stopRequested is protected by the stop mutex; shutting-down remains an unsynchronized write.
+// Only stopRequested uses the stop mutex; POSIX publishes shutting-down through its atomic member.
 void NetServer::endReceiveThread()
 {
     if (!m_netServerThread)

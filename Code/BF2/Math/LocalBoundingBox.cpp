@@ -74,7 +74,8 @@ bool LocalBoundingBox::inside(const Frustum* frustum, const Mat4* transform, uns
     return false;
 }
 
-// ELF 0x4969F0; engine ELF 0x83B31F0.
+// ELF 0x4969F0; engine ELF 0x83B31F0; RendDX9.dll copy PE 0x101C5FE0 (unreachable there: no code or
+// data references).
 int LocalBoundingBox::getMajorAxis() const
 {
     if (m_derivedDataDirty)
@@ -84,13 +85,16 @@ int LocalBoundingBox::getMajorAxis() const
     return m_size.z > m_size.x ? 2 : 0;
 }
 
-// ELF 0x497560; engine ELF 0x83B3CE0.
+// ELF 0x497560; engine ELF 0x83B3CE0; RendDX9.dll copy PE 0x101C5490 (unreachable there: no code or
+// data references; it forwards to the RendDX9 copy of intersect, PE 0x101C7980).
 bool LocalBoundingBox::inside(const Frustum& frustum) const
 {
     return intersect(frustum, *this);
 }
 
-// ELF 0x4981F0; engine ELF 0x83B49B0.
+// ELF 0x4981F0; engine ELF 0x83B49B0; RendDX9.dll copy PE 0x101C5D00 (unreachable there: no code or
+// data references). [PLATFORM] the PE copy sums the rotated components in a different association
+// ((dz*m10 + dx*m2) + dy*m6 for lz); the ELF-derived order below differs in the last float bit only.
 bool LocalBoundingBox::isInside(const Vec3& point, const Vec3& ownerPosition,
                                const Mat4& ownerInverse) const
 {
@@ -109,14 +113,18 @@ bool LocalBoundingBox::isInside(const Vec3& point, const Vec3& ownerPosition,
     return m_max.z >= lz;
 }
 
-// ELF 0x496A70. The source overload is only an identity-transform
+// ELF 0x496A70; RendDX9.dll copy PE 0x101C6050 (unreachable there: no code or data references; the
+// identity matrix comes from the function-local static at PE 0x100791E0). The source overload is only an identity-transform
 // forwarding wrapper in both ports.
 bool LocalBoundingBox::intersectRay(const Ray3& ray, Vec3& position, Vec3* normal) const
 {
     return intersectRay(ray, Mat4::getIdentity(), position, normal);
 }
 
-// ELF 0x496AC0. Tests the ray against this box under transform and writes intersection data when found.
+// ELF 0x496AC0; RendDX9.dll copy PE 0x101C56C0 (unreachable there: no code or data references;
+// instruction-identical, once addresses are normalised, to the BF2.exe copy at PE 0x6DADF0, and its
+// two plane intersections call the RendDX9 copy of findIntersection, PE 0x101C78F0).
+// Tests the ray against this box under transform and writes intersection data when found.
 bool LocalBoundingBox::intersectRay(const Ray3& ray, const Mat4& transform,
                                     Vec3& position, Vec3* normal) const
 {
@@ -243,7 +251,9 @@ bool LocalBoundingBox::intersectRay(const Ray3& ray, const Mat4& transform,
     return true;
 }
 
-// ELF 0x497600. Tests two oriented bounding boxes using their separating axes.
+// ELF 0x497600; RendDX9.dll copy PE 0x101C6080 (unreachable there: no code or data references;
+// instruction-identical, once addresses are normalised, to the BF2.exe copy at PE 0x6DB6E0, and like
+// it never reads the grow argument). Tests two oriented bounding boxes using their separating axes.
 bool LocalBoundingBox::testIntersectWithOBB(const Mat4& thisTransform,
                                              const LocalBoundingBox& other,
                                              const Mat4& otherTransform,

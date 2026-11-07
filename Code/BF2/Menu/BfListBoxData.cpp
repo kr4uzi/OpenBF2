@@ -1,5 +1,8 @@
 // Client list-box cell data. [INFERRED] Source placement.
 #include "BfListBoxData.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #include "BfNewListBoxNode.h"
 #if !DEDICATED
 #include "../External/BFMeme/TypeDescriptor.h"
@@ -9,16 +12,33 @@
 #include "../External/BFMeme/Style.h"
 #include "../External/BFMeme/System.h"
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <new>
+// [CHOSEN, not recovered] SSE2 is used only by the Windows x64 arm; arm64 has no emmintrin.h.
+#if defined(_WIN32) && !defined(_M_IX86)
+#include <emmintrin.h>
+#endif
 namespace dice { namespace meme {
-// [FRONTIER] Releases a cell resource through an unidentified interface. [INFERRED] Name and void return.
-// Keep declaration-only until the full typed interface prefix is established.
-void releaseListBoxCellResource(dice::hfe::IBase*, int resourceIndex);
+// [FRONTIER] [TEMP] [CHOSEN, not recovered] Releases a cell resource through an unidentified
+// interface. [INFERRED] Name and void return. BF2.exe clearCell (7C4CE7) and copyCell (7C4A5B) call
+// the list's +48 object at vtable +20 with the cell's resource index and discard the result; the
+// object's interface is not identified, so this stops before any call.
+// [RETIRE-WHEN: LISTBOX-CELL-RESOURCE] Identify the +48 owner and its typed +20 method, call it
+// here, and validate a list box that clears cells with a resource attached.
+void releaseListBoxCellResource(dice::hfe::IBase*, int)
+{
+    std::fprintf(stderr, "[FRONTIER] dice::meme::releaseListBoxCellResource reached\n");
+    std::fflush(stderr);
+    std::abort();
+}
 namespace {
 // PE's x87 fistp integer conversion, including its saved rounding mode. This
 // expression helper is not a separately attested retail function.
 int truncateListWidth(double value)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     unsigned short original, truncating;
     int result;
     __asm {
@@ -32,6 +52,18 @@ int truncateListWidth(double value)
         fldcw original
     }
     return result;
+#else
+    // cvttsd2si truncates like the chopped fistp, including the 0x80000000 indefinite result.
+    return _mm_cvttsd_si32(_mm_set_sd(value));
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    unsigned short original, truncating;
+    int result;
+    // [CHOSEN, not recovered] Preserve x87 truncating int32 with integer indefinite.
+    result = bf2x87::integer<int>(bf2x87::wide(value));
+    return result;
+#endif
 }
 }
 ListBoxData::ListBoxData(const char* name) : Data(name), m_row(0) {}
@@ -123,7 +155,7 @@ ListBoxCell::ListBoxCell(std::wstring text, float x, float y, float r, float g, 
 ListBoxColumn::ListBoxColumn(int number, int size, bool flag, bool flag2)
     : index(number), cells(), width(size), enabled(true), field019(flag),
       field01a(flag2), field01c(0), field020(-1) {}
-ListBoxCell::ListBoxCell(int image, float width, float height, float x, float y,
+ListBoxCell::ListBoxCell(TextureHandle image, float width, float height, float x, float y,
     float r, float g, float b, float a) : narrow(), wide()
 {
     texture = image;
@@ -258,7 +290,7 @@ bool BfListBoxData::appendCell(int index, std::string text, float r, float g, fl
 bool BfListBoxData::appendCell0x7c81c0(int index, std::string text,
     float r, float g, float b, float a, int value)
 { return appendCell(index, text, r, g, b, a, value); }
-bool BfListBoxData::appendImageCell0x7c8300(int index, int texture, float width, float height,
+bool BfListBoxData::appendImageCell0x7c8300(int index, TextureHandle texture, float width, float height,
     float x, float y, float r, float g, float b, float a)
 { return appendImageCell(index, texture, width, height, x, y, r, g, b, a); }
 // 7C8120 / 7C83D0 and their forwarders. See BfListBoxData.h for the shape and the two inherited
@@ -338,7 +370,7 @@ std::wstring BfListBoxData::getWideCell(int index, int row)
     }
     return L"";
 }
-bool BfListBoxData::appendImageCell(int index, int texture, float width, float height,
+bool BfListBoxData::appendImageCell(int index, TextureHandle texture, float width, float height,
     float x, float y, float r, float g, float b, float a)
 {
     if (static_cast<unsigned int>(index) < m_columns.size()) {
@@ -351,7 +383,7 @@ bool BfListBoxData::appendImageCell(int index, int texture, float width, float h
     }
     return true;
 }
-bool BfListBoxData::setImageCell(int index, int row, int texture, float width, float height,
+bool BfListBoxData::setImageCell(int index, int row, TextureHandle texture, float width, float height,
     float x, float y, float r, float g, float b, float a, int extra)
 {
     if (static_cast<unsigned int>(index) < m_columns.size()) {
@@ -664,6 +696,7 @@ bool BfListBoxData::insertWideCell(int index, int row, std::wstring text,
 }
 int BfListBoxData::measureText(System* system, std::wstring text, int column, int row, int* fontMode)
 {
+#if defined(_WIN32)
     int characters[256];
     std::string narrow;
     std::wstring wide;
@@ -684,6 +717,7 @@ int BfListBoxData::measureText(System* system, std::wstring text, int column, in
             system->getGlyphMetrics(character, m_node->m_fonts[mode], &metrics);
             ++index;
             // Keep all three additions on x87 until the single float store.
+#if defined(_M_IX86)
             __asm {
                 lea eax, metrics
                 fld dword ptr [eax+8]
@@ -692,6 +726,12 @@ int BfListBoxData::measureText(System* system, std::wstring text, int column, in
                 fadd width
                 fstp width
             }
+#else
+            // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+            // +8 rightBearing, +4 width, +0 leftBearing.
+            width = static_cast<float>(static_cast<double>(metrics.rightBearing) + metrics.width
+                                       + metrics.leftBearing + width);
+#endif
         }
         if (index >= 250) break;
         float imageX = 0;
@@ -715,6 +755,54 @@ int BfListBoxData::measureText(System* system, std::wstring text, int column, in
     }
     *fontMode = mode;
     return index;
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    int characters[256];
+    std::string narrow;
+    std::wstring wide;
+    float width = 0;
+    int index = 0, mode = *fontMode;
+    GlyphMetrics metrics; // retail ignores getGlyphMetrics failure; do not initialize
+    while (true) {
+        const int character = static_cast<unsigned short>(text.c_str()[index]);
+        characters[index] = character;
+        if (!character) break;
+        const int next = static_cast<unsigned short>(text.c_str()[index + 1]);
+        characters[index + 1] = next;
+        if (character == 0xA7 && next >= '0' && next <= '3') {
+            mode = next - '0'; index += 2;
+        } else if (character == 0xA7 && (next == 'C' || next == 'c')) {
+            index += 6;
+        } else {
+            system->getGlyphMetrics(character, m_node->m_fonts[mode], &metrics);
+            ++index;
+            // Keep all three additions on x87 until the single float store.
+            // [CHOSEN, not recovered] Preserve x87 right/width/left additions before float store.
+            width = bf2x87::glyphWidth(metrics.rightBearing, metrics.width, metrics.leftBearing, width);
+        }
+        if (index >= 250) break;
+        float imageX = 0;
+        if (static_cast<unsigned int>(column) < m_columns.size()) {
+            ListBoxColumn* entry = m_columns[column];
+            if (entry && static_cast<unsigned int>(row) < entry->cells.size()) {
+                ListBoxCell* cell = entry->cells[row];
+                if (cell) imageX = cell->imageX;
+            }
+        }
+        int alignment = 0;
+        if (static_cast<unsigned int>(column) < m_columns.size()) {
+            ListBoxColumn* entry = m_columns[column];
+            if (entry && static_cast<unsigned int>(row) < entry->cells.size()) {
+                ListBoxCell* cell = entry->cells[row];
+                if (cell) alignment = cell->field064;
+            }
+        }
+        const float used = imageX + width;
+        if (getAvailableWidth(column, alignment) < used) break;
+    }
+    *fontMode = mode;
+    return index;
+#endif
 }
 // 659EE0, a shared one-byte setter the HUD builder's outline row calls directly.
 void BfListBoxData::setOutlineForHud(bool outline) { m_outline = outline; }

@@ -1,5 +1,8 @@
 // Network telemetry sampling and aggregation. Graphical statistics retain a client rendering frontier.
 
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "NetworkStats.h"
 #include "../../Core/Ids.h"
 #include "../../Game/IGame.h"
@@ -146,6 +149,16 @@ void BasicNetworkStats::updateServerStats()
     const long double writeTotal = static_cast<long double>(m_streamManagerWriteBits[0]) +
         m_streamManagerWriteBits[1] + m_streamManagerWriteBits[2];
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    // ELF 847181E..847183C retains both totals in x87 and multiplies by 100 before division.
+    bf2x87::Real readTotal = 0.0L;
+    bf2x87::Real writeTotal = 0.0L;
+    for (unsigned int i = 0; i < 3; ++i) {
+        readTotal += m_streamManagerReadBits[i];
+        writeTotal += m_streamManagerWriteBits[i];
+    }
+#else
     // ELF 847181E..847183C retains both totals in x87 and multiplies by 100 before division.
     long double readTotal = 0.0L;
     long double writeTotal = 0.0L;
@@ -154,14 +167,21 @@ void BasicNetworkStats::updateServerStats()
         writeTotal += m_streamManagerWriteBits[i];
     }
 #endif
+#endif
     for (unsigned int i = 0; i < 3; ++i) {
         if (readTotal > 0.0f) {
 #if defined(_WIN32)
             m_streamManagerReadPercent[i] = static_cast<float>(
                 static_cast<long double>(m_streamManagerReadBits[i]) / readTotal * 100.0L);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+            m_streamManagerReadPercent[i] = static_cast<float>(
+                static_cast<bf2x87::Real>(m_streamManagerReadBits[i]) * 100.0L / readTotal);
+#else
             m_streamManagerReadPercent[i] = static_cast<float>(
                 static_cast<long double>(m_streamManagerReadBits[i]) * 100.0L / readTotal);
+#endif
 #endif
         }
         if (writeTotal > 0.0f) {
@@ -169,8 +189,14 @@ void BasicNetworkStats::updateServerStats()
             m_streamManagerWritePercent[i] = static_cast<float>(
                 static_cast<long double>(m_streamManagerWriteBits[i]) / writeTotal * 100.0L);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+            m_streamManagerWritePercent[i] = static_cast<float>(
+                static_cast<bf2x87::Real>(m_streamManagerWriteBits[i]) * 100.0L / writeTotal);
+#else
             m_streamManagerWritePercent[i] = static_cast<float>(
                 static_cast<long double>(m_streamManagerWriteBits[i]) * 100.0L / writeTotal);
+#endif
 #endif
         }
         // Nonpositive/NaN totals leave the previous percentage intact, but still reset samples.

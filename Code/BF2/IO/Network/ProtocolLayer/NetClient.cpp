@@ -20,6 +20,8 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
+#else
+#include <sys/time.h>                                // gettimeofday - the POSIX counter below
 #endif
 
 namespace dice {
@@ -40,7 +42,9 @@ namespace {
         if (threaded)
             ::WaitForSingleObject(mutex, INFINITE);
 #else
-        (void) threaded; (void) mutex;
+        // [CHOSEN, not recovered] No worker owns state before mutex creation.
+        if (threaded && mutex)
+            static_cast<Mutex*>(mutex)->lock();
 #endif
     }
     inline void unlockIf(bool threaded, void* mutex)
@@ -49,9 +53,21 @@ namespace {
         if (threaded)
             ::ReleaseMutex(mutex);
 #else
-        (void) threaded; (void) mutex;
+        // [CHOSEN, not recovered] Pair with the POSIX connection lock above.
+        if (threaded && mutex)
+            static_cast<Mutex*>(mutex)->unlock();
 #endif
     }
+#if !defined(_WIN32)
+    // [CHOSEN, not recovered] The POSIX stand-in for QueryPerformanceCounter: microseconds from
+    // gettimeofday, the clock NetServer uses on Unix. Frequency 1000000 goes with it.
+    inline long long posixCounterMicros()
+    {
+        struct timeval now;
+        gettimeofday(&now, 0);
+        return static_cast<long long>(now.tv_sec) * 1000000 + now.tv_usec;
+    }
+#endif
     inline unsigned int bytesOf(const BitStream* stream)
     {
         return (stream->m_highWaterBits >> 3) + ((stream->m_highWaterBits & 7) != 0 ? 1u : 0u);
@@ -94,8 +110,11 @@ NetClient::NetClient()
     ::QueryPerformanceFrequency(&counter);            // +0x0F0
     m_counterFrequency = counter.QuadPart;
 #else
-    m_startCounter = 0;
-    m_counterFrequency = 1;
+    // [CHOSEN, not recovered] c-loopback: POSIX has no QueryPerformanceCounter. The counter is
+    // gettimeofday in microseconds (NetServer's Unix clock), so elapsedMs keeps the PE formula.
+    // The old 0/1 pair with an elapsedMs of 0 froze every handshake timeout and retry.
+    m_startCounter = posixCounterMicros();
+    m_counterFrequency = 1000000;
 #endif
 }
 
@@ -189,11 +208,16 @@ int NetClient::closeConnection(unsigned int reason)
         return 9;
 #if defined(_WIN32)
     ::WaitForSingleObject(m_mutex, INFINITE);
+#else
+    // [CHOSEN, not recovered] Serialize disconnect with the receive worker.
+    lockIf(m_threaded, m_mutex);
 #endif
     for (int i = 0; i < 3; ++i)
         sendDisconnect(reason);
 #if defined(_WIN32)
     ::ReleaseMutex(m_mutex);
+#else
+    unlockIf(m_threaded, m_mutex);
 #endif
     return 0;
 }
@@ -275,7 +299,8 @@ unsigned int NetClient::elapsedMs() const
     return static_cast<unsigned int>(static_cast<double>(now.QuadPart - m_startCounter)
                                      / static_cast<double>(m_counterFrequency) * 1000.0);
 #else
-    return 0;
+    return static_cast<unsigned int>(static_cast<double>(posixCounterMicros() - m_startCounter)
+                                     / static_cast<double>(m_counterFrequency) * 1000.0);
 #endif
 }
 int NetClient::getTime() const
@@ -394,6 +419,9 @@ int NetClient::connect(const std::string& address, int port, bool blocking, cons
         m_startCounter = counter.QuadPart;
         ::QueryPerformanceFrequency(&counter);
         m_counterFrequency = counter.QuadPart;
+#else
+        m_startCounter = posixCounterMicros();        // [CHOSEN, not recovered] see the constructor
+        m_counterFrequency = 1000000;
 #endif
         m_connectAttemptsLeft = kConnectRequestAttempts;   // the canary seeded (0x5959C58A)
         m_mustSendRequest = true;
@@ -928,6 +956,34 @@ namespace {
         return 0;
     }
 }
+#else
+namespace {
+    // [CHOSEN, not recovered] POSIX counterpart of the Windows receive loop.
+    // Borrowed client/socket remain alive until the owner signals and joins.
+    class NetClientThread : public Thread
+    {
+    public:
+        explicit NetClientThread(NetClient* client) : m_client(client) {}
+        void run() override
+        {
+            std::vector<ISocket*> sockets(1, m_client->m_socket);
+            while (!m_client->m_stopRequested.load())
+            {
+                socketManager->sleep(sockets, 3.0f);
+                m_client->m_mutex->lock();
+                int result;
+                do
+                {
+                    result = m_client->_update(0);
+                }
+                while (result != 8 && result != 14);
+                m_client->m_mutex->unlock();
+            }
+        }
+    private:
+        NetClient* m_client;
+    };
+}
 #endif
 
 bool NetClient::startReceiveThread()
@@ -938,10 +994,23 @@ bool NetClient::startReceiveThread()
     m_thread = ::CreateThread(0, 0, &netClientThreadProc, this, 0, &threadId);
     if (m_thread)
     {
-        static_cast<Profiler*>(profiler)->registerThread(reinterpret_cast<unsigned int>(m_thread), threadId,
+        // The shipped signature takes the handle as a 32-bit value; its (empty) body ignores it, so
+        // the explicit narrowing on x64 loses nothing.
+        static_cast<Profiler*>(profiler)->registerThread(static_cast<unsigned int>(reinterpret_cast<uintptr_t>(m_thread)), threadId,
                                                          std::string("NetClientThread"));   // 4594F0 on the Profiler singleton
         return true;
     }
+#else
+    // [CHOSEN, not recovered] Initialize before pthread creation publishes state.
+    m_stopRequested.store(false);
+    m_mutex = new Mutex;
+    m_thread = new NetClientThread(this);
+    if (m_thread->start("NetClientThread", Thread::Priority_AboveNormal))
+        return true;
+    delete m_thread;
+    m_thread = 0;
+    delete m_mutex;
+    m_mutex = 0;
 #endif
     Debug(DEBUGTYPE_6, NETCLIENT_FILE, 1416, "") << "clientReceiveThread was not created successfully";
     return false;
@@ -959,6 +1028,22 @@ void NetClient::stopReceiveThread()
         m_mutex = 0;
         ::CloseHandle(m_thread);
         m_thread = 0;
+    }
+#else
+    // [CHOSEN, not recovered] Never free borrowed state before the worker joins.
+    if (m_thread)
+    {
+        m_stopRequested.store(true);
+        if (!m_thread->stop())
+        {
+            std::fprintf(stderr, "NetClient::stopReceiveThread: POSIX join failed\n");
+            std::fflush(stderr);
+            std::abort();
+        }
+        delete m_thread;
+        m_thread = 0;
+        delete m_mutex;
+        m_mutex = 0;
     }
 #endif
 }

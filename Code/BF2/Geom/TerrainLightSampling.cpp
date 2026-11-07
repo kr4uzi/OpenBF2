@@ -5,6 +5,9 @@
 // conversion texture; storeResults uses the lock's width as the texel pitch.
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"   // [CHOSEN, not recovered] x87 intermediates and conversions.
+#endif
 #include "TerrainLightSampling.h"
 #include "TerrainEditable.h"
 #include "QuadPatchEditable.h"
@@ -18,25 +21,15 @@
 #include "../RendDX9/RendDX9Base.h"               // the TextureManager seams
 #include "../RendDX9/Texture.h"
 #include "../../RendDX9Abi/BfMemory.h"
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "../../RendDX9Abi/Frontier.h"            // renddx9abi::logf - dice's debug stream
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"         // classManager
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 
 #include <cstdarg>
 #include <cstdio>
-
-// d3dx9_25 exports undecorated names (D3dx9_25.def's header; EnvMapManager.cpp declares the same pair).
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-extern "C" HRESULT WINAPI D3DXFilterTexture(
-    IDirect3DBaseTexture9* baseTexture, const PALETTEENTRY* palette, UINT sourceLevel, DWORD filter);
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
-#pragma comment(linker, "/alternatename:_D3DXFilterTexture@16=_D3DXFilterTexture")
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -59,7 +52,7 @@ inline ::dice::hfe::world::IHeightmapCluster* heightmapClusterByName()
 
 // The image's printf-into-a-string helper (TerrainEditable.cpp carries the same body): formats into
 // a 0xFFF-character window and substitutes the shipped warning when the text does not fit.
-void formatString(vc71::string& out, const char* format, ...)
+void formatString(std::string& out, const char* format, ...)
 {
     char buffer[0x1000];
     va_list args;
@@ -108,9 +101,45 @@ inline void clearBlock(TerrainLightBlock& block)
     block.written = 0;
 }
 
-inline TerrainLightBlock* blockAt(vc71::vector_layout& blocks, unsigned int index)
+// A scaled box extent truncated to int: FISTP (truncating control word) of the unstored product.
+inline int scaledExtent(float extent, float resolution)
 {
-    return reinterpret_cast<TerrainLightBlock*>(blocks.first) + index;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The product stays on the x87 stack through the conversion.
+    return bf2x87::toIntTruncate(bf2x87::mul(bf2x87::wide(extent), bf2x87::wide(resolution)));
+#else
+    return static_cast<int>(extent * resolution);
+#endif
+}
+
+// One sample coordinate: cursor * step * extent + box minimum, rounded only at the float store.
+inline float sampleCoordinate(unsigned int cursor, float step, float extent, float minimum)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FILD and the three operations stay unstored until the position store.
+    return bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::mul(
+        bf2x87::wide(static_cast<double>(cursor)), bf2x87::wide(step)), bf2x87::wide(extent)),
+        bf2x87::wide(minimum)));
+#else
+    return static_cast<float>(cursor) * step * extent + minimum;
+#endif
+}
+
+// One packed channel: __ftol2's 64-bit truncation of value * 255, its low byte kept.
+inline unsigned int channelByte(float value)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The product reaches __ftol2 without a float store.
+    return static_cast<unsigned int>(bf2x87::toInt64Truncate(
+        bf2x87::mul(bf2x87::wide(value), bf2x87::wide(255.0f)))) & 0xFFu;
+#else
+    return static_cast<unsigned int>(static_cast<long long>(value * 255.0f)) & 0xFFu;
+#endif
+}
+
+inline TerrainLightBlock* blockAt(std::vector<TerrainLightBlock>& blocks, unsigned int index)
+{
+    return blocks.data() + index;                                             // unchecked, as shipped
 }
 
 } // anonymous namespace
@@ -118,6 +147,7 @@ inline TerrainLightBlock* blockAt(vc71::vector_layout& blocks, unsigned int inde
 
 // The sampling cursor and the batch fields are left unset; selectBlock and getSamples
 // write them before they are read.
+// PE 0x1019A3B0
 TerrainLightSampler::TerrainLightSampler(TerrainEditable* terrain)
     : m_refCount(1),
       m_texture(0),
@@ -126,23 +156,18 @@ TerrainLightSampler::TerrainLightSampler(TerrainEditable* terrain)
       m_current(0),
       m_terrain(terrain)
 {
-    m_blocks.first = 0;
-    m_blocks.last = 0;
-    m_blocks.end = 0;
 }
 
-// Drops the texture's owner reference (destroyed at zero), then frees the block storage.
+// Drops the texture's owner reference (destroyed at zero); the block storage is freed by
+// m_blocks' own destructor after this body.
+// PE 0x1019A3F0
 TerrainLightSampler::~TerrainLightSampler()
 {
     terrainReleaseTexture(m_texture);
-    if (m_blocks.first)
-        ::renddx9abi::engineFree(m_blocks.first);
-    m_blocks.first = 0;
-    m_blocks.last = 0;
-    m_blocks.end = 0;
 }
 
 // No block current, the blocks built; always succeeds.
+// PE 0x1019A750
 bool TerrainLightSampler::init()
 {
     m_current = 0;
@@ -155,6 +180,7 @@ void TerrainLightSampler::addRef() { ++m_refCount; }
 int  TerrainLightSampler::getRef() { return m_refCount; }
 
 // Answers the count after the decrement; zero destroys and frees.
+// PE 0x1019AE20
 int TerrainLightSampler::release()
 {
     const int count = --m_refCount;
@@ -175,12 +201,14 @@ void* TerrainLightSampler::queryInterface(unsigned int iid) const
     return iid == IID_ILightSampling ? self : 0;
 }
 
+// PE 0x10199EB0
 unsigned int TerrainLightSampler::getBlockCount()
 {
-    return ::vc71::vectorSizeIn(m_blocks, sizeof(TerrainLightBlock));
+    return static_cast<unsigned int>(m_blocks.size());
 }
 
 // The texel count (height * width) and a copy of the block's box; no triangles.
+// PE 0x1019A120
 LightSampleBlock TerrainLightSampler::getBlock(unsigned int block)
 {
     const TerrainLightBlock* const source = blockAt(m_blocks, block);
@@ -194,6 +222,7 @@ LightSampleBlock TerrainLightSampler::getBlock(unsigned int block)
 // Continues the current block (selecting `block` first when it differs) row by row:
 // every texel becomes a sample at its spot of the block's box, height and normal from the
 // HeightmapCluster (Phong normals on for the batch), clamped up to sea level with an up normal.
+// PE 0x1019A1E0
 unsigned int TerrainLightSampler::getSamples(unsigned int block, unsigned int maxCount,
                                              LightSample* out)
 {
@@ -221,8 +250,8 @@ unsigned int TerrainLightSampler::getSamples(unsigned int block, unsigned int ma
     {
         if (m_nextZ >= m_current->height)
             break;
-        const float z = static_cast<float>(m_nextZ) * stepZ * extent.z + m_current->bounds.min.z;
-        const float x = static_cast<float>(m_nextX) * stepX * extent.x + m_current->bounds.min.x;
+        const float z = sampleCoordinate(m_nextZ, stepZ, extent.z, m_current->bounds.min.z);
+        const float x = sampleCoordinate(m_nextX, stepX, extent.x, m_current->bounds.min.x);
         sample->position.y = 100000.0f;
         sample->position.x = x;
         sample->position.z = z;
@@ -258,6 +287,7 @@ unsigned int TerrainLightSampler::getSamples(unsigned int block, unsigned int ma
 // are overwritten, unclamped), puts the water depth below sea level into result[0] (0..3 m -> 0..1,
 // left alone above water), and stores A = result[3], R = result[0], G = result[1], B = result[2]
 // (each * 255, truncated, low byte kept) at the batch's texels. The finished block is written.
+// PE 0x10199ED0
 bool TerrainLightSampler::storeResults()
 {
     world::IHeightmapCluster* const cluster = heightmapClusterByName();
@@ -285,10 +315,10 @@ bool TerrainLightSampler::storeResults()
             else
                 sample.result[0] = 1.0f;
         }
-        const unsigned int a = static_cast<unsigned int>(static_cast<int>(sample.result[3] * 255.0f)) & 0xFFu;
-        const unsigned int r = static_cast<unsigned int>(static_cast<int>(sample.result[0] * 255.0f)) & 0xFFu;
-        const unsigned int g = static_cast<unsigned int>(static_cast<int>(sample.result[1] * 255.0f)) & 0xFFu;
-        const unsigned int b = static_cast<unsigned int>(static_cast<int>(sample.result[2] * 255.0f)) & 0xFFu;
+        const unsigned int a = channelByte(sample.result[3]);
+        const unsigned int r = channelByte(sample.result[0]);
+        const unsigned int g = channelByte(sample.result[1]);
+        const unsigned int b = channelByte(sample.result[2]);
         texels[lock->width * m_batchZ + m_batchX] = (a << 24) | (r << 16) | (g << 8) | b;
         ++m_batchX;
         if (m_batchX >= lock->width)
@@ -306,6 +336,7 @@ bool TerrainLightSampler::storeResults()
 }
 
 // The terrain sampler keeps no lights: always 0.
+// PE 0x10199BA0
 int TerrainLightSampler::addLight(Vec3, Vec3, float)
 {
     return 0;
@@ -317,6 +348,7 @@ void* TerrainLightSampler::getLights()
     return 0;
 }
 
+// PE 0x1019A450
 void TerrainLightSampler::buildBlocks()
 {
     if (m_terrain->m_drawMain)                                               // +0x358
@@ -333,11 +365,11 @@ void TerrainLightSampler::buildBlocks()
             block.patchX = fileX;
             patch->getWorldBounds(block.bounds);
             const float resolution = m_resolutionModifier;
-            const int width = static_cast<int>(boxExtent(block.bounds).x * resolution);
-            const int height = static_cast<int>(boxExtent(block.bounds).z * resolution);
+            const int width = scaledExtent(boxExtent(block.bounds).x, resolution);
+            const int height = scaledExtent(boxExtent(block.bounds).z, resolution);
             block.width = floorPowerOfTwo(static_cast<unsigned int>(width));
             block.height = floorPowerOfTwo(static_cast<unsigned int>(height));
-            ::vc71::vectorPushBackIn(m_blocks, sizeof(TerrainLightBlock), &block);
+            m_blocks.push_back(block);
         }
     }
     if (m_terrain->m_flag359)                                                // +0x359
@@ -353,17 +385,18 @@ void TerrainLightSampler::buildBlocks()
             block.patchZ = slot;
             ring->getWorldBounds(block.bounds);
             const float resolution = m_resolutionModifier;
-            const int width = static_cast<int>(boxExtent(block.bounds).x * resolution) / 8;
-            const int height = static_cast<int>(boxExtent(block.bounds).z * resolution) / 8;
+            const int width = scaledExtent(boxExtent(block.bounds).x, resolution) / 8;
+            const int height = scaledExtent(boxExtent(block.bounds).z, resolution) / 8;
             block.width = floorPowerOfTwo(static_cast<unsigned int>(width));
             block.height = floorPowerOfTwo(static_cast<unsigned int>(height));
-            ::vc71::vectorPushBackIn(m_blocks, sizeof(TerrainLightBlock), &block);
+            m_blocks.push_back(block);
         }
     }
 }
 
 // A texture of another size is dropped (owner reference only); a new one is made in
 // the scratch pool (the TextureManager's +0x20 swapped to 3 around the create), one level.
+// PE 0x1019A060
 void TerrainLightSampler::selectBlock(unsigned int block)
 {
     m_currentBlock = static_cast<int>(block);
@@ -396,6 +429,7 @@ void TerrainLightSampler::selectBlock(unsigned int block)
 // In DXT1 mode the block texture's alpha first moves into blue (lightmapMoveAlphaToBlue, which the
 // mesh sampler shares). Ring patches save the A8R8G8B8 texture as it is; patches convert it to DXT1
 // or DXT5 in a managed copy with a full mip chain (D3DXFilterTexture) and save that.
+// PE 0x10199BB0
 void TerrainLightSampler::writeCurrentLightmap()
 {
     if (m_currentBlock == -1)
@@ -404,9 +438,9 @@ void TerrainLightSampler::writeCurrentLightmap()
     const bool dxt1 = g_LightmapGeneration->m_lightmapFormat == 1;           // +0x124
     if (m_current->patchX == -1)
     {
-        vc71::string name;
+        std::string name;
         {
-            const vc71::string base = m_terrain->getEditorLightmapBaseName();       // P+0x104
+            const std::string base = m_terrain->getEditorLightmapBaseName();       // P+0x104
             const TerrainEditableString path = m_terrain->getLevelSavePath();      // E+0x90
             formatString(name, "%s%s_s%i", path.c_str(), base.c_str(), m_current->patchZ);
         }
@@ -427,7 +461,7 @@ void TerrainLightSampler::writeCurrentLightmap()
         return;
     }
 
-    vc71::string name;
+    std::string name;
     {
         TerrainEditableNameResult base = m_terrain->getLightmapBaseName();    // E+0x74
         const TerrainEditableString path = m_terrain->getLevelSavePath();    // E+0x90

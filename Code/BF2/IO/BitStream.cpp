@@ -1,6 +1,9 @@
 // Bit-level serialization and compressed vector and quaternion codecs.
 
 #include "BitStream.h"
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x86 conversion results on both Mac architectures.
+#endif
 #include <math.h>       // sqrtf, atan2f, acosf, sinf, cosf, fabsf — the vector and normal encoders
 #include <cstring>      // std::memcpy — setData's payload copy
 #include "../Core/Debug.h"   // resetWritePosition's attested guard line
@@ -101,7 +104,16 @@ void BitStream::resetWritePosition()
         return;
     }
     m_canResetWritePosition = false;
+#if defined(_WIN32)
     setPosition(*reinterpret_cast<BSPosition*>(&m_dword24));   // +0x24 block, BSPosition-shaped
+#else
+    // [CHOSEN, not recovered] POSIX: materialize the saved fields without a typed overlay.
+    // The two unknown BSPosition words are not read by setPosition.
+    BSPosition saved{};
+    saved.m_position = m_writePosition;
+    saved.m_readWriteSwitch = m_readWriteSwitch2;
+    setPosition(saved);
+#endif
 }
 
 // Copies n bytes into the existing buffer and makes them readable.
@@ -203,7 +215,13 @@ bool BitStream::writeBits(const void* src, unsigned int nbits)
     // source byte's low bits — the classic unaligned bit blit.
     while (firstPtr <= lastPtr)
     {
+#if defined(_WIN32)
         const unsigned char cur = *in++;
+#else
+        // [CHOSEN, not recovered] POSIX: no speculative source byte beyond the field.
+        const unsigned char cur = in < static_cast<const unsigned char*>(src) + (nbits + 7u) / 8u
+            ? *in++ : 0;
+#endif
         *firstPtr = (unsigned char)((cur << startBit) | (prev >> (8 - startBit)));
         ++firstPtr;
         prev = cur;
@@ -254,7 +272,12 @@ bool BitStream::readBits(void* dst, unsigned int nbits)
     // Whole output bytes.
     while (remaining > 7)
     {
+#if defined(_WIN32)
         const unsigned char cur = *in++;
+#else
+        // [CHOSEN, not recovered] POSIX buffers need no extra byte after the last field.
+        const unsigned char cur = in < m_buffer + (end + 7u) / 8u ? *in++ : 0;
+#endif
         *out++ = (unsigned char)((cur << upShift) | (prev >> bitOffset));
         remaining -= 8;
         prev = cur;
@@ -265,7 +288,11 @@ bool BitStream::readBits(void* dst, unsigned int nbits)
     // last byte's outside bits from a pre-loop copy. Both are needed; neither is redundant.
     if (remaining > 0)
     {
+#if defined(_WIN32)
         const unsigned char cur = *in;
+#else
+        const unsigned char cur = in < m_buffer + (end + 7u) / 8u ? *in : 0;
+#endif
         const unsigned char v   = (unsigned char)((cur << upShift) | (prev >> bitOffset));
         *out = (unsigned char)(v & ((1u << remaining) - 1u));
     }
@@ -327,7 +354,11 @@ void BitStream::writeCompressedVectorWithTable(const Vec3& v, const Vec3& ref, f
 
     for (int i = 0; i < 3; ++i)
     {
+#if defined(__APPLE__)
+        int q = bf2x87::toIntTruncate(d[i] * invScale);
+#else
         int q = (int)(d[i] * invScale);          // cvttss2si — truncates toward zero
+#endif
         unsigned int sign = 0;
         if (q < 0) { sign = 1; q = -q; }
         // Plain sign-magnitude: the same width either way, and negative zero is representable.
@@ -439,7 +470,11 @@ void BitStream::writeCompressedVector2(const Vec3& v, const Vec3& ref, float sca
     const float        d[3]  = { dx, dy, dz };
     for (int i = 0; i < 3; ++i)
     {
+#if defined(__APPLE__)
+        int q = bf2x87::toIntTruncate(d[i] * invScale);
+#else
         int q = (int)(d[i] * invScale);
+#endif
         unsigned int sign = 0;
         if (q < 0) { sign = 1; q = -q; }
         writeBits(&sign, 1);
@@ -533,7 +568,11 @@ void BitStream::writeNormalAngle(float angle, int nbits)
 
     // The nonnegative angle mapping uses the full width for magnitude, with truncating conversion.
     const unsigned int max = (1u << nbits) - 1u;
+#if defined(__APPLE__)
+    unsigned int q = static_cast<unsigned int>(bf2x87::toIntTruncate(unit * (float)max));
+#else
     unsigned int q = (unsigned int)(unit * (float)max);
+#endif
     writeBits(&q, nbits);
 }
 
@@ -631,7 +670,11 @@ void BitStream::writeQuatComponent(float v, int nbits)
     if (unit < 0.0f) unit = 0.0f;
 
     const unsigned int max = (1u << nbits) - 1u;
+#if defined(__APPLE__)
+    unsigned int qv = static_cast<unsigned int>(bf2x87::toIntTruncate(unit * (float)max));
+#else
     unsigned int qv = (unsigned int)(unit * (float)max);   // fnstcw/or 0xC00/fistp == a truncating cast
+#endif
     writeBits(&qv, nbits);
 }
 
@@ -694,7 +737,11 @@ void writeUnitQuatComponent(BitStream& s, float v, int nbits)
     else if (unit > 1.0f) unit = 1.0f;
 
     const unsigned int max = (1u << nbits) - 1u;
+#if defined(__APPLE__)
+    const unsigned int qv = static_cast<unsigned int>(bf2x87::toIntTruncate(unit * (float)max));
+#else
     const unsigned int qv = (unsigned int)(unit * (float)max);   // truncating cast (fnstcw/0xC00/fistp)
+#endif
     s.writeBits(&qv, nbits);
 }
 
@@ -780,7 +827,11 @@ Vec3 BitStream::shrinkNormalVector(const Vec3& v, int nbits)
         float unit = (normalised + 1.0f) * 0.5f;
         if (unit < 0.0f)      unit = 0.0f;
         else if (unit > 1.0f) unit = 1.0f;
+#if defined(__APPLE__)
+        const float q = static_cast<float>(bf2x87::toIntTruncate(unit * (float)max)) / (float)max;
+#else
         const float q = (float)((int)(unit * (float)max)) / (float)max;   // truncate, then dequantise
+#endif
         return PI * (q + q - 1.0f);
     };
 

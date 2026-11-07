@@ -1,6 +1,6 @@
 // Road spline sampling, terrain-grid clipping, triangulation and texture interpolation.
 // [CHOSEN, not recovered] included split of RoadEditable.cpp; never compile it separately.
-// Preserve float association/24-bit precision and the explicit double-precision sort keys.
+// Preserve operand association and the observed float/double stores.
 
 namespace dice {
 namespace hfe {
@@ -8,6 +8,46 @@ namespace geom {
 
 namespace {
 
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Keep the x87 register values until the observed stores on native hosts.
+typedef bf2x87::Real RoadScalar;
+typedef bf2x87::Real RoadDouble;
+#else
+typedef float RoadScalar;
+typedef double RoadDouble;
+#endif
+
+template <typename T, typename U>
+bool roadLess(T a, U b)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] These sites use FCOM, including its invalid flag for quiet NaNs.
+    return bf2x87::less(RoadScalar(a), RoadScalar(b));
+#else
+    return a < b;
+#endif
+}
+
+template <typename T, typename U>
+bool roadLessEqual(T a, U b)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FCOM equality/range tests through the native arithmetic backend.
+    return bf2x87::lessEqual(RoadScalar(a), RoadScalar(b));
+#else
+    return a <= b;
+#endif
+}
+
+RoadScalar roadSquareRoot(RoadScalar value)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The shared native FSQRT policy.
+    return bf2x87::squareRoot(value);
+#else
+    return std::sqrt(value);
+#endif
+}
 
 // Small vector arithmetic, in the shipped operand order.
 
@@ -32,13 +72,27 @@ float lengthSumYXZ(float x, float y, float z) { return std::sqrt((y * y + x * x)
 float lengthXZ(float x, float z) { return std::sqrt(x * x + z * z); }
 
 // (thiscall on `out`, `retn 0Ch`) - out = a, then each component (b - a) * t + a.
+// PE 0x10106AE0
 void lerpVec3(Vec3& out, const Vec3& a, const Vec3& b, float t)
 {
     const Vec3 start = a;
     out = start;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the asymmetric FSTP spills before the three additions.
+    const RoadScalar dx = RoadScalar(b.x) - out.x;
+    const RoadScalar dy = RoadScalar(b.y) - start.y;
+    const float dz = bf2x87::store(RoadScalar(b.z) - start.z);
+    const float scaledX = bf2x87::store(dx * t);
+    const RoadScalar scaledY = dy * t;
+    const float scaledZ = bf2x87::store(RoadScalar(dz) * t);
+    out.x = bf2x87::store(RoadScalar(scaledX) + out.x);
+    out.y = bf2x87::store(scaledY + start.y);
+    out.z = bf2x87::store(RoadScalar(scaledZ) + start.z);
+#else
     out.x = (b.x - start.x) * t + start.x;
     out.y = (b.y - start.y) * t + start.y;
     out.z = (b.z - start.z) * t + start.z;
+#endif
 }
 
 } // anonymous namespace
@@ -76,7 +130,8 @@ RoadEditableVertex::RoadEditableVertex(const Vec3& samplePosition, const Vec3& s
     unknown2C[0] = unknown2C[1] = unknown2C[2] = unknown2C[3] = 0.0f;
 }
 
-// w = 1 - t once; each uv component is w*a + t*b (the product of a and w is formed first).
+// Interpolates position and normal, then the two texture layers and alpha.
+// PE 0x1013B670
 void RoadEditableVertex::interpolate(const RoadEditableVertex& a, const RoadEditableVertex& b, float t)
 {
     lerpVec3(position, a.position, b.position, t);
@@ -84,16 +139,32 @@ void RoadEditableVertex::interpolate(const RoadEditableVertex& a, const RoadEdit
     interpolateTexCoords(a, b, t);
 }
 
-
+// Blends the two texture layers and alpha, preserving the layer-specific float stores.
+// PE 0x1013B760
 void RoadEditableVertex::interpolateTexCoords(const RoadEditableVertex& a, const RoadEditableVertex& b,
                                               float t)
 {
-    const float w = 1.0f - t;                                                // flt_101DDDE4 - t
-    uv0.x = w * a.uv0.x + t * b.uv0.x;
-    uv0.y = w * a.uv0.y + t * b.uv0.y;
-    uv1.x = w * a.uv1.x + t * b.uv1.x;
-    uv1.y = w * a.uv1.y + t * b.uv1.y;
-    alpha = (b.alpha - a.alpha) * t + a.alpha;
+    uv0 = a.uv0;
+    const RoadScalar w = RoadScalar(1.0f) - t;
+    const RoadScalar leftU0 = w * uv0.x;
+    uv0.x = static_cast<float>(leftU0);
+    const float leftV0 = static_cast<float>(w * uv0.y);
+    uv0.y = leftV0;
+    const RoadScalar rightU0 = RoadScalar(t) * b.uv0.x;
+    const float rightV0 = static_cast<float>(RoadScalar(t) * b.uv0.y);
+    uv0.x = static_cast<float>(leftU0 + rightU0);
+    uv0.y = static_cast<float>(RoadScalar(leftV0) + rightV0);
+
+    uv1 = a.uv1;
+    const float leftU1 = static_cast<float>(w * uv1.x);
+    uv1.x = leftU1;
+    const RoadScalar leftV1 = w * uv1.y;
+    uv1.y = static_cast<float>(leftV1);
+    const RoadScalar rightU1 = RoadScalar(t) * b.uv1.x;
+    const float rightV1 = static_cast<float>(RoadScalar(t) * b.uv1.y);
+    uv1.x = static_cast<float>(RoadScalar(leftU1) + rightU1);
+    uv1.y = static_cast<float>(leftV1 + rightV1);
+    alpha = static_cast<float>((RoadScalar(b.alpha) - a.alpha) * t + a.alpha);
 }
 
 namespace {
@@ -104,12 +175,14 @@ namespace {
 
 // v = (c.z - a.z)(b.x - a.x) - (b.z - a.z)(c.x - a.x); 1 above 0.5, -1 below -0.5 (both
 // double constants), else 0 - a NaN answers 0.
+// PE 0x1013B370
 int areaSign(const Vec3& a, const Vec3& b, const Vec3& c)
 {
-    const float v = (c.z - a.z) * (b.x - a.x) - (b.z - a.z) * (c.x - a.x);
-    if (v > 0.5)                                                             // dbl_1020D7D0
+    const RoadScalar v = (RoadScalar(c.z) - a.z) * (RoadScalar(b.x) - a.x)
+                       - (RoadScalar(b.z) - a.z) * (RoadScalar(c.x) - a.x);
+    if (roadLess(0.5, v))                                                     // dbl_1020D7D0
         return 1;
-    if (v < -0.5)                                                            // dbl_1021D798
+    if (roadLess(v, -0.5))                                                    // dbl_1021D798
         return -1;
     return 0;
 }
@@ -117,23 +190,33 @@ int areaSign(const Vec3& a, const Vec3& b, const Vec3& c)
 // (`retn 18h`) - segment a-b against c-d. |denominator| below FLT_EPSILON answers false
 // without writing s or t; otherwise both are written, and the answer is whether both lie strictly
 // inside (0, 1) - a NaN passes every range test.
+// PE 0x1013B3D0
 bool segmentsIntersect(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, float* s, float* t)
 {
-    const float denominator = (d.z - c.z) * (b.x - a.x) - (d.x - c.x) * (b.z - a.z);
-    if (std::fabs(denominator) < FLT_EPSILON)                                // flt_101E05A0
+    const RoadScalar denominator = (RoadScalar(d.z) - c.z) * (RoadScalar(b.x) - a.x)
+                                 - (RoadScalar(d.x) - c.x) * (RoadScalar(b.z) - a.z);
+#if defined(__APPLE__)
+    const RoadScalar magnitude = bf2x87::abs(denominator);
+#else
+    const RoadScalar magnitude = std::fabs(denominator);
+#endif
+    if (roadLess(magnitude, FLT_EPSILON))                                    // flt_101E05A0
         return false;
-    const float inverse = 1.0f / denominator;
-    *s = ((a.z - c.z) * (d.x - c.x) - (d.z - c.z) * (a.x - c.x)) * inverse;
-    const float tValue = inverse * ((a.z - c.z) * (b.x - a.x) - (b.z - a.z) * (a.x - c.x));
-    *t = tValue;
-    if (tValue <= 0.0f || tValue >= 1.0f)
+    const RoadScalar inverse = RoadScalar(1.0f) / denominator;
+    *s = static_cast<float>(((RoadScalar(a.z) - c.z) * (RoadScalar(d.x) - c.x)
+                           - (RoadScalar(d.z) - c.z) * (RoadScalar(a.x) - c.x)) * inverse);
+    const RoadScalar tValue = ((RoadScalar(a.z) - c.z) * (RoadScalar(b.x) - a.x)
+                             - (RoadScalar(b.z) - a.z) * (RoadScalar(a.x) - c.x)) * inverse;
+    *t = static_cast<float>(tValue);
+    if (roadLessEqual(tValue, 0.0f) || roadLessEqual(1.0f, tValue))
         return false;
-    if (*s <= 0.0f || *s >= 1.0f)
+    if (roadLessEqual(*s, 0.0f) || roadLessEqual(1.0f, *s))
         return false;
     return true;
 }
 
 // is c on segment a-b? Along x unless a.x == b.x (then along z); inclusive both ways.
+// PE 0x1013BBD0
 int between(const Vec3& a, const Vec3& b, const Vec3& c)
 {
     if (a.x != b.x)
@@ -144,6 +227,7 @@ int between(const Vec3& a, const Vec3& b, const Vec3& c)
 // (`retn 14h`) - the collinear case of segmentIntersection: '0' unless c is on the line
 // a-b; then the first of c, d (on a-b) or a, b (on c-d) that lies on the other segment, copied to p,
 // with 'e'.
+// PE 0x1013BD10
 char parallelIntersection(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, Vec3& p)
 {
     if (areaSign(a, b, c) != 0)
@@ -173,33 +257,39 @@ char parallelIntersection(const Vec3& a, const Vec3& b, const Vec3& c, const Vec
 
 // (`retn 1Ch`) - O'Rourke's SegSegInt on x/z: '1' proper crossing, 'v' a vertex of one
 // segment on the other, '0' none, 'e' collinear overlap, '?' none of those decided. s (along a-b)
-// and t (along c-d) are stored as doubles but carry float precision - the inverse is formed at 24
-// bits (`fld 1.0; fdiv`) and kept as a float (`fst` to a dword). The point is lerp(a, b, s).
+// and t (along c-d) are stored as doubles; the denominator and inverse also have qword spills.
+// The first product uses the retained inverse, and the second reloads its double spill.
+// The point is lerp(a, b, float(s)).
 // The collinear arm returns from parallelIntersection without writing s or t (shipped).
+// PE 0x1013C420
 char segmentIntersection(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, Vec3& p,
                          double& s, double& t)
 {
     char code = '?';
-    const float denominator = (((a.z - b.z) * c.x + (c.z - d.z) * b.x) + (b.z - a.z) * d.x)
-                            + (d.z - c.z) * a.x;
+    const RoadDouble denominator = (((RoadDouble(a.z) - b.z) * c.x + (RoadDouble(c.z) - d.z) * b.x)
+                                   + (RoadDouble(b.z) - a.z) * d.x) + (RoadDouble(d.z) - c.z) * a.x;
+    const double storedDenominator = static_cast<double>(denominator);
     if (denominator == 0.0)
         return parallelIntersection(a, b, c, d, p);
 
-    const float numerator = ((c.z - a.z) * d.x + (a.z - d.z) * c.x) + (d.z - c.z) * a.x;
+    const RoadDouble numerator = ((RoadDouble(c.z) - a.z) * d.x + (RoadDouble(a.z) - d.z) * c.x)
+                               + (RoadDouble(d.z) - c.z) * a.x;
     if (numerator == 0.0 || numerator == denominator)
         code = 'v';
-    const float inverse = 1.0f / denominator;                                // dbl_101E0260 / denominator
+    const RoadDouble inverse = RoadDouble(1.0) / denominator;
+    const double storedInverse = static_cast<double>(inverse);
     s = static_cast<double>(inverse * numerator);
 
-    const float numerator2 = -(((b.z - a.z) * c.x + (a.z - c.z) * b.x) + (c.z - b.z) * a.x);
-    if (numerator2 == 0.0 || numerator2 == denominator)
+    const RoadDouble numerator2 = -(((RoadDouble(b.z) - a.z) * c.x + (RoadDouble(a.z) - c.z) * b.x)
+                                  + (RoadDouble(c.z) - b.z) * a.x);
+    if (numerator2 == 0.0 || numerator2 == storedDenominator)
         code = 'v';
-    const float tValue = numerator2 * inverse;
+    const RoadDouble tValue = numerator2 * storedInverse;
     t = static_cast<double>(tValue);
 
-    if (0.0 < s && s < 1.0 && 0.0 < tValue && tValue < 1.0)
+    if (roadLess(0.0, s) && roadLess(s, 1.0) && roadLess(0.0, tValue) && roadLess(tValue, 1.0))
         code = '1';
-    else if (s < 0.0 || s > 1.0 || tValue < 0.0 || tValue > 1.0)
+    else if (roadLess(s, 0.0) || roadLess(1.0, s) || roadLess(tValue, 0.0) || roadLess(1.0, tValue))
         code = '0';
 
     lerpVec3(p, a, b, static_cast<float>(s));
@@ -208,29 +298,36 @@ char segmentIntersection(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3
 
 // v = (c.x - a.x)(b.z - a.z) - (c.z - a.z)(b.x - a.x); false only when v < 0 (a NaN is
 // "left").
+// PE 0x101406E0
 bool leftOn(const Vec3& a, const Vec3& b, const Vec3& c)
 {
-    const float v = (c.x - a.x) * (b.z - a.z) - (c.z - a.z) * (b.x - a.x);
-    return !(v < 0.0f);
+    const RoadScalar v = (RoadScalar(c.x) - a.x) * (RoadScalar(b.z) - a.z)
+                       - (RoadScalar(c.z) - a.z) * (RoadScalar(b.x) - a.x);
+    return !roadLess(v, 0.0f);
 }
 
 // the two edge tests a-b and b-c, then leftOn(c, a, p).
+// PE 0x10140730
 bool pointInTriangle(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& p)
 {
-    if ((b.z - a.z) * (p.x - a.x) - (p.z - a.z) * (b.x - a.x) < 0.0f)
+    if (roadLess((RoadScalar(b.z) - a.z) * (RoadScalar(p.x) - a.x)
+                 - (RoadScalar(p.z) - a.z) * (RoadScalar(b.x) - a.x), 0.0f))
         return false;
-    if ((c.z - b.z) * (p.x - b.x) - (p.z - b.z) * (c.x - b.x) < 0.0f)
+    if (roadLess((RoadScalar(c.z) - b.z) * (RoadScalar(p.x) - b.x)
+                 - (RoadScalar(p.z) - b.z) * (RoadScalar(c.x) - b.x), 0.0f))
         return false;
     return leftOn(c, a, p);
 }
 
 // the leftOn value's sign into `side`: -1 below 0, 1 above, 0 otherwise (NaN too).
+// PE 0x101407D0
 void orient(const Vec3& a, const Vec3& b, const Vec3& c, int& side)
 {
-    const float v = (c.x - a.x) * (b.z - a.z) - (c.z - a.z) * (b.x - a.x);
-    if (v < 0.0f)
+    const RoadScalar v = (RoadScalar(c.x) - a.x) * (RoadScalar(b.z) - a.z)
+                       - (RoadScalar(c.z) - a.z) * (RoadScalar(b.x) - a.x);
+    if (roadLess(v, 0.0f))
         side = -1;
-    else if (v > 0.0f)
+    else if (roadLess(0.0f, v))
         side = 1;
     else
         side = 0;
@@ -239,19 +336,19 @@ void orient(const Vec3& a, const Vec3& b, const Vec3& c, int& side)
 
 // Interpolates target texture coordinates in the x/z triangle; returns false outside it.
 // Out-of-range ratios repeat the edge calculation but still use the original result.
-// [CHOSEN] A degenerate parallel intersection uses zero for the unwritten edge parameter.
-
+// Shipped defect: a parallel edge leaves the interpolation parameter unwritten.
+// PE 0x10140BD0
 bool interpolateInTriangle(const RoadEditableVertex& a, const RoadEditableVertex& b,
                            const RoadEditableVertex& c, RoadEditableVertex& target)
 {
-    const float winding = ((a.position.z * c.position.x - a.position.x * c.position.z)
-                         + (a.position.x * b.position.z - a.position.z * b.position.x))
-                        + (b.position.x * c.position.z - c.position.x * b.position.z);
+    const RoadScalar winding = ((RoadScalar(a.position.z) * c.position.x - RoadScalar(a.position.x) * c.position.z)
+                               + (RoadScalar(a.position.x) * b.position.z - RoadScalar(a.position.z) * b.position.x))
+                              + (RoadScalar(b.position.x) * c.position.z - RoadScalar(c.position.x) * b.position.z);
     RoadEditableVertex p0;
     RoadEditableVertex p1;
     RoadEditableVertex p2;
     p0 = a;
-    if (winding > 0.0f)                              // `test ah, 41h; jnz` - zero and NaN take b, c
+    if (roadLess(0.0f, winding))                     // `test ah, 41h; jnz` - zero and NaN take b, c
     {
         p1 = c;
         p2 = b;
@@ -265,14 +362,19 @@ bool interpolateInTriangle(const RoadEditableVertex& a, const RoadEditableVertex
         return false;
 
     Vec3 point = makeVec3(0.0f, 0.0f, 0.0f);
-    double s = 0.0;
-    double t = 0.0;
+    double s;
+    double t;
     segmentIntersection(p2.position, p1.position, p0.position, target.position, point, s, t);
     RoadEditableVertex edge;
     edge.interpolate(p2, p1, static_cast<float>(s));
-    const float ratio = lengthXZ(target.position.x - p0.position.x, target.position.z - p0.position.z)
-                      / lengthXZ(edge.position.x - p0.position.x, edge.position.z - p0.position.z);
-    if (ratio < 0.0 || ratio > 1.0)
+    const RoadScalar targetX = RoadScalar(target.position.x) - p0.position.x;
+    const RoadScalar targetZ = RoadScalar(target.position.z) - p0.position.z;
+    const float edgeX = edge.position.x - p0.position.x;
+    const float edgeZ = edge.position.z - p0.position.z;
+    const RoadScalar quotient = roadSquareRoot(targetZ * targetZ + targetX * targetX)
+                              / roadSquareRoot(RoadScalar(edgeZ) * edgeZ + RoadScalar(edgeX) * edgeX);
+    const float ratio = static_cast<float>(quotient);
+    if (roadLess(quotient, 0.0) || roadLess(1.0, ratio))
     {
         point = makeVec3(0.0f, 0.0f, 0.0f);
         segmentIntersection(p2.position, p1.position, p0.position, target.position, point, s, t);
@@ -289,16 +391,17 @@ bool interpolateInTriangle(const RoadEditableVertex& a, const RoadEditableVertex
 
 // the shoelace sum over the polygon's x/z, (z_i * x_prev - z_prev * x_i) added in order
 // (the shipped loop is unrolled by four; the additions stay sequential), times 0.5f.
-float polygonArea(const RoadPolygon& polygon, const std::vector<RoadEditableVertex>& vertices)
+// PE 0x10141560
+RoadScalar polygonArea(const RoadPolygon& polygon, const std::vector<RoadEditableVertex>& vertices)
 {
     const unsigned int count = static_cast<unsigned int>(polygon.size());
-    float area = 0.0f;
+    RoadScalar area = RoadScalar(0.0f);
     unsigned int previous = count - 1;
     for (unsigned int i = 0; i < count; ++i)
     {
         const Vec3& current = vertices[polygon[i]].position;
         const Vec3& before = vertices[polygon[previous]].position;
-        area = area + (current.z * before.x - before.z * current.x);
+        area = area + (RoadScalar(current.z) * before.x - RoadScalar(before.z) * current.x);
         previous = i;
     }
     return area * 0.5f;                                                      // flt_101DD4F0
@@ -306,9 +409,10 @@ float polygonArea(const RoadPolygon& polygon, const std::vector<RoadEditableVert
 
 // (`retn 8`) - a positive area (NaN and zero are left alone) reverses the polygon: a copy,
 // clear() (VC7.1: the block freed), then the copy pushed back from its end.
+// PE 0x10142C00
 void ensureClockwise(RoadPolygon& polygon, const std::vector<RoadEditableVertex>& vertices)
 {
-    if (!(polygonArea(polygon, vertices) > 0.0f))
+    if (!roadLess(0.0f, polygonArea(polygon, vertices)))
         return;
     const RoadPolygon copy(polygon);
     polygon.clear();
@@ -319,12 +423,14 @@ void ensureClockwise(RoadPolygon& polygon, const std::vector<RoadEditableVertex>
 // (`retn 14h`) - a, b, c are vertex indices. Not an ear when the corner turns the wrong
 // way ((b.z - a.z)(c.x - a.x) - (c.z - a.z)(b.x - a.x) < 0) or when any other live polygon vertex
 // (not -1, not a, b or c) lies in the triangle.
+// PE 0x1013C630
 bool isEar(const RoadPolygon& polygon, int a, int b, int c, const std::vector<RoadEditableVertex>& vertices)
 {
     const Vec3& pa = vertices[a].position;
     const Vec3& pb = vertices[b].position;
     const Vec3& pc = vertices[c].position;
-    if ((pb.z - pa.z) * (pc.x - pa.x) - (pc.z - pa.z) * (pb.x - pa.x) < 0.0f)
+    if (roadLess((RoadScalar(pb.z) - pa.z) * (RoadScalar(pc.x) - pa.x)
+                 - (RoadScalar(pc.z) - pa.z) * (RoadScalar(pb.x) - pa.x), 0.0f))
         return false;
     for (unsigned int i = 0; i < polygon.size(); ++i)
     {
@@ -339,14 +445,16 @@ bool isEar(const RoadPolygon& polygon, int a, int b, int c, const std::vector<Ro
 
 // (`retn 14h`) - r = (b.x - c.x)(a.z - c.z) - (b.z - c.z)(a.x - c.x): positive pushes
 // c, a, b; otherwise (NaN too) b, a, c.
+// PE 0x1013C710
 void emitTriangle(int a, int b, int c, const std::vector<RoadEditableVertex>& vertices,
                   std::vector<int>& indices)
 {
     const Vec3& pa = vertices[a].position;
     const Vec3& pb = vertices[b].position;
     const Vec3& pc = vertices[c].position;
-    const float r = (pb.x - pc.x) * (pa.z - pc.z) - (pb.z - pc.z) * (pa.x - pc.x);
-    if (r > 0.0f)
+    const RoadScalar r = (RoadScalar(pb.x) - pc.x) * (RoadScalar(pa.z) - pc.z)
+                       - (RoadScalar(pb.z) - pc.z) * (RoadScalar(pa.x) - pc.x);
+    if (roadLess(0.0f, r))
     {
         indices.push_back(c);
         indices.push_back(a);
@@ -366,11 +474,15 @@ void emitTriangle(int a, int b, int c, const std::vector<RoadEditableVertex>& ve
 //     turn, i and the next two live entries (circularly, unsigned %); the first ear is emitted and its
 //     middle entry removed; a pass that finds no ear emits the last triple it tried and removes its
 //     middle anyway. One entry goes per pass until two remain.
+// PE 0x1013C7C0
 void earClip(RoadPolygon& polygon, const std::vector<RoadEditableVertex>& vertices, std::vector<int>& indices)
 {
     if (polygon.size() < 3)
     {
-        ::renddx9abi::logf("RoadEditable.cpp:501: TBM: npoly with less then 3 vertex!");
+        const std::string expression("");
+        const std::string file("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\RoadEditable.cpp");
+        ::renddx9abi::Debug(DebugTypeError, file, 501, expression)
+            << "TBM: npoly with less then 3 vertex!";
         return;
     }
     if (polygon.size() == 3)
@@ -429,65 +541,117 @@ void earClip(RoadPolygon& polygon, const std::vector<RoadEditableVertex>& vertic
 // Returns a tolerance-adjusted polygon extremum on the even grid.
 // Requires a nonempty polygon. Minima round down; maxima round up. Ties and NaN replace
 // minima, while maxima change only on a strict increase.
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Native equivalent of the qword libm argument, FISTP and 32-bit wrap.
+int roadGridRound(float value, float tolerance, bool maximum)
+{
+    const RoadScalar adjusted = maximum ? RoadScalar(value) - tolerance : RoadScalar(value) + tolerance;
+    const double input = bf2x87::storeDouble(adjusted);
+    const int n = bf2x87::toIntTruncate(RoadScalar(maximum ? std::ceil(input) : std::floor(input)));
+    const int odd = static_cast<unsigned int>(n) & 1u;
+    return bf2x87::lowWord(static_cast<long long>(n) - odd + (maximum && odd ? 2 : 0));
+}
+#endif
+
+int roadGridStep(int value, int step)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the ADD/SUB wrap on the native compiler.
+    return bf2x87::lowWord(static_cast<long long>(value) + step);
+#else
+    return value + step;
+#endif
+}
+
+float roadGridOffset(int value, float offset)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FILD, add/subtract, then the first float store.
+    return bf2x87::store(RoadScalar(value) + offset);
+#else
+    return static_cast<float>(value) + offset;
+#endif
+}
+
+// PE 0x10141370
 int extremeMinZ(RoadPolygon polygon, const std::vector<RoadEditableVertex>& vertices, float tolerance)
 {
     float minimum = vertices[polygon[0]].position.z;
     for (unsigned int i = 1; i < polygon.size(); ++i)
     {
         const float z = vertices[polygon[i]].position.z;
-        if (!(minimum < z))
+        if (!roadLess(minimum, z))
             minimum = z;
     }
+#if defined(__APPLE__)
+    return roadGridRound(minimum, tolerance, false);
+#else
     const int n = static_cast<int>(std::floor(static_cast<double>(minimum + tolerance)));
     return n - std::abs(n) % 2;
+#endif
 }
 
 // the maximum x, even upward.
+// PE 0x10141410
 int extremeMaxX(RoadPolygon polygon, const std::vector<RoadEditableVertex>& vertices, float tolerance)
 {
     float maximum = vertices[polygon[0]].position.x;
     for (unsigned int i = 1; i < polygon.size(); ++i)
     {
         const float x = vertices[polygon[i]].position.x;
-        if (maximum < x)
+        if (roadLess(maximum, x))
             maximum = x;
     }
+#if defined(__APPLE__)
+    return roadGridRound(maximum, tolerance, true);
+#else
     int n = static_cast<int>(std::ceil(static_cast<double>(maximum - tolerance)));
     const int odd = std::abs(n) % 2;
     if (odd)
         n = n - odd + 2;
     return n;
+#endif
 }
 
 // the maximum z, even upward.
+// PE 0x101414B0
 int extremeMaxZ(RoadPolygon polygon, const std::vector<RoadEditableVertex>& vertices, float tolerance)
 {
     float maximum = vertices[polygon[0]].position.z;
     for (unsigned int i = 1; i < polygon.size(); ++i)
     {
         const float z = vertices[polygon[i]].position.z;
-        if (maximum < z)
+        if (roadLess(maximum, z))
             maximum = z;
     }
+#if defined(__APPLE__)
+    return roadGridRound(maximum, tolerance, true);
+#else
     int n = static_cast<int>(std::ceil(static_cast<double>(maximum - tolerance)));
     const int odd = std::abs(n) % 2;
     if (odd)
         n = n - odd + 2;
     return n;
+#endif
 }
 
 // the minimum x, even downward.
+// PE 0x101428D0
 int extremeMinX(RoadPolygon polygon, const std::vector<RoadEditableVertex>& vertices, float tolerance)
 {
     float minimum = vertices[polygon[0]].position.x;
     for (unsigned int i = 1; i < polygon.size(); ++i)
     {
         const float x = vertices[polygon[i]].position.x;
-        if (!(minimum < x))
+        if (!roadLess(minimum, x))
             minimum = x;
     }
+#if defined(__APPLE__)
+    return roadGridRound(minimum, tolerance, false);
+#else
     const int n = static_cast<int>(std::floor(static_cast<double>(minimum + tolerance)));
     return n - std::abs(n) % 2;
+#endif
 }
 
 // The cut classifyPolygon proposes (splitAndTriangulate's 12-byte local): a line x = cut.x (axis 0)
@@ -502,24 +666,25 @@ struct PolygonCut
 // (`retn 0Ch`) - with 1 cm of tolerance: more than one 2 m cell across in x cuts at the
 // first grid line inside (minX + 2, axis 0); else more than one in z (minZ + 2, axis 1); else a
 // single cell - false.
+// PE 0x1013C9A0
 bool classifyPolygon(const RoadPolygon& polygon, PolygonCut& cut, const std::vector<RoadEditableVertex>& vertices)
 {
     const int minX = extremeMinX(polygon, vertices, 0.01f);
-    const int maxXLessTwo = extremeMaxX(polygon, vertices, 0.01f) - 2;
+    const int maxXLessTwo = roadGridStep(extremeMaxX(polygon, vertices, 0.01f), -2);
     const int minZ = extremeMinZ(polygon, vertices, 0.01f);
     const int maxZ = extremeMaxZ(polygon, vertices, 0.01f);
     if (minX != maxXLessTwo)
     {
-        cut.x = static_cast<float>(minX + 2);
+        cut.x = static_cast<float>(roadGridStep(minX, 2));
         cut.z = 0.0f;
         cut.axis = 0;
         return true;
     }
-    if (minZ != maxZ - 2)
+    if (minZ != roadGridStep(maxZ, -2))
     {
         cut.x = 0.0f;
         cut.axis = 1;
-        cut.z = static_cast<float>(minZ + 2);
+        cut.z = static_cast<float>(roadGridStep(minZ, 2));
         return true;
     }
     return false;
@@ -535,11 +700,87 @@ bool containsIndex(const std::vector<int>& values, int value)
     return false;
 }
 
+RoadScalar roadDistanceXZ(const Vec3& a, const Vec3& b)
+{
+    const RoadScalar x = RoadScalar(a.x) - b.x;
+    const RoadScalar z = RoadScalar(a.z) - b.z;
+    return roadSquareRoot(z * z + x * x);
+}
+
+RoadScalar roadDistance3(const Vec3& a, const Vec3& b, unsigned int order, bool spillDifferences)
+{
+    RoadScalar x = RoadScalar(a.x) - b.x;
+    RoadScalar y = RoadScalar(a.y) - b.y;
+    RoadScalar z = RoadScalar(a.z) - b.z;
+    if (spillDifferences)
+    {
+        x = RoadScalar(static_cast<float>(x));
+        y = RoadScalar(static_cast<float>(y));
+        z = RoadScalar(static_cast<float>(z));
+    }
+    if (order == 2)
+        return roadSquareRoot((y * y + x * x) + z * z);
+    return roadSquareRoot(order == 1 ? (x * x + z * z) + y * y : (z * z + y * y) + x * x);
+}
+
+float roadProjectionRatio(const Vec3& origin, const Vec3& point, const Vec3& edge)
+{
+    const RoadScalar numerator = roadDistanceXZ(point, origin);
+    const float x = edge.x - origin.x;
+    const float z = edge.z - origin.z;
+    return static_cast<float>(numerator / roadSquareRoot(RoadScalar(z) * z + RoadScalar(x) * x));
+}
+
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Native storage for the tessellator's register values and float spills.
+struct RoadDeviation
+{
+    float x, y, z;
+    RoadScalar denominatorX, denominatorY, denominatorZ;
+};
+
+RoadScalar roadLength(RoadScalar x, RoadScalar y, RoadScalar z, unsigned int order)
+{
+    if (order == 1)
+        return roadSquareRoot((x * x + z * z) + y * y);
+    if (order == 2)
+        return roadSquareRoot((y * y + x * x) + z * z);
+    return roadSquareRoot((z * z + y * y) + x * x);
+}
+
+RoadDeviation roadDeviation(const Vec3& anchor, const Vec3& sample, const Vec3& ahead, bool right)
+{
+    const RoadScalar rawDx = RoadScalar(anchor.x) - sample.x;
+    const RoadScalar dx = right ? rawDx : RoadScalar(static_cast<float>(rawDx));
+    const float dy = anchor.y - sample.y;
+    const float dz = anchor.z - sample.z;
+    const RoadScalar ex = RoadScalar(ahead.x) - anchor.x;
+    const float ey = ahead.y - anchor.y;
+    const RoadScalar ez = RoadScalar(ahead.z) - anchor.z;
+    const float storedEx = static_cast<float>(ex);
+    RoadDeviation result;
+    result.x = static_cast<float>(RoadScalar(ey) * dz - ez * dy);
+    result.y = static_cast<float>(ez * dx - RoadScalar(dz) * storedEx);
+    result.z = static_cast<float>(RoadScalar(dy) * storedEx - RoadScalar(ey) * dx);
+    result.denominatorX = RoadScalar(storedEx);
+    result.denominatorY = ey;
+    result.denominatorZ = right ? RoadScalar(static_cast<float>(ez)) : ez;
+    return result;
+}
+
+float roadDeviationError(const RoadDeviation& value, unsigned int order)
+{
+    return static_cast<float>(roadLength(value.x, value.y, value.z, order)
+                              / roadLength(value.denominatorX, value.denominatorY, value.denominatorZ, order));
+}
+#endif
+
 
 // Splits polygon across line a-b, appending intersection vertices and output pieces.
 // Returns false for no crossings or an odd crossing count. Requires at least three
 // vertices and finite coordinates; endpoint hits use a one-centimetre tolerance.
 
+// PE 0x10143490
 bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces, const RoadPolygon& polygon,
                  std::vector<RoadEditableVertex>& vertices, bool verbose)
 {
@@ -557,7 +798,7 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
     std::vector<int>                crossingNew;       // index into newVertices, or -1
     std::vector<RoadEditableVertex> newVertices;
 
-    double s = 0.0;
+    double s;
     int sideAfter = 0;
     for (unsigned int i = 0; i < polygon.size(); ++i)
     {
@@ -572,12 +813,11 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
         {
             RoadEditableVertex crossing;
             crossing.interpolate(from, to, static_cast<float>(t));
-            if (lengthXZ(crossing.position.x - to.position.x, crossing.position.z - to.position.z) < 0.01)
+            if (roadLess(roadDistanceXZ(crossing.position, to.position), 0.01))
             {
                 t = 1.0;                                 // the end vertex is hit - tested below
             }
-            else if (lengthXZ(crossing.position.x - from.position.x,
-                              crossing.position.z - from.position.z) < 0.01)
+            else if (roadLess(roadDistanceXZ(crossing.position, from.position), 0.01))
             {
                 crossingVertex.push_back(polygon[i]);
                 crossingNew.push_back(-1);
@@ -596,21 +836,28 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
             }
         }
 
-        // |t - 1| at 24 bits (`fsubr` against the double 1.0); a NaN skips.
-        if (!(std::fabs(static_cast<float>(t - 1.0)) < 0.01))
+        // The qword parameter stays in the register through subtraction, FABS and comparison.
+#if defined(__APPLE__)
+        if (!roadLess(bf2x87::abs(RoadDouble(t) - 1.0), 0.01))
+#else
+        if (!(std::fabs(t - 1.0) < 0.01))
+#endif
             continue;
 
-        const float abX = b.x - a.x;
-        const float abZ = b.z - a.z;
-        const float sideOfStart = (from.position.x - a.x) * abZ - abX * (from.position.z - a.z);
+        const RoadScalar wideAbX = RoadScalar(b.x) - a.x;
+        const RoadScalar wideAbZ = RoadScalar(b.z) - a.z;
+        const RoadScalar sideOfStart = (RoadScalar(from.position.x) - a.x) * wideAbZ
+                                    - wideAbX * (RoadScalar(from.position.z) - a.z);
         int sideBefore;
-        if (sideOfStart < 0.0f)
+        if (roadLess(sideOfStart, 0.0f))
             sideBefore = -1;
-        else if (sideOfStart > 0.0f)
+        else if (roadLess(0.0f, sideOfStart))
             sideBefore = 1;
         else
             continue;                                    // the start vertex is on the line (or NaN)
 
+        const float abX = static_cast<float>(wideAbX);
+        const float abZ = static_cast<float>(wideAbZ);
         Vec3 after = makeVec3(0.0f, 0.0f, 0.0f);
         unsigned int k = (i + 2) % count;
         if (k != i)
@@ -618,13 +865,14 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
             for (;;)
             {
                 after = vertices[polygon[k]].position;
-                const float side = (after.x - a.x) * abZ - abX * (after.z - a.z);
-                if (side < 0.0f)
+                const RoadScalar side = (RoadScalar(after.x) - a.x) * abZ
+                                      - RoadScalar(abX) * (RoadScalar(after.z) - a.z);
+                if (roadLess(side, 0.0f))
                 {
                     sideAfter = -1;
                     break;
                 }
-                if (side > 0.0f)
+                if (roadLess(0.0f, side))
                 {
                     sideAfter = 1;
                     break;
@@ -673,7 +921,7 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
         double best = 1000.0;                                                // dbl_101E01D8
         for (unsigned int m = 0; m < crossingParameter.size(); ++m)
         {
-            if (crossingParameter[m] != -1.0 && crossingParameter[m] < best)
+            if (crossingParameter[m] != -1.0 && roadLess(crossingParameter[m], best))
             {
                 smallest = m;
                 best = crossingParameter[m];
@@ -753,8 +1001,8 @@ bool clipPolygon(const Vec3& a, const Vec3& b, std::vector<RoadPolygon>& pieces,
 // Assigns coordinates to vertices from start onward using the road columns and mode.
 // Mode 0 clears resolved flags; modes 1 and 2 retain them. Requires nonempty columns
 // and finite coordinates. Mode 2 intentionally reuses the centre-column distance.
-// [CHOSEN] Uninitialized compatibility fallback indices and intersection values start at zero.
-
+// Shipped defect: failed parallel intersections leave the interpolation parameter unwritten.
+// PE 0x10141690
 void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::vector<RoadEditableVertex>& second,
                      const std::vector<RoadEditableVertex>& third, std::vector<RoadEditableVertex>& vertices,
                      unsigned int start, int mode)
@@ -782,8 +1030,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                 if (side == 0)
                 {
                     v.interpolateTexCoords(l0, l1,
-                        lengthXZ(v.position.x - l0.position.x, v.position.z - l0.position.z)
-                        / lengthXZ(l1.position.x - l0.position.x, l1.position.z - l0.position.z));
+                        roadProjectionRatio(l0.position, v.position, l1.position));
                     v.needsUv = 0;
                     break;
                 }
@@ -791,8 +1038,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                 if (side == 0)
                 {
                     v.interpolateTexCoords(l1, r1,
-                        lengthXZ(v.position.x - l1.position.x, v.position.z - l1.position.z)
-                        / lengthXZ(r1.position.x - l1.position.x, r1.position.z - l1.position.z));
+                        roadProjectionRatio(l1.position, v.position, r1.position));
                     v.needsUv = 0;
                     break;
                 }
@@ -800,8 +1046,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                 if (side == 0)
                 {
                     v.interpolateTexCoords(r1, r0,
-                        lengthXZ(v.position.x - r1.position.x, v.position.z - r1.position.z)
-                        / lengthXZ(r0.position.x - r1.position.x, r0.position.z - r1.position.z));
+                        roadProjectionRatio(r1.position, v.position, r0.position));
                     v.needsUv = 0;
                     break;
                 }
@@ -809,8 +1054,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                 if (side == 0)
                 {
                     v.interpolateTexCoords(r0, l0,
-                        lengthXZ(v.position.x - r0.position.x, v.position.z - r0.position.z)
-                        / lengthXZ(l0.position.x - r0.position.x, l0.position.z - r0.position.z));
+                        roadProjectionRatio(r0.position, v.position, l0.position));
                     v.needsUv = 0;
                     break;
                 }
@@ -818,8 +1062,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                 if (side == 0)
                 {
                     v.interpolateTexCoords(l0, r1,
-                        lengthXZ(v.position.x - l0.position.x, v.position.z - l0.position.z)
-                        / lengthXZ(r1.position.x - l0.position.x, r1.position.z - l0.position.z));
+                        roadProjectionRatio(l0.position, v.position, r1.position));
                     v.needsUv = 0;
                     break;
                 }
@@ -842,10 +1085,11 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
 
     if (mode == 1)
     {
-        unsigned int nearest = 0;                    // shipped: the third column's address (unset)
+        // Shipped defect: until a nearer sample is found, this argument slot holds the third column pointer.
+        unsigned int nearest = static_cast<unsigned int>(reinterpret_cast<std::uintptr_t>(&third));
         int side = static_cast<int>(start);          // shipped: the `start` argument slot
-        float s = 0.0f;                              // shipped: an unwritten stack word
-        float t = 0.0f;
+        float s;
+        float t;
         for (unsigned int k = start; k < vertices.size(); ++k)
         {
             RoadEditableVertex& v = vertices[k];
@@ -856,17 +1100,16 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
             {
                 const Vec3& p1 = first[i].position;
                 const Vec3& p2 = second[i].position;
-                const float toFirst = lengthSumXZY(p1.x - v.position.x, p1.y - v.position.y,
-                                                   p1.z - v.position.z);
-                const float toSecond = lengthSumXZY(p2.x - v.position.x, p2.y - v.position.y,
-                                                    p2.z - v.position.z);
-                if (toFirst < best)
+                const RoadScalar firstDistance = roadDistance3(p1, v.position, true, false);
+                const float toFirst = static_cast<float>(firstDistance);
+                const float toSecond = static_cast<float>(roadDistance3(p2, v.position, true, false));
+                if (roadLess(firstDistance, best))
                 {
                     nearest = i;
                     best = toFirst;
                     side = 1;
                 }
-                if (toSecond < best)
+                if (roadLess(toSecond, best))
                 {
                     nearest = i;
                     best = toSecond;
@@ -897,13 +1140,9 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                     previous = second[nearest - 1];
                     following = second[nearest + 1];
                 }
-                const float toPrevious = lengthSumZYX(previous.position.x - v.position.x,
-                                                      previous.position.y - v.position.y,
-                                                      previous.position.z - v.position.z);
-                const float toFollowing = lengthSumZYX(following.position.x - v.position.x,
-                                                       following.position.y - v.position.y,
-                                                       following.position.z - v.position.z);
-                neighbour = (toFollowing > toPrevious) ? nearest - 1 : nearest + 1;
+                const RoadScalar toPrevious = roadDistance3(previous.position, v.position, false, false);
+                const RoadScalar toFollowing = roadDistance3(following.position, v.position, false, true);
+                neighbour = roadLess(toPrevious, toFollowing) ? nearest - 1 : nearest + 1;
             }
 
             RoadEditableVertex closest;
@@ -926,8 +1165,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
             segmentsIntersect(along.position, across.position, closest.position, v.position, &s, &t);
             RoadEditableVertex hit;
             hit.interpolate(along, across, s);
-            const float ratio = lengthXZ(v.position.x - closest.position.x, v.position.z - closest.position.z)
-                              / lengthXZ(hit.position.x - closest.position.x, hit.position.z - closest.position.z);
+            const float ratio = roadProjectionRatio(closest.position, v.position, hit.position);
             v.interpolateTexCoords(closest, hit, ratio);
         }
         return;
@@ -937,8 +1175,8 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
     {
         unsigned int nearest = start;                // shipped: the `start` argument slot
         int side = mode;                             // shipped: the `mode` argument slot
-        float s = 0.0f;                              // shipped: an unwritten stack word
-        float t = 0.0f;
+        float s;
+        float t;
         for (unsigned int k = start; k < vertices.size(); ++k)
         {
             RoadEditableVertex& v = vertices[k];
@@ -949,27 +1187,25 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
             {
                 const Vec3& p1 = first[i].position;
                 const Vec3& p2 = second[i].position;
-                const float toFirst = lengthSumXZY(p1.x - v.position.x, p1.y - v.position.y,
-                                                   p1.z - v.position.z);
-                const float toSecond = lengthSumXZY(p2.x - v.position.x, p2.y - v.position.y,
-                                                    p2.z - v.position.z);
-                const float toThird = lengthSumXZY(p2.x - v.position.x, p2.y - v.position.y,
-                                                   p2.z - v.position.z);   // [shipped] the centre again
-                if (toFirst < best)
+                const RoadScalar firstDistance = roadDistance3(p1, v.position, true, false);
+                const float toFirst = static_cast<float>(firstDistance);
+                const float toSecond = static_cast<float>(roadDistance3(p2, v.position, true, false));
+                const float toThird = static_cast<float>(roadDistance3(p2, v.position, true, false)); // shipped defect: centre again
+                if (roadLess(firstDistance, best))
                 {
                     nearest = i;
                     best = toFirst;
                     side = 1;
                 }
-                if (toSecond < best)
+                if (roadLess(toSecond, best))
                 {
                     nearest = i;
                     best = toSecond;
                     side = 21;
-                    if (!(toFirst < toThird))
+                    if (!roadLess(toFirst, toThird))
                         side = 23;
                 }
-                if (toThird < best)
+                if (roadLess(toThird, best))
                 {
                     nearest = i;
                     best = toThird;
@@ -1002,13 +1238,9 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
                     previous = column[nearest - 1];
                     following = column[nearest + 1];
                 }
-                const float toPrevious = lengthSumXZY(previous.position.x - v.position.x,
-                                                      previous.position.y - v.position.y,
-                                                      previous.position.z - v.position.z);
-                const float toFollowing = lengthSumXZY(following.position.x - v.position.x,
-                                                       following.position.y - v.position.y,
-                                                       following.position.z - v.position.z);
-                neighbour = (toFollowing > toPrevious) ? nearest - 1 : nearest + 1;
+                const RoadScalar toPrevious = roadDistance3(previous.position, v.position, true, false);
+                const RoadScalar toFollowing = roadDistance3(following.position, v.position, true, true);
+                neighbour = roadLess(toPrevious, toFollowing) ? nearest - 1 : nearest + 1;
             }
 
             RoadEditableVertex closest;
@@ -1043,8 +1275,7 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
             segmentsIntersect(along.position, across.position, closest.position, v.position, &s, &t);
             RoadEditableVertex hit;
             hit.interpolate(along, across, s);
-            const float ratio = lengthXZ(v.position.x - closest.position.x, v.position.z - closest.position.z)
-                              / lengthXZ(hit.position.x - closest.position.x, hit.position.z - closest.position.z);
+            const float ratio = roadProjectionRatio(closest.position, v.position, hit.position);
             v.interpolateTexCoords(closest, hit, ratio);
         }
     }
@@ -1052,24 +1283,211 @@ void assignTexCoords(const std::vector<RoadEditableVertex>& first, const std::ve
 
 // The fade ramps' clamps, each exactly as its arm compares (NaN results noted per form).
 // First pass: t < 1 ? (0 < t ? t : 0) : 1 - a NaN becomes 1.
-float fadeRamp(float t)
+float fadeRamp(RoadScalar t)
 {
-    if (!(t < 1.0f))
+    if (!roadLess(t, 1.0f))
         return 1.0f;
-    return (0.0f < t) ? t : 0.0f;
+    const float stored = static_cast<float>(t);
+    return roadLess(0.0f, stored) ? stored : 0.0f;
 }
 
 // Second pass: min(min(t, 1), current) against 0 - a NaN t becomes 1, a NaN current is replaced.
-float fadeRampEnd(float t, float current)
+float fadeRampEnd(RoadScalar t, float current)
 {
-    if (!(t < 1.0f))
-        t = 1.0f;
-    if (current < t)
-        t = current;
-    return (0.0f < t) ? t : 0.0f;
+    if (!roadLess(t, 1.0f))
+        t = RoadScalar(1.0f);
+    if (roadLess(current, t))
+        t = RoadScalar(current);
+    return roadLess(0.0f, t) ? static_cast<float>(t) : 0.0f;
 }
 
 } // anonymous namespace
+
+
+// Dead tessellator helpers: unreachable in 1.50, no code or data references (no export, no table, no
+// caller beyond the pair noted below). They keep their external linkage so the unused-function warning
+// stays quiet; nothing calls them. The thiscall-on-the-road bodies take the road's pending list
+// (+0xD8; the only road field they read) by reference [CHOSEN, not recovered].
+
+// (thiscall on `out`, `retn 0Ch` through the target) - `push ebp; mov ebp, esp; pop ebp; jmp` to the
+// Vec3 lerp, the same three arguments untouched.
+// PE 0x1013B750
+void roadLerpVec3Forward(Vec3& out, const Vec3& a, const Vec3& b, float t)
+{
+    lerpVec3(out, a, b, t);
+}
+
+// (stdcall, `retn 0Ch`) - areaSign(a, b, c) == 0.
+// PE 0x1013BC60
+bool roadAreaSignIsZero(const Vec3& a, const Vec3& b, const Vec3& c)
+{
+    return areaSign(a, b, c) == 0;
+}
+
+// (thiscall, `retn 8`) - every element equal to oldIndex in every pending polygon becomes newIndex.
+// Only the snapping helper below calls it.
+// PE 0x1013C5D0
+void roadReplacePendingIndex(RoadPolygonList& pending, int oldIndex, int newIndex)
+{
+    for (RoadPolygonList::iterator node = pending.begin(); node != pending.end(); ++node)
+    {
+        RoadPolygon& polygon = *node;
+        for (unsigned int i = 0; !polygon.empty() && i < polygon.size(); ++i)
+        {
+            if (polygon[i] == oldIndex)
+                polygon[i] = newIndex;
+        }
+    }
+}
+
+// (`retn 20h`) - the edge polygon[k] -> polygon[(k + 1) % n] against the segment a-b. Writes
+// index = -1 and the first ratio `s` (double) before it decides anything. A second ratio within
+// 1e-4 of 1 means the lines meet at the far end: answers whether the other end points of the edge lie
+// on opposite sides of a-b (nothing is appended). Otherwise, when the second ratio lies in
+// [0.0001, 1), appends the point lerp(edge start, edge end, ratio) as a fresh vertex to `out`,
+// writes its index to `index` and answers true. polygon.size() == 0 divides by zero (shipped).
+// PE 0x1013CA80
+bool roadEdgeCrossing(const Vec3& a, const Vec3& b, const RoadPolygon& polygon, int k,
+                      const std::vector<RoadEditableVertex>& vertices, double& s, int& index,
+                      std::vector<RoadEditableVertex>& out)
+{
+    const unsigned int count = static_cast<unsigned int>(polygon.size());
+    const unsigned int next = static_cast<unsigned int>(k + 1) % count;
+    const float ax = a.x;
+    const float az = a.z;
+    const float bx = b.x;
+    const RoadScalar dzAB = RoadScalar(b.z) - az;
+    const float dzABStored = static_cast<float>(dzAB);
+    const Vec3& c = vertices[polygon[k]].position;
+    const Vec3& d = vertices[polygon[next]].position;
+    const float cx = c.x;
+    const float cz = c.z;
+    const float dx = d.x;
+    const float dz = d.z;
+
+    index = -1;
+    const RoadScalar t1Register = (RoadScalar(dz) - cz) * ax;
+    const double t1 = static_cast<double>(t1Register);
+    const RoadScalar t2 = (RoadScalar(cz) - dz) * bx;
+    const RoadScalar t3 = t2 + (RoadScalar(az) - b.z) * cx;
+    const RoadScalar t4 = t3 + RoadScalar(dx) * dzAB;
+    const RoadScalar denominator = t1Register + t4;
+    const float u = static_cast<float>(RoadScalar(cz) - az);
+    const RoadScalar inverse = RoadScalar(1.0) / denominator;
+    const RoadScalar sValue = (((RoadScalar(az) - dz) * cx + RoadScalar(u) * dx) + t1) * inverse;
+    s = static_cast<double>(sValue);
+    const RoadScalar x1 = RoadScalar(cz) - b.z;
+    const RoadScalar y1 = x1 * ax + (RoadScalar(az) - cz) * bx;
+    const RoadScalar y2 = y1 + RoadScalar(cx) * dzAB;
+    const RoadScalar ratio = (-y2) * inverse;
+
+    if (roadLess(0.9999, ratio) && roadLess(ratio, 1.0001))
+    {
+        const float q = static_cast<float>(RoadScalar(bx) - ax);
+        const float r = static_cast<float>(RoadScalar(dzABStored) * (RoadScalar(cx) - ax)
+                                           - RoadScalar(u) * q);
+        if (roadLess(RoadScalar(std::fabs(r)), 0.0001))
+            return false;
+        // The shipped source compares two constants here (a dword 0 and |qword 0| < 1e-4), so the
+        // scan below always runs.
+        RoadScalar side = 0.0f;
+        const double zeroConstant = 0.0;
+        if (roadLess(RoadScalar(std::fabs(zeroConstant)), 0.0001))
+        {
+            unsigned int j = static_cast<unsigned int>(k) + 2;
+            do
+            {
+                const unsigned int size = static_cast<unsigned int>(polygon.size());
+                const Vec3& e = vertices[polygon[j % size]].position;
+                ++j;
+                side = (RoadScalar(e.x) - ax) * dzABStored - (RoadScalar(e.z) - az) * q;
+            } while (roadLess(RoadScalar(std::fabs(static_cast<double>(side))), 0.0001));
+        }
+        if (roadLess(0.0f, r) && roadLess(0.0f, side))
+            return false;
+        if (roadLess(r, 0.0f) && roadLess(side, 0.0f))
+            return false;
+        return true;
+    }
+
+    if (roadLess(ratio, 0.0001) || roadLessEqual(1.0, ratio))
+        return false;
+
+    RoadEditableVertex crossing;
+    lerpVec3(crossing.position, c, d, static_cast<float>(ratio));
+    crossing.uv0.x = 0.0f;                          // the inline vertex constructor's stores after the call
+    crossing.uv0.y = 0.0f;
+    crossing.uv1.x = 0.0f;
+    crossing.uv1.y = 0.0f;
+    index = static_cast<int>(out.size());
+    out.push_back(crossing);
+    return true;
+}
+
+// (thiscall, `retn 8`) - snaps the point to millimetres in x and z (y is kept), drops every vertex
+// within 1 mm of it (their indices become -1 in the pending polygons, the survivors are renumbered
+// into a compacted copy), appends the point itself under index -1's replacement, then removes
+// consecutive duplicate indices from each pending polygon. The compacted vertex vector is a local
+// that is destroyed at the end (`vertices` is never written; shipped).
+// Shipped defect, restored as a bounds check [CHOSEN, not recovered; memory-safety exception]: the
+// duplicate-removal pass compares the next index with element (m - 1) of the half-built copy, which
+// lies past its end once an index has been skipped; here such an out-of-range comparison counts as
+// "different".
+// PE 0x1013CDE0
+void roadSnapPoint(RoadPolygonList& pending, RoadEditableVertex& point,
+                   const std::vector<RoadEditableVertex>& vertices)
+{
+    const float y = point.position.y;
+    point.position.x = static_cast<float>(RoadScalar(point.position.x) * 1000.0f);
+    point.position.y = static_cast<float>(RoadScalar(point.position.y) * 1000.0f);
+    point.position.z = static_cast<float>(RoadScalar(point.position.z) * 1000.0f);
+    point.position.x = static_cast<float>(RoadScalar(static_cast<int>(point.position.x)) * 0.001f);
+    point.position.z = static_cast<float>(RoadScalar(static_cast<int>(point.position.z)) * 0.001f);
+    point.position.y = y;
+
+    std::vector<RoadEditableVertex> snapped;
+    for (unsigned int i = 0; !vertices.empty() && i < vertices.size(); ++i)
+    {
+        const RoadEditableVertex& v = vertices[i];
+        const RoadScalar deltaX = RoadScalar(v.position.x) - point.position.x;
+        const RoadScalar deltaZ = RoadScalar(v.position.z) - point.position.z;
+        const RoadScalar distance = roadSquareRoot(deltaX * deltaX + deltaZ * deltaZ);
+        if (roadLess(0.001, distance))
+        {
+            const int newIndex = static_cast<int>(snapped.size());
+            snapped.push_back(v);
+            if (newIndex != static_cast<int>(i))
+                roadReplacePendingIndex(pending, static_cast<int>(i), newIndex);
+        }
+        else
+        {
+            roadReplacePendingIndex(pending, static_cast<int>(i), -1);
+        }
+    }
+    const int pointIndex = static_cast<int>(snapped.size());
+    snapped.push_back(point);
+    roadReplacePendingIndex(pending, -1, pointIndex);
+
+    for (RoadPolygonList::iterator node = pending.begin(); node != pending.end(); ++node)
+    {
+        RoadPolygon& polygon = *node;
+        for (unsigned int j = 1; !polygon.empty() && j < polygon.size(); ++j)
+        {
+            if (polygon[j - 1] != polygon[j])
+                continue;
+            RoadPolygon compact;
+            compact.push_back(polygon[0]);
+            for (unsigned int m = 1; !polygon.empty() && m < polygon.size(); ++m)
+            {
+                const bool same = (m - 1 < compact.size()) && compact[m - 1] == polygon[m];
+                if (!same)
+                    compact.push_back(polygon[m]);
+            }
+            polygon = compact;
+            break;
+        }
+    }
+}
 
 
 // (`retn 8`) - drain the pending list: a polygon of three or more vertices that spans more
@@ -1080,12 +1498,13 @@ float fadeRampEnd(float t, float current)
 // whole. Then every ready polygon of three or more vertices is ear-clipped into `indices`. Polygons
 // with fewer vertices are dropped from both lists unprocessed.
 
+// PE 0x1013D560
 void RoadEditable::splitAndTriangulate(std::vector<RoadEditableVertex>& vertices, std::vector<int>& indices)
 {
     PolygonCut cut;
     cut.x = 0.0f;
     cut.z = 0.0f;                                    // the axis word is not initialised (shipped)
-    while (m_pendingPolygons.size != 0)
+    while (!m_pendingPolygons.empty())
     {
         RoadPolygon& polygon = m_pendingPolygons.front();
         if (polygon.size() >= 3)
@@ -1097,16 +1516,16 @@ void RoadEditable::splitAndTriangulate(std::vector<RoadEditableVertex>& vertices
                 if (cut.axis == 0)
                 {
                     const int maxZ = extremeMaxZ(polygon, vertices, 0.0f);
-                    lineStart = makeVec3(cut.x, 0.0f, static_cast<float>(maxZ) + 1.0f);
+                    lineStart = makeVec3(cut.x, 0.0f, roadGridOffset(maxZ, 1.0f));
                     const int minZ = extremeMinZ(polygon, vertices, 0.0f);
-                    lineEnd = makeVec3(cut.x, 0.0f, static_cast<float>(minZ) - 1.0f);
+                    lineEnd = makeVec3(cut.x, 0.0f, roadGridOffset(minZ, -1.0f));
                 }
                 else
                 {
                     const int maxX = extremeMaxX(polygon, vertices, 0.0f);
-                    lineStart = makeVec3(static_cast<float>(maxX) + 1.0f, 0.0f, cut.z);
+                    lineStart = makeVec3(roadGridOffset(maxX, 1.0f), 0.0f, cut.z);
                     const int minX = extremeMinX(polygon, vertices, 0.0f);
-                    lineEnd = makeVec3(static_cast<float>(minX) - 1.0f, 0.0f, cut.z);
+                    lineEnd = makeVec3(roadGridOffset(minX, -1.0f), 0.0f, cut.z);
                 }
                 std::vector<RoadPolygon> pieces;
                 if (clipPolygon(lineStart, lineEnd, pieces, polygon, vertices, false))
@@ -1123,12 +1542,12 @@ void RoadEditable::splitAndTriangulate(std::vector<RoadEditableVertex>& vertices
             {
                 const int maxZ = extremeMaxZ(polygon, vertices, 0.01f);
                 const int minX = extremeMinX(polygon, vertices, 0.01f);
-                const Vec3 lineStart = makeVec3(static_cast<float>(minX) - 1.0f, 0.0f,
-                                                static_cast<float>(maxZ) + 1.0f);
+                const Vec3 lineStart = makeVec3(roadGridOffset(minX, -1.0f), 0.0f,
+                                                roadGridOffset(maxZ, 1.0f));
                 const int minZ = extremeMinZ(polygon, vertices, 0.01f);
                 const int maxX = extremeMaxX(polygon, vertices, 0.01f);
-                const Vec3 lineEnd = makeVec3(static_cast<float>(maxX) + 1.0f, 0.0f,
-                                              static_cast<float>(minZ) - 1.0f);
+                const Vec3 lineEnd = makeVec3(roadGridOffset(maxX, 1.0f), 0.0f,
+                                              roadGridOffset(minZ, -1.0f));
                 std::vector<RoadPolygon> pieces;
                 if (clipPolygon(lineStart, lineEnd, pieces, polygon, vertices, false))
                 {
@@ -1144,7 +1563,7 @@ void RoadEditable::splitAndTriangulate(std::vector<RoadEditableVertex>& vertices
         m_pendingPolygons.pop_front();
     }
 
-    while (m_readyPolygons.size != 0)
+    while (!m_readyPolygons.empty())
     {
         RoadPolygon& polygon = m_readyPolygons.front();
         if (polygon.size() >= 3)
@@ -1158,6 +1577,7 @@ void RoadEditable::splitAndTriangulate(std::vector<RoadEditableVertex>& vertices
 // the template supplies the error limit. Ghost mode emits a strip or mirrored-column mesh.
 // Requires sampled edges to be nonempty; the final error test retains an unchecked end read.
 // Noise changes only x. Final geometry is split on the terrain grid and projected to its heightmap.
+// PE 0x1013DAC0
 int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vector<int>& indices,
                              float width, float /*maxError - not read*/, bool ghost)
 {
@@ -1196,10 +1616,10 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
     const Vec2& offset1 = m_textureScaleOffsets[1];
     const Vec2& scale1 = m_template->getTextureScale(1);
     const float scaleU1 = scale1.x + offset1.x;
-    const float scaleV1 = offset1.y + scale1.y;
-    const float inverseWidth = 1.0f / width;
-    const float alongScale0 = scaleU0 * inverseWidth / scaleV0;
-    const float alongScale1 = inverseWidth * scaleU1 / scaleV1;
+    const RoadScalar scaleV1 = RoadScalar(offset1.y) + scale1.y;
+    const RoadScalar inverseWidth = RoadScalar(1.0f) / width;
+    const float alongScale0 = static_cast<float>(RoadScalar(scaleU0) * inverseWidth / scaleV0);
+    const float alongScale1 = static_cast<float>(inverseWidth * scaleU1 / scaleV1);
     const bool mirror0 = m_template->getMirror(0);                           // +0x24
     const bool mirror1 = m_template->getMirror(1);
 
@@ -1235,6 +1655,13 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
             bool keep = false;
             for (unsigned int j = nextRow; j <= i; ++j)
             {
+#if defined(__APPLE__)
+                const RoadDeviation leftDeviation = roadDeviation(firstAnchor.position, left[j].position,
+                                                                   left[i + 1].position, false);
+                const RoadDeviation rightDeviation = roadDeviation(secondAnchor.position, right[j].position,
+                                                                    right[i + 1].position, true);
+                const float leftError = roadDeviationError(leftDeviation, 0);
+#else
                 const Vec3& a = firstAnchor.position;
                 const float d1x = a.x - left[j].position.x;
                 const float d1y = a.y - left[j].position.y;
@@ -1260,13 +1687,18 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
                 const float c2z = d2y * fx - fy * d2x;
 
                 const float leftError = lengthSumZYX(c1x, c1y, c1z) / lengthSumZYX(ex, ey, ez);
-                if (m_template->getMaxTesselatedError(0) < leftError)        // +0x34
+#endif
+                if (roadLess(m_template->getMaxTesselatedError(0), leftError)) // +0x34
                 {
                     keep = true;
                     break;
                 }
+#if defined(__APPLE__)
+                const float rightError = roadDeviationError(rightDeviation, 0);
+#else
                 const float rightError = lengthSumZYX(c2x, c2y, c2z) / lengthSumZYX(fx, fy, fz);
-                if (m_template->getMaxTesselatedError(0) < rightError || i == leftSamples.size() - 1)
+#endif
+                if (roadLess(m_template->getMaxTesselatedError(0), rightError) || i == leftSamples.size() - 1)
                 {
                     keep = true;
                     break;
@@ -1279,22 +1711,19 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
             RoadEditableVertex rightVertex = rightSamples[i];
             if (m_noise)
             {
-                const float noiseX = static_cast<float>(i) * 0.1f;           // flt_101DD25C
+                const float noiseX = static_cast<float>(RoadScalar(i) * 0.1f); // flt_101DD25C
                 leftVertex.position.x = m_noise->sample(noiseX, 0.0f, 0.0f, 0.0f) + leftVertex.position.x;
                 rightVertex.position.x = m_noise->sample(noiseX + 1000.0f, 0.0f, 0.0f, 0.0f)
                                        + rightVertex.position.x;
             }
-            const float dx = rightVertex.position.x - secondAnchor.position.x;
-            const float dy = rightVertex.position.y - secondAnchor.position.y;
-            const float dz = rightVertex.position.z - secondAnchor.position.z;
             rightVertex.uv0.x = inverseScaleU0;
             rightVertex.uv1.x = inverseScaleU1;
             leftVertex.uv0.x = 0.0f;
             leftVertex.uv1.x = 0.0f;
-            const float rowLength = lengthSumZYX(dx, dy, dz);
-            const float v0 = alongScale0 * rowLength + secondAnchor.uv0.y;
+            const RoadScalar rowLength = roadDistance3(rightVertex.position, secondAnchor.position, 0, false);
+            const float v0 = static_cast<float>(RoadScalar(alongScale0) * rowLength + secondAnchor.uv0.y);
             rightVertex.uv0.y = v0;
-            const float v1 = alongScale1 * rowLength + secondAnchor.uv1.y;
+            const float v1 = static_cast<float>(RoadScalar(alongScale1) * rowLength + secondAnchor.uv1.y);
             rightVertex.uv1.y = v1;
             leftVertex.uv1.y = v1;
             leftVertex.uv0.y = v0;
@@ -1311,48 +1740,48 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         if (m_fadeDistAtStartRight.y != 0.0f)
             secondColumn[0].alpha = 0.0f;
 
-        float firstDistance = 0.0f;
-        float secondDistance = 0.0f;
+        RoadScalar firstDistance = RoadScalar(0.0f);
+        RoadScalar secondDistance = RoadScalar(0.0f);
         for (unsigned int k = 1; k < firstColumn.size(); ++k)
         {
             const Vec3& p = firstColumn[k].position;
             const Vec3& q = firstColumn[k - 1].position;
-            firstDistance = firstDistance + lengthSumZYX(p.x - q.x, p.y - q.y, p.z - q.z);
+            firstDistance = firstDistance + roadDistance3(p, q, 0, false);
             const Vec3& r = secondColumn[k].position;
             const Vec3& u = secondColumn[k - 1].position;
-            secondDistance = secondDistance + lengthSumZYX(r.x - u.x, r.y - u.y, r.z - u.z);
-            if (0.0f != m_fadeDistAtStartLeft.y - m_fadeDistAtStartLeft.x)
+            secondDistance = secondDistance + roadDistance3(r, u, 0, false);
+            if (0.0f != RoadScalar(m_fadeDistAtStartLeft.y) - m_fadeDistAtStartLeft.x)
             {
                 firstColumn[k].alpha = fadeRamp((firstDistance - m_fadeDistAtStartLeft.x)
-                    / (m_fadeDistAtStartLeft.y - m_fadeDistAtStartLeft.x));
+                    / (RoadScalar(m_fadeDistAtStartLeft.y) - m_fadeDistAtStartLeft.x));
             }
-            if (0.0f != m_fadeDistAtStartRight.y - m_fadeDistAtStartRight.x)
+            if (0.0f != RoadScalar(m_fadeDistAtStartRight.y) - m_fadeDistAtStartRight.x)
             {
                 secondColumn[k].alpha = fadeRamp((secondDistance - m_fadeDistAtStartRight.x)
-                    / (m_fadeDistAtStartRight.y - m_fadeDistAtStartRight.x));
+                    / (RoadScalar(m_fadeDistAtStartRight.y) - m_fadeDistAtStartRight.x));
             }
         }
-        const float firstTotal = firstDistance;
-        const float secondTotal = secondDistance;
-        float firstRun = 0.0f;
-        float secondRun = 0.0f;
+        const RoadScalar firstTotal = firstDistance;
+        const float secondTotal = static_cast<float>(secondDistance);
+        RoadScalar firstRun = RoadScalar(0.0f);
+        RoadScalar secondRun = RoadScalar(0.0f);
         for (unsigned int k = 1; k < firstColumn.size(); ++k)
         {
             const Vec3& p = firstColumn[k].position;
             const Vec3& q = firstColumn[k - 1].position;
-            firstRun = firstRun + lengthSumXZY(p.x - q.x, p.y - q.y, p.z - q.z);
+            firstRun = firstRun + roadDistance3(p, q, 1, false);
             const Vec3& r = secondColumn[k].position;
             const Vec3& u = secondColumn[k - 1].position;
-            secondRun = secondRun + lengthSumXZY(r.x - u.x, r.y - u.y, r.z - u.z);
-            if (0.0f != m_fadeDistAtEndLeft.y - m_fadeDistAtEndLeft.x)
+            secondRun = secondRun + roadDistance3(r, u, 1, false);
+            if (0.0f != RoadScalar(m_fadeDistAtEndLeft.y) - m_fadeDistAtEndLeft.x)
             {
                 firstColumn[k].alpha = fadeRampEnd(((firstTotal - firstRun) - m_fadeDistAtEndLeft.x)
-                    / (m_fadeDistAtEndLeft.y - m_fadeDistAtEndLeft.x), firstColumn[k].alpha);
+                    / (RoadScalar(m_fadeDistAtEndLeft.y) - m_fadeDistAtEndLeft.x), firstColumn[k].alpha);
             }
-            if (0.0f != m_fadeDistAtEndRight.y - m_fadeDistAtEndRight.x)
+            if (0.0f != RoadScalar(m_fadeDistAtEndRight.y) - m_fadeDistAtEndRight.x)
             {
                 secondColumn[k].alpha = fadeRampEnd(((secondTotal - secondRun) - m_fadeDistAtEndRight.x)
-                    / (m_fadeDistAtEndRight.y - m_fadeDistAtEndRight.x), secondColumn[k].alpha);
+                    / (RoadScalar(m_fadeDistAtEndRight.y) - m_fadeDistAtEndRight.x), secondColumn[k].alpha);
             }
         }
 
@@ -1388,7 +1817,7 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         firstAnchor = leftSamples[0];
         thirdAnchor = rightSamples[0];
         secondAnchor = firstAnchor;
-        secondAnchor.position = makeVec3((thirdAnchor.position.x + firstAnchor.position.x) * 0.5f,
+        secondAnchor.position = makeVec3(static_cast<float>((RoadScalar(thirdAnchor.position.x) + firstAnchor.position.x) * 0.5f),
                                          (thirdAnchor.position.y + firstAnchor.position.y) * 0.5f,
                                          (thirdAnchor.position.z + firstAnchor.position.z) * 0.5f);
         firstAnchor.uv1.x = 0.0f;
@@ -1397,7 +1826,8 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         firstAnchor.uv0.y = 0.0f;
         thirdAnchor.uv0.y = 0.0f;
         secondAnchor.uv0.y = 0.0f;
-        const float inverseScaleU0 = 1.0f / scaleU0;
+        const RoadScalar rawInverseScaleU0 = RoadScalar(1.0f) / scaleU0;
+        const float inverseScaleU0 = static_cast<float>(rawInverseScaleU0);
         if (mirror0)
         {
             secondAnchor.uv0.x = inverseScaleU0;
@@ -1405,10 +1835,11 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         }
         else
         {
-            secondAnchor.uv0.x = 0.5f * inverseScaleU0;
+            secondAnchor.uv0.x = static_cast<float>(RoadScalar(0.5f) * rawInverseScaleU0);
             thirdAnchor.uv0.x = inverseScaleU0;
         }
-        const float inverseScaleU1 = 1.0f / scaleU1;
+        const RoadScalar rawInverseScaleU1 = RoadScalar(1.0f) / scaleU1;
+        const float inverseScaleU1 = static_cast<float>(rawInverseScaleU1);
         thirdAnchor.uv1.y = 0.0f;
         secondAnchor.uv1.y = 0.0f;
         if (mirror1)
@@ -1418,7 +1849,7 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         }
         else
         {
-            secondAnchor.uv1.x = 0.5f * inverseScaleU1;
+            secondAnchor.uv1.x = static_cast<float>(RoadScalar(0.5f) * rawInverseScaleU1);
             thirdAnchor.uv1.x = inverseScaleU1;
         }
         firstColumn.push_back(firstAnchor);
@@ -1434,6 +1865,13 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
             bool keep = false;
             for (unsigned int j = nextRow; j <= i; ++j)
             {
+#if defined(__APPLE__)
+                const RoadDeviation leftDeviation = roadDeviation(firstAnchor.position, left[j].position,
+                                                                   left[i + 1].position, false);
+                const RoadDeviation rightDeviation = roadDeviation(thirdAnchor.position, right[j].position,
+                                                                    right[i + 1].position, true);
+                const float leftError = roadDeviationError(leftDeviation, 0);
+#else
                 const Vec3& a = firstAnchor.position;
                 const float d1x = a.x - left[j].position.x;
                 const float d1y = a.y - left[j].position.y;
@@ -1459,13 +1897,18 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
                 const float c2z = d2y * fx - fy * d2x;
 
                 const float leftError = lengthSumZYX(c1x, c1y, c1z) / lengthSumZYX(ex, ey, ez);
-                if (m_template->getMaxTesselatedError(0) < leftError)
+#endif
+                if (roadLess(m_template->getMaxTesselatedError(0), leftError))
                 {
                     keep = true;
                     break;
                 }
+#if defined(__APPLE__)
+                const float rightError = roadDeviationError(rightDeviation, 1);
+#else
                 const float rightError = lengthSumXZY(c2x, c2y, c2z) / lengthSumXZY(fx, fy, fz);
-                if (m_template->getMaxTesselatedError(0) < rightError || i == sampleCount - 1)
+#endif
+                if (roadLess(m_template->getMaxTesselatedError(0), rightError) || i == sampleCount - 1)
                 {
                     keep = true;
                     break;
@@ -1478,23 +1921,19 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
             RoadEditableVertex rightVertex = rightSamples[i];
             if (m_noise)
             {
-                const float noiseX = static_cast<float>(i) * 0.1f;
+                const float noiseX = static_cast<float>(RoadScalar(i) * 0.1f);
                 leftVertex.position.x = m_noise->sample(noiseX, 0.0f, 0.0f, 0.0f) + leftVertex.position.x;
                 rightVertex.position.x = m_noise->sample(noiseX + 1000.0f, 0.0f, 0.0f, 0.0f)
                                        + rightVertex.position.x;
             }
             RoadEditableVertex centreVertex = leftVertex;
-            centreVertex.position = makeVec3((rightVertex.position.x + leftVertex.position.x) * 0.5f,
+            centreVertex.position = makeVec3(static_cast<float>((RoadScalar(rightVertex.position.x) + leftVertex.position.x) * 0.5f),
                                              (rightVertex.position.y + leftVertex.position.y) * 0.5f,
                                              (rightVertex.position.z + leftVertex.position.z) * 0.5f);
-            const float rightLength = lengthSumZYX(rightVertex.position.x - thirdAnchor.position.x,
-                                                   rightVertex.position.y - thirdAnchor.position.y,
-                                                   rightVertex.position.z - thirdAnchor.position.z);
-            const float leftLength = lengthSumZYX(leftVertex.position.x - firstAnchor.position.x,
-                                                  leftVertex.position.y - firstAnchor.position.y,
-                                                  leftVertex.position.z - firstAnchor.position.z);
+            const float rightLength = static_cast<float>(roadDistance3(rightVertex.position, thirdAnchor.position, 0, false));
+            const RoadScalar leftLength = roadDistance3(leftVertex.position, firstAnchor.position, 0, false);
             leftVertex.uv0.x = 0.0f;
-            const float rowLength = (leftLength + rightLength) * 0.5f;
+            const RoadScalar rowLength = (leftLength + rightLength) * 0.5f;
             if (mirror0)
             {
                 centreVertex.uv0.x = inverseScaleU0;
@@ -1505,7 +1944,7 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
                 rightVertex.uv0.x = inverseScaleU0;
                 centreVertex.uv0.x = inverseScaleU0 * 0.5f;
             }
-            const float v0 = alongScale0 * rowLength + secondAnchor.uv0.y;
+            const float v0 = static_cast<float>(RoadScalar(alongScale0) * rowLength + secondAnchor.uv0.y);
             centreVertex.uv0.y = v0;
             leftVertex.uv1.x = 0.0f;
             if (mirror1)
@@ -1518,7 +1957,7 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
                 rightVertex.uv1.x = inverseScaleU1;
                 centreVertex.uv1.x = inverseScaleU1 * 0.5f;
             }
-            const float v1 = rowLength * alongScale1 + secondAnchor.uv1.y;
+            const float v1 = static_cast<float>(rowLength * alongScale1 + secondAnchor.uv1.y);
             rightVertex.uv0.y = v0;
             leftVertex.uv0.y = v0;
             centreVertex.uv1.y = v1;
@@ -1541,50 +1980,50 @@ int RoadEditable::tessellate(std::vector<RoadEditableVertex>& vertices, std::vec
         if (m_fadeDistAtStartRight.y != 0.0f)
             thirdColumn[0].alpha = 0.0f;
 
-        float firstDistance = 0.0f;
-        float centreDistance = 0.0f;
+        RoadScalar firstDistance = RoadScalar(0.0f);
+        RoadScalar centreDistance = RoadScalar(0.0f);
         for (unsigned int k = 1; k < firstColumn.size(); ++k)
         {
             const Vec3& p = firstColumn[k].position;
             const Vec3& q = firstColumn[k - 1].position;
-            firstDistance = firstDistance + lengthSumZYX(p.x - q.x, p.y - q.y, p.z - q.z);
+            firstDistance = firstDistance + roadDistance3(p, q, 0, false);
             const Vec3& r = secondColumn[k].position;
             const Vec3& u = secondColumn[k - 1].position;
-            centreDistance = centreDistance + lengthSumZYX(r.x - u.x, r.y - u.y, r.z - u.z);
-            if (0.0f != m_fadeDistAtStartLeft.y - m_fadeDistAtStartLeft.x)
+            centreDistance = centreDistance + roadDistance3(r, u, 0, false);
+            if (0.0f != RoadScalar(m_fadeDistAtStartLeft.y) - m_fadeDistAtStartLeft.x)
             {
                 firstColumn[k].alpha = fadeRamp((firstDistance - m_fadeDistAtStartLeft.x)
-                    / (m_fadeDistAtStartLeft.y - m_fadeDistAtStartLeft.x));
+                    / (RoadScalar(m_fadeDistAtStartLeft.y) - m_fadeDistAtStartLeft.x));
             }
-            if (0.0f != m_fadeDistAtStartRight.y - m_fadeDistAtStartRight.x)
+            if (0.0f != RoadScalar(m_fadeDistAtStartRight.y) - m_fadeDistAtStartRight.x)
             {
                 thirdColumn[k].alpha = fadeRamp((centreDistance - m_fadeDistAtStartRight.x)
-                    / (m_fadeDistAtStartRight.y - m_fadeDistAtStartRight.x));   // [shipped] the centre's run
+                    / (RoadScalar(m_fadeDistAtStartRight.y) - m_fadeDistAtStartRight.x));   // [shipped] the centre's run
             }
         }
-        const float firstTotal = firstDistance;
-        const float centreTotal = centreDistance;
-        float firstRun = 0.0f;
-        float centreRun = 0.0f;
+        const RoadScalar firstTotal = firstDistance;
+        const float centreTotal = static_cast<float>(centreDistance);
+        RoadScalar firstRun = RoadScalar(0.0f);
+        RoadScalar centreRun = RoadScalar(0.0f);
         for (unsigned int k = 1; k < firstColumn.size(); ++k)
         {
             const Vec3& p = firstColumn[k].position;
             const Vec3& q = firstColumn[k - 1].position;
-            firstRun = firstRun + lengthSumZYX(p.x - q.x, p.y - q.y, p.z - q.z);
+            firstRun = firstRun + roadDistance3(p, q, 0, false);
             const Vec3& r = secondColumn[k].position;
             const Vec3& u = secondColumn[k - 1].position;
-            centreRun = centreRun + lengthSumYXZ(r.x - u.x, r.y - u.y, r.z - u.z);
-            if (0.0f != m_fadeDistAtEndLeft.y - m_fadeDistAtEndLeft.x)
+            centreRun = centreRun + roadDistance3(r, u, 2, false);
+            if (0.0f != RoadScalar(m_fadeDistAtEndLeft.y) - m_fadeDistAtEndLeft.x)
             {
                 firstColumn[k].alpha = fadeRampEnd(((firstTotal - firstRun) - m_fadeDistAtEndLeft.x)
-                    / (m_fadeDistAtEndLeft.y - m_fadeDistAtEndLeft.x), firstColumn[k].alpha);
+                    / (RoadScalar(m_fadeDistAtEndLeft.y) - m_fadeDistAtEndLeft.x), firstColumn[k].alpha);
             }
-            if (0.0f != m_fadeDistAtEndRight.y - m_fadeDistAtEndRight.x)
+            if (0.0f != RoadScalar(m_fadeDistAtEndRight.y) - m_fadeDistAtEndRight.x)
             {
                 thirdColumn[k].alpha = fadeRampEnd(((centreTotal - centreRun) - m_fadeDistAtEndRight.x)
-                    / (m_fadeDistAtEndRight.y - m_fadeDistAtEndRight.x), thirdColumn[k].alpha);
+                    / (RoadScalar(m_fadeDistAtEndRight.y) - m_fadeDistAtEndRight.x), thirdColumn[k].alpha);
             }
-            secondColumn[k].alpha = (firstColumn[k].alpha + thirdColumn[k].alpha) * 0.5f;
+            secondColumn[k].alpha = static_cast<float>((RoadScalar(firstColumn[k].alpha) + thirdColumn[k].alpha) * 0.5f);
         }
 
         if (ghost)

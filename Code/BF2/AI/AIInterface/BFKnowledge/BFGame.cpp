@@ -97,8 +97,10 @@ int BFGame::getAISettingsFromGame(int& a, bool& b, float& c) const
 {
     IBase* general = classManager->getSingleton(std::string("GeneralSettings"));
 #if DEDICATED
-    // The dedicated images declare no GeneralSettings (Game/GeneralSettings.h is client-only), and
-    // no dedicated module registers the singleton, so this arm cannot be reached there.
+    // [FRONTIER] bf2 (ia-32, dedicated) 0x83FED10 has the same menu arm as BF2.exe. It is missing
+    // here only because IGeneralSettings (Game/GeneralSettings.h) and ILocalProfileManager
+    // (Game/LocalProfileManager.h) are declared under `#if !DEDICATED` (game track). No dedicated
+    // module registers "GeneralSettings", so the stop cannot be reached.
     if (general)
     {
         BF2_AI_FRONTIER("dice::hfe::ai::BFGame::getAISettingsFromGame"

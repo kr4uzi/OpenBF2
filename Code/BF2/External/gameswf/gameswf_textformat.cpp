@@ -5,6 +5,9 @@
 
 #include "gameswf_log.h"
 #include "gameswf_textformat.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
+#endif
 
 namespace gameswf
 {  
@@ -156,7 +159,12 @@ void textformat_setformat(const fn_call& fn)
 
   if (obj->get_member("color", &method)) {
     //log_msg("Color exists and is set to %f\n", method.to_number());
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+    obj->obj.colorSet(bf2x87::lowUInt32(method.to_number()));
+#else
     obj->obj.colorSet((uint32)method.to_number());
+#endif
   }
 
   if (obj->get_member("indent", &method)) {

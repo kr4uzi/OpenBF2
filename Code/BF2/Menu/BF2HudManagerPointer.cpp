@@ -1,5 +1,8 @@
 // HUD pointer positioning and routing. [INFERRED] Source split.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Ref2System.h"
 #include "HudAmmo.h"
@@ -11,7 +14,9 @@ namespace dice { namespace hfe { namespace hud {
 namespace {
 float centerPointer(float center, float dimension)
 {
+#if defined(_WIN32)
     const float half=0.5f;
+#if defined(_M_IX86)
     float result;
     __asm {
         fld dimension
@@ -20,18 +25,43 @@ float centerPointer(float center, float dimension)
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(center - static_cast<double>(dimension) * half);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float half=0.5f;
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 extended centering before float store.
+    result = bf2x87::center(center, dimension);
+    return result;
+#endif
 }
 float pointerDimension(int dimension) // 751200 fild and two equal float stores
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fild dimension
         fstp result
     }
     return result;
+#else
+    // The int is exact in double; the single float rounding is the fstp's.
+    return static_cast<float>(static_cast<double>(dimension));
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 signed FILD and float store.
+    result = bf2x87::store(bf2x87::wide(dimension));
+    return result;
+#endif
 }
 }
-void BF2HudManager::enablePointer(int texture, int mode)
+void BF2HudManager::enablePointer(std::intptr_t texture, int mode)
 {
     menu::Ref2System* initialSystem=ref2System;
     m_field15c=true;

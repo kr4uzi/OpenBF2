@@ -49,10 +49,6 @@ call :death color-death     "FIXTURE_DEBUG line=918 Failed set color on node: Ab
 if errorlevel 1 exit /b 1
 call :death font-death      "FIXTURE_DEBUG line=938 Failed setting font on node: Absent"     FIXTURE_FONT_RETURNED
 if errorlevel 1 exit /b 1
-call :death paintself-death "[FRONTIER] dice::meme::BfEditNode::paintSelf" FIXTURE_PAINTSELF_RETURNED
-if errorlevel 1 exit /b 1
-call :death onevent-death   "[FRONTIER] dice::meme::BfEditNode::onEvent1"  FIXTURE_ONEVENT_RETURNED
-if errorlevel 1 exit /b 1
 echo HUD edit node and its six rows passed
 exit /b 0
 

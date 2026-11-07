@@ -38,12 +38,16 @@ private:
     BF2Engine* m_engine;            // offset 0 - the only member
 };
 
-#if defined(_WIN32) && !DEDICATED
+#if !DEDICATED
 // Keyboard rings filled by window messages and consumed by menu/console text input.
-// Toggling either UI flushes its ring. [INFERRED] Global names.
+// Toggling either UI flushes its ring. [INFERRED] Global names. The console ring is defined in
+// BF2Console.cpp on every platform; the menu ring beside the Win32 window procedure in BF2.cpp.
 extern char consoleCharBuffer[256];
-extern char menuKeyBuffer[256];
 extern int  consoleCharCount, consoleCharRead, consoleCharWrite;
+#endif
+// [CHOSEN, not recovered] The macOS client fills the menu ring too (BF2.cpp, __APPLE__ arm).
+#if (defined(_WIN32) || defined(__APPLE__)) && !DEDICATED
+extern char menuKeyBuffer[256];
 extern int  menuKeyCount, menuKeyRead, menuKeyWrite;
 #endif
 

@@ -21,7 +21,7 @@ public:
     virtual bool setDefaults() = 0;                           //+24 4B3230: reset, re-run Settings/Controls.con, back up; true
     virtual void resetControlMaps() = 0;                      //+28 4B2BE0: reset() on every live map
     virtual void updateInputDevices() = 0;                    //+2C 4B2C70: device manager update(-1.0f) then update(0.1f)
-    virtual bool mapNextInput(int input, bool alternate, int unused, bool second, bool gameInput) = 0;
+    virtual int mapNextInput(int input, bool alternate, int unused, bool second, bool gameInput) = 0; //+30 4B2CA0: the manager's full EAX (int status)
     virtual bool selectControlMap(const std::string& name) = 0; //+34 4B38A0: the map the feel accessors forward to; true
     virtual bool getBindingDescription(io::IControlMap* map, int input, bool alternate, bool second,
                                        bool gameInput, std::string& key, std::wstring& text) = 0;
@@ -72,7 +72,7 @@ public:
     bool setDefaults() override;
     void resetControlMaps() override;
     void updateInputDevices() override;
-    bool mapNextInput(int input, bool alternate, int unused, bool second, bool gameInput) override;
+    int mapNextInput(int input, bool alternate, int unused, bool second, bool gameInput) override;
     bool selectControlMap(const std::string& name) override;
     bool getBindingDescription(io::IControlMap* map, int input, bool alternate, bool second,
                                bool gameInput, std::string& key, std::wstring& text) override;

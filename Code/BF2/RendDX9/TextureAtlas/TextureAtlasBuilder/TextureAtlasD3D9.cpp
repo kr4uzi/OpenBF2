@@ -3,8 +3,13 @@
 
 #include "TextureAtlasD3D9.h"
 #include "TextureFormat.h"
-#include "D3dx9Imports.h"
+#include "../../../../RendDX9Abi/D3dx9Sdk.h"
 
+#if defined(__APPLE__)
+#include <cstdio>
+#else
+#include <dxerr9.h>         // DXGetErrorString9A, from the SDK's DxErr9.lib
+#endif
 #include <cctype>
 
 namespace textureatlas {
@@ -22,7 +27,8 @@ ITextureAtlasConfiguration* __fastcall ITextureAtlasConfiguration::create()
 // getTextureInfo(): the load path is inputDirectory + name (stored
 // first), the name as given; D3DX reads the image's header from THE disk (D3DXGetImageInfoFromFileA:
 // the game's zip archives are invisible to it - census finding 5). A failed read leaves both strings
-// assigned and returns false.
+// assigned and returns false. Width (+0x00), Height (+0x04), MipLevels (+0x0C) and Format (+0x10)
+// are read out of the D3DXIMAGE_INFO stack copy (TAB 0x100082D0..0x100082FA).
 
 bool TextureAtlasConfigurationD3D9::getTextureInfo(const std::string& inputDirectory,
                                                    const std::string& name, TextureInfo& info)
@@ -30,7 +36,7 @@ bool TextureAtlasConfigurationD3D9::getTextureInfo(const std::string& inputDirec
     info.path = inputDirectory + name;
     info.name = name;
 
-    TextureAtlasD3dxImageInfo imageInfo;
+    D3DXIMAGE_INFO imageInfo;
     if (FAILED(D3DXGetImageInfoFromFileA(info.path.c_str(), &imageInfo)))
         return false;
 
@@ -53,6 +59,16 @@ int TextureAtlasD3D9::maxHeight()
 }
 
 namespace {
+
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] DxErr9 is unavailable on macOS; retain the failing HRESULT.
+std::string nativeAtlasErrorString(HRESULT result)
+{
+    char message[32];
+    std::snprintf(message, sizeof message, "HRESULT 0x%08X", static_cast<unsigned int>(result));
+    return std::string(message);
+}
+#endif
 
 // the string BY value, upper-cased in place through MSVCR71's toupper
 // with the char sign-extended (`movsx`), returned by value (through EBX: the DLL was built with /GL).
@@ -97,9 +113,9 @@ bool TextureAtlasD3D9::buildTextures()
         {
             IDirect3DTexture9* texture;
             if (FAILED(D3DXCreateTextureFromFileExA(m_device, tex->path.c_str(),
-                                                    TEXTUREATLAS_D3DX_DEFAULT, TEXTUREATLAS_D3DX_DEFAULT,
+                                                    D3DX_DEFAULT, D3DX_DEFAULT,
                                                     0, 0, D3DFMT_UNKNOWN, D3DPOOL_SYSTEMMEM,
-                                                    TEXTUREATLAS_D3DX_FILTER_NONE, TEXTUREATLAS_D3DX_DEFAULT,
+                                                    D3DX_FILTER_NONE, D3DX_DEFAULT,
                                                     0, 0, 0, &texture)))
             {
                 m_error(std::string("Could not load texture: ") + tex->path);
@@ -137,7 +153,11 @@ bool TextureAtlasD3D9::buildTextures()
                 hr = texture->GetSurfaceLevel(srcLevel, &srcSurface);
                 if (FAILED(hr))
                 {
+#if defined(__APPLE__)
+                    m_error(nativeAtlasErrorString(hr));
+#else
                     m_error(std::string(DXGetErrorString9A(hr)));
+#endif
                     texture->Release();
                     atlasTexture->Release();
                     return false;
@@ -145,17 +165,25 @@ bool TextureAtlasD3D9::buildTextures()
                 hr = atlasTexture->GetSurfaceLevel(level, &dstSurface);
                 if (FAILED(hr))
                 {
+#if defined(__APPLE__)
+                    m_error(nativeAtlasErrorString(hr));
+#else
                     m_error(std::string(DXGetErrorString9A(hr)));
+#endif
                     srcSurface->Release();
                     texture->Release();
                     atlasTexture->Release();
                     return false;
                 }
                 hr = D3DXLoadSurfaceFromSurface(dstSurface, 0, &rect, srcSurface, 0, 0,
-                                                TEXTUREATLAS_D3DX_FILTER_NONE, 0);
+                                                D3DX_FILTER_NONE, 0);
                 if (FAILED(hr))
                 {
+#if defined(__APPLE__)
+                    m_error(nativeAtlasErrorString(hr));
+#else
                     m_error(std::string(DXGetErrorString9A(hr)));
+#endif
                     dstSurface->Release();
                     srcSurface->Release();
                     texture->Release();
@@ -196,7 +224,7 @@ bool TextureAtlasD3D9::buildTextures()
                 atlasTexture->GetSurfaceLevel(level, &srcSurface);
                 dxtTexture->GetSurfaceLevel(level, &dstSurface);
                 D3DXLoadSurfaceFromSurface(dstSurface, 0, 0, srcSurface, 0, 0,
-                                           TEXTUREATLAS_D3DX_FILTER_NONE, 0);
+                                           D3DX_FILTER_NONE, 0);
                 if (srcSurface)
                 {
                     srcSurface->Release();
@@ -210,7 +238,7 @@ bool TextureAtlasD3D9::buildTextures()
             }
 
             const std::string path = m_outputPath + filename;
-            D3DXSaveTextureToFileA(path.c_str(), TEXTUREATLAS_D3DXIFF_DDS, dxtTexture, 0);
+            D3DXSaveTextureToFileA(path.c_str(), D3DXIFF_DDS, dxtTexture, 0);
             if (FAILED(createResult))
             {
                 m_error(std::string("Error saving texture \"") + path + "\"");
@@ -226,7 +254,7 @@ bool TextureAtlasD3D9::buildTextures()
         else
         {
             const std::string path = m_outputPath + filename;
-            if (FAILED(D3DXSaveTextureToFileA(path.c_str(), TEXTUREATLAS_D3DXIFF_DDS, atlasTexture, 0)))
+            if (FAILED(D3DXSaveTextureToFileA(path.c_str(), D3DXIFF_DDS, atlasTexture, 0)))
             {
                 m_error(std::string("Error saving texture \"") + path + "\"");
                 atlasTexture->Release();

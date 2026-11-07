@@ -6,8 +6,14 @@
 #include "CdKeyStore.h"
 #if !DEDICATED
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <wincrypt.h>
+#else
+// [CHOSEN, not recovered] macOS: the DPAPI counterpart (docs/macos-port.md, "Protected profile
+// data (DPAPI)"). The flow below is the shipped one; only the API calls differ.
+#include "../../../Platform/macOS/ProtectedData.h"
+#endif
 
 #include <cstdlib>                                   // malloc / free - the 402CF0 / 402D10 pair
 #include <cstring>                                   // memcmp / strlen
@@ -74,7 +80,11 @@ void ProtectedData::release()
 {
     if (m_blob)
     {
+#if defined(_WIN32)
         ::LocalFree(m_blob->pbData);
+#else
+        macos::freeProtectedData(m_blob->pbData);
+#endif
         delete m_blob;
         m_blob = 0;
     }
@@ -86,8 +96,13 @@ bool ProtectedData::protect(const std::string& plainText)
 {
     DATA_BLOB in;
     const char* const text = plainText.c_str();
+#if defined(_WIN32)
     in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(text));
     in.cbData = static_cast<DWORD>(std::strlen(text) + 1);
+#else
+    in.pbData = reinterpret_cast<unsigned char*>(const_cast<char*>(text));
+    in.cbData = static_cast<std::uint32_t>(std::strlen(text) + 1);
+#endif
 
     if (plainText.empty())
         return false;
@@ -95,21 +110,32 @@ bool ProtectedData::protect(const std::string& plainText)
     release();
 
     m_blob = new DATA_BLOB;                          // : operator new(8)
+#if defined(_WIN32)
     return ::CryptProtectData(&in, L"This is the description string.",
                               0, 0, 0, CRYPTPROTECT_UI_FORBIDDEN, m_blob) != FALSE;
+#else
+    // A failed protect leaves the blob empty, as a failed CryptProtectData does.
+    m_blob->cbData = 0;
+    m_blob->pbData = 0;
+    return macos::protectData(in.pbData, in.cbData, m_blob);
+#endif
 }
 
 // Decodes a dpapi-protected hexadecimal value in place. Assigns plaintext only on
 // success; failure preserves the original text and leaks the temporary decode buffer.
 bool ProtectedData::unprotect(std::string& hexText)
 {
+#if defined(_WIN32)
     const DWORD count = static_cast<DWORD>(hexText.size() >> 1);
     LPWSTR description = 0;
+#else
+    const std::uint32_t count = static_cast<std::uint32_t>(hexText.size() >> 1);
+#endif
 
     if (!count)
         return false;
 
-    BYTE* const bytes = static_cast<BYTE*>(std::malloc(count));   // : the engine malloc
+    unsigned char* const bytes = static_cast<unsigned char*>(std::malloc(count));   // : the engine malloc
     hexToBytes(hexText, bytes);
 
     DATA_BLOB in;
@@ -117,6 +143,7 @@ bool ProtectedData::unprotect(std::string& hexText)
     in.cbData = count;
 
     DATA_BLOB out;
+#if defined(_WIN32)
     if (::CryptUnprotectData(&in, &description, 0, 0, 0, CRYPTPROTECT_UI_FORBIDDEN, &out))
     {
         hexText = std::string(reinterpret_cast<const char*>(out.pbData));
@@ -125,6 +152,23 @@ bool ProtectedData::unprotect(std::string& hexText)
         ::LocalFree(out.pbData);
         return true;
     }
+#else
+    out.cbData = 0;
+    out.pbData = 0;
+    // The plain text carries its terminator (protect includes it), so it is read as a C string.
+    if (macos::unprotectData(in.pbData, in.cbData, &out) && out.cbData && out.pbData[out.cbData - 1] == 0)
+    {
+        hexText = std::string(reinterpret_cast<const char*>(out.pbData));
+        std::free(bytes);
+        macos::freeProtectedData(out.pbData);
+        return true;
+    }
+    if (out.pbData)
+        macos::freeProtectedData(out.pbData);
+    // As shipped, `bytes` is not freed on failure; there is no system message to format.
+    return false;
+#endif
+#if defined(_WIN32)
 
     char* message = 0;
     if (::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -133,6 +177,7 @@ bool ProtectedData::unprotect(std::string& hexText)
                          reinterpret_cast<LPSTR>(&message), 0, 0))
         ::LocalFree(message);
     return false;
+#endif
 }
 
 // Writes the encrypted blob as hex. Requires a non-null blob from successful protection.

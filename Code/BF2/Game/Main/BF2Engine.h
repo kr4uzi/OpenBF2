@@ -188,7 +188,7 @@ private:
     /* 164 */ int                 dwordA4; // [UNRESOLVED] Constructor sets -1; shutdown does not reset it.
 
     /* 168 */ Demo*               demo; // Owned demo controller.
-    /* 172 */ MusicPlayer*        musicPlayer; // Client-only allocation; original shutdown does not delete it.
+    /* 172 */ MusicPlayer*        musicPlayer; // Client-only allocation; the client shutdown arm deletes it.
 #if !DEDICATED
     struct MovieEntry // Client-only movie queue payload.
     {
@@ -217,6 +217,9 @@ struct SingleInstanceGuard
 {
 #if defined(_WIN32) && !DEDICATED
     /* +0x00 */ void* handle; // Win32 handle without including windows.h.
+#elif defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] Owned flock descriptor; closed on destruction or exec.
+    int lockFd;
 #endif
     /* +0x04 (client) / +0x00 */ bool isFirstInstance;
     SingleInstanceGuard();

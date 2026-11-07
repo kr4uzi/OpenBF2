@@ -24,8 +24,17 @@
 // On windows, replace ANSI assert with our own, for a less annoying
 // debugging experience.
 //int	tu_testbed_assert_break(const char* filename, int linenum, const char* expression);
+#if !defined(_M_IX86)
+#include <intrin.h>	// __debugbreak, the x64 arm below
+#endif
 #undef assert
+#if defined(_M_IX86)
 #define assert(x)	if (!(x)) { __asm { int 3 } }	// tu_testbed_assert_break(__FILE__, __LINE__, #x))
+#else
+// [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): no inline asm on x64;
+// the same breakpoint through the intrinsic.
+#define assert(x)	if (!(x)) { __debugbreak(); }
+#endif
 
 #endif // not NDEBUG
 #endif // _WIN32
@@ -74,11 +83,19 @@ void	operator delete[](void* ptr);
 // some misc handy math functions
 //
 
+// [BUILD-FIX SwiffPlayer: fmax, fmin and log2(float) live in namespace tu_util and are called
+// qualified. libc++'s <math.h> brings std::fmax/fmin/log2(float) into the global namespace, where
+// these global definitions conflict. The C library versions answer differently for NaN and
+// signed-zero inputs (fmax(NaN, 1) is 1 there, NaN or 1 here depending on order), so gameswf keeps
+// its own comparisons on every toolchain.]
+namespace tu_util {
+inline float	fmax(float a, float b) { if (a < b) return b; else return a; }
+inline float	fmin(float a, float b) { if (a < b) return a; else return b; }
+}
+
 inline int	iabs(int i) { if (i < 0) return -i; else return i; }
 inline int	imax(int a, int b) { if (a < b) return b; else return a; }
-inline float	fmax(float a, float b) { if (a < b) return b; else return a; }
 inline int	imin(int a, int b) { if (a < b) return a; else return b; }
-inline float	fmin(float a, float b) { if (a < b) return a; else return b; }
 
 
 inline int	iclamp(int i, int min, int max) {
@@ -88,13 +105,15 @@ inline int	iclamp(int i, int min, int max) {
 
 inline float	fclamp(float f, float xmin, float xmax) {
 	assert( xmin <= xmax );
-	return fmax(xmin, fmin(f, xmax));
+	return tu_util::fmax(xmin, tu_util::fmin(f, xmax));
 }
 
 inline float flerp(float a, float b, float f) { return (b - a) * f + a; }
 
 const float LN_2 = 0.693147180559945f;
-inline float	log2(float f) { return logf(f) / LN_2; }
+namespace tu_util {
+inline float	log2(float f) { return logf(f) / LN_2; }	// [BUILD-FIX SwiffPlayer: see fmax above.]
+}
 
 inline int	fchop( float f ) { return (int) f; }	// replace w/ inline asm if desired
 inline int	frnd(float f) { return fchop(f + 0.5f); }	// replace with inline asm if desired

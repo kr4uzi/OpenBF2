@@ -97,39 +97,39 @@ struct PaintRenderer : dx9rend::IRenderer {
     void beginFrame() override {actionUnsupported("renderer beginFrame");}
     void update(double) override {actionUnsupported("renderer update");}
     bool renderFrame(double,float) override {actionUnsupported("renderer frame");}
-    bool renderScene(double,const dx9rend::RenderFlags*,float) override {actionUnsupported("renderer scene");}
-    void slot_0x30() override {actionUnsupported("renderer slot30");}
-    void slot_0x34() override {actionUnsupported("renderer slot34");}
+    bool renderScene(double,const dx9rend::RenderFlags*,void*) override {actionUnsupported("renderer scene");}
+    bool slot_0x30() override {actionUnsupported("renderer slot30");}
+    bool slot_0x34(void*,const dx9rend::RenderFlags*) override {actionUnsupported("renderer slot34");}
     void slot_0x38() override {actionUnsupported("renderer slot38");}
     void* slot_0x3C(const dx9rend::DisplayModeFilter*) override {actionUnsupported("renderer slot3c");}
-    void slot_0x40() override {actionUnsupported("renderer slot40");}
+    bool slot_0x40(unsigned) override {actionUnsupported("renderer slot40");}
     bool setRenderViewDup(IBase*) override {actionUnsupported("renderer duplicate setter");}
     dx9rend::IRenderView* getRenderViewDup() override {actionUnsupported("renderer duplicate getter");}
     unsigned getFrameOrdinal() override {actionUnsupported("renderer frame ordinal");}
     void slot_0x58() override {actionUnsupported("renderer slot58");}
-    void slot_0x5C() override {actionUnsupported("renderer slot5c");}
-    void slot_0x60() override {actionUnsupported("renderer slot60");}
-    void slot_0x64() override {actionUnsupported("renderer slot64");}
+    bool slot_0x5C(const std::string&,void*,bool,bool,unsigned*,unsigned*) override {actionUnsupported("renderer slot5c");}
+    void slot_0x60(unsigned,void*,float,float,float,float,bool) override {actionUnsupported("renderer slot60");}
+    void slot_0x64(const DemoConfig*) override {actionUnsupported("renderer slot64");}
     void slot_0x68() override {actionUnsupported("renderer slot68");}
     void* getRenderStats() override {actionUnsupported("renderer stats");}
-    void slot_0x70() override {actionUnsupported("renderer slot70");}
+    bool slot_0x70() override {actionUnsupported("renderer slot70");}
     IVideoOptions* getVideoOptions() override {actionUnsupported("renderer video options");}
-    void slot_0x78() override {actionUnsupported("renderer slot78");}
-    void slot_0x7C() override {actionUnsupported("renderer slot7c");}
-    void slot_0x80() override {actionUnsupported("renderer slot80");}
-    void slot_0x84() override {actionUnsupported("renderer slot84");}
-    void slot_0x88() override {actionUnsupported("renderer slot88");}
-    void slot_0x8C() override {actionUnsupported("renderer slot8c");}
-    void slot_0x90() override {actionUnsupported("renderer slot90");}
-    void slot_0x94() override {actionUnsupported("renderer slot94");}
-    void slot_0x98() override {actionUnsupported("renderer slot98");}
-    void slot_0x9C() override {actionUnsupported("renderer slot9c");}
+    void slot_0x78(float) override {actionUnsupported("renderer slot78");}
+    float slot_0x7C() override {actionUnsupported("renderer slot7c");}
+    void slot_0x80(float) override {actionUnsupported("renderer slot80");}
+    float slot_0x84() override {actionUnsupported("renderer slot84");}
+    void slot_0x88(float) override {actionUnsupported("renderer slot88");}
+    float slot_0x8C() override {actionUnsupported("renderer slot8c");}
+    void slot_0x90(bool) override {actionUnsupported("renderer slot90");}
+    bool slot_0x94() override {actionUnsupported("renderer slot94");}
+    void slot_0x98(bool) override {actionUnsupported("renderer slot98");}
+    bool slot_0x9C() override {actionUnsupported("renderer slot9c");}
     double getFrameRate() override {actionUnsupported("renderer frame rate");}
     void setRenderAheadLimit(unsigned) override {actionUnsupported("renderer ahead limit setter");}
     unsigned getRenderAheadLimit() override {actionUnsupported("renderer ahead limit getter");}
     bool isExpansionPack() override {actionUnsupported("renderer expansion mode");}
     unsigned slot_0xB0() override {actionUnsupported("renderer slotb0");}
-    void slot_0xB4() override {actionUnsupported("renderer slotb4");}
+    void* destroy(unsigned int) override {actionUnsupported("renderer destroy"); return this;}
     void slot_0xB8(bool) override {actionUnsupported("renderer slotb8");}
     bool waitWhileAppInactive() override {actionUnsupported("renderer activation wait");}
     bool isAppInactive() override {actionUnsupported("renderer activation");}

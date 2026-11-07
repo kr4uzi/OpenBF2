@@ -1,6 +1,3 @@
-// [FRONTIER] Remaining methods stop by name until implemented.
-// [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the remaining BotNavigation operations.
-
 #include "BotNavigation.h"
 
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
@@ -210,9 +207,6 @@ void BotNavigation::clearProgress()
     m_zero280[2] = 0;                      // +288
 }
 
-// [FRONTIER] Obstacle updates for living, standing bots are not implemented.
-// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: aidll-02-skeleton]
-// Replace the stop when the corresponding navigation behavior is recovered.
 namespace {
 
 // ELF 0x197560 (vtable 0x4b6c38): a primary object with a mobile plug-in (+0x38), or any

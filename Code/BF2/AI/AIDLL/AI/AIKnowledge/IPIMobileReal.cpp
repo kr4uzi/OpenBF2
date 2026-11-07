@@ -1,5 +1,8 @@
 // so and AIDLL_w32ded.dll .
 
+#if defined(__APPLE__)
+#include "../../../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "IPIMobileReal.h"
 
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
@@ -87,6 +90,21 @@ void IPIMobileReal::getPositionEstimate(double time, Vec3& position)
     position.y = static_cast<float>(static_cast<double>(scaledY) + position.y);
     position.z = static_cast<float>(static_cast<double>(scaledZ) + position.z);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    // [PLATFORM] ELF calls the timer first and rounds the delta before calling speed.
+    const float difference = static_cast<float>(
+        time - static_cast<const IBFTimer*>(CommonSingletonServer::m_iBFTimer)->getGameTime());
+    const Vec3& speed = getSpeed();
+    const bf2x87::Real scaledX = static_cast<bf2x87::Real>(speed.x) * difference;
+    const float scaledY =
+        static_cast<float>(static_cast<bf2x87::Real>(speed.y) * difference);
+    const float scaledZ =
+        static_cast<float>(static_cast<bf2x87::Real>(speed.z) * difference);
+    position.x = static_cast<float>(scaledX + static_cast<bf2x87::Real>(position.x));
+    position.y = static_cast<float>(static_cast<bf2x87::Real>(scaledY) + position.y);
+    position.z = static_cast<float>(static_cast<bf2x87::Real>(scaledZ) + position.z);
+#else
     // [PLATFORM] ELF calls the timer first and rounds the delta before calling speed.
     const float difference = static_cast<float>(
         time - static_cast<const IBFTimer*>(CommonSingletonServer::m_iBFTimer)->getGameTime());
@@ -99,6 +117,7 @@ void IPIMobileReal::getPositionEstimate(double time, Vec3& position)
     position.x = static_cast<float>(scaledX + static_cast<long double>(position.x));
     position.y = static_cast<float>(static_cast<long double>(scaledY) + position.y);
     position.z = static_cast<float>(static_cast<long double>(scaledZ) + position.z);
+#endif
 #endif
 }
 

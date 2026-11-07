@@ -8,7 +8,6 @@
 #include "../../../../Math/Vec3.h"
 #include "../../../../IO/Input/PlayerInput.h"
 #include "../Main/InformationManager.h"
-#include "../Main/AIDllFrontier.h"
 #include "BAPCondition.h"
 #include "BAPTypes.h"
 #include "../Main/CommonSingletonServer.h"
@@ -108,13 +107,11 @@ inline std::ostream& streamCondition(std::ostream& out, const BAPCondition* cond
     return out << *condition;
 }
 
-// [FRONTIER] io::operator<<(std::ostream&, PlayerInputMap) is the engine's (IO/Input/InputMapStream.cpp,
-// a bf2 export the shipped libaidll imports through its PLT); that TU is not in the bf2_aidll
-// source list (coordinator decision requested), so the debug text stops here.
-inline std::ostream& streamInput(std::ostream& out, io::PlayerInputMap)
+// io::operator<<(std::ostream&, PlayerInputMap) (ELF 0x48D5A0, IO/Input/InputMapStream.cpp): the
+// shipped libaidll.so carries its own copy, and so does bf2_aidll (aidll_sources.txt).
+inline std::ostream& streamInput(std::ostream& out, io::PlayerInputMap input)
 {
-    BF2_AI_FRONTIER("dice::hfe::io::operator<<(std::ostream&, PlayerInputMap) (engine export, not linked into bf2_aidll)");
-    return out;
+    return io::operator<<(out, input);
 }
 
 // operator<<(std::ostream&, BAPStatementType) (ELF 0x3C7D90) and operator<<(std::ostream&,

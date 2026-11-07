@@ -10,28 +10,35 @@
 #if defined(BF2_IMAGE_RENDDX9)
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include "../Math/Frustum.h"
+#include "../Math/Mat4.h"
+#include <set>
 #else
 #include "../Core/IBase.h"
 #include <string>
 #endif
 
 #include "../Math/Vec3.h"
+#include <map>
+#include <vector>
 
-// The three light-gather slots take the DLL's own VC7.1 vector layout by reference.  The type is
-// only ever named by reference here, so the dedicated build - which never includes the RendDX9Abi
-// headers and never calls those slots - needs no more than this declaration. The ground-hemi getter
-// (+0x48) returns the renderer's own VC7.1 string by reference on the same terms.
-namespace vc71 { struct vector_layout; class string; }
+// The light-gather slots fill a std::vector of LightSource pointers. The ground-hemi getter (+0x48)
+// returns the renderer's own string by reference.
+#include <string>
 struct IDirect3DSurface9;   // lightManagerSetDepthStencil
 
 namespace dice {
 namespace hfe {
 
-namespace world { class LightSource; }
-namespace dx9rend { class Effect; struct EngineTexture; }
+namespace world { class IObject; class LightSource; }
+namespace dx9rend {
+class Effect; struct EngineTexture; struct RenderQueueEntry; struct RendDX9Base;
+namespace Ra { struct RaLightRecord; }
+}
 
 namespace geom {
+
+typedef std::multimap<float, world::LightSource*> LightDistanceMap;
 
 // The ground-hemi setter (+0x44) takes the host's string, like HemiMapManager::setBaseHemiMap it
 // forwards to (HemiMapName): the retail VC7.1 layout in the compatibility flavour, the rebuilt
@@ -46,6 +53,7 @@ typedef std::string LightManagerHostString;
 
 // Light manager interface. Reserved virtuals preserve positions and must not be called.
 // The host boundary retains the full explicit table; unknown entries log their offset and abort.
+// Read-only accessor constness follows the existing interface convention [INFERRED].
 class LightManager : public IBase
 {
 public:
@@ -58,24 +66,27 @@ public:
     // +0x014  PE 0x100F2E60.  Every owned light (the +0x1B8 set, in key order) that satisfies
     // every bit of `required` and violates none of `forbidden` (lightMatchesMask in the .cpp),
     // appended to `out`.
-    virtual void getLightsByMask(vc71::vector_layout& out, unsigned int required,
+    virtual void getLightsByMask(std::vector<world::LightSource*>& out, unsigned int required,
                                  unsigned int forbidden);                   // +0x014
     // [INFERRED] Appends visible lights in frame order. required == 0x7FFFFFFF ignores forbidden
     // and selects enabled, nondirectional lights whose templates support emitters.
-    virtual void getVisibleLightsByMask(vc71::vector_layout& out, unsigned int required,
+    virtual void getVisibleLightsByMask(std::vector<world::LightSource*>& out,
+                                        unsigned int required,
                                         unsigned int forbidden);            // +0x018
     // +0x01C  PE 0x100F3890.  The lights of this frame's scratch list (+0x1D0) within `radius` of
     // `position` - each light's bounding radius widening the test - filtered by the two masks,
     // sorted nearest first, ray-tested against the world when `occlusionTest`, and appended to
     // `out` until it holds `maxLights`.
-    virtual void gatherLights(const Vec3& position, float radius, vc71::vector_layout& out,
+    virtual void gatherLights(const Vec3& position, float radius,
+                              std::vector<world::LightSource*>& out,
                               unsigned int maxLights, unsigned int required,
                               unsigned int forbidden, bool occlusionTest);  // +0x01C
     // +0x020  PE 0x100F1750.  gatherLights at a geometry instance's transform translation with
     // that instance's bounding radius.  The StaticMesh draw's entry point.
-    virtual void gatherLightsForGeometry(void* geometry, vc71::vector_layout& out,
+    virtual void gatherLightsForGeometry(void* geometry, std::vector<world::LightSource*>& out,
                                          unsigned int maxLights, unsigned int required,
                                          unsigned int forbidden, bool occlusionTest); // +0x020
+
     virtual void setSkyLight(world::LightSource* light);                   // +0x024
     virtual world::LightSource* getSkyLight() const;                       // +0x028
     virtual void setSkyColor(const Vec3& color);                           // +0x02C
@@ -90,7 +101,7 @@ public:
     virtual void setGroundHemi(const LightManagerHostString& name);        // +0x044
     // +0x048  the base hemi map's name (HemiMap +0x18), or a function-local static
     // empty string while there is none. `LightManager.groundHemi` GET. Constness [INFERRED].
-    virtual const vc71::string& getGroundHemi() const;                     // +0x048
+    virtual const std::string& getGroundHemi() const;                     // +0x048
 
     // Both bodies ignore this and call the published HemiMapManager
     // singleton without a null guard. ModuleGeom publication order is therefore observable.
@@ -120,45 +131,74 @@ public:
     virtual void removeLight(world::LightSource* light);                   // +0x090
     virtual void enableLight(world::LightSource* light);                   // +0x094
     virtual void disableLight(world::LightSource* light);                  // +0x098
-    BF2_LIGHT_RESERVED(09C); BF2_LIGHT_RESERVED(0A0);
-    BF2_LIGHT_RESERVED(0A4); BF2_LIGHT_RESERVED(0A8);
-    BF2_LIGHT_RESERVED(0AC); BF2_LIGHT_RESERVED(0B0);
-    BF2_LIGHT_RESERVED(0B4); BF2_LIGHT_RESERVED(0B8);
-    BF2_LIGHT_RESERVED(0BC); BF2_LIGHT_RESERVED(0C0);
+    virtual void setShadowMapSize(int size);                               // +0x09C
+    virtual int getShadowMapSize() const;                                 // +0x0A0
+    virtual void setShadowMapObjectSize(int size);                         // +0x0A4
+    virtual int getShadowMapObjectSize() const;                           // +0x0A8
+    virtual void setShadowMapBitDepth(int depth);                          // +0x0AC
+    virtual int getShadowMapBitDepth() const;                             // +0x0B0
+    virtual void setShadowDistance(float distance);                       // +0x0B4
+    virtual float getShadowDistance() const;                              // +0x0B8
+    // [CHOSEN, not recovered] names (unobservable-type exception, AGENTS.md): the setter copies
+    // its 4-byte argument to +0x218, the getter returns that field in st0, and no image calls
+    // either. PE 0x1015C130 / 0x1015C140; _r 0x102C7470 / 0x102C7480 (table 0x104AB608);
+    // editor 0x10367AB0 / 0x10367AD0 (field +0x118). float follows the st0 return.
+    virtual void setUnusedFloat218(float value);                          // +0x0BC
+    virtual float getUnusedFloat218() const;                              // +0x0C0
     virtual void setShadowStaticFeature(bool enabled);                     // +0x0C4
     virtual bool getShadowStaticFeature() const;                           // +0x0C8
-    BF2_LIGHT_RESERVED(0CC); BF2_LIGHT_RESERVED(0D0);
+    virtual void setShadowShowFrustums(bool enabled);                     // +0x0CC
+    virtual bool getShadowShowFrustums() const;                           // +0x0D0
     virtual void setShadowIntensityBias(float value);                      // +0x0D4
     virtual float getShadowIntensityBias() const;                          // +0x0D8
     virtual void setLightMapIntensityBias(float value);                    // +0x0DC
     virtual float getLightMapIntensityBias() const;                        // +0x0E0
-    BF2_LIGHT_RESERVED(0E4); BF2_LIGHT_RESERVED(0E8);
+    virtual void setDropShadowClipHeightOffset(float offset);              // +0x0E4
+    virtual float getDropShadowClipHeightOffset() const;                   // +0x0E8
     virtual void setDynamicShadowsEnabled(bool enabled);                   // +0x0EC
     virtual bool getDynamicShadowsEnabled() const;                         // +0x0F0
-    BF2_LIGHT_RESERVED(0F4); BF2_LIGHT_RESERVED(0F8);
-    BF2_LIGHT_RESERVED(0FC); BF2_LIGHT_RESERVED(100);
-    BF2_LIGHT_RESERVED(104); BF2_LIGHT_RESERVED(108);
-    BF2_LIGHT_RESERVED(10C); BF2_LIGHT_RESERVED(110);
-    BF2_LIGHT_RESERVED(114); BF2_LIGHT_RESERVED(118);
-    BF2_LIGHT_RESERVED(11C); BF2_LIGHT_RESERVED(120);
+    virtual void setDynamicStaticMeshShadowsEnabled(bool enabled);        // +0x0F4
+    virtual bool getDynamicStaticMeshShadowsEnabled() const;              // +0x0F8
+    virtual void setDynamic1pShadowsEnabled(bool enabled);                // +0x0FC
+    virtual bool getDynamic1pShadowsEnabled() const;                      // +0x100
+    virtual void setAllowAlphaShadows(bool enabled);                      // +0x104
+    virtual bool getAllowAlphaShadows() const;                            // +0x108
+    virtual void setAlphaShadowThreshold(float threshold);                // +0x10C
+    virtual float getAlphaShadowThreshold() const;                       // +0x110
+    virtual void setShadowUpdateFactor(float factor);                     // +0x114
+    virtual float getShadowUpdateFactor() const;                          // +0x118
+    virtual void setStencilCullerResetEnabled(bool enabled);              // +0x11C
+    virtual bool getStencilCullerResetEnabled() const;                     // +0x120
     virtual void setShadowUpdatesEnabled(bool enabled);                    // +0x124
     virtual bool getShadowUpdatesEnabled() const;                          // +0x128
-    BF2_LIGHT_RESERVED(12C); BF2_LIGHT_RESERVED(130);
-    BF2_LIGHT_RESERVED(134); BF2_LIGHT_RESERVED(138);
-    BF2_LIGHT_RESERVED(13C); BF2_LIGHT_RESERVED(140);
-    BF2_LIGHT_RESERVED(144); BF2_LIGHT_RESERVED(148);
-    BF2_LIGHT_RESERVED(14C); BF2_LIGHT_RESERVED(150);
-    BF2_LIGHT_RESERVED(154); BF2_LIGHT_RESERVED(158);
-    BF2_LIGHT_RESERVED(15C); BF2_LIGHT_RESERVED(160);
-    BF2_LIGHT_RESERVED(164); BF2_LIGHT_RESERVED(168);
-    BF2_LIGHT_RESERVED(16C); BF2_LIGHT_RESERVED(170);
-    BF2_LIGHT_RESERVED(174); BF2_LIGHT_RESERVED(178);
-    BF2_LIGHT_RESERVED(17C);
-    virtual void setShadowTSMFocus(float value);                           // +0x180
+    virtual void setShadowDepthBias(float bias);                          // +0x12C
+    virtual float getShadowDepthBias() const;                             // +0x130
+    virtual void setShadowSlopeScaleDepthBias(float bias);                // +0x134
+    virtual float getShadowSlopeScaleDepthBias() const;                   // +0x138
+    virtual float getShadowOccluderOversizeFactor() const;                // +0x13C
+    virtual void setShadowOccluderOversizeFactor(float factor);           // +0x140
+    virtual bool getUseLSSMOptimizations() const;                          // +0x144
+    virtual void setUseLSSMOptimizations(bool enabled);                    // +0x148
+    virtual bool getUsePSMOptimizations() const;                          // +0x14C
+    virtual void setUsePSMOptimizations(bool enabled);                    // +0x150
+    virtual bool getShadowPSMUseSlideback() const;                        // +0x154
+    virtual void setShadowPSMUseSlideback(bool enabled);                  // +0x158
+    virtual bool getShadowPSMUseUnitCubeClipping() const;                 // +0x15C
+    virtual void setShadowPSMUseUnitCubeClipping(bool enabled);           // +0x160
+    virtual float getShadowPSMZNearOffset() const;                        // +0x164
+    virtual void setShadowPSMZNearOffset(float offset);                   // +0x168
+    virtual float getShadowPSMZFarOffset() const;                         // +0x16C
+    virtual void setShadowPSMZFarOffset(float offset);                    // +0x170
+    virtual float getShadowPSMZMinInfinityZ() const;                      // +0x174
+    virtual void setShadowPSMZMinInfinityZ(float z);                      // +0x178
+    virtual float getShadowPSMFovY() const;                              // +0x17C
+    virtual void setShadowPSMFovY(float value);                           // +0x180
     virtual float getShadowTSMFocus() const;                               // +0x184
-    BF2_LIGHT_RESERVED(188); BF2_LIGHT_RESERVED(18C);
-    BF2_LIGHT_RESERVED(190); BF2_LIGHT_RESERVED(194);
-    BF2_LIGHT_RESERVED(198);
+    virtual void setShadowTSMFocus(float value);                           // +0x188
+    virtual float getShadow80Line() const;                               // +0x18C
+    virtual void setShadow80Line(float value);                            // +0x190
+    virtual void setShadowMergeDynamicShadowFrustums(bool enabled);       // +0x194
+    virtual bool getShadowMergeDynamicShadowFrustums() const;             // +0x198
     virtual void renderShadowMaps();                                       // +0x19C
 
     virtual void setSunDirection(Vec3 direction);                          // +0x1A0
@@ -169,7 +209,10 @@ public:
     virtual Vec3 getSunSpecColor() const;                                  // +0x1B4
     virtual void setSunEnabled(bool enabled);                              // +0x1B8
     virtual bool getSunEnabled() const;                                    // +0x1BC
-    BF2_LIGHT_RESERVED(1C0);
+    // [INFERRED] Name. The returned scratch map remains owned by this manager and is rebuilt
+    // on every call; light pointers are borrowed and equal squared distances retain every light.
+    virtual LightDistanceMap* getVisibleLightsByDistance(unsigned int required,
+                                                        unsigned int forbidden); // +0x1C0
     virtual void setTreeSunColor(const Vec3& color);                       // +0x1C4
     virtual const Vec3& getTreeSunColor() const;                           // +0x1C8
     virtual void setTreeSkyColor(const Vec3& color);                       // +0x1CC
@@ -184,26 +227,39 @@ public:
     virtual const Vec3& getSinglePointColor() const;                       // +0x1F0
     virtual void setDynamicPointColor(const Vec3& color);                  // +0x1F4
     virtual const Vec3& getDynamicPointColor() const;                      // +0x1F8
-    BF2_LIGHT_RESERVED(1FC); BF2_LIGHT_RESERVED(200);
-    BF2_LIGHT_RESERVED(204); BF2_LIGHT_RESERVED(208);
-    BF2_LIGHT_RESERVED(20C); BF2_LIGHT_RESERVED(210);
-    BF2_LIGHT_RESERVED(214); BF2_LIGHT_RESERVED(218);
-    BF2_LIGHT_RESERVED(21C); BF2_LIGHT_RESERVED(220);
-    BF2_LIGHT_RESERVED(224); BF2_LIGHT_RESERVED(228);
-    BF2_LIGHT_RESERVED(22C); BF2_LIGHT_RESERVED(230);
-    BF2_LIGHT_RESERVED(234); BF2_LIGHT_RESERVED(238);
-    BF2_LIGHT_RESERVED(23C); BF2_LIGHT_RESERVED(240);
-    BF2_LIGHT_RESERVED(244); BF2_LIGHT_RESERVED(248);
-    BF2_LIGHT_RESERVED(24C); BF2_LIGHT_RESERVED(250);
-    BF2_LIGHT_RESERVED(254); BF2_LIGHT_RESERVED(258);
+    virtual void setSinglePointColorHigh(const Vec3& color); // +0x1FC
+    virtual const Vec3& getSinglePointColorHigh() const;     // +0x200
+    virtual void setSinglePointColorLow(const Vec3& color); // +0x204
+    virtual const Vec3& getSinglePointColorLow() const;     // +0x208
+    virtual void setDynamicPointColorHigh(const Vec3& color); // +0x20C
+    virtual const Vec3& getDynamicPointColorHigh() const;     // +0x210
+    virtual void setDynamicPointColorLow(const Vec3& color); // +0x214
+    virtual const Vec3& getDynamicPointColorLow() const;     // +0x218
+    virtual void setSkyColorHigh(const Vec3& color); // +0x21C
+    virtual const Vec3& getSkyColorHigh() const;     // +0x220
+    virtual void setSkyColorLow(const Vec3& color); // +0x224
+    virtual const Vec3& getSkyColorLow() const;     // +0x228
+    virtual void setStaticSkyColorHigh(const Vec3& color); // +0x22C
+    virtual const Vec3& getStaticSkyColorHigh() const;     // +0x230
+    virtual void setStaticSkyColorLow(const Vec3& color); // +0x234
+    virtual const Vec3& getStaticSkyColorLow() const;     // +0x238
+    virtual void setSunColorHigh(const Vec3& color); // +0x23C
+    virtual const Vec3& getSunColorHigh() const;     // +0x240
+    virtual void setSunColorLow(const Vec3& color); // +0x244
+    virtual const Vec3& getSunColorLow() const;     // +0x248
+    virtual void setSunSpecColorHigh(const Vec3& color); // +0x24C
+    virtual const Vec3& getSunSpecColorHigh() const;     // +0x250
+    virtual void setSunSpecColorLow(const Vec3& color); // +0x254
+    virtual const Vec3& getSunSpecColorLow() const;     // +0x258
     virtual void setEffectSunColor(const Vec3& color);                     // +0x25C
     virtual const Vec3& getEffectSunColor() const;                         // +0x260
     virtual void setEffectShadowColor(const Vec3& color);                  // +0x264
     virtual const Vec3& getEffectShadowColor() const;                      // +0x268
     virtual void setDefaultEffectLightAffectionFactor(float factor);       // +0x26C
     virtual float getDefaultEffectLightAffectionFactor() const;            // +0x270
-    BF2_LIGHT_RESERVED(274); BF2_LIGHT_RESERVED(278);
-    BF2_LIGHT_RESERVED(27C);
+    virtual void setTerrainShadowLod(int lod);                            // +0x274
+    virtual int getTerrainShadowLod() const;                             // +0x278
+    virtual void setStaticMeshShadowLod(int lod);                          // +0x27C
     // +0x280  PE 0x1015BF40, `mov eax, [ecx+154h]; retn` - the field the constructor seeds with 1
     // and +0x27C sets.  The StaticMesh shadow draw renders a caster with this lod (clamped to the
     // instance's lod count) and restores afterwards.  [INFERRED] name.
@@ -214,13 +270,15 @@ public:
     // Name [INFERRED] from that caller; getter constness follows the read-only accessor convention.
     virtual void setSkinnedMeshShadowLod(int lod);                         // +0x28C
     virtual int getSkinnedMeshShadowLod() const;                           // +0x290
-    BF2_LIGHT_RESERVED(294); BF2_LIGHT_RESERVED(298);
+    virtual void setShadowOverrideQuality(int quality);                    // +0x294
+    virtual int getShadowOverrideQuality() const;                          // +0x298
     // [INFERRED] name: height probes cast upward by this unclamped float, field +0x164.
     virtual void setShadowRoofRayLength(float length);                   // +0x29C
     virtual float getShadowRoofRayLength() const;                        // +0x2A0
     virtual void setShadowSunScalePower(float power);                     // +0x2A4
     virtual float getShadowSunScalePower() const;                         // +0x2A8
-    BF2_LIGHT_RESERVED(2AC); BF2_LIGHT_RESERVED(2B0);
+    virtual void setShadowPullbackDistance(float distance);                // +0x2AC
+    virtual float getShadowPullbackDistance() const;                       // +0x2B0
     virtual void setShadowUseSweepTest(bool enabled);                      // +0x2B4
     virtual bool getShadowUseSweepTest() const;                            // +0x2B8
     virtual void setShadowSunHeightOverFade(const Vec2& range);            // +0x2BC
@@ -232,7 +290,7 @@ public:
     virtual float sampleSimpleShadowMapIO(float x, float z) const;         // +0x2C8
     virtual float sampleSimpleShadowMapIOTexel(int x, int z) const;        // +0x2CC
     virtual float sampleSimpleShadowMapTexel(int x, int z) const;          // +0x2D0
-    BF2_LIGHT_RESERVED(2D4);
+    virtual void setShadowMergeLodLimit(int lod);                           // +0x2D4
     // +0x2D8  PE 0x1015C590, `mov eax, [ecx+820h]; retn` - the field the constructor seeds with
     // 16 and +0x2D4 sets.  The StaticMesh shadow draw merges a lod's index ranges into one draw
     // only while the shadow lod is at or below it.  [INFERRED] name.
@@ -245,6 +303,15 @@ public:
     virtual void loadSimpleShadowMaps();                                  // +0x2EC
     virtual void registerShadowEffect(int reflectionTypeId,
                                       dx9rend::Effect* effect);            // +0x2F0
+
+    // Mesh lighting blend duration. The console executor calls these directly; they add no slots.
+    void setStaticLightBlendingTime(double duration);
+    double getStaticLightBlendingTime() const;
+
+    // Recomputes expansion lighting from the renderer blend and the high/low presets.
+    // Requires the renderer and Terrain singletons to be initialized.
+    // [INFERRED] Name of the direct, nonvirtual call at PE 0x100F2740.
+    void updateExpansionLighting();
 
     // Defined only in XpLightManager.cpp. These adapters are the one binary-boundary concession
     // required by the unrecovered tail of the host table; source code never calls them.
@@ -263,10 +330,89 @@ inline LightManager* asLightManager(IBase* base)
 extern const unsigned int CID_LightManager;
 extern const unsigned int IID_ILightManager;
 
+// One shadow-map render record (0x498 bytes in the PE; the `// +0xNN` comments keep those offsets).
+// The LightManager keeps four vectors of them (directional +0x79C, secondary +0x7AC, spot +0x7CC,
+// point +0x7DC); a mesh's caster pointer (geometry slot +0x24) addresses one, and the mesh, decal and
+// terrain draws read its matrices and tail flags. Field names are [INFERRED].
+struct LightShadowRecord
+{
+    LightShadowRecord();
+    // The prefix up to `casters` is copied byte for byte (frustum, nine matrices, flags and
+    // pointers), then the caster set and the tail.
+    LightShadowRecord(const LightShadowRecord& other);
+    ~LightShadowRecord();
+
+    float                     atlasScaleOffset[4];  // +0x000  u, v, scale, scale
+    Frustum                   frustum;              // +0x010
+    // +0x1F8 - [0] +0x1F8 the caster view-projection, [1] +0x238 the light view, [2] +0x278 the
+    // light projection / TSM matrix, [3] +0x2B8, [4] +0x2F8 the receiver projection
+    // (lightviewprojortho), [5] +0x338, [6] +0x378, [7] +0x3B8 the trapezoid (lightviewproj),
+    // [8] +0x3F8 the atlas transform.
+    Mat4                      matrices[9];
+    float                     atlasBounds[4];       // +0x438
+    unsigned char             flags448[8];          // +0x448  [0] the first-person caster flag
+    void*                     geometry;             // +0x450  the directional record's root geometry
+    world::LightSource*       source;               // +0x454
+    unsigned char             pad458[0x30];         // +0x458
+    std::set<world::IObject*> casters;              // +0x488  the objects drawn into this record
+    // +0x494 - [0] the decal draw's record test, [1] the mesh draws' light-matrix selector (set by
+    // the point/spot records). [UNRESOLVED] roles.
+    unsigned char             tail494[4];
+
+private:
+    LightShadowRecord& operator=(const LightShadowRecord&);
+};
+
+// Typed reads of LightManager state other draws need. [CHOSEN, not recovered] accessors for fields
+// those draws read by offset (issue #7); each answers the live member.
+// +0x79C - the directional shadow records this frame (empty when no record was built).
+std::vector<LightShadowRecord>& lightManagerShadowRecords(LightManager* manager);
+// +0x7DC - the point shadow records ([INFERRED] name; PE 0x1015C570).
+std::vector<LightShadowRecord>& lightManagerPointShadowRecords(LightManager* manager);
+// A frustum's near plane pulled back over the box (minimum, maximum); the terrain culler's shadow gather.
+void fitShadowFrustumNearPlaneToBounds(Frustum& frustum, const Vec3& boxMin, const Vec3& boxMax);
+// +0x278 - the light-space frustum the directional pass fits over the camera frustum.
+const Frustum& lightManagerShadowFrustum(const LightManager* manager);
+// +0x16C - the distance the directional pass pulls a frustum back toward the light (200).
+float lightManagerShadowPullbackDistance(const LightManager* manager);
+// +0x21C - the directional shadow map.
+dx9rend::EngineTexture* lightManagerShadowMapTexture(const LightManager* manager);
+// +0x230 - the point/spot shadow atlas.
+dx9rend::EngineTexture* lightManagerPointShadowMapTexture(const LightManager* manager);
+// +0x248 - the black 8 x 8 cube texture the constructor builds.
+dx9rend::EngineTexture* lightManagerBlackCubeTexture(const LightManager* manager);
+// +0x838 - the shadow fade duration the mesh draws divide their elapsed fade time by (1.0).
+double lightManagerShadowFadeDuration(const LightManager* manager);
+
 // Direct XpLightManager.cpp frame coordinator at PE 0x100EFB50.  Renderer calls this against a
 // TU-static coordinator rather than through LightManager; keeping it a free seam preserves that
 // distinction.
 void prepareLightFrame(double time);
+
+// [INFERRED] source names for the coordinator's association queries. The opaque wrapper and
+// typed accessors keep native callers independent of its retail STL layout.
+struct XpLight;
+class TerrainCuller;
+// Borrowed coordinator lists for this frame, in their current collector order.
+const std::vector<XpLight*>& xpStaticFrameLights();
+const std::vector<XpLight*>& xpDynamicFrameLights();
+world::LightSource* xpLightSource(const XpLight* light);
+float xpLightRadius(const XpLight* light);
+void xpLightGatherTerrain(const XpLight* light, TerrainCuller* query);
+XpLight* xpLightForSource(world::LightSource* source); // PE 0x100EF3F0
+XpLight* xpNewLightWrapper(world::LightSource* source);
+// Append all associations for geometry, preserving an existing output prefix and duplicates.
+void appendXpLightsForGeometry(void* geometry, std::vector<XpLight*>& output); // PE 0x100EF4E0
+// PE 0x100EEED0 (the same walk returning the source pointers) is xpGatherDebugLights in
+// XpLightManager.cpp; its only caller is the SkinnedMesh light-debug list.
+int xpLightCategory(const XpLight* light); // PE 0x1018FB90
+const std::vector<LightShadowRecord>& xpLightShadowRecords(const XpLight* light); // PE 0x1018F9F0
+int xpLightType(const XpLight* light); // PE 0x1018FBA0
+void xpLightFillRecord(const XpLight* light, const Mat4& inverse,
+                       dx9rend::Ra::RaLightRecord& output); // PE 0x1018FBC0
+// The transient wrapper used by the nonprojected point-light pass (PE 0x100FB8F0).
+void submitSourceLightRecord(world::LightSource* source, const Mat4& inverse,
+                             dx9rend::RenderQueueEntry* entry, bool transparent);
 
 // Renderer::onRenderPathActivated and the LightManager device-reset listener call
 // this direct body rather than a primary-interface slot.
@@ -279,8 +425,15 @@ void initializeLightManager(LightManager* manager);
 IBase* __fastcall createLightManager(unsigned int iid, IBase* outer);
 
 // XpLightManager.cpp's renderer-target helpers, published for the terrain draws
-// (Geom/TerrainDraw.cpp): sub_10005920 with a texture argument, and sub_10028070.
+// (Geom/TerrainDraw.cpp): lightManagerSelectRenderTarget below with the base renderer, level 0 and
+// face 0x7FFFFFFF, and the reselection of the renderer's retained target 0.
 void lightManagerSetRenderTargetTexture(unsigned int index, dx9rend::EngineTexture* texture);
+// The base renderer's full render-target selector (the one body behind the helper above): binds
+// `texture`'s (level, face) surface as render target `index`, or with no texture the temporary or
+// device back buffer for target 0 and nothing for any other index. Always returns true.
+bool lightManagerSelectRenderTarget(dx9rend::RendDX9Base* base, unsigned int index,
+                                    dx9rend::EngineTexture* texture, unsigned int level,
+                                    unsigned int face);
 void lightManagerRestoreRendererTarget0();
 // Binds `surface` as the renderer's depth stencil; null binds the renderer's own (+0x770).
 // Published for LightmapGeneration.cpp.

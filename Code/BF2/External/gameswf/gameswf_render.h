@@ -77,9 +77,10 @@ namespace gameswf
 		void	text_detach(void* line);
 		void	text_draw(void* line, const matrix* m, unsigned color, int flags);
 		bool	text_extent(void* line, int count, float* w, float* h);
-		bool	text_hit(void* line, int* out_pos, int x, int y);
+		// [DICE-MOD SwiffPlayer] float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
+		bool	text_hit(void* line, int* out_pos, float x, float y);
 		bool	text_selection(void* line, int* a, int* b);	// [DICE-MOD SwiffPlayer #46] true = a selection exists
-		bool	text_set_selection(void* line, int a, int b, int c, int d);
+		bool	text_set_selection(void* line, float x1, float y1, float x2, float y2);
 		void	text_blur(void* line);
 		void	text_set_size(void* line, float size, int flag);
 		void	text_caret(void* line, int pos);

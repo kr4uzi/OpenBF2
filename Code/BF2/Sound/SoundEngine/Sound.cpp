@@ -7,6 +7,7 @@
 #include "BfSoundEngine.h"
 #include "SoundTrace.h"
 #include "SoundEngineMath.h"
+#include "../../Platform/MsvcRand.h"   // [CHOSEN, not recovered] MSVCR71 rand range (RAND_MAX 0x7FFF)
 
 #include <climits>
 #include <cmath>
@@ -744,7 +745,7 @@ int Sound::randomIndex()
     do
     {
         n = m_template->getSampleCount();
-        r = std::rand() % n;
+        r = bf2crt::rand() % n;
     }
     while (r == m_lastRandomIndex);
     m_lastRandomIndex = r;

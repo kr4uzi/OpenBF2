@@ -6,8 +6,8 @@
 #include "../Math/Vec3.h"
 namespace dice { namespace hfe { namespace ai {
 class IAIEventCourier;
-// [FRONTIER] [CHOSEN, not recovered] Artillery request dispatch with team and target position.
-// [RETIRE-WHEN: HUD-ARTILLERY-COURIER] Define after the courier's complete typed interface and request path are validated.
+// Artillery request dispatch with team and target position: IAIEventCourier::event_incomingArtillery.
+// [INFERRED] helper name; defined in BF2HudManagerAbilities.cpp.
 void dispatchArtilleryRequest(IAIEventCourier*, int team, Vec2 target);
 } } }
 #endif

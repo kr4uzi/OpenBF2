@@ -1,4 +1,7 @@
 // HUD hover-node layout and updates. [INFERRED] Source placement.
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "Bf2HoverNode.h"
 #if !DEDICATED
 #include "../Core/StringUtil.h"
@@ -149,19 +152,44 @@ bool Bf2HoverNode::updateSelf(System*, const NodeState*, const Rect*, float delt
         const double deltaZ = m_anchorZ < 0.0f                          // see the note above
             ? static_cast<double>(positionZ) - m_anchorZ
             : static_cast<double>(positionZ) + m_anchorZ;
+#if defined(__APPLE__)
+        m_yPos = bf2x87::toIntTruncate(static_cast<double>(yScale) * deltaZ) + m_middleY;  // +2C
+#else
         m_yPos = static_cast<int>(static_cast<double>(yScale) * deltaZ) + m_middleY;  // +2C
+#endif
         const float xScale = static_cast<float>(m_boundsWidthInt) / m_width;
         const float positionX = vehicle->getAbsolutePosition().x;
+#if defined(__APPLE__)
+        m_xPos = m_middleX
+               - bf2x87::toIntTruncate((static_cast<double>(positionX) - m_anchorX) * xScale);  // +28
+#else
         m_xPos = m_middleX
                - static_cast<int>((static_cast<double>(positionX) - m_anchorX) * xScale);  // +28
+#endif
     }
 
     // Runs whether or not the indicator is shown.
+#if defined(__APPLE__)
+    const int left = bf2x87::toIntTruncate(m_boundsX);                       // __ftol2
+#else
     const int left = static_cast<int>(m_boundsX);                       // __ftol2
+#endif
+#if defined(__APPLE__)
+    bool outside = m_xPos < left || m_xPos > bf2x87::toIntTruncate(m_boundsWidth) + left;
+#else
     bool outside = m_xPos < left || m_xPos > static_cast<int>(m_boundsWidth) + left;
+#endif
     if (!outside) {
+#if defined(__APPLE__)
+        const int top = bf2x87::toIntTruncate(m_boundsY);                    // __ftol2
+#else
         const int top = static_cast<int>(m_boundsY);                    // __ftol2
+#endif
+#if defined(__APPLE__)
+        outside = m_yPos < top || m_yPos > bf2x87::toIntTruncate(m_boundsHeight) + top;
+#else
         outside = m_yPos < top || m_yPos > static_cast<int>(m_boundsHeight) + top;
+#endif
     }
     if (outside) {
         m_show = false;
@@ -180,7 +208,9 @@ namespace {
 TypeDescriptor* const registeredBf2HoverNodeType = Bf2HoverNode::getClassType();
 }
 
+#if defined(_M_IX86)
 static_assert(sizeof(Bf2HoverNodeTypeDescriptor) == 16, "client BF2 hover metadata");
 static_assert(sizeof(Bf2HoverNode) == 84, "native Bf2HoverNode storage");
+#endif
 } }
 #endif

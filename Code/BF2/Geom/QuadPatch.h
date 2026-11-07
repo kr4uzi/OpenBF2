@@ -6,8 +6,8 @@
 #define GEOM_QUADPATCH_H
 
 #include <cstddef>
+#include <vector>
 #include "../Math/Vec3.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
 
 namespace dice {
 namespace hfe {
@@ -20,6 +20,8 @@ namespace geom {
 class Terrain;
 class TerrainRawReader;
 struct TerrainCullerNode;
+struct TerrainShadowRange;
+struct LightShadowRecord;
 
 // sub_101C6750 - the eight corners of an axis-aligned box from its (min, max) pair, in the shipped
 // order: x fixed at min for the first four (z, y, z), then at max.
@@ -68,6 +70,8 @@ struct QuadPatchDetailLayer
     explicit QuadPatchDetailLayer(Terrain* owner);
     int  load(TerrainRawReader& reader);
     ~QuadPatchDetailLayer();
+    // Partitions legacy triangle indices into recursively allocated child LOD records.
+    void buildLodTableTree(unsigned char* table, int quadrant, int size, int x, int z);
     // sub_101BB6B0 (thiscall, recursive; `this` is only passed on) - the destructor's pre-0x18 arm:
     // the four children's subtrees when the first link (+0x180) is set, then the record.
     void freeLodTableTree(unsigned char* table);
@@ -96,42 +100,62 @@ public:
     explicit QuadPatch(Terrain* owner);
     virtual ~QuadPatch();                                            // slot 0: 0x1018E520 -> body sub_1018A220
     void load(TerrainRawReader& reader);
+    // Drops detail resources in low quality; otherwise reloads them from the saved file offset.
+    void reloadDetailLayers(TerrainRawReader& reader);
     void loadDetailLayers(TerrainRawReader& reader);
     void loadDetailMaps();
+    // Preloads the three base textures and primary vertex buffer, then stamps this frame.
+    void preloadResources();
 
     // the per-frame bodies. Each takes the visible-list iterator by reference and
     //      consumes every entry that belongs to this patch.
     void draw(TerrainCullerNode**& it);                              // 0x1018BE20  the Hi_/Low_Terrain pass-0 draw (accumulation target)
     void drawFinal(TerrainCullerNode**& it);                         // 0x1018C910  the diffuse detail passes (LOD 0 per layer, then the lower LODs)
     void drawShadow();                                               // 0x1018DD00  pass 7: this patch's gathered shadow ranges
-    bool gatherShadowRanges(void** lockedIndices, int* cursor);     // 0x1018BAE0  per shadow record -> sub_1018AC00 [UNREAD, stops]
-    void drawWater(TerrainCullerNode**& it, vc71::vector_layout* list,
+    bool gatherShadowRanges(void** lockedIndices, int* cursor);     // 0x1018BAE0
+    // Appends this record's visible patch ranges and their cracked-grid indices. [INFERRED] name.
+    void gatherShadowRecord(unsigned short* indices, int* cursor, LightShadowRecord* shadow,
+                            std::vector<TerrainShadowRange>& ranges, float extrusionScale,
+                            unsigned char* any);
+    void drawWater(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list,
                    void* materialParameters, void* objectParameters); // 0x1018D800  the Ra water submit - see the body
 
     // the light passes' draws over the culler's gathered list
-    void drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* list,
+    void drawGatheredNodes(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list,
                            int passLod0, int passOther);            // 0x10189210  per node: its pass, the morph constants, one uncracked range
     void drawPointLight(TerrainCullerNode**& it);                    // 0x1018C7F0  "TerrainPointLight": drawGatheredNodes, pass 13 / 1
+    void drawOccluderShadows(TerrainCullerNode**& it);               // 0x1018BB70  [INFERRED] name; "TerrainOccluderShadows", unreachable in 1.50
+    void drawDynamicLightMap();                                      // 0x1018D5D0  [INFERRED] name; "TerrainMakeDynamicLightMap", unreachable in 1.50
+    void drawSpotLight(TerrainCullerNode**& it);                     // 0x1018C880
+    void drawShadowBatch(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* visible,
+                         const std::vector<TerrainShadowRange>& ranges); // 0x10189720
+    bool intersectsLightSphere(const Vec3& position, float radius) const; // 0x10188B80
+    // Draws this patch's uncracked LOD ranges for the selected terrain technique pass.
+    void drawTechniquePass(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list);
+    // Emits the shipped obsolete-depth-draw error; the iterator and pass are unused.
+    void drawDepthComplexity(TerrainCullerNode**& it, int pass);
 
     // three QuadPatch.cpp bodies only the dormant editable terrain calls
-    // TerrainEditable::update (0x1010C630) culls and sorts its patches with the first two
+    // TerrainEditable::update culls and sorts its patches with the first two
     // (0x1010C733 / 0x1010C740); QuadPatchEditable's VB rebuild (0x1019DF30) runs the third
     // (0x1019E150). The loaded game path never reaches them. [INFERRED] names.
     bool  isVisible(const Frustum* frustum);                         // 0x10188660   29 B  the sphere (+0xA0, +0xAC) against the frustum
     float getSquaredDistance(const Vec3& position);                  // 0x10188BE0   47 B  |position - center|^2
+    float getCameraDistance();                                       // 0x10188C10  [INFERRED] name; camera distance to the centre, cached per frame
     void  buildNormalVertexBuffer();                                 // 0x10188680 1271 B  per-vertex normals from the heightmap into +0x5C
 
     Terrain*              terrain;              // +0x004
-    vc71::vector_layout   detailLayers;         // +0x008  QuadPatchDetailLayer* per detail texture (+1 slots, null-filled; first at +0x0C)
+    std::vector<QuadPatchDetailLayer*> detailLayers;   // +0x008  one per detail texture (+1 slots, null-filled)
     Vec3                  center;               // +0x018  patch origin + half a patch (load)
     // Owned vertex buffers; editable patches populate height and normal streams.
     // Loaded game patches leave these three optional buffers null.
     void*                 vertexBuffer24;       // +0x024  0
     int                   unresolved28;         // +0x028  0
-    void*                 legacyVertexTable;    // +0x02C  the pre-0x18 packed xz table
-    int                   unresolved30[2];      // +0x030  not touched
+    void*                 legacyVertexTable;    // +0x02C  pre-0x18 float heights; released after culler construction
+    float                 cachedCameraDistance; // +0x030  getCameraDistance's cache; the constructor does not touch it; [INFERRED] name
+    unsigned int          cachedDistanceFrame;  // +0x034  the frame ordinal that cache was computed in; not touched by the constructor; [INFERRED] name
     unsigned int          lastDrawnFrame;       // +0x038  0; drawFinal stamps the renderer's frame ordinal
-    int                   unresolved3C;         // +0x03C  0
+    unsigned int          lastPreloadedFrame;   // +0x03C  0; preloadResources stamps the renderer frame
     void*                 detailMap[2];         // +0x040  "<detailmapBase>%02ix%02i_1" / "_2"
     void*                 lowDetailmap;         // +0x048  "<lowDetailmapBase>%02ix%02i" (when the .dds exists; mip class 4)
     void*                 colormap;             // +0x04C  "<colormapBase>%02ix%02i" (mip class 2)
@@ -189,12 +213,16 @@ public:
     virtual ~SurroundingPatch();                                     // slot 0: 0x1018F870 -> body sub_1018E910
     void load(int slot, TerrainRawReader& reader);
     void setupPlacement();
+    float getCameraDistance();                                       // 0x1018F390  [INFERRED] name; camera distance to the centre, cached per frame
+    float getSquaredDistance(const Vec3& position);                  // 0x1018F360  [INFERRED] name; |position - center|^2 (+0x4C)
+    bool isVisibleInFrustum(const Frustum* frustum);                 // 0x1018E550  [INFERRED] name; the bounds sphere (+0x70, +0x7C) against the frustum
     bool isVisible(int unused);                                      // 0x1018F420  camera inside, far-plane reject, then the slot's edge tests
     void draw(int unused);                                           // 0x1018F7B0  textures, sttransxz, the two streams, pass 0, one draw
 
     Terrain*              terrain;              // +0x004
     void*                 xzBytes;              // +0x008  file: 4 x vertexCount bytes (packed xz per vertex)
-    int                   unresolved0C[2];      // +0x00C  not touched
+    float                 cachedCameraDistance; // +0x00C  getCameraDistance's cache; [INFERRED] name
+    unsigned int          cachedDistanceFrame;  // +0x010  the frame ordinal that cache was computed in; [INFERRED] name
     void*                 lowDetailmap;         // +0x014  "<lowDetailmapBase>_s%i"
     void*                 colormap;             // +0x018  "<colormapBase>_s%i"
     void*                 xzVertexBuffer;       // +0x01C  "SurroundingPatch", vertexCount x 4 B
@@ -239,7 +267,7 @@ struct TerrainCullerNode
 
     QuadPatch*            patch;                // +0x000  patches[fileByte] or null (0xFF)
     unsigned char*        lodTable;             // +0x004  the terrain's LOD table (leaf) or the parent's child table (load)
-    vc71::vector_layout   layerLodTables;       // +0x008  per detail layer of `patch`: the layer's LOD table (leaf) or the parent's child table (first at +0x0C)
+    std::vector<unsigned char*> layerLodTables; // +0x008  per detail layer of `patch`: the layer's LOD table (leaf) or the parent's child table
     // +0x018: a dx9rend Query (QueryManager.cpp) - proven by the pre-0x18 node builder
     // sub_100E4690, which stores QueryManager::createQuery's answer here (0x100E4E9E..0x100E4EA3),
     // and by the destructor, which releases it through the Query's inline --ref dance around its
@@ -263,9 +291,10 @@ struct TerrainCullerNode
     unsigned char         cameraInside;         // +0x0FC  0; the camera's xz lies inside the bounds
     unsigned char         padFD[3];
     int                   crackMask;            // +0x100  0; the crack fixup's neighbour bits (1, 2, 4, 8) that pick the LOD table column
-    int                   unresolved104;        // +0x104  -1
-    int                   unresolved108;        // +0x108  not touched
-    int                   unresolved10C;        // +0x10C  0
+    // Legacy grid metadata; names are [INFERRED].
+    int                   legacyGridIndex;      // +0x104  constructor -1; the legacy root is 0
+    int                   legacyLevel;          // +0x108  legacy root 1; constructor leaves uninitialized
+    TerrainCullerNode*    legacyParent;         // +0x10C  borrowed parent; constructor 0
 };
 
 class TerrainCuller
@@ -281,19 +310,50 @@ public:
     void deleteNodeTree(TerrainCullerNode* node);
     void load(TerrainRawReader& reader);
     void loadNode(TerrainRawReader& reader, TerrainCullerNode* node);
-    vc71::vector_layout* visiblePatches()  { return &visible; }
-    vc71::vector_layout* gatheredPatches() { return &gathered; }
+    // Builds the per-node quadtree used by terrain files predating version 0x18.
+    void buildLegacyTree();
+    void buildLegacyChild(TerrainCullerNode* parent, int quadrant, int unused);
+    // Requires legacy node-level metadata; assigns the flattened grid indices in place.
+    void assignLegacyGridIndices(TerrainCullerNode* node, int x, int z);
+    TerrainCullerNode* findLegacyNode(int index, TerrainCullerNode* node);
+    // Populates the eight neighbour links after the legacy indices have been assigned.
+    void linkLegacyNeighbours(TerrainCullerNode* node);
+    // Rebuilds per-layer LOD references after patch detail layers have been reloaded.
+    void reloadDetailLayers();
+    std::vector<TerrainCullerNode*>* visiblePatches()  { return &visible; } // PE 0x100E2ED0
+    std::vector<TerrainCullerNode*>* gatheredPatches() { return &gathered; }
 
     // the per-frame bodies
     void update();                                                   // 0x100E7080  slot +0x28 of Terrain calls it: LOD distance, the walk, the crack fixup
-    void walkRoot(TerrainCullerNode* node);                          // 0x100E6D50  the root's sphere/corner tests, then the mode dispatch
+    // Tests the root and dispatches the selected walk. Returns the shipped constant one.
+    int walkRoot(TerrainCullerNode* node);
+    // Visits accepted children by increasing stored camera distance.
+    void walkMode1(TerrainCullerNode* parent);
+    // Visits candidates in array order, retaining the three-child fallback quirk.
+    void walkMode2(TerrainCullerNode* parent);
     void walkMode3(TerrainCullerNode* parent);                       // 0x100E59A0  mode 3 (the shipped default): per child - tests, LOD, push or descend
+    // Defers complete child groups so a patch-level parent can replace them in the visible list.
+    int walkMode4(TerrainCullerNode* parent);
+    // Traverses children in array order without the camera-inside shortcut.
+    void walkMode5(TerrainCullerNode* parent);
+    // Returns the node's final visibility after visiting its children and selecting leaf LODs.
+    int walkMode6(TerrainCullerNode* node);
     static void setLod(TerrainCullerNode* node, int lod);            // 0x100E2D00  the node and its visible children; 3+ clamps to 2
     void fixCracks();                                                // 0x100E34E0  the neighbour-LOD mask per visible node
+    // Removes recently occluded nodes; the native renderer age-limit read remains a frontier.
+    void filterOccluded();
     void gatherSphere(const float* centre, float radius);            // 0x100E6D10  every node with a patch within `radius` into `gathered`
     void gatherNode(TerrainCullerNode* node);                        // 0x100E45B0  its recursive walk
     void gatherVisibleSphere(const float* centre, float radius);     // 0x100E6C70  the light passes' variant: the visible leaves within `radius` into `gathered`
     void gatherVisibleNode(TerrainCullerNode* node);                 // 0x100E4370  its recursive walk
+    // Replaces the gather list using visible leaves and retains the supplied frustum as the culler's current one.
+    void gatherVisibleFrustum(Frustum* source);
+    void gatherVisibleFrustumNode(TerrainCullerNode* node);
+    // Unreachable in 1.50 ([INFERRED] names, see QuadPatch.cpp): the shadow-caster variant of
+    // gatherVisibleFrustum. `fitNearPlane`, when set, is pulled back over each gathered node's box;
+    // `unused` is only passed down the recursion.
+    void gatherShadowFrustum(Frustum* source, Frustum* fitNearPlane, int unused);
+    void gatherShadowFrustumNode(TerrainCullerNode* node, Frustum* fitNearPlane, int unused);
 
     int                   lodDistance;          // +0x000  not touched by the constructor; update: the current LOD distance
     Terrain*              terrain;              // +0x004
@@ -308,15 +368,15 @@ public:
     float                 lodFactor28;          // +0x028  2.0f
     float                 lodFactor2C;          // +0x02C  2.7f
     float                 lodFactor30;          // +0x030  3.0f - LOD 2 beyond lodDistance * this
-    vc71::vector_layout   visible;              // +0x034  the visible node list the draws walk (first at +0x38)
-    vc71::vector_layout   gathered;             // +0x044  the sphere gathers' node list (first at +0x48)
+    std::vector<TerrainCullerNode*> visible;    // +0x034  the visible node list the draws walk
+    std::vector<TerrainCullerNode*> gathered;   // +0x044  the sphere gathers' node list
     Frustum*              frustum;              // +0x054  update: the render view's frustum
     const float*          cameraPosition;       // +0x058  update: row 3 of the render view's +0x64 matrix
     const float*          gatherCentre;         // +0x05C  gatherSphere's centre
     float                 gatherRadius;         // +0x060
     float                 gatherRadiusSq;       // +0x064
     int                   param68;              // +0x068  2
-    int                   param6C;              // +0x06C  3 - the walk mode (1..6); only 3 is written
+    int                   param6C;              // +0x06C  3 - the walk mode (1..6)
     unsigned char         flag70;               // +0x070  1 - run the crack fixup
     unsigned char         flag71;               // +0x071  1 - test the camera against the root's box
     unsigned char         pad72[2];
@@ -331,22 +391,8 @@ static_assert(offsetof(TerrainAabb, dirty) == 0x20, "box dirty byte at +0x20");
 static_assert(offsetof(TerrainAabb, centre) == 0x30, "box centre at +0x30");
 static_assert(sizeof(QuadPatchDetailLayer) == 0x3C, "detail layer is 0x3C bytes - see 0x1018A3A0");
 static_assert(offsetof(QuadPatchDetailLayer, terrain) == 0x34, "detail layer terrain at +0x34");
-static_assert(sizeof(QuadPatch) == 0x120, "QuadPatch is 0x120 bytes - see 0x100D8B20");
 static_assert(offsetof(QuadPatch, terrain) == 0x04, "QuadPatch terrain at +0x04 - one vptr ahead of it");
 static_assert(offsetof(QuadPatch, detailLayers) == 0x08, "QuadPatch detail layer vector at +0x08");
-static_assert(offsetof(QuadPatch, lastDrawnFrame) == 0x38, "QuadPatch frame stamp at +0x38");
-static_assert(offsetof(QuadPatch, vertexBuffer) == 0x60, "QuadPatch vertex buffer at +0x60");
-static_assert(offsetof(QuadPatch, worldXf) == 0x88, "QuadPatch world position at +0x88");
-static_assert(offsetof(QuadPatch, heightVertexBuffer) == 0x54, "QuadPatch height VB at +0x54 - see 0x1019DFDC");
-static_assert(offsetof(QuadPatch, normalVertexBuffer) == 0x5C, "QuadPatch normal VB at +0x5C - see 0x1018868E");
-static_assert(offsetof(QuadPatch, maxHeight) == 0x98, "QuadPatch max height at +0x98 - see 0x100D894F");
-static_assert(offsetof(QuadPatch, minHeight) == 0x9C, "QuadPatch min height at +0x9C - see 0x100D892F");
-static_assert(offsetof(QuadPatch, sphereCentre) == 0xA0, "QuadPatch sphere centre at +0xA0 - see 0x10188669");
-static_assert(offsetof(QuadPatch, sphereRadius) == 0xAC, "QuadPatch sphere radius at +0xAC - see 0x10188663");
-static_assert(offsetof(QuadPatch, currentDetailMap) == 0xC4, "QuadPatch detail-map cache at +0xC4");
-static_assert(offsetof(QuadPatch, lightRecord) == 0xC8, "QuadPatch light record at +0xC8");
-static_assert(offsetof(QuadPatch, hasNoDetailLayers) == 0x10C, "QuadPatch no-detail flag at +0x10C");
-static_assert(offsetof(QuadPatch, maxDetailLayerIndex) == 0x11C, "QuadPatch max layer at +0x11C");
 static_assert(sizeof(SurroundingPatch) == 0x168, "SurroundingPatch is 0x168 bytes - see 0x100D8BA0");
 static_assert(offsetof(SurroundingPatch, terrain) == 0x04, "SurroundingPatch terrain at +0x04");
 static_assert(offsetof(SurroundingPatch, originXf) == 0x58, "SurroundingPatch origin vector at +0x58");
@@ -354,20 +400,15 @@ static_assert(offsetof(SurroundingPatch, slot) == 0x84, "SurroundingPatch slot a
 static_assert(offsetof(SurroundingPatch, placement) == 0x8C, "SurroundingPatch transform at +0x8C");
 static_assert(offsetof(SurroundingPatch, bounds) == 0xCC, "SurroundingPatch bounds at +0xCC");
 static_assert(offsetof(SurroundingPatch, corners) == 0x108, "SurroundingPatch corners at +0x108");
-static_assert(sizeof(TerrainCullerNode) == 272, "culler node is 272 bytes - see 0x100E3FF0");
 static_assert(offsetof(TerrainCullerNode, layerLodTables) == 0x08, "node layer tables at +0x08");
-static_assert(offsetof(TerrainCullerNode, child) == 0x1C, "node children at +0x1C");
-static_assert(offsetof(TerrainCullerNode, bounds) == 0x50, "node bounds at +0x50");
-static_assert(offsetof(TerrainCullerNode, corners) == 0x8C, "node corners at +0x8C");
-static_assert(offsetof(TerrainCullerNode, fileByteEC) == 0xEC, "node file bytes at +0xEC");
-static_assert(offsetof(TerrainCullerNode, childrenWalked) == 0xF0, "node walked count at +0xF0");
-static_assert(offsetof(TerrainCullerNode, lod) == 0xF8, "node lod at +0xF8");
-static_assert(offsetof(TerrainCullerNode, crackMask) == 0x100, "node crack mask at +0x100");
-static_assert(sizeof(TerrainCuller) == 0x7C, "culler is 0x7C bytes - see 0x100D7920");
+// The node's +0x08 vector is 0x10 bytes only in the image's VC7.1 STL; a current MSVC x86 build
+// checks the STL-free span from +0x18 instead.
+#if defined(_MSC_VER) && _MSC_VER == 1310
+static_assert(offsetof(TerrainCullerNode, legacyParent) == 0x10C, "legacy parent at +0x10C");
+#endif
+static_assert(offsetof(TerrainCullerNode, legacyParent) - offsetof(TerrainCullerNode, occlusionQuery) == 0x10C - 0x18,
+              "legacy parent 0xF4 past +0x18 - see 0x100E47E5");
 static_assert(offsetof(TerrainCuller, visible) == 0x34, "visible list at +0x34");
-static_assert(offsetof(TerrainCuller, gathered) == 0x44, "gathered list at +0x44");
-static_assert(offsetof(TerrainCuller, frustum) == 0x54, "frustum at +0x54");
-static_assert(offsetof(TerrainCuller, nodeCount) == 0x74, "node count at +0x74");
 #endif
 
 } // namespace geom

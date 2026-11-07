@@ -1,9 +1,13 @@
 // Path:     [INFERRED] from the recovered ZoomComponents family placement.
 // Contents: server-reachable DefaultZoomComp and complete DefaultZoomCompTemplate leaf recovered
-// from ELF 0x829BED0..0x829D77A and cross-checked against PE 0x5A58xx..0x5A64xx.
-// The client-only WeaponHud notification tail is the named frontier at changeZoom().
+// from ELF 0x829BED0..0x829D77A and cross-checked against PE 0x5A58xx..0x5A64xx
+// (changeZoom: PE 0x606C20, ELF 0x829C2B0).
 
 #include "DefaultZoomComp.h"
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native static geometry tables retain PE slot order.
+#include "../../../../Geom/NativeGeometrySlots.h"
+#endif
 
 #include <cstddef>
 #include <sstream>
@@ -13,6 +17,8 @@
 #include "../../Game/Soldier.h"
 #include "../../IObject.h"
 #include "../../IPlayer.h"
+#include "../../IWeaponHudComp.h"
+#include "../../WeaponHudCompTemplate.h"   // WeaponHudInfo::altGuiIndex
 #include "../../ObjectLayoutAccess.h"
 #include "../../GeometryPartAccess.h"
 #include "../../../../Core/EventManager.h"
@@ -29,7 +35,8 @@ namespace {
 
 // geom::IGeometry is still unrecovered.  This is the complete bounded surface used by DefaultZoom.
 // Its virtual destructor differs across the two retail ABIs, shifting every geometry slot after it.
-#if defined(_MSC_VER) && defined(_M_IX86)
+// The slots follow the compiler's destructor ABI, so native MSVC x64 takes the PE arm too.
+#if defined(_MSC_VER)
 typedef int (__thiscall *GeometryGetIntFn)(void*);
 typedef void (__thiscall *GeometrySetLodFn)(void*, int);
 typedef void* (__thiscall *GeometryGetTemplateFn)(void*);
@@ -38,17 +45,9 @@ const std::size_t kGeometryGetSubgeomSlot = 0x70 / 4;
 const std::size_t kGeometrySetLodSlot = 0x78 / 4;
 const std::size_t kGeometryGetLodSlot = 0x7C / 4;
 const std::size_t kGeometryGetLodCountSlot = 0x80 / 4;
-#else
-typedef int (*GeometryGetIntFn)(void*);
-typedef void (*GeometrySetLodFn)(void*, int);
-typedef void* (*GeometryGetTemplateFn)(void*);
-const std::size_t kGeometryGetTemplateSlot = 0x3C / 4;
-const std::size_t kGeometryGetSubgeomSlot = 0x74 / 4;
-const std::size_t kGeometrySetLodSlot = 0x7C / 4;
-const std::size_t kGeometryGetLodSlot = 0x80 / 4;
-const std::size_t kGeometryGetLodCountSlot = 0x84 / 4;
 #endif
 
+#if defined(_MSC_VER)
 void** geometryVtable(void* geometry)
 {
     return *reinterpret_cast<void***>(geometry);
@@ -83,6 +82,14 @@ void* geometryGetTemplate(void* geometry)
     return reinterpret_cast<GeometryGetTemplateFn>(
         geometryVtable(geometry)[kGeometryGetTemplateSlot])(geometry);
 }
+#else
+// Non-MSVC: the named geometry_part operations (static native: Geom/NativeGeometrySlots.h).
+int geometryGetSubgeom(void* geometry) { return geometry_part::getSubgeom(geometry); }
+void geometrySetLod(void* geometry, int lod) { geometry_part::setLod(geometry, lod); }
+int geometryGetLod(void* geometry) { return geometry_part::getLod(geometry); }
+int geometryGetLodCount(void* geometry) { return geometry_part::getLodCount(geometry); }
+void* geometryGetTemplate(void* geometry) { return geometry_part::getTemplate(geometry); }
+#endif
 
 } // namespace
 
@@ -377,12 +384,15 @@ void DefaultZoomComp::changeZoom(int camera, bool immediate)
         }
     }
 
-    // [FRONTIER] [RETIRE-WHEN: unrecovered-factories-registered]
-    // Retail's remaining arm reads the firearm's Object +0x5C WeaponHud component, calls its
-    // specialized +0x50 getter, tests the returned object's +0x18 field, and only then posts the
-    // zoom HUD event for a local first-person player. WeaponHud remains factory-dark under RW-6
-    // and a dedicated server's is1P() is false, so the arm is unreachable in this slice. It must
-    // land with the typed WeaponHud interface rather than being mis-dispatched through an ELF slot.
+    // Tell the HUD to recompute its GUI index (ECHud 31, HudVehicleInformation::updateGuiIndex)
+    // when the weapon has an alternate index, so a zoomed rifle switches to its altGuiIndex HUD
+    // (no crosshair for the AK-101's 52). The WeaponHud component is read before is1P(), as in
+    // both images (PE 0x606CD1..0x606D06, ELF 0x829C350..0x829C39D); the same tail is inlined in
+    // the PE reload thunk at 0x606E7C. A dedicated server's is1P() is false.
+    IWeaponHudComp* const weaponHud = static_cast<IWeaponHudComp*>(
+        object_detail::LayoutAccess::weaponHudComponent(firearm()));
+    if (is1P() && weaponHud && weaponHud->getHudInfo()->altGuiIndex != -1)
+        eventManager->postEvent(ECHud, 31, this, 0.0f);
 }
 
 int DefaultZoomComp::getZoomLod() const

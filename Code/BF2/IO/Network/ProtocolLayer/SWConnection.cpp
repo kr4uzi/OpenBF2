@@ -20,6 +20,22 @@ namespace dice {
 namespace hfe {
 namespace io {
 
+#if !defined(_WIN32)
+// [CHOSEN, not recovered] c-loopback: Darwin's struct timeval has a 32-bit tv_usec, so writing it
+// over a {long, long} TimeStamp left the upper half of tv_usec stale. A TimeStamp on the stack
+// then held garbage microseconds and the handshake timeout (state 1, 10 s) fired at random:
+// about one loopback join in three was dropped with reason 10. ELF and LP64 Linux timevals are
+// {long, long}, where this is the same as the shipped direct write.
+template <class Stamp>
+inline void gettimeofdayInto(Stamp& stamp)
+{
+    struct timeval now;
+    gettimeofday(&now, 0);
+    stamp.tv_sec  = now.tv_sec;
+    stamp.tv_usec = now.tv_usec;
+}
+#endif
+
 namespace {
 
 // Seeds a wall-clock timestamp. Keep the Windows epoch conversion consistent with NetServer.
@@ -33,7 +49,7 @@ void seedTimeStamp(SWConnection::TimeStamp& ts)
     ts.tv_sec  = (long)(t / 10000000ULL);
     ts.tv_usec = (long)((t % 10000000ULL) / 10);
 #else
-    gettimeofday(reinterpret_cast<struct timeval*>(&ts), 0);
+    gettimeofdayInto(ts);
 #endif
 }
 
@@ -326,7 +342,14 @@ int SWConnection::getPacketPtrFromRecvQueue(unsigned char** buff, unsigned int* 
         const unsigned char* const slot =
             static_cast<const unsigned char*>(front->pvoid14) + front->currBytePositionBitStream;
 
+#if defined(_WIN32)
         const unsigned int len = *reinterpret_cast<const unsigned short*>(slot);
+#else
+        // [CHOSEN, not recovered] POSIX packet prefixes need not be aligned for a short load.
+        unsigned short encodedLength;
+        std::memcpy(&encodedLength, slot, sizeof(encodedLength));
+        const unsigned int len = encodedLength;
+#endif
         if (len == 0)
         {
             m_recvBuffer->popFront();
@@ -354,7 +377,14 @@ int SWConnection::getPacketFromRecvQueue(unsigned char* dest, unsigned int* leng
         const unsigned char* const slot =
             static_cast<const unsigned char*>(front->pvoid14) + front->currBytePositionBitStream;
 
+#if defined(_WIN32)
         unsigned int len = *reinterpret_cast<const unsigned short*>(slot);
+#else
+        // [CHOSEN, not recovered] Preserve the little-endian prefix without a typed overlay.
+        unsigned short encodedLength;
+        std::memcpy(&encodedLength, slot, sizeof(encodedLength));
+        unsigned int len = encodedLength;
+#endif
 
         // the clamp its sibling does not have. Note that it clamps to `size - dword8`, not to
         // `size - currBytePositionBitStream`, so whatever +0x08 counts is what bounds the tail.

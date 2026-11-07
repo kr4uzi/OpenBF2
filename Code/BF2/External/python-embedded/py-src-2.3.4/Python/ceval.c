@@ -429,21 +429,40 @@ static struct {
 	int (*func)(void *);
 	void *arg;
 } pendingcalls[NPENDINGCALLS];
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+#include <stdatomic.h>
+/* [CHOSEN, not recovered] POSIX pending-call publication must order the queue slots.
+   C11 atomics are used in this C runtime; the Windows implementation is retained below. */
+static _Atomic int pendingfirst = 0;
+static _Atomic int pendinglast = 0;
+static _Atomic int things_to_do = 0;
+#else
 static volatile int pendingfirst = 0;
 static volatile int pendinglast = 0;
 static volatile int things_to_do = 0;
+#endif
 
 int
 Py_AddPendingCall(int (*func)(void *), void *arg)
 {
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+	/* A failed try-lock refuses nested/simultaneous producers without blocking a signal handler. */
+	static _Atomic int busy = 0;
+#else
 	static int busy = 0;
+#endif
 	int i, j;
 	/* XXX Begin critical section */
 	/* XXX If you want this to be safe against nested
 	   XXX asynchronous calls, you'll have to work harder! */
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+	if (atomic_exchange_explicit(&busy, 1, memory_order_seq_cst))
+		return -1;
+#else
 	if (busy)
 		return -1;
 	busy = 1;
+#endif
 	i = pendinglast;
 	j = (i + 1) % NPENDINGCALLS;
 	if (j == pendingfirst) {
@@ -454,7 +473,11 @@ Py_AddPendingCall(int (*func)(void *), void *arg)
 	pendingcalls[i].arg = arg;
 	pendinglast = j;
 
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+	__atomic_store_n(&_Py_Ticker, 0, __ATOMIC_SEQ_CST);
+#else
 	_Py_Ticker = 0;
+#endif
 	things_to_do = 1; /* Signal main loop */
 	busy = 0;
 	/* XXX End critical section */
@@ -772,13 +795,22 @@ eval_frame(PyFrameObject *f)
 		   async I/O handler); see Py_AddPendingCall() and
 		   Py_MakePendingCalls() above. */
 
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+		/* [CHOSEN, not recovered] May be reset by Py_AddPendingCall without the GIL. */
+		if (__atomic_sub_fetch(&_Py_Ticker, 1, __ATOMIC_SEQ_CST) < 0) {
+#else
 		if (--_Py_Ticker < 0) {
+#endif
                         if (*next_instr == SETUP_FINALLY) {
                                 /* Make the last opcode before
                                    a try: finally: block uninterruptable. */
                                 goto fast_next_opcode;
                         }
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+			__atomic_store_n(&_Py_Ticker, _Py_CheckInterval, __ATOMIC_SEQ_CST);
+#else
 			_Py_Ticker = _Py_CheckInterval;
+#endif
 			tstate->tick_counter++;
 			if (things_to_do) {
 				if (Py_MakePendingCalls() < 0) {

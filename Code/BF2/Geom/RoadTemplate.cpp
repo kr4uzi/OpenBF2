@@ -11,7 +11,8 @@
 #include "../../RendDX9Abi/ModuleCommon.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"   // dice::hfe::fileManager
-#include "../../RendDX9Abi/Vc71String.h"
+#include <sstream>
+#include <string>
 
 #include <new>
 
@@ -38,18 +39,17 @@ const unsigned int kIID_IRoadTemplate = 820008u;
 // (200, 300), width 1.0f, the +0x5C / +0x60 / +0x64 zeros, the name, priority 0. Then the default
 // contents: two empty texture files (each through a temporary std::string("")), two (1, 1) scales,
 // two false mirror flags, and one 0.25f max tesselated error (the inline push_back).
+// PE 0x1013A700
 RoadTemplate::RoadTemplate()
     : m_refCount(1)
     , m_blendFactor(1.0f)
+    , m_fadeOffDistance{200.0f, 300.0f}
     , m_width(1.0f)
     , m_unknown5C(0)
     , m_unknown60(0.0f)
     , m_material(0)
     , m_priority(0)
 {
-    m_fadeOffDistance.x = 200.0f;
-    m_fadeOffDistance.y = 300.0f;
-
     m_textureFiles.push_back(::renddx9abi::HostString(""));
     m_textureFiles.push_back(::renddx9abi::HostString(""));
 
@@ -67,8 +67,9 @@ RoadTemplate::RoadTemplate()
     m_maxTesselatedErrors.push_back(0.25f);                                  // inline; _Insert_n 0x1004E420
 }
 
-// the members in reverse: the name, the error vector, the mirror flags (size zeroed, then
-// the words), the scales, the texture files (sub_100111E0). The C++ member order is the shipped one.
+// the members in reverse: the name, the error vector, the mirror flags, the scales, the texture
+// files (sub_100111E0). The C++ member order is the shipped one.
+// PE 0x1013A690
 RoadTemplate::~RoadTemplate()
 {
 }
@@ -112,19 +113,19 @@ void* RoadTemplate::queryInterface(unsigned int iid) const
 // The accessors. None checks its index (shipped).
 
 
-// std::string::operator= on the element (index * 28 bytes from _Myfirst).
+// PE 0x1013A1A0: std::string::operator= on the element.
 void RoadTemplate::setTextureFile(int index, const ::renddx9abi::HostString& file)
 {
     m_textureFiles[static_cast<unsigned int>(index)] = file;
 }
 
-// the element's address.
+// PE 0x1013A1D0: the element's address.
 const ::renddx9abi::HostString& RoadTemplate::getTextureFile(int index)
 {
     return m_textureFiles[static_cast<unsigned int>(index)];
 }
 
-// y through the FPU, x as a dword: a Vec2 copy into the element.
+// PE 0x1013A1F0: y through the FPU, x as a dword: a Vec2 copy into the element.
 void RoadTemplate::setTextureScale(int index, const Vec2& scale)
 {
     Vec2& element = m_textureScales[static_cast<unsigned int>(index)];
@@ -132,42 +133,45 @@ void RoadTemplate::setTextureScale(int index, const Vec2& scale)
     element.x = scale.x;
 }
 
-// the element's address.
+// PE 0x1013A210: the element's address.
 const Vec2& RoadTemplate::getTextureScale(int index)
 {
     return m_textureScales[static_cast<unsigned int>(index)];
 }
 
-// the inline bit or / and-not on the word `index >> 5` (unsigned `shr`).
+// PE 0x1013A650: the inline bit or / and-not on the word `index >> 5` (unsigned `shr`).
 void RoadTemplate::setMirror(unsigned int index, bool mirror)
 {
-    m_mirrors.set(index, mirror);
+    m_mirrors[index] = mirror;
 }
 
-// the inline bit test, answered as 0 / 1 (`neg / sbb / neg`).
+// PE 0x1013A620: the inline bit test, answered as 0 / 1 (`neg / sbb / neg`).
 bool RoadTemplate::getMirror(unsigned int index)
 {
-    return m_mirrors.test(index);
+    return m_mirrors[index];
 }
 
+// PE 0x1013A0F0
 void  RoadTemplate::setWidth(float width)           { m_width = width; }
 float RoadTemplate::getWidth()                      { return m_width; }
 
-// element `lod` of the float vector (+0x3C), unchecked.
+// PE 0x1013A220: element `lod` of the float vector (+0x3C), unchecked.
 void RoadTemplate::setMaxTesselatedError(int lod, float error)
 {
     m_maxTesselatedErrors[static_cast<unsigned int>(lod)] = error;
 }
 
+// PE 0x1013A240
 float RoadTemplate::getMaxTesselatedError(int lod)
 {
     return m_maxTesselatedErrors[static_cast<unsigned int>(lod)];
 }
 
+// PE 0x1013A110
 void  RoadTemplate::setBlendFactor(float factor)    { m_blendFactor = factor; }
 float RoadTemplate::getBlendFactor()                { return m_blendFactor; }
 
-// y through the FPU, x as a dword.
+// PE 0x1013A180: y through the FPU, x as a dword.
 void RoadTemplate::setFadeOffDistance(const Vec2& distance)
 {
     m_fadeOffDistance.y = distance.y;
@@ -176,8 +180,10 @@ void RoadTemplate::setFadeOffDistance(const Vec2& distance)
 
 const Vec2& RoadTemplate::getFadeOffDistance()      { return m_fadeOffDistance; }
 
+// PE 0x10178BC0 (ICF with the ParticleSystemTemplate +0x84 dword setter: one dword store at +0x84)
 void RoadTemplate::setPriority(int priority)        { m_priority = priority; }
 int  RoadTemplate::getPriority()                    { return m_priority; }
+// PE 0x10178B40 (ICF with the ParticleSystemTemplate +0x64 dword setter: one dword store at +0x64)
 void RoadTemplate::setMaterial(int material)        { m_material = material; }
 int  RoadTemplate::getMaterial()                    { return m_material; }
 
@@ -187,21 +193,23 @@ void RoadTemplate::setName(const ::renddx9abi::HostString& name)
     m_name = name;
 }
 
-// a copy of the name into the caller's return slot.
+// PE 0x1013AD30: a copy of the name into the caller's return slot.
 ::renddx9abi::HostString RoadTemplate::getName()
 {
     return m_name;
 }
 
+// PE 0x1013A140
 void  RoadTemplate::setUnknown5C(int value)         { m_unknown5C = value; }
 int   RoadTemplate::getUnknown5C()                  { return m_unknown5C; }
+// PE 0x1013A160
 void  RoadTemplate::setUnknown60(float value)       { m_unknown60 = value; }
 float RoadTemplate::getUnknown60()                  { return m_unknown60; }
 
 
+// PE 0x1013A260 (slot +0x60 of IRoadTemplate's table 0x1021D610)
 // Writes the template's _compiled.con and _compiled.dat beside each other.
 // Requires writable output streams; failures are unchecked and the result is always true.
-
 bool RoadTemplate::compile(const ::renddx9abi::HostString& path)
 {
     ::renddx9abi::HostString conFile(path);
@@ -219,50 +227,44 @@ bool RoadTemplate::compile(const ::renddx9abi::HostString& path)
         static_cast< ::renddx9abi::HostFileMode>(0),
         static_cast< ::renddx9abi::HostFileAccess>(2), 0);                   // FileManager +0x18
 
-    // The ostringstream's three lines; `endl` puts '\n' (and flushes a string buffer - nothing).
-    ::renddx9abi::HostString text("GeometryTemplate.create RoadCompiled ");
-    text += getName();                                                       // #3
-    text += "\n";
-    text += "ObjectTemplate.create SimpleObject ";
-    text += getName();                                                       // #4
-    text += "\n";
-    text += "ObjectTemplate.geometry ";
-    text += getName();                                                       // #5
-    text += "\n";
+    // Three lines through an ostringstream; `endl` puts '\n' and flushes the string buffer (no effect).
+    std::ostringstream text;
+    text << "GeometryTemplate.create RoadCompiled " << getName() << std::endl;   // #3
+    text << "ObjectTemplate.create SimpleObject " << getName() << std::endl;     // #4
+    text << "ObjectTemplate.geometry " << getName() << std::endl;                // #5
 
-    stream->write(text.c_str(), static_cast<unsigned int>(text.size()));    // +0x14, unguarded
+    // str() is taken twice: once for the size, once for the data (0x1013A4CD / 0x1013A4E0).
+    stream->write(text.str().c_str(), static_cast<unsigned int>(text.str().size()));   // +0x14, unguarded
     stream->release();                                                       // +0x08
 
     TerrainRawReader raw;
-    raw.open(::renddx9abi::toVc71String(datFile), 0, 2, 0);
+    raw.open(::renddx9abi::fromHostString(datFile), 0, 2, 0);
 
-    vc71::string line0(::renddx9abi::toVc71String(m_textureFiles[0u]));
-    line0 += "\n";                                                           // operator+=(char) 0x0A
+    std::string line0(::renddx9abi::fromHostString(m_textureFiles[0u]));
+    line0 += '\n';                                                           // operator+=(char) 0x0A
     raw.writeString(line0);
 
-    vc71::string line1(::renddx9abi::toVc71String(m_textureFiles[1u]));
-    line1 += "\n";
+    std::string line1(::renddx9abi::fromHostString(m_textureFiles[1u]));
+    line1 += '\n';
     raw.writeString(line1);
 
     raw.writeF32(m_blendFactor);
     raw.writeVec2(&m_fadeOffDistance);
-    raw.writeU32(static_cast<unsigned int>(m_priority));
+    raw.writeI32(m_priority);                                                // sub_10076160, the int writer
     raw.close();
     return true;
 }
 
 
-// RefFactory refuse aggregation, 0x88 bytes, construct, QI with NO null test on the
-// object (shipped), release on refusal. (The native flavour's object is smaller - its HostString is
-// the host's std::string - and still fits the shipped block.)
+// RefFactory refuse aggregation, the object (retail 0x88 bytes), construct, QI with NO null
+// test on the object (shipped), release on refusal.
 
 IBase* __fastcall createRoadTemplate(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
 
-    static_assert(sizeof(RoadTemplate) <= 0x88, "the shipped 0x88-byte block must hold the object");
-    void* const storage = ::renddx9abi::engineAlloc(0x88);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(RoadTemplate));
     RoadTemplate* self = 0;
     if (storage)
         self = new (storage) RoadTemplate();

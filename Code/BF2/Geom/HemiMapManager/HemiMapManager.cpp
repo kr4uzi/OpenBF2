@@ -15,23 +15,12 @@
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
-#include "../../../RendDX9Abi/Vc71Vector.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
 
 #include <cstddef>
 #include <cstring>
 #include <new>
-
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-extern "C" HRESULT WINAPI D3DXSaveSurfaceToFileA(
-    const char* destinationFile, unsigned int fileFormat, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect);
-
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
-#pragma comment(linker, "/alternatename:_D3DXSaveSurfaceToFileA@20=_D3DXSaveSurfaceToFileA")
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -57,6 +46,7 @@ void releaseTexture(dx9rend::EngineTexture* texture)
     }
 }
 
+// PE 0x1012B5A0: drops the map's own texture reference, evicts the cache's, destroys the name and frees the map.
 void destroyHemiMap(HemiMap* map)
 {
     if (!map)
@@ -68,10 +58,12 @@ void destroyHemiMap(HemiMap* map)
     // cached, this removes and releases the cache's independent reference; otherwise the cache
     // walk simply reaches its sentinel.
     dx9rend::textureManagerEvictFromCache(texture);
-    map->name.~string();
+    map->name.~basic_string();
     ::renddx9abi::engineFree(map);
 }
 
+// PE 0x1012B600: allocates and fills a map; a missing <name>.dds is replaced by an 8x8 white texture
+// that is saved under Editor_LevelSavePath.
 HemiMap* createHemiMap(const HemiMapName& name, const Vec3& position,
                        float range, float falloff)
 {
@@ -81,7 +73,7 @@ HemiMap* createHemiMap(const HemiMapName& name, const Vec3& position,
         map->position.x = 0.0f;
         map->position.y = 0.0f;
         map->position.z = 0.0f;
-        new (&map->name) vc71::string();
+        new (&map->name) std::string();
     }
 
     // Retail 0x1012B600 continues through these stores after a failed allocation. Preserve that
@@ -91,7 +83,7 @@ HemiMap* createHemiMap(const HemiMapName& name, const Vec3& position,
     map->name = name.c_str();
     map->falloff = falloff;
 
-    vc71::string probe(map->name);
+    std::string probe(map->name);
     probe += ".dds";
     if (::renddx9abi::engineFileExists(probe))
     {
@@ -110,7 +102,7 @@ HemiMap* createHemiMap(const HemiMapName& name, const Vec3& position,
         *pixel++ = 0xFFFFFFFFu;
     dx9rend::textureUnlock(map->texture, lock);
 
-    vc71::string saveDirectory;
+    std::string saveDirectory;
     dx9rend::readStringSettingDefault("Editor_LevelSavePath", " ERROR ", saveDirectory);
     saveDirectory += "/";
     saveDirectory += map->name;
@@ -150,7 +142,7 @@ private:
 
     int m_refCount;                        // +0x04
     HemiMap* m_baseHemiMap;                // +0x08
-    vc71::vector_layout m_hemiMaps;        // +0x0C
+    std::vector<HemiMap*> m_hemiMaps;      // +0x0C
     float m_hemiLerpBias;                  // +0x1C
     dx9rend::HemiRenderState m_savedState; // +0x20
     HemiMapInfo m_info;                    // +0x4C
@@ -159,27 +151,18 @@ private:
 #if defined(_M_IX86)
 struct HemiMapManagerLayoutAssertions
 {
-    static_assert(sizeof(HemiMapManager) == 0x5C,
-                  "RefFactory_geom_HemiMapManager allocates exactly 0x5C bytes");
     static_assert(offsetof(HemiMapManager, m_refCount) == 0x04, "Hemi manager ref offset drift");
     static_assert(offsetof(HemiMapManager, m_baseHemiMap) == 0x08, "Hemi base offset drift");
     static_assert(offsetof(HemiMapManager, m_hemiMaps) == 0x0C, "Hemi vector offset drift");
-    static_assert(offsetof(HemiMapManager, m_hemiLerpBias) == 0x1C, "Hemi bias offset drift");
-    static_assert(offsetof(HemiMapManager, m_savedState) == 0x20, "Hemi state offset drift");
-    static_assert(offsetof(HemiMapManager, m_info) == 0x4C, "Hemi info offset drift");
 };
 #endif
 
+// PE 0x1012BFB0
 HemiMapManager::HemiMapManager()
     : m_refCount(1)
     , m_baseHemiMap(0)
     , m_hemiLerpBias(0.3f)
 {
-    // VC7.1's empty allocator member at +0x0C is intentionally not written by 0x1012BFB0.
-    m_hemiMaps.first = 0;
-    m_hemiMaps.last = 0;
-    m_hemiMaps.end = 0;
-
     // The constructor writes only state dwords +0x38..+0x44; the other state bytes retain the
     // allocator's contents until rendererCaptureHemiState fills the fields it owns.
     *reinterpret_cast<unsigned int*>(m_savedState.bytes + 24) = 0u;
@@ -193,9 +176,19 @@ HemiMapManager::HemiMapManager()
     m_info.lerpBias = 0.0f;
 }
 
+// PE 0x1012BFF0
 HemiMapManager::~HemiMapManager()
 {
-    clear();
+    // The base-map slot stays unchanged throughout destruction.
+    if (m_baseHemiMap)
+        destroyHemiMap(m_baseHemiMap);
+    for (std::vector<HemiMap*>::iterator it = m_hemiMaps.begin();
+         it != m_hemiMaps.end(); ++it)
+        destroyHemiMap(*it);
+
+    typedef std::vector<HemiMap*> HemiMapVector;
+    m_hemiMaps.~HemiMapVector();
+    new (&m_hemiMaps) HemiMapVector();
 }
 
 void HemiMapManager::addRef()
@@ -208,6 +201,7 @@ int HemiMapManager::getRef()
     return m_refCount;
 }
 
+// PE 0x1012C1C0
 int HemiMapManager::release()
 {
     const int remaining = --m_refCount;
@@ -219,6 +213,7 @@ int HemiMapManager::release()
     return remaining;
 }
 
+// PE 0x1012C150
 void* HemiMapManager::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IHemiMapManager)
@@ -226,6 +221,8 @@ void* HemiMapManager::queryInterface(unsigned int iid) const
     return 0;
 }
 
+// Releases map objects and their vector storage. The vector end is read after each map dies.
+// PE 0x1012C0B0
 void HemiMapManager::clear()
 {
     if (m_baseHemiMap)
@@ -234,18 +231,16 @@ void HemiMapManager::clear()
         m_baseHemiMap = 0;
     }
 
-    HemiMap** it = reinterpret_cast<HemiMap**>(m_hemiMaps.first);
-    HemiMap** const last = reinterpret_cast<HemiMap**>(m_hemiMaps.last);
-    while (it != last)
+    std::vector<HemiMap*>::iterator it = m_hemiMaps.begin();
+    while (it != m_hemiMaps.end())
         destroyHemiMap(*it++);
 
-    if (m_hemiMaps.first)
-        ::renddx9abi::engineFree(m_hemiMaps.first);
-    m_hemiMaps.first = 0;
-    m_hemiMaps.last = 0;
-    m_hemiMaps.end = 0;
+    typedef std::vector<HemiMap*> HemiMapVector;
+    m_hemiMaps.~HemiMapVector();
+    new (&m_hemiMaps) HemiMapVector();
 }
 
+// PE 0x1012BF70: destroys the old base map, creates the replacement and stores it at +0x08.
 void HemiMapManager::setBaseHemiMap(const HemiMapName& name, const Vec3& position,
                                     float range, float falloff)
 {
@@ -259,6 +254,7 @@ HemiMap* HemiMapManager::getBaseHemiMap() const
     return m_baseHemiMap;
 }
 
+// PE 0x1012B2F0
 const HemiMapInfo& HemiMapManager::getHemiMapInfo(const HemiMap* map)
 {
     if (map)
@@ -287,6 +283,7 @@ HemiMap* HemiMapManager::slot28(unsigned int)
     return getBaseHemiMap();
 }
 
+// PE 0x1012C1A0
 void HemiMapManager::setHemiLerpBias(float bias)
 {
     m_hemiLerpBias = bias;
@@ -297,6 +294,9 @@ float HemiMapManager::getHemiLerpBias() const
     return m_hemiLerpBias;
 }
 
+// PE 0x1012B800: renders the top-down source and lighting passes, composes them with the full-screen quad,
+// writes lightingTex.dds and the DXT3 conversion to the output path. The conversion-texture failure is
+// reported and then dereferenced, as shipped.
 bool HemiMapManager::makeHemiMap(unsigned long resolution, HemiMapName outputName,
                                  Vec3 position, float orthoExtent)
 {
@@ -402,7 +402,7 @@ bool HemiMapManager::makeHemiMap(unsigned long resolution, HemiMapName outputNam
 
     IDirect3DSurface9* surface =
         dx9rend::textureGetLevelSurface(sourceTexture, 0u, 0x7FFFFFFFu);
-    D3DXSaveSurfaceToFileA("lightingTex.dds", 4u, surface, 0, 0);
+    D3DXSaveSurfaceToFileA("lightingTex.dds", D3DXIFF_DDS, surface, 0, 0);
     surface->Release();
     releaseTexture(sourceTexture);
     newDepthStencil->Release();
@@ -434,10 +434,10 @@ bool HemiMapManager::makeHemiMap(unsigned long resolution, HemiMapName outputNam
     lightingSurface->Release();
     dx9rend::textureManagerSwapManaged(conversionManaged);
 
-    vc71::string outputPath(outputName.c_str());
+    std::string outputPath(outputName.c_str());
     ::renddx9abi::engineFilePrepareWrite(outputPath);
     surface = dx9rend::textureGetLevelSurface(conversionTexture, 0u, 0x7FFFFFFFu);
-    D3DXSaveSurfaceToFileA(outputPath.c_str(), 4u, surface, 0, 0);
+    D3DXSaveSurfaceToFileA(outputPath.c_str(), D3DXIFF_DDS, surface, 0, 0);
     surface->Release();
     releaseTexture(lightingTexture);
     releaseTexture(conversionTexture);

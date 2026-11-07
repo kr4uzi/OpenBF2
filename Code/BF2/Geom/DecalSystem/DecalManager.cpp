@@ -47,20 +47,20 @@ namespace {
 
 // unk_1025BEBC - a file-scope std::string built by the static initialiser 0x101D37C0 (destroyed by
 // the atexit entry 0x101D96B0). loadAtlas and generateTexture prefix it.
-const vc71::string s_atlasDirectory("Objects/Effects/Decals/Textures/Atlas/");
+const std::string s_atlasDirectory("Objects/Effects/Decals/Textures/Atlas/");
 
-// The shipped code inlines MSVCP71's operator+ - copy-construct, operator+=, copy out. vc71::string
-// publishes no operator+, so these carry the same steps (UndergrowthSystemLoad.cpp's precedent).
-vc71::string concat(const vc71::string& left, const char* right)
+// The shipped code inlines MSVCP71's operator+ - copy-construct, operator+=, copy out. These carry
+// the same steps (UndergrowthSystemLoad.cpp's precedent).
+std::string concat(const std::string& left, const char* right)
 {
-    vc71::string result(left);
+    std::string result(left);
     result += right;
     return result;
 }
 
-vc71::string concat(const vc71::string& left, const vc71::string& right)
+std::string concat(const std::string& left, const std::string& right)
 {
-    vc71::string result(left);
+    std::string result(left);
     result += right;
     return result;
 }
@@ -76,8 +76,8 @@ dx9rend::IRenderer* renderer()
 // `textureAtlasRelease` in TextureAtlas.h.
 int releaseAtlas(dx9rend::TextureAtlas* atlas)
 {
-    typedef int (__fastcall* ReleaseFn)(void*, void*);
-    return reinterpret_cast<ReleaseFn>(static_cast<void**>(atlas->vptr)[0x08 / 4])(atlas, 0);
+    typedef int (__thiscall* ReleaseFn)(void*);
+    return reinterpret_cast<ReleaseFn>(static_cast<void**>(atlas->vptr)[0x08 / 4])(atlas);
 }
 
 } // anonymous namespace
@@ -85,7 +85,7 @@ int releaseAtlas(dx9rend::TextureAtlas* atlas)
 
 // Initializes decal resources and pool, then derives fade times from their defaults.
 // The listener's render-path field and padding remain untouched.
-
+// PE 0x101251F0
 DecalManager::DecalManager()
     : m_refCount(1)
     , m_timeToLive(20.0f)
@@ -117,7 +117,8 @@ DecalManager::DecalManager()
     , m_decalGeomClipAngle(60.0f)
     , m_atlas(0)
 {
-    void* const storage = ::renddx9abi::engineAlloc(0x14u);                // sub_1005F320(0x14)
+    void* const storage = ::renddx9abi::engineAlloc(
+        static_cast<unsigned int>(sizeof(dx9rend::TextureAtlas)));         // sub_1005F320(0x14)
     m_atlas = storage ? dx9rend::textureAtlasCtor(storage) : 0;
     initPool();
     recomputeFades();                                                      // inline, 0x101253C3..
@@ -127,8 +128,9 @@ DecalManager::DecalManager()
 // the destructor: flushDeletes, clear, the atlas released through its table
 // (unguarded - a failed atlas allocation faults here, as shipped), then the members in reverse
 // declaration order: the renderer (0x101AA4F0), the maps +0x84 / +0x78 / +0x6C, the vectors +0x5C /
-// +0x4C, the maps +0x40 / +0x34 / +0x28 - each map erase(begin(), end()) + its head freed.
+// +0x4C, the maps +0x40 / +0x34 / +0x28 - the std containers' own destructors.
 
+// PE 0x10125080
 DecalManager::~DecalManager()
 {
     flushDeletes();
@@ -149,6 +151,7 @@ int DecalManager::getRef()
     return m_refCount;
 }
 
+// PE 0x10126F00
 // the decremented count is cached before the object is destroyed and freed
 // (sub_1005F360), and returned.
 int DecalManager::release()
@@ -163,6 +166,7 @@ int DecalManager::release()
 }
 
 // this for iid 1 or 820018, else 0 (branch-free `setnz; sub; and`).
+// PE 0x10126EB0
 void* DecalManager::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE)
@@ -178,25 +182,26 @@ void DecalManager::reserved10()
 }
 
 
+// PE 0x10124610
 // +0x14, createClient(owner): 0 while decals are disabled (+0x2A6);
 // else a 0x44-byte DecalObject (operator new, D1's constructor 0x101AC7B0 with the owner), inserted
 // into the client set as (object, object) - also when the allocation failed and the object is 0.
-
 void* DecalManager::createClient(void* owner)
 {
     if (!m_enabled)
         return 0;
 
-    void* const storage = ::renddx9abi::engineAlloc(0x44u);                // sub_1005F320(0x44)
+    void* const storage = ::renddx9abi::engineAlloc(
+        static_cast<unsigned int>(sizeof(DecalObject)));                   // sub_1005F320(0x44)
     DecalObject* const object =
         storage ? new (storage) DecalObject(static_cast<world::IObject*>(owner)) : 0;
-    bool inserted = false;
-    m_clients.insert(object, object, &inserted);
+    m_clients.insert(DecalObjectMap::value_type(object, object));
     return object;
 }
 
 // +0x18, the deferred delete (DecalObject slot +0x28 calls it with
 // itself): queued unless clear() is running; update's flushDeletes destroys it.
+// PE 0x10124790
 void DecalManager::enqueue(void* decalObject)
 {
     if (!m_clearing)                                                       // +0x2A4
@@ -211,15 +216,15 @@ void DecalManager::enqueue(void* decalObject)
 //   name (operator[]), takes the running count as its index (+0x58, written through the new
 //   pointer with no null test), the count is incremented, and the index map files it too.
 
+// PE 0x10124BE0
 IDecalTemplate* DecalManager::addTemplate(const DecalTemplateString& name)
 {
-    // The key is this image's own VC7.1 string: in the retail-ABI flavour the host's string IS
-    // one (toVc71String answers a reference); in the native flavour it is converted once here.
-    const vc71::string& key = ::renddx9abi::toVc71String(name);
+    // The key is this image's own string; fromHostString converts the host string once here.
+    const std::string& key = ::renddx9abi::fromHostString(name);
 
-    DecalTemplateMap::Node* const found = m_templates.find(key);
+    const DecalTemplateMap::iterator found = m_templates.find(key);
     if (found != m_templates.end())
-        return found->value;                                               // node +0x28
+        return found->second;                                              // node +0x28
 
     if (m_templateCount >= 0x200)
     {
@@ -246,6 +251,7 @@ void DecalManager::reserved20(void* argument)
 // is reported (line 274) and handled again; the flag is set; an object already in the active set is
 // reported (line 283); then (object, object) is inserted - a duplicate insert changes nothing.
 
+// PE 0x10124670
 void DecalManager::addInstance(void* instance)
 {
     DecalObject* const object = static_cast<DecalObject*>(instance);
@@ -256,10 +262,10 @@ void DecalManager::addInstance(void* instance)
     if (m_activeInstances.find(object) != m_activeInstances.end())
         ::renddx9abi::logf("DecalManager.cpp:283 Trying to add already activeInstances");
 
-    bool inserted = false;
-    m_activeInstances.insert(object, object, &inserted);
+    m_activeInstances.insert(DecalObjectMap::value_type(object, object));
 }
 
+// PE 0x10124820
 // +0x28, the active flag cleared and the object queued; update's
 // flushRemovals takes it out of the set. The DecalObject destructor (0x101AEC80) calls this too.
 void DecalManager::removeInstance(void* decalObject)
@@ -291,9 +297,9 @@ void DecalManager::update(float deltaTime)
     flushRemovals();
     renderer()->getRenderViewDup();                                        // +0x50, answer unused
     m_lastDeltaTime = deltaTime;                                           // +0x20
-    for (DecalObjectMap::Node* it = m_activeInstances.begin(); it != m_activeInstances.end();
-         it = DecalObjectMap::next(it))
-        it->value->update(deltaTime);                // [value] +0x24
+    for (DecalObjectMap::iterator it = m_activeInstances.begin(); it != m_activeInstances.end();
+         ++it)
+        it->second->update(deltaTime);               // [value] +0x24
     flushRemovals();
 }
 
@@ -382,6 +388,7 @@ void DecalManager::onRenderPathChanged(int path)
 // collect over a stack copy of the renderer's view (+0x48), then render with the renderer's view
 // fetched again. The two halves are the unreferenced 0x10124570 and 0x10124110, inlined here.
 
+// PE 0x101245B0 (RenderPathListener receiver)
 void DecalManager::onRenderPathNotification(int unused)
 {
     collectDecals(*renderer()->getRenderView());                           // +0x48, 0x10124570 body
@@ -395,9 +402,10 @@ int DecalManager::getCurrentRenderPath() const
 }
 
 // +0x14, std::string("DecalRenderer client").
-vc71::string DecalManager::getRenderPathListenerName() const
+// PE 0x10126EE0
+std::string DecalManager::getRenderPathListenerName() const
 {
-    return vc71::string("DecalRenderer client");
+    return std::string("DecalRenderer client");
 }
 
 // non-virtual
@@ -411,6 +419,7 @@ void DecalManager::renderDecals(dx9rend::IRenderView* view)
 
 // (nullsub_9, `retn 4`) - the console's `drawStats` setter (0x100BC19F). empty: the
 // console can read drawStats (+0x2A5) but never change it. Shipped.
+// PE 0x10124130
 void DecalManager::setDrawStats(bool enable)
 {
 }
@@ -429,21 +438,23 @@ void DecalManager::recomputeFades()
 // the DecalAtlas entry for a texture name: 0 when the atlas holds no
 // entry at all (its map size, `cmp [eax+10h], 0; ja`), else the atlas's lookup of name + ".dds".
 // The atlas pointer is not tested. Caller: DecalTemplate::loadTexture (0x101AF89D).
-dx9rend::TextureAtlasEntry* DecalManager::getAtlasEntry(const vc71::string& textureName)
+// PE 0x10124350
+dx9rend::TextureAtlasEntry* DecalManager::getAtlasEntry(const std::string& textureName)
 {
-    if (m_atlas->entries.size == 0)
+    if (dx9rend::textureAtlasEntryCount(m_atlas) == 0)
         return 0;
-    const vc71::string key = concat(textureName, ".dds");
+    const std::string key = concat(textureName, ".dds");
     return dx9rend::textureAtlasFind(m_atlas, key);
 }
 
 // load "<atlas directory><fileName>" into the atlas; false for an empty
 // name. Caller: initPool.
-bool DecalManager::loadAtlas(const vc71::string& fileName)
+// PE 0x101243C0
+bool DecalManager::loadAtlas(const std::string& fileName)
 {
     if (fileName.size() == 0)
         return false;
-    const vc71::string path = concat(s_atlasDirectory, fileName);          // unk_1025BEBC + name
+    const std::string path = concat(s_atlasDirectory, fileName);          // unk_1025BEBC + name
     return dx9rend::textureAtlasLoadTAI(m_atlas, path);
 }
 
@@ -454,6 +465,7 @@ bool DecalManager::loadAtlas(const vc71::string& fileName)
 // the host's "GSUseEffectTextureAtlas" setting is true (SettingsRepostitory +0x50, default false),
 // loadAtlas("DecalAtlas.tai").
 
+// PE 0x10124450
 void DecalManager::initPool()
 {
     m_poolSize = 0x800;
@@ -464,18 +476,19 @@ void DecalManager::initPool()
     m_freeList = m_pool;
 
     if (dx9rend::readBoolSetting("GSUseEffectTextureAtlas", false))       // +0x50
-        loadAtlas(vc71::string("DecalAtlas.tai"));
+        loadAtlas(std::string("DecalAtlas.tai"));
 }
 
-// the listener's first half: a stack copy of `view`
-// (Rend::RenderView's copy constructor, 0x10125960), and the renderer's collect over it and the
-// active set.
+// PE 0x10124570: the listener's first half, a stack copy of `view`
+// (Rend::RenderView's implicit copy constructor, 0x10125960, cited at renderViewCopyConstruct in
+// RendMisc/RenderView.cpp), and the renderer's collect over it and the
+// active set. Unreachable in 1.50: no code or data references.
 void DecalManager::collectDecals(dx9rend::IRenderView& view)
 {
     union
     {
         double        alignment;
-        unsigned char bytes[1072];                                         // [ebp-430h]
+        unsigned char bytes[dx9rend::kRenderViewObjectBytes];             // [ebp-430h], 1072 in retail
     } storage;
     dx9rend::IRenderView* const copy = Rend::renderViewCopyConstruct(storage.bytes, view);
     m_renderer.collect(*copy, m_activeInstances);
@@ -488,14 +501,16 @@ void DecalManager::collectDecals(dx9rend::IRenderView& view)
 // An object the client set does not hold is NOT destroyed (it leaks) - shipped. The queue is then
 // resized to 0 (VC7.1 `resize(0)` - the buffer is kept).
 
+// PE 0x101247B0
 void DecalManager::flushDeletes()
 {
-    for (DecalObject** it = m_deleteQueue.begin(); it != m_deleteQueue.end(); ++it)
+    for (std::vector<DecalObject*>::iterator it = m_deleteQueue.begin(); it != m_deleteQueue.end();
+         ++it)
     {
         DecalObject* const object = *it;
         if (object->activeFlag())
             removeInstance(object);                                        // [this] +0x28
-        DecalObjectMap::Node* const found = m_clients.find(object);
+        const DecalObjectMap::iterator found = m_clients.find(object);
         if (found != m_clients.end())
         {
             m_clients.erase(found);
@@ -507,11 +522,13 @@ void DecalManager::flushDeletes()
 
 // the deferred removals: each queued object erased from the active set
 // when present, then the queue resized to 0.
+// PE 0x10124880
 void DecalManager::flushRemovals()
 {
-    for (DecalObject** it = m_removeQueue.begin(); it != m_removeQueue.end(); ++it)
+    for (std::vector<DecalObject*>::iterator it = m_removeQueue.begin(); it != m_removeQueue.end();
+         ++it)
     {
-        DecalObjectMap::Node* const found = m_activeInstances.find(*it);
+        const DecalObjectMap::iterator found = m_activeInstances.find(*it);
         if (found != m_activeInstances.end())
             m_activeInstances.erase(found);
     }
@@ -525,21 +542,19 @@ void DecalManager::flushRemovals()
 // +0x34 and +0x78 cleared, in that order (+0x84 and the remove queue are left); templateCount = 0;
 // the renderer's empty reset (0x101A9AA0); the pool `delete[]`d (sub_1005F370) - the pool pointer
 // is NOT cleared; clearing = 0.
-
+// PE 0x10124970
 void DecalManager::clear()
 {
     m_clearing = true;
-    for (DecalTemplateMap::Node* it = m_templates.begin(); it != m_templates.end();
-         it = DecalTemplateMap::next(it))
+    for (DecalTemplateMap::iterator it = m_templates.begin(); it != m_templates.end(); ++it)
     {
-        if (it->value)
-            delete it->value;                                              // [t] +0xA0 (1)
+        if (it->second)
+            delete it->second;                                             // [t] +0xA0 (1)
     }
-    for (DecalObjectMap::Node* it = m_clients.begin(); it != m_clients.end();
-         it = DecalObjectMap::next(it))
+    for (DecalObjectMap::iterator it = m_clients.begin(); it != m_clients.end(); ++it)
     {
-        if (it->value)
-            delete it->value;                      // [o] +0x00 (1)
+        if (it->second)
+            delete it->second;                     // [o] +0x00 (1)
     }
     m_deleteQueue.resize(0);                                               // sub_101262A0(0, 0)
     m_templates.clear();
@@ -555,6 +570,7 @@ void DecalManager::clear()
 
 // (no reference) - `return templatesByIndex[index]` - operator[], so an unknown index
 // files a null entry.
+// PE 0x10124BC0
 DecalTemplate* DecalManager::getTemplateByIndex(unsigned short index)
 {
     return m_templatesByIndex[index];
@@ -564,25 +580,25 @@ DecalTemplate* DecalManager::getTemplateByIndex(unsigned short index)
 // Builds the decal atlas from named template textures beneath the editor save path.
 // Returns false only for an empty list; downstream builder failures are not propagated.
 
-bool DecalManager::generateTexture(const vc71::string& atlasName)
+// PE 0x10124CE0
+bool DecalManager::generateTexture(const std::string& atlasName)
 {
-    std::list<vc71::string> files;
-    for (DecalTemplateMap::Node* it = m_templates.begin(); it != m_templates.end();
-         it = DecalTemplateMap::next(it))
+    std::list<std::string> files;
+    for (DecalTemplateMap::iterator it = m_templates.begin(); it != m_templates.end(); ++it)
     {
-        IDecalTemplate* const decalTemplate = it->value;                   // node +0x28
+        IDecalTemplate* const decalTemplate = it->second;                  // node +0x28
         if (decalTemplate->getDecalTextureName().size() > 0)               // +0x54
-            files.push_back(concat(::renddx9abi::toVc71String(
+            files.push_back(concat(::renddx9abi::fromHostString(
                 decalTemplate->getDecalTextureName()), ".dds"));           // +0x54 again
     }
 
-    vc71::string modDirectory;
+    std::string modDirectory;
     dx9rend::readStringSettingDefault("GSModDirectory", "mods/bf2", modDirectory);        // +0x40
-    vc71::string levelSavePath;
+    std::string levelSavePath;
     dx9rend::readStringSettingDefault("Editor_LevelSavePath", modDirectory.c_str(),
                                       levelSavePath);                                      // +0x40
 
-    const vc71::string taiPath =
+    const std::string taiPath =
         concat(concat(concat(concat(levelSavePath, "/"), s_atlasDirectory), atlasName), ".tai");
     ::renddx9abi::HostStream* const stream = ::dice::hfe::fileManager->open(
         ::renddx9abi::makeHostString(taiPath), static_cast<renddx9abi::HostFileMode>(0),

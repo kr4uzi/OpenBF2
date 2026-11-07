@@ -436,7 +436,7 @@ bool Bf2HudBuilder::setCompassNodeSnapOffset(int a, int b, int c, int d)
 bool Bf2HudBuilder::setCompassNodeSnapTexture(bool primary, std::string texture)
 {
     if (m_system) {
-        const int handle = m_system->loadTexture(texture.c_str(), true);
+        const meme::TextureHandle handle = m_system->loadTexture(texture.c_str(), true);
         if (handle) {
             meme::Bf2CompassNode* compass = builderCast<meme::Bf2CompassNode>(m_field014);
             if (compass) return compass->setSnapTextureForHud(primary, handle);
@@ -494,7 +494,7 @@ bool Bf2HudBuilder::setNodeShowVariable(std::string name)
             meme::Bf2CullNode* cull = createVisibilityNode(m_field050, value);
             cull->setChild(0, node->getChild(1));
             node->setChild(1, cull);
-            return m_system->registerObject(cull, nullptr) != false;
+            return m_system->registerObject(cull, nullptr) != nullptr;
         }
     }
     Debug(DebugTypeError, builderSource, 1875, "")
@@ -629,7 +629,7 @@ bool Bf2HudBuilder::setNodeLogicShowVariable(std::string operation, std::string 
         if (operation != "AND") {
             cull->setChild(0, node->getChild(1));
             node->setChild(1, cull);
-            return m_system->registerObject(cull, nullptr) != false;
+            return m_system->registerObject(cull, nullptr) != nullptr;
         }
     }
 failed:
@@ -818,7 +818,7 @@ bool Bf2HudBuilder::setNodeColor(float r, float g, float b, float a)
                 }
                 carrier->setChild(0, node->getChild(1));
                 node->setChild(1, carrier);
-                return m_system->registerObject(carrier, nullptr) != false;
+                return m_system->registerObject(carrier, nullptr) != nullptr;
             }
         }
     }
@@ -843,7 +843,7 @@ bool Bf2HudBuilder::setNodeInTime(float seconds)
                 cull->setChild(0, node->getChild(1));
                 node->setChild(1, cull);
                 cull->setInTimeForHud(seconds);
-                return m_system->registerObject(cull, nullptr) != false;
+                return m_system->registerObject(cull, nullptr) != nullptr;
             }
         }
     }
@@ -867,7 +867,7 @@ bool Bf2HudBuilder::setNodeOutTime(float seconds)
                 cull->setChild(0, node->getChild(1));
                 node->setChild(1, cull);
                 cull->setOutTimeForHud(seconds);
-                return m_system->registerObject(cull, nullptr) != false;
+                return m_system->registerObject(cull, nullptr) != nullptr;
             }
         }
     }
@@ -1656,9 +1656,9 @@ bool Bf2HudBuilder::createButtonNode(std::string parent, std::string name,
 bool Bf2HudBuilder::setButtonNodeTexture(int index, std::string texture)
 {
     if (m_system) {
-        m_buttonTexture = static_cast<std::uint32_t>(m_system->loadTexture(texture.c_str(), true));
+        m_buttonTexture = static_cast<std::uintptr_t>(m_system->loadTexture(texture.c_str(), true));
         meme::Bf2ButtonNode* node = builderCast<meme::Bf2ButtonNode>(m_field014);
-        if (node) return node->setTextureForHud(index, static_cast<int>(m_buttonTexture));
+        if (node) return node->setTextureForHud(index, static_cast<meme::TextureHandle>(m_buttonTexture));
     }
     Debug(DebugTypeError, builderSource, 1434, "")
         << "Failed setting Picture on node: " << m_field018;
@@ -2069,7 +2069,7 @@ bool Bf2HudBuilder::setEditNodeColor(float r, float g, float b, float a)
 bool Bf2HudBuilder::setEditNodeFont(std::string font, bool outline)
 {
     if (m_system && font != "") {
-        const int handle = m_system->loadFont(font.c_str());
+        const meme::FontHandle handle = m_system->loadFont(font.c_str());
         meme::Bf2EditNode* node = builderCast<meme::Bf2EditNode>(m_field014);
         if (node) return node->setFontForHud(handle, outline);
     }
@@ -2239,6 +2239,8 @@ bool Bf2HudBuilder::setSliderNodeChild(std::string name)
     return false;
 }
 
+#if defined(_M_IX86)
 static_assert(sizeof(Bf2HudBuilder) == 0x8c, "native x86 HUD builder; retail0x9C uses larger strings");
+#endif
 } } }
 #endif

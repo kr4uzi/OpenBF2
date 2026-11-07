@@ -3,7 +3,10 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
 #include "QuadPatchEditable.h"
+#include "../Core/StringUtil.h"         // formatString (sub_10074AB0)
+#include "../GeomMisc/Debug.h"
 #include "TerrainEditable.h"
 #include "Terrain.h"
 #include "QuadPatch.h"
@@ -19,11 +22,12 @@
 #include "../RendDX9/Texture.h"
 #include "../RendMisc/EnvMapSystem/EnvMapManager.h"
 #include "../../RendDX9Abi/BfMemory.h"
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "../../RendDX9Abi/Frontier.h"        // renddx9abi::logf - dice's debug stream
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"     // classManager, fileManager
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #include <cfloat>
 #include <cmath>
@@ -31,27 +35,6 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
-
-// The D3DX entry points this TU calls - real static imports of the shipped image (d3dx9_25.dll, listed
-// in Code/RendDX9Abi/D3dx9_25.def since TerrainEditable R0). The fill callback is LPD3DXFILL2D:
-// (D3DXVECTOR4* out, const D3DXVECTOR2* texCoord, const D3DXVECTOR2* texelSize, void* data).
-typedef void (WINAPI* TerrainEditableFill2D)(float* out, const float* texCoord,
-                                             const float* texelSize, void* data);
-extern "C" HRESULT WINAPI D3DXFillTexture(IDirect3DTexture9* texture, TerrainEditableFill2D function,
-                                          void* data);
-extern "C" HRESULT WINAPI D3DXComputeBoundingSphere(
-    const ::dice::hfe::Vec3* firstPosition, DWORD vertexCount, DWORD stride,
-    ::dice::hfe::Vec3* centre, float* radius);
-// R2: the surface copy the edit copy, its commit and the road-mask downsample use (the declaration
-// and bridge XpLightManager.cpp already carries - eight arguments, @32).
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-#pragma comment(linker, "/alternatename:_D3DXFillTexture@12=_D3DXFillTexture")
-#pragma comment(linker, "/alternatename:_D3DXComputeBoundingSphere@20=_D3DXComputeBoundingSphere")
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
 
 namespace dice {
 namespace hfe {
@@ -143,22 +126,6 @@ inline dx9rend::EngineTexture* engineTexture(void* texture)
     return static_cast<dx9rend::EngineTexture*>(texture);
 }
 
-// sub_10074AB0 - the image's printf-into-a-std::string helper: _vsnprintf into a 0xFFF-byte window,
-// the shipped warning text when it does not fit (QuadPatch.cpp and StaticMesh.cpp carry the same body).
-void formatString(vc71::string& out, const char* format, ...)
-{
-    char buffer[0x1000];
-    va_list args;
-    va_start(args, format);
-    const int written = _vsnprintf(buffer, 0xFFF, format, args);
-    va_end(args);
-    if (written < 0)
-        std::snprintf(buffer, sizeof(buffer), "%s",
-                      "WARNING: The original message was too long for formatString(). \n");
-    else
-        buffer[written] = 0;
-    out = buffer;
-}
 
 // The "lock, fill every texel of mip 0, unlock" every texture-creating body here open-codes:
 // textureLock(t, 0, 0x7FFFFFFF) (sub_10014BA0), width * height dwords from the record's bits, then
@@ -177,7 +144,9 @@ void fillTexture(dx9rend::EngineTexture* texture, unsigned int value)
 // (`retn 10h`; the texel size is not read). State: QuadPatchEditable +0x128 (last u, last v, the
 // current cell's u / v start, the cell counters). The compares are the listing's: a coordinate below
 // the last one resets that axis; a step of more than 0.125 (flt_1021DD38) opens the next cell.
-void WINAPI checkerboardFill(float* out, const float* texCoord, const float*, void* data)
+// PE 0x1019AF10
+void WINAPI checkerboardFill(D3DXVECTOR4* out, const D3DXVECTOR2* texCoord, const D3DXVECTOR2*,
+                             void* data)
 {
     float* const state = static_cast<float*>(data);
     float& lastU = state[0];
@@ -186,41 +155,41 @@ void WINAPI checkerboardFill(float* out, const float* texCoord, const float*, vo
     float& cellV = state[3];
     int& countU = reinterpret_cast<int*>(state)[4];
     int& countV = reinterpret_cast<int*>(state)[5];
-    if (texCoord[0] < lastU)
+    if (texCoord->x < lastU)
     {
         countU = 0;
         cellU = 0.0f;
     }
-    if (texCoord[1] < lastV)
+    if (texCoord->y < lastV)
     {
         countV = 0;
         cellV = 0.0f;
     }
-    if (texCoord[0] - cellU > 0.125f)
+    if (texCoord->x - cellU > 0.125f)
     {
         countU += 1;
-        cellU = texCoord[0];
+        cellU = texCoord->x;
     }
-    if (texCoord[1] - cellV > 0.125f)
+    if (texCoord->y - cellV > 0.125f)
     {
         countV += 1;
-        cellV = texCoord[1];
+        cellV = texCoord->y;
     }
     if ((countV + countU) % 2 == 0)
     {
-        out[0] = 0.81f;
-        out[1] = 0.81f;
-        out[2] = 0.75f;
+        out->x = 0.81f;
+        out->y = 0.81f;
+        out->z = 0.75f;
     }
     else
     {
-        out[0] = 0.94f;
-        out[1] = 0.94f;
-        out[2] = 0.91f;
+        out->x = 0.94f;
+        out->y = 0.94f;
+        out->z = 0.91f;
     }
-    out[3] = 1.0f;
-    lastU = texCoord[0];
-    lastV = texCoord[1];
+    out->w = 1.0f;
+    lastU = texCoord->x;
+    lastV = texCoord->y;
 }
 
 } // anonymous namespace
@@ -228,12 +197,14 @@ void WINAPI checkerboardFill(float* out, const float* texCoord, const float*, vo
 
 // PatchDetailLayer
 
+// PE 0x1019AFF0
 PatchDetailLayer::PatchDetailLayer()
 {
     created = 0;
     data = 0;
 }
 
+// PE 0x1019B000
 PatchDetailLayer::~PatchDetailLayer()
 {
     if (data)
@@ -243,43 +214,86 @@ PatchDetailLayer::~PatchDetailLayer()
     }
 }
 
+// PE 0x1019B020 (the standalone copy of the body PatchDetailLayers::init inlines)
 void PatchDetailLayer::init(QuadPatchEditable* newOwner, int newWidth)
 {
     owner = newOwner;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] IMUL retains the low 32 bits.
+    byteSize = static_cast<int>(static_cast<unsigned int>(newWidth) * static_cast<unsigned int>(newWidth));
+#else
     byteSize = newWidth * newWidth;
+#endif
     width = newWidth;
 }
 
-// a second create only logs.
+// PE 0x1019B140. Unreachable in 1.50: no code or data references.
+void PatchDetailLayer::freeData()
+{
+    if (created && data)
+    {
+        ::renddx9abi::engineFree(data);                                       // operator delete[] (sub_1005F370)
+        data = 0;
+    }
+    created = 0;
+}
+
+// PE 0x1019B170. Unreachable in 1.50: no code or data references.
+void PatchDetailLayer::copyFrom(const PatchDetailLayer* other)
+{
+    ::memcpy(data, other->data, static_cast<unsigned int>(byteSize));
+}
+
+// PE 0x1019BD20. Unreachable in 1.50: no code or data references.
+void PatchDetailLayer::fill(unsigned char value)
+{
+    assertCreated();
+    ::memset(data, value, static_cast<unsigned int>(byteSize));
+}
+
+// PE 0x1019BAF0 (a tail jump to PatchDetailLayer::at). Unreachable in 1.50: no code or data references.
+unsigned char* PatchDetailLayer::byteAt(int position)
+{
+    return at(position);
+}
+
+// Reports the retail Error and refuses a second creation.
+// PE 0x1019B0A0
 void PatchDetailLayer::create()
 {
     if (created)
     {
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:207] TBM: PatchDetailLayer already created");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 207, std::string())
+            << "TBM: PatchDetailLayer already created";
         return;
     }
     created = 1;
     data = static_cast<unsigned char*>(::renddx9abi::engineAlloc(static_cast<unsigned int>(byteSize)));   // operator new[] (sub_1005F340)
 }
 
-// a log line, never a stop: every caller carries on with the null map.
+// Reports the retail Error for an uncreated map; Error filtering belongs to Debug.
+// PE 0x101A1CD0
 void PatchDetailLayer::assertCreated()
 {
     if (!created)
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:234] TBM: PatchDetailLayer is not created");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 234, std::string())
+            << "TBM: PatchDetailLayer is not created";
 }
 
 // The bound is `position > byteSize` (signed), so byteSize itself passes, and the
-// refusal only logs - the address is answered regardless.
+// refusal reports an Error; when filtered, the address is answered regardless.
+// PE 0x1019BA60
 unsigned char* PatchDetailLayer::at(int position)
 {
     assertCreated();
     if (position < 0 || position > byteSize)
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:128] TBM: pos out of range!");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 128, std::string())
+            << "TBM: pos out of range!";
     return data + position;
 }
 
 // the texels of heightmap quad (x, z): `width / patchSize` per side. No created test.
+// PE 0x1019B040
 void PatchDetailLayer::clearQuad(int x, int z)
 {
     const int block = width / owner->editableTerrain->m_patchSize;
@@ -289,24 +303,43 @@ void PatchDetailLayer::clearQuad(int x, int z)
 }
 
 // the mean weight over quad (x, z): column by column, each column's rows summed in order.
+// PE 0x1019BB00
 float PatchDetailLayer::averageWeight(int x, int z)
 {
     assertCreated();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FIADD accumulates and divides without a float spill.
+    bf2x87::Real sum(0);
+#else
     float sum = 0.0f;
+#endif
     const int w = width;
     const int block = w / owner->editableTerrain->m_patchSize;
     int count = 0;
     for (int col = 0; col < block; ++col)
     {
         for (int row = 0; row < block; ++row)
+#if defined(__APPLE__)
+            sum = bf2x87::add(sum, bf2x87::Real(data[x * block + col + w * (z * block + row)]));
+#else
             sum = sum + static_cast<float>(data[x * block + col + w * (z * block + row)]);
+#endif
+#if defined(__APPLE__)
+        count = static_cast<int>(static_cast<unsigned int>(count) + static_cast<unsigned int>(block));
+#else
         count += block;
+#endif
     }
+#if defined(__APPLE__)
+    return bf2x87::store(bf2x87::div(sum, bf2x87::Real(count)));
+#else
     return sum / static_cast<float>(count);
+#endif
 }
 
 // any non-zero weight in quad (x, z) or the one-texel border around it; each sample is
 // clamped to [0, width - 1] (the upper clamp first).
+// PE 0x1019BC60
 bool PatchDetailLayer::anyWeight(int x, int z)
 {
     assertCreated();
@@ -338,18 +371,21 @@ bool PatchDetailLayer::anyWeight(int x, int z)
 
 // PatchDetailLayers
 
+// PE 0x1019B1A0
 void PatchDetailLayers::init(QuadPatchEditable* owner, int width)
 {
     for (int i = 0; i < 6; ++i)
         records[i].init(owner, width);
 }
 
+// PE 0x1019B370
 bool PatchDetailLayers::isLayerSet(int layer, int x, int z)
 {
     return (layerMask3(x, z) & static_cast<unsigned char>(1 << layer)) != 0;
 }
 
 // at most three layers: 5, 4, 3 first, then 0, 1, 2, stopping at the third found.
+// PE 0x1019BE00
 unsigned char PatchDetailLayers::layerMask3(int x, int z)
 {
     unsigned char mask = 0;
@@ -378,6 +414,7 @@ unsigned char PatchDetailLayers::layerMask3(int x, int z)
 }
 
 // the layer with the largest mean weight (strictly larger wins; 0 when none exceeds 0).
+// PE 0x1019BEA0
 unsigned char PatchDetailLayers::dominantLayer(int x, int z)
 {
     float best = 0.0f;
@@ -385,7 +422,11 @@ unsigned char PatchDetailLayers::dominantLayer(int x, int z)
     for (int i = 0; i < 6; ++i)
     {
         const float weight = records[i].averageWeight(x, z);
+#if defined(__APPLE__)
+        if (bf2x87::greater(bf2x87::Real(weight), bf2x87::Real(best)))
+#else
         if (weight > best)
+#endif
         {
             best = weight;
             layer = static_cast<unsigned char>(i);
@@ -394,6 +435,7 @@ unsigned char PatchDetailLayers::dominantLayer(int x, int z)
     return layer;
 }
 
+// PE 0x1019B290
 unsigned char PatchDetailLayers::layerMask(int x, int z)
 {
     unsigned char mask = 0;
@@ -403,19 +445,23 @@ unsigned char PatchDetailLayers::layerMask(int x, int z)
     return mask;
 }
 
-// The guard only logs (`layer < 0 || layer > 6`, so 6 passes silently).
+// Reports an Error outside [0, 6]; the shipped guard lets index 6 pass.
+// PE 0x1019BD60
 bool PatchDetailLayers::hasLayer(int layer, int x, int z)
 {
     if (layer < 0 || layer > 6)
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:282] TBM: layer out of range");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 282, std::string())
+            << "TBM: layer out of range";
     return records[layer].anyWeight(x, z);
 }
 
 // the same guard, then the record's quad cleared.
+// PE 0x1019B2D0
 void PatchDetailLayers::clearLayerQuad(int layer, int x, int z)
 {
     if (layer < 0 || layer > 6)
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:292] TBM: layer out of range");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 292, std::string())
+            << "TBM: layer out of range";
     records[layer].clearQuad(x, z);
 }
 
@@ -439,6 +485,7 @@ void PatchDetailLayers::createAll()
 }
 
 // each map's created test (it only logs), then the map zeroed.
+// PE 0x1019BF00
 void PatchDetailLayers::clearAll()
 {
     for (int i = 0; i < 6; ++i)
@@ -449,6 +496,7 @@ void PatchDetailLayers::clearAll()
 }
 
 // each map copied from the other set's, by this set's sizes.
+// PE 0x1019B420
 void PatchDetailLayers::copyFrom(const PatchDetailLayers* other)
 {
     for (int i = 0; i < 6; ++i)
@@ -466,21 +514,43 @@ bool PatchDetailLayers::areAllCreated()
 }
 
 
+// PE 0x1019B280 (a tail jump to getLayer). Unreachable in 1.50: no code or data references.
+PatchDetailLayer* PatchDetailLayers::layerRecord(int layer)
+{
+    return getLayer(layer);
+}
+
+// PE 0x1019B1F0
 PatchDetailLayer* PatchDetailLayers::getLayer(int layer)
 {
     if (layer < 0 || layer > 6)
-        ::renddx9abi::logf("[QuadPatchEditable.cpp:256] TBM: layer out of range");
+        ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 256, std::string())
+            << "TBM: layer out of range";
     return records + layer;
 }
 
 
 // MergedPatchDetailLayers - every query goes to `source` until this set's own maps are all created.
 
+// Slot +0x00 of the merged set's table (0x1022115C): refuses with the retail Error, reading neither
+// argument (`retn 8`).
+// PE 0x101A1D50
 void MergedPatchDetailLayers::init(QuadPatchEditable*, int)
 {
-    ::renddx9abi::logf("[QuadPatchEditable.h:107] TBM: dont use this on MergedPatchDetailLayers");
+    ::renddx9abi::Debug(DebugTypeError, std::string("c:\\dice\\projects\\bf2branches\\patch_1_50\\code\\bf2\\geom\\QuadPatchEditable.h"), 107, std::string())
+        << "TBM: dont use this on MergedPatchDetailLayers";
 }
 
+// PE 0x1019B460. Unreachable in 1.50: no code or data references. Sets `source` first, then the
+// six records' owner, byte size and width (the inlined PatchDetailLayer::init).
+void MergedPatchDetailLayers::initWithSource(QuadPatchEditable* owner, int width, PatchDetailLayers* sourceSet)
+{
+    source = sourceSet;
+    for (int i = 0; i < 6; ++i)
+        records[i].init(owner, width);
+}
+
+// PE 0x1019B580
 bool MergedPatchDetailLayers::isLayerSet(int layer, int x, int z)
 {
     if (areAllCreated())
@@ -488,6 +558,7 @@ bool MergedPatchDetailLayers::isLayerSet(int layer, int x, int z)
     return source->isLayerSet(layer, x, z);
 }
 
+// PE 0x1019BF80
 unsigned char MergedPatchDetailLayers::layerMask3(int x, int z)
 {
     if (areAllCreated())
@@ -495,6 +566,7 @@ unsigned char MergedPatchDetailLayers::layerMask3(int x, int z)
     return source->layerMask3(x, z);
 }
 
+// PE 0x1019BFB0
 unsigned char MergedPatchDetailLayers::dominantLayer(int x, int z)
 {
     if (areAllCreated())
@@ -502,6 +574,7 @@ unsigned char MergedPatchDetailLayers::dominantLayer(int x, int z)
     return source->dominantLayer(x, z);
 }
 
+// PE 0x1019B510
 unsigned char MergedPatchDetailLayers::layerMask(int x, int z)
 {
     if (areAllCreated())
@@ -509,6 +582,7 @@ unsigned char MergedPatchDetailLayers::layerMask(int x, int z)
     return source->layerMask(x, z);
 }
 
+// PE 0x1019BF40
 bool MergedPatchDetailLayers::hasLayer(int layer, int x, int z)
 {
     if (areAllCreated())
@@ -516,6 +590,7 @@ bool MergedPatchDetailLayers::hasLayer(int layer, int x, int z)
     return source->hasLayer(layer, x, z);
 }
 
+// PE 0x1019B540
 void MergedPatchDetailLayers::clearLayerQuad(int layer, int x, int z)
 {
     if (areAllCreated())
@@ -526,6 +601,7 @@ void MergedPatchDetailLayers::clearLayerQuad(int layer, int x, int z)
     source->clearLayerQuad(layer, x, z);
 }
 
+// PE 0x1019B4E0 (also 0x1019B4B0, an instruction-identical standalone copy)
 PatchDetailLayer* MergedPatchDetailLayers::getLayer(int layer)
 {
     if (areAllCreated())
@@ -540,6 +616,7 @@ PatchDetailLayer* MergedPatchDetailLayers::getLayer(int layer)
 // checker state, the name, the three layer sets (records created = 0, data = 0; the merged set's
 // source is left to init), then the flags and the texture / buffer slots. +0x328 and the file
 // indices are not initialised.
+// PE 0x1019BFE0
 QuadPatchEditable::QuadPatchEditable(TerrainEditable* owner)
     : QuadPatch(owner),
       m_colormapEdit(0),
@@ -572,6 +649,7 @@ QuadPatchEditable::QuadPatchEditable(TerrainEditable* owner)
 // the road mask (owner references only, not nulled), the six layer index buffers; then the members - the
 // merged set, the edit set and the imported set, each freeing its six maps last to first - the name
 // and ~QuadPatch. The +0x2DC compressed detail maps are never released.
+// PE 0x1019C190
 QuadPatchEditable::~QuadPatchEditable()
 {
     terrainReleaseTexture(m_undergrowthOverlay);                              // +0x2E4
@@ -586,15 +664,23 @@ QuadPatchEditable::~QuadPatchEditable()
 }
 
 // The patch size is asked once (E+0x4C); both halvings are signed, as shipped.
+// PE 0x1019B7A0
 void QuadPatchEditable::getFileIndices(int* x, int* z)
 {
-    TerrainEditable* const te = editableTerrain;
-    const int patchSize = te->getPatchSize();                                 // E+0x4C
-    *x = te->m_heightmapSizeX / patchSize / 2 + gridX;                        // +0x350, +0x68
-    *z = te->m_heightmapSizeZ / patchSize / 2 + gridZ;                        // +0x354, +0x6C
+    const int patchSize = editableTerrain->getPatchSize();                   // E+0x4C
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] ADD wraps after the two signed divisions.
+    *x = static_cast<int>(static_cast<unsigned int>(editableTerrain->m_heightmapSizeX / patchSize / 2)
+        + static_cast<unsigned int>(gridX));
+    *z = static_cast<int>(static_cast<unsigned int>(editableTerrain->m_heightmapSizeZ / patchSize / 2)
+        + static_cast<unsigned int>(gridZ));
+#else
+    *x = editableTerrain->m_heightmapSizeX / patchSize / 2 + gridX;            // +0x350, +0x68
+    *z = editableTerrain->m_heightmapSizeZ / patchSize / 2 + gridZ;            // +0x354, +0x6C
+#endif
 }
 
-// Places the patch at grid (x, z), loads its maps, and builds buffers and layer sets.
+// PE 0x1019F530: places the patch at grid (x, z), loads its maps, and builds buffers and layer sets.
 // Colormaps prefer the editor copy, then the game copy, then a checkerboard; lightmaps
 // default to white. Missing detail maps are created and saved immediately.
 // Temporarily enables managed textures. Loaded detail maps defer import until update().
@@ -605,31 +691,39 @@ void QuadPatchEditable::init(int x, int z)
     gridZ = z;
     worldX = x * te->m_patchSize;
     worldZ = z * te->m_patchSize;
+#if defined(__APPLE__)
+    scaledX = bf2x87::toIntTruncate(te->m_primaryWorldScale.x) * worldX;
+#else
     scaledX = static_cast<int>(te->m_primaryWorldScale.x) * worldX;
+#endif
+#if defined(__APPLE__)
+    scaledZ = bf2x87::toIntTruncate(te->m_primaryWorldScale.z) * worldZ;
+#else
     scaledZ = static_cast<int>(te->m_primaryWorldScale.z) * worldZ;
+#endif
     m_fileIndexX = x + te->m_patchCount / 2;
     m_fileIndexZ = z + te->m_patchCount / 2;
-    formatString(m_fileName, "%02ix%02i", m_fileIndexX, m_fileIndexZ);
+    m_fileName = formatString("%02ix%02i", m_fileIndexX, m_fileIndexZ);
 
     // "<save path><editor colormap base><name>" - the editor base name (P+0xFC) is asked first.
-    vc71::string editPath;
+    std::string editPath;
     {
-        const vc71::string editorBase = te->getEditorColormapBaseName();
-        editPath = ::renddx9abi::toVc71String(te->getLevelSavePath());       // E+0x90
+        const std::string editorBase = te->getEditorColormapBaseName();
+        editPath = ::renddx9abi::fromHostString(te->getLevelSavePath());       // E+0x90
         editPath += editorBase;
         editPath += m_fileName;
     }
     // "<save path><colormap base><name>" - the base name (E+0x6C) is asked first.
-    vc71::string gamePath;
+    std::string gamePath;
     {
         TerrainEditableNameResult colormapBase = te->getColormapBaseName();
-        gamePath = ::renddx9abi::toVc71String(te->getLevelSavePath());
-        gamePath += ::renddx9abi::toVc71String(colormapBase);
+        gamePath = ::renddx9abi::fromHostString(te->getLevelSavePath());
+        gamePath += ::renddx9abi::fromHostString(colormapBase);
         gamePath += m_fileName;
     }
 
     const int savedManaged = dx9rend::textureManagerSwapManaged(1);
-    vc71::string editDds(editPath);
+    std::string editDds(editPath);
     editDds += ".dds";
     if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(editDds)))
     {
@@ -638,7 +732,7 @@ void QuadPatchEditable::init(int x, int z)
     }
     else
     {
-        vc71::string gameDds(gamePath);
+        std::string gameDds(gamePath);
         gameDds += ".dds";
         if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(gameDds)))
         {
@@ -666,14 +760,14 @@ void QuadPatchEditable::init(int x, int z)
     m_materialOverlay = 0;
 
     // "<save path><lightmap base><name>" - the base name (E+0x74) is asked first.
-    vc71::string lightPath;
+    std::string lightPath;
     {
         TerrainEditableNameResult lightmapBase = te->getLightmapBaseName();
-        lightPath = ::renddx9abi::toVc71String(te->getLevelSavePath());
-        lightPath += ::renddx9abi::toVc71String(lightmapBase);
+        lightPath = ::renddx9abi::fromHostString(te->getLevelSavePath());
+        lightPath += ::renddx9abi::fromHostString(lightmapBase);
         lightPath += m_fileName;
     }
-    vc71::string lightDds(lightPath);
+    std::string lightDds(lightPath);
     lightDds += ".dds";
     if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(lightDds)))
     {
@@ -689,18 +783,18 @@ void QuadPatchEditable::init(int x, int z)
 
     // "<save path><editor detail base><name>_1" / "_2" - the editor base name (P+0xF4) first.
     m_detailMapsFromFile = 0;
-    vc71::string detailBase;
+    std::string detailBase;
     {
-        const vc71::string editorBase = te->getEditorDetailmapBaseName();
-        detailBase = ::renddx9abi::toVc71String(te->getLevelSavePath());
+        const std::string editorBase = te->getEditorDetailmapBaseName();
+        detailBase = ::renddx9abi::fromHostString(te->getLevelSavePath());
         detailBase += editorBase;
         detailBase += m_fileName;
     }
     for (int i = 0; i < 2; ++i)
     {
-        vc71::string path;
-        formatString(path, "%s_%i", detailBase.c_str(), i + 1);
-        vc71::string dds(path);
+        std::string path;
+        path = formatString("%s_%i", detailBase.c_str(), i + 1);
+        std::string dds(path);
         dds += ".dds";
         if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
         {
@@ -747,6 +841,7 @@ void QuadPatchEditable::init(int x, int z)
         m_importPending = 1;
 }
 
+// PE 0x1019E160
 // the height range (+0x98 / +0x9C, seeded FLT_MIN / FLT_MAX) and the bounding sphere
 // (+0xA0 / +0xAC) of the patch's (patchSize + 1)^2 heightmap samples. The compares are the listing's:
 // `max < h` raises, `!(min < h)` lowers. Scale and size are asked through ITerrainEditable.
@@ -785,11 +880,12 @@ void QuadPatchEditable::computeBounds()
             ++point;
         }
     }
-    D3DXComputeBoundingSphere(points, static_cast<DWORD>(side * side), 12, &sphereCentre, &sphereRadius);
+    D3DXComputeBoundingSphere(reinterpret_cast<const D3DXVECTOR3*>(points), static_cast<DWORD>(side * side),
+                              12, reinterpret_cast<D3DXVECTOR3*>(&sphereCentre), &sphereRadius);
     ::renddx9abi::engineFree(points);
 }
 
-// the per-patch streams: +0x54 the heights (4 bytes per sample, divided by the vertical
+// PE 0x1019DF30: the per-patch streams: +0x54 the heights (4 bytes per sample, divided by the vertical
 // scale) and a fresh +0x5C that buildNormalVertexBuffer fills. The old wrappers are released, not
 // nulled. The x == -1024 re-sample (when the scaled height is below one unit) asks the cluster for
 // the same coordinate again - -1024.0f (0xC4800000) is the column's own x.
@@ -812,7 +908,11 @@ void QuadPatchEditable::rebuildVertexBuffers()
         static_cast<unsigned int>(side * side), 4u, 8u, "QuadPatchEditable");
     float* const heights = static_cast<float*>(dx9rend::vertexBufferLock(heightVertexBuffer, 0, 0, 0));
     ::dice::hfe::world::IHeightmapCluster* const cluster = heightmapClusterByName();
+#if defined(__APPLE__)
+    const int step = bf2x87::toIntTruncate(editableTerrain->getPrimaryWorldScale().x);   // E+0x34
+#else
     const int step = static_cast<int>(editableTerrain->getPrimaryWorldScale().x);   // E+0x34
+#endif
     const float scaleY = editableTerrain->getPrimaryWorldScale().y;                  // E+0x34 again
     const int zEnd = scaledZ + step * side;
     const int xEnd = scaledX + step * side;
@@ -841,7 +941,8 @@ void QuadPatchEditable::rebuildVertexBuffers()
 // Techniques 0..2 and 7 draw the whole base grid; 4 / 5 / 6 / 8 the grid with their overlay as
 // TEXLAYER0 (no overlay set for another technique draws nothing); 3 draws every detail layer with
 // triangles, one pass each (1 side-projected, 2 environment-mapped, else 0). The technique is
-// compared unsigned (a negative one draws nothing).
+// compared unsigned (a negative one draws nothing). Reached only through the table (0x10221228).
+// PE 0x101A15B0
 void QuadPatchEditable::draw(int)
 {
     TerrainEditable* const te = editableTerrain;
@@ -891,7 +992,7 @@ void QuadPatchEditable::draw(int)
                 if (!m_layerTriangleCount[layer])
                     continue;
                 const TerrainDetailTexture* const record =
-                    reinterpret_cast<TerrainDetailTexture**>(editableTerrain->m_detailTextures.first)[layer];
+                    editableTerrain->m_detailTextures.data()[layer];
                 param(editableTerrain->m_hTexLayer[1])->setValue(record->texture, 0);
                 void* detail;
                 if (editableTerrain->m_useCompDetailMaps && m_compDetailMap[layer / 3])
@@ -903,12 +1004,12 @@ void QuadPatchEditable::draw(int)
                     float selector[3] = { 0.0f, 0.0f, 0.0f };
                     selector[2 - layer % 3] = 1.0f;
                     dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(editableTerrain->m_effect),
-                                                                   vc71::string("COMPONENTSELECTOR"))->setValue(selector, 0);
+                                                                   std::string("COMPONENTSELECTOR"))->setValue(selector, 0);
                 }
                 {
                     float tiling[4] = { record->sideTiling.x, record->sideTiling.y, record->topTiling, record->yOffset };
                     dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(editableTerrain->m_effect),
-                                                                   vc71::string("NEARTEXTILING"))->setValue(tiling, 0);
+                                                                   std::string("NEARTEXTILING"))->setValue(tiling, 0);
                 }
                 dx9rend::indexBufferBind(m_layerIndexBuffer[layer]);
                 unsigned int pass;
@@ -922,7 +1023,7 @@ void QuadPatchEditable::draw(int)
                     pass = 2;
                     // The live EnvMapManager's borrowed texture (dword_10267A34 +0x64), unguarded.
                     dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(editableTerrain->m_effect),
-                                                                   vc71::string("TEXLAYER7"))->setValue(
+                                                                   std::string("TEXLAYER7"))->setValue(
                         static_cast<Rend::EnvMapManager*>(terrainEnvMapManager())->m_currentTexture, 0);
                 }
                 else
@@ -947,6 +1048,7 @@ void QuadPatchEditable::draw(int)
 }
 
 // all six layers, then the pending flag cleared.
+// PE 0x1019FF20
 void QuadPatchEditable::importAllLayers()
 {
     for (int layer = 0; layer < 6; ++layer)
@@ -992,8 +1094,18 @@ void QuadPatchEditable::importLayer(int layer)
     rebuildLayerIndexBuffer(layer);
 }
 
+// PE 0x1019B760. Unreachable in 1.50: no code or data references. The shipped body stores through
+// the index unchecked; [CHOSEN, not recovered] the index is range-tested here (memory-safety
+// exception: out-of-bounds write omitted), which cannot be observed as nothing calls it.
+void QuadPatchEditable::clearLayerTriangleCount(int layer)
+{
+    if (layer >= 0 && layer < 6)
+        m_layerTriangleCount[layer] = 0;
+}
+
 // two triangles per heightmap quad the merged set reports for `layer`, as u16 indices
 // into the (patchSize + 1)^2 grid; the lock is not tested. The count is triangles (indices / 3).
+// PE 0x1019B650
 void QuadPatchEditable::rebuildLayerIndexBuffer(int layer)
 {
     const int n = editableTerrain->getPatchSize();                            // E+0x4C
@@ -1029,10 +1141,18 @@ void QuadPatchEditable::rebuildLayerIndexBuffer(int layer)
 // the low-detail map rebuilt from the detail maps: cleared, then every layer whose record
 // says low-detail type 1 (into red, bits 16..23) or 2 (into blue, bits 0..7) adds its channel's
 // weights, saturating at 255. Three surfaces locked (flags 0), unlocked and released in lock order.
+// PE 0x101A0D60
 void QuadPatchEditable::rebuildLowDetailMap()
 {
     const int width = editableTerrain->m_patchDetailmapSize;
-    fillTexture(engineTexture(lowDetailmap), 0u);
+    {
+        dx9rend::TextureLockRecord* const record = dx9rend::textureLock(engineTexture(lowDetailmap), 0, 0x7FFFFFFF);
+        unsigned int* texel = static_cast<unsigned int*>(record->pBits);
+        unsigned int* const end = texel + record->width * record->height;
+        for (; texel != end; ++texel)
+            *texel = 0;
+        dx9rend::textureUnlock(engineTexture(lowDetailmap), record);
+    }
     IDirect3DSurface9* const lowSurface =
         dx9rend::textureGetLevelSurface(engineTexture(lowDetailmap), 0, 0x7FFFFFFF);
     D3DLOCKED_RECT lowRect;
@@ -1052,7 +1172,7 @@ void QuadPatchEditable::rebuildLowDetailMap()
     for (int layer = 0; layer < 6; ++layer)
     {
         TerrainDetailTexture* const record =
-            reinterpret_cast<TerrainDetailTexture**>(editableTerrain->m_detailTextures.first)[layer];
+            editableTerrain->m_detailTextures.data()[layer];
         const int type = record->getLowDetailType();                          // record slot +0x50
         if (type != 1 && type != 2)
             continue;
@@ -1080,11 +1200,13 @@ void QuadPatchEditable::rebuildLowDetailMap()
 }
 
 // (nullsub_12, `retn 4`) - empty in 1.50.
+// PE 0x1019B9B0
 void QuadPatchEditable::debugTest(int)
 {
 }
 
 // the technique overlays: patchSize^2, D3DFMT_A8R8G8B8 (21), one mip, cleared to 0
+// PE 0x1019C3A0
 void QuadPatchEditable::createUndergrowthOverlay()
 {
     if (m_undergrowthOverlay)
@@ -1092,7 +1214,12 @@ void QuadPatchEditable::createUndergrowthOverlay()
     const int size = editableTerrain->m_patchSize;
     m_undergrowthOverlay = engineTexture(dx9rend::textureManagerCreateEmpty(
         static_cast<unsigned int>(size), static_cast<unsigned int>(size), 21, 1, 0, 0));
-    fillTexture(m_undergrowthOverlay, 0u);
+    dx9rend::TextureLockRecord* const record = dx9rend::textureLock(m_undergrowthOverlay, 0, 0x7FFFFFFF);
+    unsigned int* texel = static_cast<unsigned int*>(record->pBits);
+    unsigned int* const end = texel + record->width * record->height;
+    for (; texel != end; ++texel)
+        *texel = 0;
+    dx9rend::textureUnlock(m_undergrowthOverlay, record);
 }
 
 // The releases (0x1019C410 / 0x1019C4D0 / 0x1019C590 / 0x1019C5E0): the owner reference, then the same
@@ -1106,6 +1233,7 @@ void QuadPatchEditable::releaseUndergrowthOverlay()
     m_undergrowthOverlay = 0;
 }
 
+// PE 0x1019C460
 void QuadPatchEditable::createOvergrowthOverlay()
 {
     if (m_overgrowthOverlay)
@@ -1116,6 +1244,7 @@ void QuadPatchEditable::createOvergrowthOverlay()
     fillTexture(m_overgrowthOverlay, 0u);
 }
 
+// PE 0x1019C4D0
 void QuadPatchEditable::releaseOvergrowthOverlay()
 {
     if (!m_overgrowthOverlay)
@@ -1125,6 +1254,7 @@ void QuadPatchEditable::releaseOvergrowthOverlay()
     m_overgrowthOverlay = 0;
 }
 
+// PE 0x1019C520
 void QuadPatchEditable::createOvergrowthShadowOverlay()
 {
     if (m_overgrowthShadowOverlay)
@@ -1135,6 +1265,7 @@ void QuadPatchEditable::createOvergrowthShadowOverlay()
     fillTexture(m_overgrowthShadowOverlay, 0u);
 }
 
+// PE 0x1019C590
 void QuadPatchEditable::releaseOvergrowthShadowOverlay()
 {
     if (!m_overgrowthShadowOverlay)
@@ -1144,6 +1275,7 @@ void QuadPatchEditable::releaseOvergrowthShadowOverlay()
     m_overgrowthShadowOverlay = 0;
 }
 
+// PE 0x1019C5E0
 void QuadPatchEditable::releaseMaterialOverlay()
 {
     if (!m_materialOverlay)
@@ -1174,31 +1306,54 @@ inline int texelPitch(const D3DLOCKED_RECT& locked)
     return static_cast<int>(static_cast<unsigned int>(locked.Pitch) >> 2);
 }
 
-// sub_100A2FE0 - ceil of a float through the CRT's double ceil (`fld; fstp qword; call ceil`), the
-// result left in st0 for the caller's chop.
-inline int ceilChop(float value)
-{
-    return static_cast<int>(std::ceil(static_cast<double>(value)));
-}
-
 } // anonymous namespace
+
+// sub_100A2FE0 - ceil of a float through the CRT's double ceil (`fld; fstp qword; call ceil`), the
+// result left in st0 for the caller's chop (folded in here; every caller chops it at once).
+int ceilChop(float value)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The caller's FISTP returns integer indefinite on invalid input.
+    return bf2x87::toIntTruncate(std::ceil(static_cast<double>(value)));
+#else
+    return static_cast<int>(std::ceil(static_cast<double>(value)));
+#endif
+}
 
 // the colour helpers (QuadPatchEditable.h)
 // (`retn 10h`, four floats BY value). Each * 255.0f (flt_101E14C0), chopped (fistp under a
 // truncating control word), the low byte kept - the third first, then the fourth unmasked (only its
 // low byte survives the two shifts that follow), the second, the first.
+// PE 0x1019AE50
 unsigned int terrainEditPackColor(float c0, float c1, float c2, float c3)
 {
+#if defined(__APPLE__)
+    unsigned int packed = static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(c2), bf2x87::Real(255)))) & 0xFFu;
+#else
     unsigned int packed = static_cast<unsigned int>(static_cast<int>(c2 * 255.0f)) & 0xFFu;
+#endif
+#if defined(__APPLE__)
+    packed |= static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(c3), bf2x87::Real(255)))) << 8;
+#else
     packed |= static_cast<unsigned int>(static_cast<int>(c3 * 255.0f)) << 8;
+#endif
     packed <<= 8;
+#if defined(__APPLE__)
+    packed |= static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(c1), bf2x87::Real(255)))) & 0xFFu;
+#else
     packed |= static_cast<unsigned int>(static_cast<int>(c1 * 255.0f)) & 0xFFu;
+#endif
     packed <<= 8;
+#if defined(__APPLE__)
+    packed |= static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(c0), bf2x87::Real(255)))) & 0xFFu;
+#else
     packed |= static_cast<unsigned int>(static_cast<int>(c0 * 255.0f)) & 0xFFu;
+#endif
     return packed;
 }
 
 // (ecx = out, edx = colour) - each byte, the lowest first, * 0.0039215689f (flt_101E2B98).
+// PE 0x1019B9C0
 void terrainEditUnpackColor(float out[4], unsigned int color)
 {
     out[0] = static_cast<float>(color & 0xFFu) * 0.0039215689f;
@@ -1209,8 +1364,29 @@ void terrainEditUnpackColor(float out[4], unsigned int color)
 
 // (thiscall on dst, `retn 8`) - dst scaled by (1 - t) and stored, all four first; then
 // t * src computed for all four and added.
+// PE 0x101A1DD0
 void terrainEditLerpColor(float dst[4], const float src[4], float t)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep and component zero retain x87 width; other components spill.
+    const bf2x87::Real keep = bf2x87::sub(bf2x87::Real(1), bf2x87::Real(t));
+    const bf2x87::Real first = bf2x87::mul(keep, bf2x87::Real(dst[0]));
+    dst[0] = bf2x87::store(first);
+    const float kept1 = bf2x87::store(bf2x87::mul(keep, bf2x87::Real(dst[1])));
+    dst[1] = kept1;
+    const float kept2 = bf2x87::store(bf2x87::mul(keep, bf2x87::Real(dst[2])));
+    dst[2] = kept2;
+    const float kept3 = bf2x87::store(bf2x87::mul(keep, bf2x87::Real(dst[3])));
+    dst[3] = kept3;
+    const bf2x87::Real add0 = bf2x87::mul(bf2x87::Real(t), bf2x87::Real(src[0]));
+    const float add1 = bf2x87::store(bf2x87::mul(bf2x87::Real(t), bf2x87::Real(src[1])));
+    const float add2 = bf2x87::store(bf2x87::mul(bf2x87::Real(t), bf2x87::Real(src[2])));
+    const float add3 = bf2x87::store(bf2x87::mul(bf2x87::Real(t), bf2x87::Real(src[3])));
+    dst[0] = bf2x87::store(bf2x87::add(first, add0));
+    dst[1] = bf2x87::store(bf2x87::add(bf2x87::Real(kept1), bf2x87::Real(add1)));
+    dst[2] = bf2x87::store(bf2x87::add(bf2x87::Real(kept2), bf2x87::Real(add2)));
+    dst[3] = bf2x87::store(bf2x87::add(bf2x87::Real(kept3), bf2x87::Real(add3)));
+#else
     const float keep = 1.0f - t;
     dst[0] = keep * dst[0];
     dst[1] = keep * dst[1];
@@ -1224,12 +1400,14 @@ void terrainEditLerpColor(float dst[4], const float src[4], float t)
     dst[1] = dst[1] + add1;
     dst[2] = dst[2] + add2;
     dst[3] = dst[3] + add3;
+#endif
 }
 
 // the colormap's edit copy
 // only when there is none: a patchColormapSize^2 A8R8G8B8 texture (one mip), stored
 // first, then the colormap copied into it by D3DX (no rectangles, D3DX_DEFAULT filter, no colour key;
 // the answer not tested) and both surfaces released, the copy's first.
+// PE 0x1019B5C0
 void QuadPatchEditable::makeColormapEditCopy()
 {
     if (m_colormapEdit)
@@ -1244,7 +1422,8 @@ void QuadPatchEditable::makeColormapEditCopy()
     source->Release();
 }
 
-// the copy's owner reference, then the member's value out of the cache, then nulled.
+// PE 0x1019C350. The copy's owner reference (+0x04 decremented; release and free at zero), then the
+// member's value out of the cache, then nulled.
 void QuadPatchEditable::releaseColormapEdit()
 {
     if (!m_colormapEdit)
@@ -1254,8 +1433,9 @@ void QuadPatchEditable::releaseColormapEdit()
     m_colormapEdit = 0;
 }
 
-// with a copy: the copy loaded back over the colormap (D3DX, as above), the copy's surface
-// released before the colormap's, then the copy dropped (a tail jump into 0x1019C350).
+// PE 0x1019EF80. With a copy (+0x120): the copy loaded back over the colormap (+0x4C; D3DX, as
+// above), the copy's surface released before the colormap's, then the copy dropped (a tail jump
+// into releaseColormapEdit).
 void QuadPatchEditable::commitColormapEdit()
 {
     if (!m_colormapEdit)
@@ -1270,6 +1450,7 @@ void QuadPatchEditable::commitColormapEdit()
 
 // with a copy: every texel of it (patchColormapSize^2, x outer, z inner, the pitch
 // honoured) set to 0, under a (0, 0, size, size) lock with flags 0.
+// PE 0x1019B910
 void QuadPatchEditable::clearColormapEdits()
 {
     if (!m_colormapEdit)
@@ -1292,6 +1473,7 @@ void QuadPatchEditable::clearColormapEdits()
 // zeroed (+0x164 clearAll), the edit and merged sets freed, and the layer's triangle count reset
 // (its index buffer is not rebuilt). Lock (0, 0, w, w), flags 0; the rows advance by `w` texels -
 // the surface pitch is ignored.
+// PE 0x1019B800
 void QuadPatchEditable::clearDetailLayer(int layer)
 {
     const int width = editableTerrain->m_patchDetailmapSize;
@@ -1320,6 +1502,7 @@ void QuadPatchEditable::clearDetailLayer(int layer)
     m_layerTriangleCount[layer] = 0;
 }
 
+// PE 0x1019B8F0
 void QuadPatchEditable::clearAllDetailLayers()
 {
     for (int layer = 0; layer < 6; ++layer)
@@ -1329,6 +1512,7 @@ void QuadPatchEditable::clearAllDetailLayers()
 // the edit and merged sets freed, then the layer's channel of its detail map rewritten
 // from the imported weights (texel = (weight << shift) | (texel & ~(255 << shift)); lock (0, 0, w, w),
 // flags 0, rows advance by `w` texels), and the layer's index buffer rebuilt.
+// PE 0x1019EFE0
 void QuadPatchEditable::revertLayer(int layer)
 {
     const int width = editableTerrain->m_patchDetailmapSize;
@@ -1361,6 +1545,7 @@ void QuadPatchEditable::revertLayer(int layer)
     rebuildLayerIndexBuffer(layer);
 }
 
+// PE 0x1019F100
 void QuadPatchEditable::revertAllLayers()
 {
     for (int layer = 0; layer < 6; ++layer)
@@ -1371,6 +1556,7 @@ void QuadPatchEditable::revertAllLayers()
 // weights copied into the imported set (+0x164 slot +0x28 with the merged set - its own maps, not the
 // forwarders), each set freed when it still exists (asked again), then the low-detail map rebuilt.
 // The argument is not read.
+// PE 0x101A1A30
 void QuadPatchEditable::commitLayer(int)
 {
     if (!m_colormapEdited)
@@ -1387,6 +1573,7 @@ void QuadPatchEditable::commitLayer(int)
     rebuildLowDetailMap();
 }
 
+// PE 0x101A1AB0
 void QuadPatchEditable::commitAllLayers()
 {
     for (int layer = 0; layer < 6; ++layer)
@@ -1397,6 +1584,7 @@ void QuadPatchEditable::commitAllLayers()
 // (w(3i + 2) << 16) + (w(3i + 1) << 8) + w(3i) - alpha 0 - at texel (x, z), the pitch honoured; the
 // weight index is x + z * w (x outer, z inner). Both maps locked over (0, 0, w, w) with flags 0 first,
 // unlocked and released in map order last. The layer argument is not read.
+// PE 0x1019D400
 void QuadPatchEditable::writeLayersBack(int x0, int x1, int z0, int z1, int)
 {
     const int width = editableTerrain->m_patchDetailmapSize;
@@ -1536,6 +1724,7 @@ void QuadPatchEditable::addLayerWeight(int layer, int position, int amount)
 // the brushes
 // (nullsub_11, `retn 10h`) - empty in 1.50: TerrainEditable::brushHeightmapPatches reaches
 // every patch under the brush and nothing happens here.
+// PE 0x1019B780
 void QuadPatchEditable::brushHeightmap(float, float, float, float)
 {
 }
@@ -1550,8 +1739,13 @@ void QuadPatchEditable::paintDetail(float x, float z, float radius, int strength
     const float zr = z - static_cast<float>(scaledZ);                         // +0x7C
     if (!(xr + radius > 0.0f))
         return;
+#if defined(__APPLE__)
+    const float extent = static_cast<float>(bf2x87::toIntTruncate(
+        static_cast<float>(te->m_patchSize) * te->m_primaryWorldScale.x));
+#else
     const float extent = static_cast<float>(static_cast<int>(
         static_cast<float>(te->m_patchSize) * te->m_primaryWorldScale.x));
+#endif
     if (!(xr - radius < extent) || !(zr + radius > 0.0f) || !(zr - radius < extent)
         || !m_colormapEdited)
         return;
@@ -1563,7 +1757,11 @@ void QuadPatchEditable::paintDetail(float x, float z, float radius, int strength
     const float xs = xr * scale;
     const float zs = zr * scale;
     const float rs = scale * radius;
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(xs - rs);
+#else
     int x0 = static_cast<int>(xs - rs);
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
@@ -1572,7 +1770,11 @@ void QuadPatchEditable::paintDetail(float x, float z, float radius, int strength
         if (size >= top)
             xEnd = top;
     }
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(zs - rs);
+#else
     int z0 = static_cast<int>(zs - rs);
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
@@ -1608,7 +1810,11 @@ void QuadPatchEditable::paintDetail(float x, float z, float radius, int strength
             double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));   // flt_1022106C
             if (!(0.0 < falloff))
                 falloff = 0.0;
+#if defined(__APPLE__)
+            const int amount = bf2x87::toIntTruncate(static_cast<float>(static_cast<double>(strength) * falloff));
+#else
             const int amount = static_cast<int>(static_cast<float>(static_cast<double>(strength) * falloff));
+#endif
             if (!amount)
                 continue;
             addLayerWeight(layer, position, amount);
@@ -1626,42 +1832,87 @@ void QuadPatchEditable::paintDetail(float x, float z, float radius, int strength
 // colormap's texel by |t|, a zero strength stores 0. The colour is R/B-swapped before use
 // ({c2, c1, c0, c3} of its bytes, low first): an argument 0x00BBGGRR paints red RR. Both surfaces are
 // unlocked and released, the colormap's first.
+// PE 0x1019FF40
 void QuadPatchEditable::paintColor(float x, float z, float radius, int strength, unsigned int color)
 {
-    TerrainEditable* const te = editableTerrain;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Match FILD inputs, retained arithmetic and attested spills.
+    const float xr = bf2x87::store(bf2x87::sub(bf2x87::Real(x), bf2x87::Real(scaledX)));
+    const float zr = bf2x87::store(bf2x87::sub(bf2x87::Real(z), bf2x87::Real(scaledZ)));
+#else
     const float xr = x - static_cast<float>(scaledX);
     const float zr = z - static_cast<float>(scaledZ);
-    const int extentInt = static_cast<int>(static_cast<float>(te->m_patchSize) * te->m_primaryWorldScale.x);
+#endif
+#if defined(__APPLE__)
+    const int extentInt = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(editableTerrain->m_patchSize), bf2x87::Real(editableTerrain->m_primaryWorldScale.x)));
+#else
+    const int extentInt = static_cast<int>(static_cast<float>(editableTerrain->m_patchSize) * editableTerrain->m_primaryWorldScale.x);
+#endif
+#if defined(__APPLE__)
+    if (!bf2x87::greater(bf2x87::add(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(0)))
+#else
     if (!(xr + radius > 0.0f))
+#endif
         return;
     const float extent = static_cast<float>(extentInt);
+#if defined(__APPLE__)
+    if (!bf2x87::less(bf2x87::sub(bf2x87::Real(xr), bf2x87::Real(radius)), bf2x87::Real(extent))
+        || !bf2x87::greater(bf2x87::add(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(0))
+        || !bf2x87::less(bf2x87::sub(bf2x87::Real(zr), bf2x87::Real(radius)), bf2x87::Real(extent))
+        || !m_colormapEdited)
+#else
     if (!(xr - radius < extent) || !(zr + radius > 0.0f) || !(zr - radius < extent)
         || !m_colormapEdited)
+#endif
         return;
     if (!m_colormapEdit)
         makeColormapEditCopy();
 
-    const int size = te->m_patchColormapSize;
+    const int size = editableTerrain->m_patchColormapSize;
+#if defined(__APPLE__)
+    const bf2x87::Real scale = bf2x87::div(bf2x87::Real(size), bf2x87::Real(extent));
+    const float xs = bf2x87::store(bf2x87::mul(bf2x87::Real(xr), scale));
+    const float zs = bf2x87::store(bf2x87::mul(bf2x87::Real(zr), scale));
+    const float rs = bf2x87::store(bf2x87::mul(scale, bf2x87::Real(radius)));
+    const float inverse = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(rs)));
+#else
     const float scale = static_cast<float>(size) / extent;
     const float xs = xr * scale;
     const float zs = zr * scale;
     const float rs = scale * radius;
     const float inverse = 1.0f / rs;
+#endif
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(xs), bf2x87::Real(rs)));
+#else
     int x0 = static_cast<int>(xs - rs);
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(xs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(xs + rs);
+#endif
         if (size >= top)
             xEnd = top;
     }
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(bf2x87::sub(bf2x87::Real(zs), bf2x87::Real(rs)));
+#else
     int z0 = static_cast<int>(zs - rs);
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
     {
+#if defined(__APPLE__)
+        const int top = ceilChop(bf2x87::store(bf2x87::add(bf2x87::Real(zs), bf2x87::Real(rs))));
+#else
         const int top = ceilChop(zs + rs);
+#endif
         if (size >= top)
             zEnd = top;
     }
@@ -1678,23 +1929,49 @@ void QuadPatchEditable::paintColor(float x, float z, float radius, int strength,
 
     for (int px = x0; px < xEnd; ++px)
     {
+#if defined(__APPLE__)
+        if (z0 >= zEnd)
+            continue;
+        const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(px), bf2x87::Real(xs));
+        const float dxSquared = bf2x87::store(bf2x87::mul(dx, dx));
+#else
         const float dx = static_cast<float>(px) - xs;
         const float dxSquared = dx * dx;
+#endif
         for (int pz = z0; pz < zEnd; ++pz)
         {
+#if defined(__APPLE__)
+            const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(pz), bf2x87::Real(zs));
+            const bf2x87::Real distance = bf2x87::squareRoot(bf2x87::add(bf2x87::mul(dz, dz), bf2x87::Real(dxSquared)));
+            const float sampledDistance = bf2x87::store(distance);
+            if (bf2x87::greater(distance, bf2x87::Real(rs)))
+#else
             const float dz = static_cast<float>(pz) - zs;
             const float distance = std::sqrt(dz * dz + dxSquared);
             if (distance > rs)
+#endif
                 continue;
             unsigned int* const edit = editBits + px + pz * texelPitch(editLocked);
             const unsigned int* const original = colormapBits + px + pz * texelPitch(colormapLocked);
             float colour[4];
             terrainEditUnpackColor(colour, color);
+#if defined(__APPLE__)
+            bf2x87::Real falloff = bf2x87::cosValue(bf2x87::mul(bf2x87::mul(
+                bf2x87::Real(sampledDistance), bf2x87::Real(inverse)), bf2x87::Real(1.5707964f)));
+            if (!bf2x87::less(bf2x87::Real(0), falloff))
+                falloff = bf2x87::Real(0);
+#else
             double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));
             if (!(0.0 < falloff))
                 falloff = 0.0;
+#endif
             const float target[4] = { colour[2], colour[1], colour[0], colour[3] };
+#if defined(__APPLE__)
+            const float t = bf2x87::store(bf2x87::abs(bf2x87::mul(bf2x87::mul(falloff,
+                bf2x87::Real(strength)), bf2x87::Real(0.0039215689f))));
+#else
             const float t = std::fabs(static_cast<float>(falloff * static_cast<double>(strength)) * 0.0039215689f);
+#endif
             float result[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             float current[4];
             terrainEditUnpackColor(current, *edit);
@@ -1719,15 +1996,133 @@ void QuadPatchEditable::paintColor(float x, float z, float radius, int strength,
     editSurface->Release();
 }
 
+// PE 0x1019DC80 (`retn 14h`). Unreachable in 1.50: no code or data references. The colour brush on the
+// low-detail map: the centre is x and z times the texels per patch unit (detail size / patch size,
+// integer division, chopped), the radius in texels is detailSize / (patchSize * primary scale x) *
+// radius, and the window is clamped to the map. The map's level 0 is locked with the whole-map rect and
+// flags 0. Per texel inside the radius: t = |cos(distance / radius * pi/2) * strength / 255|; a texel
+// with t > 0 is lerped by t toward the colour (R/B-swapped as in paintColor) for a positive strength,
+// toward zero for a negative one, and re-packed unchanged for a zero strength. The distance is not
+// rounded to float before the cosine (paintColor stores it first).
+void QuadPatchEditable::paintLowDetailColor(float x, float z, float radius, int strength, unsigned int color)
+{
+    TerrainEditable* const terrain = editableTerrain;
+    const int size = terrain->m_patchDetailmapSize;
+    const int patchSize = terrain->m_patchSize;
+    const int texelsPerPatch = size / patchSize;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Match the FILD inputs, the retained x87 arithmetic and the attested spills.
+    const int cx = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(x), bf2x87::Real(texelsPerPatch)));
+    const int cz = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(z), bf2x87::Real(texelsPerPatch)));
+    const float rad = bf2x87::store(bf2x87::mul(
+        bf2x87::div(bf2x87::Real(size), bf2x87::mul(bf2x87::Real(patchSize),
+                                                    bf2x87::Real(terrain->m_primaryWorldScale.x))),
+        bf2x87::Real(radius)));
+    const float inverse = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(rad)));
+    const int whole = bf2x87::toIntTruncate(bf2x87::Real(rad));
+#else
+    const int cx = static_cast<int>(x * static_cast<float>(texelsPerPatch));
+    const int cz = static_cast<int>(z * static_cast<float>(texelsPerPatch));
+    const float rad = static_cast<float>(size)
+        / (static_cast<float>(patchSize) * terrain->m_primaryWorldScale.x) * radius;
+    const float inverse = 1.0f / rad;
+    const int whole = static_cast<int>(rad);
+#endif
+    int xStart = cx - whole;
+    if (xStart <= 0)
+        xStart = 0;
+    int xEnd = size;
+    if (!(size < cx + whole))
+        xEnd = cx + whole;
+    int zStart = cz - whole;
+    if (zStart <= 0)
+        zStart = 0;
+    int zEnd = size;
+    if (!(size < cz + whole))
+        zEnd = cz + whole;
+
+    const float centreZ = static_cast<float>(cz);
+    RECT rect = { 0, 0, size, size };
+    IDirect3DSurface9* const surface = dx9rend::textureGetLevelSurface(engineTexture(lowDetailmap), 0, 0x7FFFFFFF);
+    D3DLOCKED_RECT locked;
+    surface->LockRect(&locked, &rect, 0);
+    unsigned int* const bits = static_cast<unsigned int*>(locked.pBits);
+    for (int px = xStart; px < xEnd; ++px)
+    {
+#if defined(__APPLE__)
+        const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(px), bf2x87::Real(cx));
+        const float dxSquared = bf2x87::store(bf2x87::mul(dx, dx));
+#else
+        const float dx = static_cast<float>(px - cx);
+        const float dxSquared = dx * dx;
+#endif
+        for (int pz = zStart; pz < zEnd; ++pz)
+        {
+#if defined(__APPLE__)
+            const bf2x87::Real dz = bf2x87::sub(bf2x87::Real(pz), bf2x87::Real(centreZ));
+            const bf2x87::Real distance = bf2x87::squareRoot(
+                bf2x87::add(bf2x87::mul(dz, dz), bf2x87::Real(dxSquared)));
+            if (bf2x87::greater(distance, bf2x87::Real(rad)))
+                continue;
+            bf2x87::Real falloff = bf2x87::cosValue(bf2x87::mul(bf2x87::mul(
+                distance, bf2x87::Real(inverse)), bf2x87::Real(1.5707964f)));
+            if (!bf2x87::less(bf2x87::Real(0), falloff))
+                falloff = bf2x87::Real(0);
+            const bf2x87::Real weight = bf2x87::abs(bf2x87::mul(bf2x87::mul(falloff,
+                bf2x87::Real(strength)), bf2x87::Real(0.0039215689f)));
+            const float t = bf2x87::store(weight);
+            if (!bf2x87::greater(weight, bf2x87::Real(0)))
+                continue;
+#else
+            const float dz = static_cast<float>(pz) - centreZ;
+            const float distance = std::sqrt(dz * dz + dxSquared);
+            if (distance > rad)
+                continue;
+            double falloff = std::cos(static_cast<double>(distance * inverse * 1.5707964f));
+            if (!(0.0 < falloff))
+                falloff = 0.0;
+            const double weight = std::fabs(falloff * static_cast<double>(strength) * 0.0039215689f);
+            const float t = static_cast<float>(weight);
+            if (!(weight > 0.0))
+                continue;
+#endif
+            unsigned int* const texel = bits + px + pz * texelPitch(locked);
+            float result[4];
+            terrainEditUnpackColor(result, *texel);
+            if (strength > 0)
+            {
+                float painted[4];
+                terrainEditUnpackColor(painted, color);
+                const float target[4] = { painted[2], painted[1], painted[0], painted[3] };
+                terrainEditLerpColor(result, target, t);
+            }
+            else if (strength < 0)
+            {
+                const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                terrainEditLerpColor(result, zero, t);
+            }
+            *texel = terrainEditPackColor(result[0], result[1], result[2], result[3]);
+        }
+    }
+    surface->UnlockRect();
+    surface->Release();
+}
+
 // Blends the editable colormap toward a layer's tiled color texture for positive strength,
 // or back toward the original colormap for negative strength. The layer texture must exist.
 // Negative v wrapping intentionally uses texture width rather than height.
+// PE 0x101A10D0
 void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, int strength, int layer)
 {
     TerrainEditable* const te = editableTerrain;
     const float xr = x - static_cast<float>(scaledX);
     const float zr = z - static_cast<float>(scaledZ);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] the FILD * FMUL product is chopped unrounded (0x101A10FC..0x101A110F).
+    const int extentInt = bf2x87::toIntTruncate(bf2x87::mul(bf2x87::Real(te->m_patchSize), bf2x87::Real(te->m_primaryWorldScale.x)));
+#else
     const int extentInt = static_cast<int>(static_cast<float>(te->m_patchSize) * te->m_primaryWorldScale.x);
+#endif
     if (!(xr + radius > 0.0f))
         return;
     const float extent = static_cast<float>(extentInt);
@@ -1743,7 +2138,11 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
     const float zs = zr * scale;
     const float rs = scale * radius;
     const float inverse = 1.0f / rs;
+#if defined(__APPLE__)
+    int x0 = bf2x87::toIntTruncate(xs - rs);
+#else
     int x0 = static_cast<int>(xs - rs);
+#endif
     if (x0 <= 0)
         x0 = 0;
     int xEnd = size;
@@ -1752,7 +2151,11 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
         if (size >= top)
             xEnd = top;
     }
+#if defined(__APPLE__)
+    int z0 = bf2x87::toIntTruncate(zs - rs);
+#else
     int z0 = static_cast<int>(zs - rs);
+#endif
     if (z0 <= 0)
         z0 = 0;
     int zEnd = size;
@@ -1770,7 +2173,7 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
     D3DLOCKED_RECT editLocked;
     editSurface->LockRect(&editLocked, 0, 0);
     const TerrainDetailTextureEditable* const record = static_cast<const TerrainDetailTextureEditable*>(
-        reinterpret_cast<TerrainDetailTexture**>(te->m_detailTextures.first)[layer]);
+        te->m_detailTextures.data()[layer]);
     const int textureHeight = static_cast<int>(dx9rend::textureDims(record->colorTexture)[1]);
     const int textureWidth = static_cast<int>(dx9rend::textureDims(record->colorTexture)[0]);
     IDirect3DSurface9* const textureSurface = dx9rend::textureGetLevelSurface(record->colorTexture, 0, 0x7FFFFFFF);
@@ -1793,13 +2196,23 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
             if (distance > rs)
                 continue;
             const float inverseScale = 1.0f / scale;
+#if defined(__APPLE__)
+            int u = bf2x87::toIntTruncate(std::floor(static_cast<double>(
+                (inverseScale * pxF + static_cast<float>(scaledX)) * record->colorTextureTiling.x + 0.5f)));
+#else
             int u = static_cast<int>(std::floor(static_cast<double>(
                 (inverseScale * pxF + static_cast<float>(scaledX)) * record->colorTextureTiling.x + 0.5f)));
+#endif
             u = u % textureWidth;
             if (u < 0)
                 u += textureWidth;
+#if defined(__APPLE__)
+            int v = bf2x87::toIntTruncate(std::floor(static_cast<double>(
+                (inverseScale * pzF + static_cast<float>(scaledZ)) * record->colorTextureTiling.y + 0.5f)));
+#else
             int v = static_cast<int>(std::floor(static_cast<double>(
                 (inverseScale * pzF + static_cast<float>(scaledZ)) * record->colorTextureTiling.y + 0.5f)));
+#endif
             v = v % textureHeight;
             if (v < 0)
                 v += textureWidth;                                            // the width (shipped)
@@ -1809,7 +2222,8 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
             unsigned int* const edit = editBits + px + pz * texelPitch(editLocked);
             if (!(0.0 < falloff))
                 falloff = 0.0;
-            const float t = std::fabs(static_cast<float>(falloff * static_cast<double>(strength)) * 0.0039215689f);
+            // FIMUL, FMUL 1/255, FABS, one FSTP: no rounding before the store (0x101A148F..0x101A14A2).
+            const float t = static_cast<float>(std::fabs(falloff * static_cast<double>(strength) * 0.0039215689f));
             float paint[4];
             terrainEditUnpackColor(paint, *source);
             float result[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1843,19 +2257,23 @@ void QuadPatchEditable::paintColorFromTexture(float x, float z, float radius, in
 // makeUncompDDS (E+0xFC) into `directory`; when "<tile>.dds" then exists, detail map 0 is dropped
 // (owner release + evict) and reloaded from it, and layers 0..2 re-imported (0x1019D2D0). The .tga is
 // deleted either way (FileManager +0x20).
-void QuadPatchEditable::importBaseLayers(const vc71::string& directory)
+// PE 0x1019E480
+void QuadPatchEditable::importBaseLayers(const std::string& directory)
 {
-    vc71::string tile(directory);
+    std::string tile(directory);
     tile += "/tx";
     tile += m_fileName;
     {
-        vc71::string tga(tile);
+        std::string tga(tile);
         tga += ".tga";
         editableTerrain->makeUncompDDS(::renddx9abi::toHostString(tga), ::renddx9abi::toHostString(directory));
     }
-    vc71::string dds(tile);
-    dds += ".dds";
-    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+    bool exists;
+    {
+        const std::string dds(std::string(tile) += ".dds");
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    if (exists)
     {
         terrainReleaseTexture(detailMap[0]);
         dx9rend::textureManagerEvictFromCache(detailMap[0]);
@@ -1864,7 +2282,7 @@ void QuadPatchEditable::importBaseLayers(const vc71::string& directory)
         importLayer(1);
         importLayer(2);
     }
-    vc71::string tga(tile);
+    std::string tga(tile);
     tga += ".tga";
     ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(tga));
 }
@@ -1875,23 +2293,26 @@ void QuadPatchEditable::importBaseLayers(const vc71::string& directory)
 // and every texel whose byte (layer % 3) is not zero is added to the layer as a weight (the brush's
 // arithmetic, rows advance by `w` texels); the texture is dropped (owner release + evict) before its
 // surface is unlocked and released, then the whole patch is written back and all six index buffers
-// rebuilt. The .tga is deleted either way.
-void QuadPatchEditable::importLayerTile(int layer, const vc71::string& directory)
+// rebuilt. The .tga is deleted either way. The texel loop inlines the detail brush's weight arithmetic
+// (addLayerWeight; its never-taken negative-amount arm is present in the listing too).
+// PE 0x1019E650
+void QuadPatchEditable::importLayerTile(int layer, const std::string& directory)
 {
-    const int width = editableTerrain->m_patchDetailmapSize;
-    vc71::string tile(directory);
-    tile += "/tx";
-    tile += m_fileName;
-    vc71::string outputDirectory;
-    formatString(outputDirectory, "%s/", directory.c_str());
+    const int width = editableTerrain->m_patchDetailmapSize;                 // E+0x44, read first
+    const std::string tile = directory + "/tx" + m_fileName;
+    std::string outputDirectory;
+    outputDirectory = formatString("%s/", directory.c_str());
     {
-        vc71::string tga(tile);
+        std::string tga(tile);
         tga += ".tga";
         editableTerrain->makeUncompDDS(::renddx9abi::toHostString(tga), ::renddx9abi::toHostString(outputDirectory));
     }
-    vc71::string dds(tile);
-    dds += ".dds";
-    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
+    bool exists;
+    {
+        const std::string dds(tile + ".dds");                                 // destroyed before the test
+        exists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));
+    }
+    if (exists)
     {
         if (!m_detailLayersEdit.areAllCreated())
         {
@@ -1934,25 +2355,36 @@ void QuadPatchEditable::importLayerTile(int layer, const vc71::string& directory
         for (int i = 0; i < 6; ++i)
             rebuildLayerIndexBuffer(i);
     }
-    vc71::string tga(tile);
+    std::string tga(tile);
     tga += ".tga";
     ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(tga));
 }
 
+// PE 0x1019ED40: only logs the retail Error "TBM: dont use this functions!" (QuadPatchEditable.cpp:2147) and
+// returns; the one stack argument is never read. [INFERRED] name; [CHOSEN, not recovered] argument type
+// (a directory string reference, as its sibling tile imports take: no instruction reads it).
+// unreachable in 1.50: no code or data references.
+void QuadPatchEditable::importAllLayerTiles(const std::string&)
+{
+    ::renddx9abi::Debug(DebugTypeError, std::string("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatchEditable.cpp"), 2147, std::string())
+        << "TBM: dont use this functions!";
+}
+
+// PE 0x1019EDC0
 // the colormap from "<directory>/tx<name>.tga" (converted into `directory`): when the
 // .dds exists the colormap is dropped (owner release + evict) and reloaded from it, the patch marked
 // edited (+0x32A) and its edit copy cleared. The .tga is deleted either way.
-void QuadPatchEditable::importColormapTile(const vc71::string& directory)
+void QuadPatchEditable::importColormapTile(const std::string& directory)
 {
-    vc71::string tile(directory);
+    std::string tile(directory);
     tile += "/tx";
     tile += m_fileName;
     {
-        vc71::string tga(tile);
+        std::string tga(tile);
         tga += ".tga";
         editableTerrain->makeUncompDDS(::renddx9abi::toHostString(tga), ::renddx9abi::toHostString(directory));
     }
-    vc71::string dds(tile);
+    std::string dds(tile);
     dds += ".dds";
     if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
     {
@@ -1962,13 +2394,13 @@ void QuadPatchEditable::importColormapTile(const vc71::string& directory)
         m_colormapEdited = 1;
         clearColormapEdits();
     }
-    vc71::string tga(tile);
+    std::string tga(tile);
     tga += ".tga";
     ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(tga));
 }
 
 // lightmaps
-// the lightmap dropped (owner release + evict, nulled) and reloaded under a managed-flag
+// PE 0x1019F350: the lightmap dropped (owner release + evict, nulled) and reloaded under a managed-flag
 // swap to 1 (sub_10017E20): "<save path><lightmap base><name>" - the base name (E+0x74) asked before
 // the save path (E+0x90) - else a patchColormapSize^2 A8R8G8B8 texture filled white.
 void QuadPatchEditable::reloadLightmap()
@@ -1981,14 +2413,14 @@ void QuadPatchEditable::reloadLightmap()
         lightmap = 0;
     }
     const int savedManaged = dx9rend::textureManagerSwapManaged(1);
-    vc71::string path;
+    std::string path;
     {
         TerrainEditableNameResult lightmapBase = te->getLightmapBaseName();   // E+0x74
-        path = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        path += ::renddx9abi::toVc71String(lightmapBase);
+        path = ::renddx9abi::fromHostString(te->getLevelSavePath());           // E+0x90
+        path += ::renddx9abi::fromHostString(lightmapBase);
         path += m_fileName;
     }
-    vc71::string dds(path);
+    std::string dds(path);
     dds += ".dds";
     if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
     {
@@ -2009,6 +2441,7 @@ void QuadPatchEditable::reloadLightmap()
 // the height stream on 1, the terrain's LOD index buffer, and one draw of the LOD-0 range: its
 // triangle count (+0x11C) as primitives and, for a triangle list (+0x1A8 == 4), three vertices per
 // primitive - else primitives + 2.
+// PE 0x1019E340
 void QuadPatchEditable::drawForLightmapGeneration()
 {
     TerrainEditable* const te = editableTerrain;
@@ -2028,22 +2461,37 @@ void QuadPatchEditable::drawForLightmapGeneration()
 
 // (scaledX, 0, scaledZ) .. + patchSize * the primary scale (E+0x4C, then E+0x34). The box's
 // derived fields are left as the caller built them.
+// PE 0x1019E410
 void QuadPatchEditable::getWorldBounds(TerrainAabb& bounds)
 {
-    TerrainEditable* const te = editableTerrain;
-    const int patchSize = te->getPatchSize();                                 // E+0x4C
-    const Vec3& scale = te->getPrimaryWorldScale();                           // E+0x34
+    const int patchSize = editableTerrain->getPatchSize();                   // E+0x4C
+    const Vec3& scale = editableTerrain->getPrimaryWorldScale();              // E+0x34
+    const float scaleX = scale.x;
+    const float scaleZ = scale.z;
+    const int originX = scaledX;
+    const int originZ = scaledZ;
     bounds.min.y = 0.0f;
-    bounds.min.x = static_cast<float>(scaledX);
-    bounds.min.z = static_cast<float>(scaledZ);
+    bounds.min.x = static_cast<float>(originX);
+    bounds.min.z = static_cast<float>(originZ);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Z retains the FILD size; X reloads its float spill.
+    const float size = bf2x87::store(bf2x87::Real(patchSize));
+    const bf2x87::Real maxZ = bf2x87::add(bf2x87::mul(bf2x87::Real(patchSize), bf2x87::Real(scaleZ)), bf2x87::Real(scaledZ));
+    const bf2x87::Real maxX = bf2x87::add(bf2x87::mul(bf2x87::Real(size), bf2x87::Real(scaleX)), bf2x87::Real(scaledX));
+    bounds.max.y = 0.0f;
+    bounds.max.x = bf2x87::store(maxX);
+    bounds.max.z = bf2x87::store(maxZ);
+#else
     const float size = static_cast<float>(patchSize);
     bounds.max.y = 0.0f;
-    bounds.max.x = size * scale.x + static_cast<float>(scaledX);
-    bounds.max.z = size * scale.z + static_cast<float>(scaledZ);
+    bounds.max.x = size * scaleX + static_cast<float>(scaledX);
+    bounds.max.z = size * scaleZ + static_cast<float>(scaledZ);
+#endif
 }
 
 // the road mask and its consumers
 // owner release, evict, nulled.
+// PE 0x1019F300
 void QuadPatchEditable::releaseRoadMask()
 {
     if (!m_roadMask)
@@ -2065,36 +2513,35 @@ void QuadPatchEditable::renderRoadMask(int size)
     const int patchSize = te->m_patchSize;                                    // +0x38
     dx9rend::stateManagerPush();
 
-    unsigned char* const toggles = static_cast<unsigned char*>(static_cast<void*>(dx9rend::g_Renderer));
-    const unsigned char saved1701 = toggles[1701];
-    const unsigned char saved1693 = toggles[1693];
-    const unsigned char saved1713 = toggles[1713];
-    const unsigned char saved1705 = toggles[1705];
-    const unsigned char saved1697 = toggles[1697];
-    const unsigned char saved1717 = toggles[1717];
-    const unsigned char saved1702 = toggles[1702];
-    const unsigned char saved1703 = toggles[1703];
-    const unsigned char saved1698 = toggles[1698];
-    const unsigned char saved1714 = toggles[1714];
-    const unsigned char saved1700 = toggles[1700];
+    const unsigned char saved1701 = dx9rend::rendererRenderSwitch(1701);
+    const unsigned char saved1693 = dx9rend::rendererRenderSwitch(1693);
+    const unsigned char saved1713 = dx9rend::rendererRenderSwitch(1713);
+    const unsigned char saved1705 = dx9rend::rendererRenderSwitch(1705);
+    const unsigned char saved1697 = dx9rend::rendererRenderSwitch(1697);
+    const unsigned char saved1717 = dx9rend::rendererRenderSwitch(1717);
+    const unsigned char saved1702 = dx9rend::rendererRenderSwitch(1702);
+    const unsigned char saved1703 = dx9rend::rendererRenderSwitch(1703);
+    const unsigned char saved1698 = dx9rend::rendererRenderSwitch(1698);
+    const unsigned char saved1714 = dx9rend::rendererRenderSwitch(1714);
+    const unsigned char saved1700 = dx9rend::rendererRenderSwitch(1700);
     te->m_primaryHeightmap->getSeaWaterLevel();                               // +0x64, dropped
     dx9rend::rendererGetHemiRenderMode();                                     // sub_10009F00, dropped
     g_LightManager->getDynamicShadowsEnabled();                               // +0xF0, dropped
     te->getShaderTechnique();                                                 // E+0x8C, dropped
 
-    toggles[1693] = 0;
-    toggles[1701] = 0;
-    toggles[1713] = 0;
-    toggles[1705] = 0;
-    toggles[1697] = 0;
+    dx9rend::rendererRenderSwitch(1693) = 0;
+    dx9rend::rendererRenderSwitch(1701) = 0;
+    dx9rend::rendererRenderSwitch(1713) = 0;
+    dx9rend::rendererRenderSwitch(1705) = 0;
+    dx9rend::rendererRenderSwitch(1697) = 0;
     bundledMeshSetHemiEnabled(0);                                             // dword_102597F4 +0x10
-    toggles[1717] = 0;
-    toggles[1702] = 0;
-    toggles[1703] = 0;
-    toggles[1698] = 0;
+    dx9rend::rendererRenderSwitch(1717) = 0;
+    dx9rend::rendererRenderSwitch(1702) = 0;
+    dx9rend::rendererRenderSwitch(1703) = 0;
+    dx9rend::rendererRenderSwitch(1698) = 0;
     staticMeshRendererSetHemiEnabled(0);                                      // +0x18
-    toggles[1714] = 0;
-    toggles[1700] = 1;
+    dx9rend::rendererRenderSwitch(1714) = 0;
+    dx9rend::rendererRenderSwitch(1700) = 1;
     roadCompiledRendererSetHemiEnabled(1);                                    // +0x18
     static_cast<RoadEditableRenderer*>(g_RoadEditableRenderer)->m_mode = 1;   // +0x18
 
@@ -2121,19 +2568,19 @@ void QuadPatchEditable::renderRoadMask(int size)
     position.z = patchSizeF * te->m_primaryWorldScale.z * (static_cast<float>(gridZ) + 0.5f);
     dx9rend::rendererRenderOrthoTopDown(renderTarget, depthStencil, position, extent, flags);
 
-    toggles[1693] = saved1693;
-    toggles[1701] = saved1701;
-    toggles[1713] = saved1713;
-    toggles[1705] = saved1705;
-    toggles[1697] = saved1697;
+    dx9rend::rendererRenderSwitch(1693) = saved1693;
+    dx9rend::rendererRenderSwitch(1701) = saved1701;
+    dx9rend::rendererRenderSwitch(1713) = saved1713;
+    dx9rend::rendererRenderSwitch(1705) = saved1705;
+    dx9rend::rendererRenderSwitch(1697) = saved1697;
     bundledMeshSetHemiEnabled(saved1697);
-    toggles[1717] = saved1717;
-    toggles[1702] = saved1702;
-    toggles[1703] = saved1703;
-    toggles[1698] = saved1698;
+    dx9rend::rendererRenderSwitch(1717) = saved1717;
+    dx9rend::rendererRenderSwitch(1702) = saved1702;
+    dx9rend::rendererRenderSwitch(1703) = saved1703;
+    dx9rend::rendererRenderSwitch(1698) = saved1698;
     staticMeshRendererSetHemiEnabled(saved1698);
-    toggles[1714] = saved1714;
-    toggles[1700] = saved1700;
+    dx9rend::rendererRenderSwitch(1714) = saved1714;
+    dx9rend::rendererRenderSwitch(1700) = saved1700;
     roadCompiledRendererSetHemiEnabled(saved1700);
     static_cast<RoadEditableRenderer*>(g_RoadEditableRenderer)->m_mode = 0;
 
@@ -2230,6 +2677,7 @@ void QuadPatchEditable::burnRoadsInUndergrowth()
     releaseRoadMask();                                                        // 0x1019F300's body, inlined
 }
 
+// PE 0x101A0F30
 // the patch's materials into the primary heightmap: per heightmap quad (z outer, x inner,
 // n = the patch size asked through E+0x4C) the merged set's dominant layer (+0x0C) and that record's
 // material byte (+0x14), then the road mask at the patch size and every non-zero mask texel's low byte
@@ -2246,7 +2694,7 @@ void QuadPatchEditable::buildMaterialMap()
         {
             const unsigned char layer = m_mergedLayers.dominantLayer(x, z);
             const TerrainDetailTexture* const record =
-                reinterpret_cast<TerrainDetailTexture**>(te->m_detailTextures.first)[layer];
+                te->m_detailTextures.data()[layer];
             te->m_primaryHeightmap->setMaterialInGrid(x + n * gridX, z + n * gridZ, record->materialId);
             ++x;
         }
@@ -2273,6 +2721,7 @@ void QuadPatchEditable::buildMaterialMap()
 // Rebuilds the material/height overlay only for technique 8, replacing any previous overlay.
 // Writes contiguous patch-sized rows without using lock pitch. Height display retains the
 // low-byte conversion and subsequent color scaling, including overflow wrapping.
+// PE 0x101A1AD0
 void QuadPatchEditable::createMaterialOverlay()
 {
     if (m_materialOverlay)
@@ -2338,37 +2787,38 @@ void QuadPatchEditable::createMaterialOverlay()
 
 // (`retn 4`) - both detail maps saved as "<save><editor detail base><name>_<1|2><suffix>"
 // (the editor base name, P+0xF4, asked before the save path, E+0x90).
-void QuadPatchEditable::saveDetailMaps(const vc71::string& suffix)
+void QuadPatchEditable::saveDetailMaps(const std::string& suffix)
 {
     TerrainEditable* const te = editableTerrain;
-    vc71::string base;
+    std::string base;
     {
-        const vc71::string editorBase = te->getEditorDetailmapBaseName();     // P+0xF4
-        base = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
+        const std::string editorBase = te->getEditorDetailmapBaseName();     // P+0xF4
+        base = ::renddx9abi::fromHostString(te->getLevelSavePath());           // E+0x90
         base += editorBase;
         base += m_fileName;
     }
     for (int i = 0; i < 2; ++i)
     {
-        vc71::string number;
-        formatString(number, "_%i", i + 1);
-        vc71::string name(base);
+        std::string number;
+        number = formatString("_%i", i + 1);
+        std::string name(base);
         name += number;
         name += suffix;
         dx9rend::textureManagerSaveTexture(engineTexture(detailMap[i]), name);   // sub_10017F90, answer dropped
     }
 }
 
-// (`retn 4`) - the lightmap saved as "<save><base><name>".
-void QuadPatchEditable::saveLightmap(const vc71::string& base)
+// PE 0x1019D210 (`retn 4`) - the lightmap saved as "<save><base><name>".
+void QuadPatchEditable::saveLightmap(const std::string& base)
 {
-    vc71::string name(::renddx9abi::toVc71String(editableTerrain->getLevelSavePath()));   // E+0x90
+    std::string name(::renddx9abi::fromHostString(editableTerrain->getLevelSavePath()));   // E+0x90
     name += base;
     name += m_fileName;
     dx9rend::textureManagerSaveTexture(engineTexture(lightmap), name);
 }
 
-// only for an edited colormap (+0x32A): the edit copy committed (0x1019EF80), then the
+// PE 0x1019FE30
+// only for an edited colormap (+0x32A): the edit copy committed (commitColormapEdit), then the
 // colormap saved as "<save><editor colormap base><name>" (P+0xFC asked first).
 void QuadPatchEditable::saveEditedColormap()
 {
@@ -2376,10 +2826,10 @@ void QuadPatchEditable::saveEditedColormap()
         return;
     commitColormapEdit();
     TerrainEditable* const te = editableTerrain;
-    vc71::string name;
+    std::string name;
     {
-        const vc71::string editorBase = te->getEditorColormapBaseName();      // P+0xFC
-        name = ::renddx9abi::toVc71String(te->getLevelSavePath());
+        const std::string editorBase = te->getEditorColormapBaseName();      // P+0xFC
+        name = ::renddx9abi::fromHostString(te->getLevelSavePath());
         name += editorBase;
         name += m_fileName;
     }
@@ -2399,14 +2849,14 @@ void QuadPatchEditable::removeCompDetailMaps()
         terrainReleaseTexture(m_compDetailMap[i]);
         dx9rend::textureManagerEvictFromCache(m_compDetailMap[i]);
         m_compDetailMap[i] = 0;
-        vc71::string name;
+        std::string name;
         {
-            const vc71::string editorBase = te->getEditorDetailmapBaseName(); // P+0xF4
-            name = ::renddx9abi::toVc71String(te->getLevelSavePath());
+            const std::string editorBase = te->getEditorDetailmapBaseName(); // P+0xF4
+            name = ::renddx9abi::fromHostString(te->getLevelSavePath());
             name += editorBase;
             name += m_fileName;
-            vc71::string suffix;
-            formatString(suffix, "_%i_tmp", i + 1);
+            std::string suffix;
+            suffix = formatString("_%i_tmp", i + 1);
             name += suffix;
         }
         name += ".dds";
@@ -2421,49 +2871,46 @@ void QuadPatchEditable::removeCompDetailMaps()
 // "_tmp_.dds" output moved onto "_tmp.dds" (no leftover delete), and "<...>_<i>_tmp" loaded by name
 // (sub_10019260) into +0x2DC / +0x2E0.
 // The name goes through the texture manager, which cuts at the last dot - a dotted save path breaks it.
+// PE 0x101A0310
 void QuadPatchEditable::makeCompDetailMaps()
 {
     removeCompDetailMaps();
     {
-        const vc71::string suffix("_tmp");
+        const std::string suffix("_tmp");
         saveDetailMaps(suffix);
     }
-    TerrainEditable* const te = editableTerrain;
     for (int i = 0; i < 2; ++i)
     {
-        vc71::string temp;
+        std::string temp;
         {
-            const vc71::string editorBase = te->getEditorDetailmapBaseName(); // P+0xF4
-            vc71::string base(::renddx9abi::toVc71String(te->getLevelSavePath()));
-            base += editorBase;
-            base += m_fileName;
-            vc71::string suffix;
-            formatString(suffix, "_%i_tmp", i + 1);
+            const std::string editorBase = editableTerrain->getEditorDetailmapBaseName(); // P+0xF4
+            const std::string base((std::string(::renddx9abi::fromHostString(editableTerrain->getLevelSavePath())) += editorBase) += m_fileName);
+            std::string suffix;
+            suffix = formatString("_%i_tmp", i + 1);
             temp = base;
             temp += suffix;
         }
         {
             // The argument blocks are built right to left: the options, the directory, the file.
-            const TerrainEditableString options(te->m_detailmapSettings);     // +0x800
-            vc71::string outputDirectory;
+            const TerrainEditableString options(editableTerrain->m_detailmapSettings);     // +0x800
+            std::string outputDirectory;
             {
-                const vc71::string directory = te->getEditorDetailmapDirectory();   // P+0xF8
-                outputDirectory = ::renddx9abi::toVc71String(te->getLevelSavePath());
-                outputDirectory += directory;
+                const std::string directory = editableTerrain->getEditorDetailmapDirectory();   // P+0xF8
+                outputDirectory = std::string(::renddx9abi::fromHostString(editableTerrain->getLevelSavePath())) += directory;
             }
-            vc71::string file(temp);
+            std::string file(temp);
             file += ".dds";
-            te->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options);
+            editableTerrain->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options);
         }
         {
-            vc71::string input(temp);
+            std::string input(temp);
             input += ".dds";
             ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(input));
         }
         {
-            vc71::string target(temp);
+            std::string target(temp);
             target += ".dds";
-            vc71::string source(temp);
+            std::string source(temp);
             source += "_.dds";
             ::dice::hfe::fileManager->moveFile(::renddx9abi::makeHostString(source),
                                                ::renddx9abi::makeHostString(target));
@@ -2472,22 +2919,22 @@ void QuadPatchEditable::makeCompDetailMaps()
     }
 }
 
+// PE 0x1019C630
 // Burns the patch colormap, optionally rendering edited layers before DDS compilation.
 // Deletes the destination first and preserves the compatibility target-release sequence.
-// [CHOSEN, not recovered] Unused render-flag storage is zero-initialized.
-void QuadPatchEditable::burnColormap(const vc71::string& base)
+void QuadPatchEditable::burnColormap(const std::string& base)
 {
     TerrainEditable* const te = editableTerrain;
     const int size = te->m_patchColormapSize;                                 // +0x48
-    vc71::string path;
+    std::string path;
     {
         TerrainEditableNameResult colormapBase = te->getColormapBaseName();  // E+0x6C
-        path = ::renddx9abi::toVc71String(te->getLevelSavePath());           // E+0x90
-        path += ::renddx9abi::toVc71String(colormapBase);
+        path = ::renddx9abi::fromHostString(te->getLevelSavePath());           // E+0x90
+        path += ::renddx9abi::fromHostString(colormapBase);
         path += m_fileName;
     }
     {
-        vc71::string dds(path);
+        std::string dds(path);
         dds += ".dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(dds));   // +0x20
     }
@@ -2495,10 +2942,10 @@ void QuadPatchEditable::burnColormap(const vc71::string& base)
         return;
     if (!m_colormapEdited)                                                    // +0x32A
     {
-        vc71::string target(::renddx9abi::toVc71String(te->getLevelSavePath()));
+        std::string target(::renddx9abi::fromHostString(te->getLevelSavePath()));
         target += base;
         target += m_fileName;
-        vc71::string dds(target);
+        std::string dds(target);
         dds += ".dds";
         const bool missing = !::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds));   // +0x1C
         if (missing)
@@ -2507,38 +2954,41 @@ void QuadPatchEditable::burnColormap(const vc71::string& base)
     }
 
     dx9rend::stateManagerPush();
-    unsigned char* const toggles = static_cast<unsigned char*>(static_cast<void*>(dx9rend::g_Renderer));
-    const unsigned char saved1693 = toggles[1693];
-    const unsigned char saved1713 = toggles[1713];
-    const unsigned char saved1705 = toggles[1705];
-    const unsigned char saved1697 = toggles[1697];
-    const unsigned char saved1717 = toggles[1717];
-    const unsigned char saved1702 = toggles[1702];
-    const unsigned char saved1703 = toggles[1703];
-    const unsigned char saved1698 = toggles[1698];
-    const unsigned char saved1714 = toggles[1714];
-    const unsigned char saved1700 = toggles[1700];
+    const unsigned char saved1693 = dx9rend::rendererRenderSwitch(1693);
+    const unsigned char saved1713 = dx9rend::rendererRenderSwitch(1713);
+    const unsigned char saved1705 = dx9rend::rendererRenderSwitch(1705);
+    const unsigned char saved1697 = dx9rend::rendererRenderSwitch(1697);
+    const unsigned char saved1717 = dx9rend::rendererRenderSwitch(1717);
+    const unsigned char saved1702 = dx9rend::rendererRenderSwitch(1702);
+    const unsigned char saved1703 = dx9rend::rendererRenderSwitch(1703);
+    const unsigned char saved1698 = dx9rend::rendererRenderSwitch(1698);
+    const unsigned char saved1714 = dx9rend::rendererRenderSwitch(1714);
+    const unsigned char saved1700 = dx9rend::rendererRenderSwitch(1700);
     const float savedSeaLevel = te->m_primaryHeightmap->getSeaWaterLevel();  // +0x64
     const int savedRenderMode = dx9rend::rendererGetHemiRenderMode();
     const bool savedShadows = g_LightManager->getDynamicShadowsEnabled();     // +0xF0
     const int savedTechnique = te->getShaderTechnique();                      // E+0x8C
 
-    toggles[1693] = 1;
-    toggles[1713] = 0;
-    toggles[1705] = 0;
-    toggles[1697] = 0;
+    dx9rend::rendererRenderSwitch(1693) = 1;
+    dx9rend::rendererRenderSwitch(1713) = 0;
+    dx9rend::rendererRenderSwitch(1705) = 0;
+    dx9rend::rendererRenderSwitch(1697) = 0;
     bundledMeshSetHemiEnabled(0);                                             // dword_102597F4 +0x10
-    toggles[1717] = 0;
-    toggles[1702] = 0;
-    toggles[1703] = 0;
-    toggles[1698] = 0;
+    dx9rend::rendererRenderSwitch(1717) = 0;
+    dx9rend::rendererRenderSwitch(1702) = 0;
+    dx9rend::rendererRenderSwitch(1703) = 0;
+    dx9rend::rendererRenderSwitch(1698) = 0;
     staticMeshRendererSetHemiEnabled(0);                                      // +0x18
-    toggles[1714] = 0;
-    toggles[1700] = 1;
+    dx9rend::rendererRenderSwitch(1714) = 0;
+    dx9rend::rendererRenderSwitch(1700) = 1;
     roadCompiledRendererSetHemiEnabled(1);                                    // +0x18
     te->m_primaryHeightmap->setSeaWaterLevel(-110.0f);                        // +0x60,
     dx9rend::rendererSetHemiRenderMode(4);
     g_LightManager->setDynamicShadowsEnabled(false);                          // +0xEC
+    // The shipped block stores +0x00..+0x12 only (0x1019C8EF..0x1019C926) and passes +0x13 and the
+    // view word (+0x14) as stack garbage. [CHOSEN, not recovered] all 24 bytes zeroed (an
+    // uninitialised read, see the memory-safety exception): the render reads +0x14 only when +0x00
+    // is set, and it is 0.
     dx9rend::RenderFlags flags;
     std::memset(&flags, 0, sizeof(flags));
     flags.field01 = 1;                                                        // the terrain arm
@@ -2553,26 +3003,30 @@ void QuadPatchEditable::burnColormap(const vc71::string& base)
                                D3DMULTISAMPLE_NONE, 0, FALSE, &renderTarget, 0);              // +0x70
     device->CreateDepthStencilSurface(static_cast<UINT>(size), static_cast<UINT>(size), D3DFMT_D24S8,
                                       D3DMULTISAMPLE_NONE, 0, FALSE, &depthStencil, 0);       // +0x74
-    const float patchSizeF = static_cast<float>(te->m_patchSize);
-    const float extent = patchSizeF * te->m_primaryWorldScale.x;
+    // [CHOSEN, not recovered] the x87 sequence 0x1019C97D..0x1019C9DC: only the extent is spilled to
+    // float; patchSize * scale.z stays wide into the z product, which is narrowed at the store.
+    const bf2x87::Real patchSizeWide = bf2x87::Real(te->m_patchSize);
+    const float extent = bf2x87::store(bf2x87::mul(patchSizeWide, bf2x87::Real(te->m_primaryWorldScale.x)));
+    const bf2x87::Real depth = bf2x87::mul(patchSizeWide, bf2x87::Real(te->m_primaryWorldScale.z));
     Vec3 position;
-    position.x = (static_cast<float>(gridX) + 0.5f) * extent;
+    position.x = bf2x87::store(bf2x87::mul(bf2x87::add(bf2x87::Real(gridX), bf2x87::Real(0.5f)),
+                                           bf2x87::Real(extent)));
     position.y = 500.0f;
-    position.z = patchSizeF * te->m_primaryWorldScale.z * (static_cast<float>(gridZ) + 0.5f);
+    position.z = bf2x87::store(bf2x87::mul(depth, bf2x87::add(bf2x87::Real(gridZ), bf2x87::Real(0.5f))));
     dx9rend::rendererRenderOrthoTopDown(renderTarget, depthStencil, position, extent, flags);
 
-    toggles[1693] = saved1693;
-    toggles[1713] = saved1713;
-    toggles[1705] = saved1705;
-    toggles[1697] = saved1697;
+    dx9rend::rendererRenderSwitch(1693) = saved1693;
+    dx9rend::rendererRenderSwitch(1713) = saved1713;
+    dx9rend::rendererRenderSwitch(1705) = saved1705;
+    dx9rend::rendererRenderSwitch(1697) = saved1697;
     bundledMeshSetHemiEnabled(saved1697);
-    toggles[1717] = saved1717;
-    toggles[1702] = saved1702;
-    toggles[1703] = saved1703;
-    toggles[1698] = saved1698;
+    dx9rend::rendererRenderSwitch(1717) = saved1717;
+    dx9rend::rendererRenderSwitch(1702) = saved1702;
+    dx9rend::rendererRenderSwitch(1703) = saved1703;
+    dx9rend::rendererRenderSwitch(1698) = saved1698;
     staticMeshRendererSetHemiEnabled(saved1698);
-    toggles[1714] = saved1714;
-    toggles[1700] = saved1700;
+    dx9rend::rendererRenderSwitch(1714) = saved1714;
+    dx9rend::rendererRenderSwitch(1700) = saved1700;
     roadCompiledRendererSetHemiEnabled(saved1700);
     te->m_primaryHeightmap->setSeaWaterLevel(savedSeaLevel);
     dx9rend::rendererSetHemiRenderMode(savedRenderMode);
@@ -2601,43 +3055,43 @@ void QuadPatchEditable::burnColormap(const vc71::string& base)
     flippedSurface->UnlockRect();
     bigSurface->UnlockRect();
     {
-        vc71::string name(path);
+        std::string name(path);
         name += "_u8888";
         dx9rend::textureManagerSaveTexture(flipped, name);
     }
     {
         // The argument blocks are built right to left: the options, the directory, the file.
         const TerrainEditableString options(te->m_colormapSettings);           // +0x7C8
-        vc71::string outputDirectory;
+        std::string outputDirectory;
         {
-            const vc71::string directory = te->getColormapDirectory();         // P+0xEC
-            outputDirectory = ::renddx9abi::toVc71String(te->getLevelSavePath());
+            const std::string directory = te->getColormapDirectory();         // P+0xEC
+            outputDirectory = ::renddx9abi::fromHostString(te->getLevelSavePath());
             outputDirectory += directory;
         }
-        vc71::string file(path);
+        std::string file(path);
         file += "_u8888.dds";
         te->runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options);   // E+0xF4
     }
     {
-        vc71::string target(path);
+        std::string target(path);
         target += ".dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(target));
     }
     {
-        vc71::string target(path);
+        std::string target(path);
         target += ".dds";
-        vc71::string source(path);
+        std::string source(path);
         source += "_u8888_.dds";
         ::dice::hfe::fileManager->moveFile(::renddx9abi::makeHostString(source),
                                            ::renddx9abi::makeHostString(target));   // +0x24
     }
     {
-        vc71::string input(path);
+        std::string input(path);
         input += "_u8888.dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(input));
     }
     {
-        vc71::string leftover(path);
+        std::string leftover(path);
         leftover += "_u8888_.dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(leftover));
     }

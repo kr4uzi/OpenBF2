@@ -55,6 +55,36 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTING": "OFF"
       }
+    },
+    {
+      "name": "macos-x64",
+      "displayName": "BF2 native macOS dedicated port",
+      "description": "AppleClang on macOS: x86_64 build with Unix Makefiles. Needs the Command Line Tools and cmake.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "macosx",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "macos-universal",
+      "inherits": "macos-x64",
+      "displayName": "BF2 native macOS universal port",
+      "description": "[CHOSEN, not recovered] AppleClang arm64 and x86_64 slices; arm64 runtime validation requires Apple silicon.",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64"
+      }
     }
   ],
   "buildPresets": [
@@ -89,6 +119,25 @@
       "targets": [
         "bf2",
         "dice_py_check"
+      ]
+    },
+    {
+      "name": "macos-x64",
+      "displayName": "Build bf2 and libdice_py.dylib",
+      "configurePreset": "macos-x64",
+      "targets": [
+        "bf2",
+        "dice_py_check"
+      ]
+    },
+    {
+      "name": "macos-universal",
+      "displayName": "Build universal server and runtime checks",
+      "configurePreset": "macos-universal",
+      "targets": [
+        "bf2",
+        "dice_py_check",
+        "bf2_aidll_loader_check"
       ]
     }
   ],

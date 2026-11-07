@@ -189,6 +189,12 @@ namespace gameswf
 
 				if (dobj.m_character->get_depth() == depth)
 				{
+#if !defined(_MSC_VER)
+					if (g_swf_mouse_pass_depth > 0)
+					{
+						SWF_LIST_TRACE("replace at depth %d in list %p (size %d)", depth, (void*) this, size);
+					}
+#endif
 					dobj.set_character(NULL);
 					m_display_object_array.remove(index);
 				}
@@ -328,6 +334,10 @@ namespace gameswf
 		
 		smart_ptr<character>	old_ch = di.m_character;
 
+		// [DICE-MOD SwiffPlayer #58] 0x100A8080 releases the root's mouse capture held by the
+		// outgoing character or anything beneath it (see remove_display_object below).
+		old_ch->release_mouse_capture_within();
+
 		// Put the new character in its place.
 		assert(ch);
 		ch->set_depth(depth);
@@ -416,6 +426,16 @@ namespace gameswf
 		
 		// Remove reference only.
 		di.m_ref = false;
+		// [DICE-MOD SwiffPlayer #58] 0x100A7A20 (0x100A7A67..0x100A7AAA): a removed character that
+		// holds the root's mouse capture, or contains its holder, releases it. The holder took it on
+		// its press (#51) and gives it back only in its own release transition, which a character
+		// off the list never runs again; every other state machine stays gated off. mainMenu.swf's
+		// CREATE ACCOUNT button: its onPress runs createOffline, which on success jumps the root
+		// from the account page (frame 19) to the main menu (49) and removes the pressed button, so
+		// after an SP account creation no click reached the menu. The shipped body then clears the
+		// removed character's parent (+0x64); the port keeps the parent for its dead reference (#42)
+		// [CHOSEN, not recovered].
+		if (di.m_character.get_ptr()) di.m_character->release_mouse_capture_within();
 		if (di.m_character.get_ptr()) di.m_character->mark_dead();	// [DICE-MOD SwiffPlayer #42] dead from the removal on
 	}
 	
@@ -423,6 +443,12 @@ namespace gameswf
 	void	display_list::clear()
 	// clear the display list.
 	{
+#if !defined(_MSC_VER)
+		if (g_swf_mouse_pass_depth > 0)
+		{
+			SWF_LIST_TRACE("clear list %p (size %d, sprite destroyed)", (void*) this, m_display_object_array.size());
+		}
+#endif
 		int i, n = m_display_object_array.size();
 		for (i = 0; i < n; i++)
 		{
@@ -433,8 +459,24 @@ namespace gameswf
 		
 		m_display_object_array.clear();
 	}
-	
-	
+
+
+	void	display_list::release_characters(array<as_value>* held)
+	// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Unlike clear(),
+	// no UNLOAD: the movie is being destroyed with its scripts already disconnected.
+	{
+		for (int i = 0, n = m_display_object_array.size(); i < n; i++)
+		{
+			character*	ch = m_display_object_array[i].m_character.get_ptr();
+			if (ch != NULL)
+			{
+				held->push_back(as_value(ch));
+			}
+		}
+		m_display_object_array.clear();
+	}
+
+
 	void	display_list::reset()
 	// reset the references to the display list.
 	{
@@ -466,6 +508,14 @@ namespace gameswf
 				r++;
 			}
 		}
+#if !defined(_MSC_VER)
+		// [TEMP] c-swf-disconnect: a sweep inside a mouse pass (the owner is named by the goto line).
+		if (r > 0 && g_swf_mouse_pass_depth > 0)
+		{
+			SWF_LIST_TRACE("sweep list %p removed %d, %d left%s", (void*) this, r, m_display_object_array.size(),
+				m_display_object_array.size() == 0 ? " - EMPTY (buffer freed)" : "");
+		}
+#endif
 		
 		//printf("### removed characters: %4d active characters: %4d\n", r, m_display_object_array.size());
 	}

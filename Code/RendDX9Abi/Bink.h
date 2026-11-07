@@ -57,6 +57,17 @@ struct BINKSUMMARY
 const unsigned int BINK_SURFACE_32BGRA = 3u;
 const unsigned int BINK_COPYALL        = 0x80000000u;
 
+// [CHOSEN, not recovered] Only the x86 image imports binkw32.dll (issue #7). The macOS client and
+// Windows x64 implement the same ten entry points on the vendored FFmpeg Bink decoders
+// (BinkFFmpeg.cpp, docs/macos-c-bink.md): BF2_BINK_PORT. Other images declare nothing, so any
+// reference fails to compile there.
+#if !defined(_M_IX86) && (defined(__APPLE__) || defined(_WIN64))
+#define BF2_BINK_PORT 1
+#else
+#define BF2_BINK_PORT 0
+#endif
+
+#if defined(_M_IX86)
 extern "C" {
 
 // binkw32.dll - the ten imports the shipped image carries (see binkw32.def). __stdcall.
@@ -74,5 +85,26 @@ int          __stdcall BinkSetSoundSystem(void* open, unsigned int param);
 void*        __stdcall BinkOpenDirectSound(unsigned int param);
 
 } // extern "C"
+#elif BF2_BINK_PORT
+// [CHOSEN, not recovered] The port (macOS, Windows x64): same names and argument lists, native
+// calling convention (x64 has only one). BinkOpenDirectSound keeps its name so Video::initSound
+// stays one arm; it selects the port's sound output (AudioQueue on macOS, DirectSound on x64)
+// that stands in for binkw32's DirectSound mixer.
+extern "C" {
+
+HBINK        BinkOpen(const char* name, unsigned int flags);
+void         BinkClose(HBINK bnk);
+int          BinkWait(HBINK bnk);
+int          BinkDoFrame(HBINK bnk);
+void         BinkNextFrame(HBINK bnk);
+void         BinkCopyToBuffer(HBINK bnk, void* dest, int destpitch, unsigned int destheight,
+                              unsigned int destx, unsigned int desty, unsigned int flags);
+void         BinkGetSummary(HBINK bnk, BINKSUMMARY* sum);
+void         BinkPause(HBINK bnk, int pause);
+int          BinkSetSoundSystem(void* open, unsigned int param);
+void*        BinkOpenDirectSound(unsigned int param);
+
+} // extern "C"
+#endif // _M_IX86 / BF2_BINK_PORT
 
 } // namespace renddx9abi

@@ -1,6 +1,3 @@
-// [FRONTIER] Remaining methods stop by name until implemented.
-// [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the remaining BotSenses operations.
-
 #include "BotSenses.h"
 
 #include "../AIUtils/checkPointer.h"
@@ -112,9 +109,6 @@ BotSenses::~BotSenses()
     reset();
     delete m_frustum;
 }
-
-// [FRONTIER] Remaining sight, hearing and communication operations require implementation.
-// [RETIRE-WHEN: aidll-02-skeleton] Remove when the corresponding implementation is complete and validated.
 
 // ELF 0x19A040 (172 bytes). Hearing gets a tenth and the fire objects three tenths of the slice;
 // seeing gets what is left of the deadline (start + slice - now). The ELF reads the update time

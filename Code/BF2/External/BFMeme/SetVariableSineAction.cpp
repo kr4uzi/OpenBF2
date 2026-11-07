@@ -1,11 +1,17 @@
 // [INFERRED] path. Complete table94D000, metadata94CD6C, constructor8330D0,
 // factory/eager and all differing instructions read. No runtime math shim.
 #include "SetVariableSineAction.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Data.h"
 #include "Node.h"
 #include "Stream.h"
 #include "TypeDescriptor.h"
+#if !defined(_M_IX86)
+#include <cmath>
+#endif
 namespace dice { namespace meme {
 namespace {
 // PE832B86..C39, same x87 order and float stores. Helper/name [INFERRED].
@@ -15,9 +21,11 @@ namespace {
 bool chooseSineValue(float current, float target, float delta, float speed,
                      float braking, float& value)
 {
+#if defined(_WIN32)
     const float angle = 1.57075f;                        // 94CB68, bytes56 0E C9 3F
     float rounded;
     bool changed = false;
+#if defined(_M_IX86)
     __asm {
         fld target
         fld current
@@ -90,8 +98,40 @@ bool chooseSineValue(float current, float target, float delta, float speed,
         fstp st(0)
     done:
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates) and the CRT cosine in
+    // place of fcos; the argument stays within [0, k], where both agree to double precision.
+    // Equal or unordered samples write nothing; an unordered braking test takes full speed.
+    if (current < target) {
+        const double distance = static_cast<double>(target) - current;
+        const double step = distance < braking
+            ? std::cos(angle - distance / braking * angle) * speed * delta
+            : static_cast<double>(delta) * speed;
+        const double candidate = step + current;
+        rounded = candidate > target ? target : static_cast<float>(candidate);
+        changed = true;
+    } else if (current > target) {
+        const double distance = static_cast<double>(current) - target;
+        const double step = distance < braking
+            ? std::cos(angle - distance / braking * angle) * speed * delta
+            : static_cast<double>(delta) * speed;
+        const double candidate = current - step;
+        rounded = candidate < target ? target : static_cast<float>(candidate);
+        changed = true;
+    }
+#endif
     if (changed) value = rounded;
     return changed;
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float angle = 1.57075f;                        // 94CB68, bytes56 0E C9 3F
+    float rounded;
+    bool changed = false;
+    // [CHOSEN, not recovered] Preserve x87 ordered movement and retained candidate comparison.
+    changed = bf2x87::chooseValue(current, target, delta, speed, braking, true, rounded);
+    if (changed) value = rounded;
+    return changed;
+#endif
 }
 }
 SetVariableSineAction::SetVariableSineAction() : m_brakingDistance(0.0f) {}
@@ -127,8 +167,10 @@ bool SetVariableSineAction::execute(System* system, const Rect*, const NodeState
     }
     return false;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(SetVariableSineAction) == 20, "client SetVariableSineAction");
 static_assert(sizeof(ClassTypeDescriptor<SetVariableSineAction, SetVariableSoftAction>) == 16,
               "SetVariableSineAction metadata");
+#endif
 } }
 #endif

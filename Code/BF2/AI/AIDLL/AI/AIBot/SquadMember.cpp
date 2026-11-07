@@ -1,6 +1,9 @@
 // [INFERRED] Source placement.
 // [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the remaining SquadMember operations.
 
+#if defined(__APPLE__)
+#include "../../../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "SquadMember.h"
 #include <cmath>
 #include <iostream>
@@ -58,7 +61,12 @@ static bool memberPathUpdateDue(double previous, double now)
     }
     return due;
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    return static_cast<bf2x87::Real>(now) > static_cast<bf2x87::Real>(previous) + 9.0L;
+#else
     return static_cast<long double>(now) > static_cast<long double>(previous) + 9.0L;
+#endif
 #endif
 }
 
@@ -103,14 +111,30 @@ static bool memberPathDisplaced(const Vec3& previous, const Vec3& current)
 #if defined(_WIN32)
     const long double dx = static_cast<float>(static_cast<long double>(previous.x) - current.x);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dx = static_cast<bf2x87::Real>(previous.x) - current.x;
+#else
     const long double dx = static_cast<long double>(previous.x) - current.x;
 #endif
+#endif
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dy = static_cast<bf2x87::Real>(previous.y) - current.y;
+    const bf2x87::Real dz = static_cast<bf2x87::Real>(previous.z) - current.z;
+#else
     const long double dy = static_cast<long double>(previous.y) - current.y;
     const long double dz = static_cast<long double>(previous.z) - current.z;
+#endif
 #if defined(_WIN32)
     return (dz * dz + dx * dx) + dy * dy > static_cast<long double>(0.01f);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    return (dx * dx + dy * dy) + dz * dz > static_cast<bf2x87::Real>(0.01f);
+#else
     return (dx * dx + dy * dy) + dz * dz > static_cast<long double>(0.01f);
+#endif
 #endif
 #endif
 }

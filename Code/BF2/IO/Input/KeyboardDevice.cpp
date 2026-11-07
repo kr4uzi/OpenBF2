@@ -6,6 +6,7 @@
 #include "../../Core/Ids.h"
 #include "../../Game/Main/BF2ClientSeams.h"
 #include "../../Game/Main/BF2Window.h"
+#include "../../Platform/Windows/WinInputScript.h"   // [TEMP] BF2_INPUT_SCRIPT feed
 #include <cstring>
 
 namespace dice { namespace hfe { namespace io {
@@ -67,7 +68,15 @@ bool KeyboardDevice::setCooperativeModeForWindow(HWND window, InputDeviceMode mo
 bool KeyboardDevice::activate()
 {
     if (!m_device) return false;
-    if (!m_active) m_active = m_device->Acquire() == DI_OK;
+    if (!m_active) {
+        m_active = m_device->Acquire() == DI_OK;
+        // [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT (Platform/Windows/WinInputScript.h): the
+        // scripted feed counts as acquired without focus. [RETIRE-WHEN: client-test-automation-replaced]
+        if (inputscript::winInputScriptActive()) {
+            m_active = true;
+            inputscript::winInputScriptClearKeyboardData();
+        }
+    }
     return true; // Retail reports success even if Acquire failed.
 }
 bool KeyboardDevice::deActivate()
@@ -184,6 +193,12 @@ void KeyboardDevice::update(float dt)
     }
     DWORD count;
     HRESULT hr;
+    // [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT: scripted device data replaces the real
+    // device's. [RETIRE-WHEN: client-test-automation-replaced]
+    if (inputscript::winInputScriptActive()) {
+        count = inputscript::winInputScriptTakeKeyboardData(bufferedEvents, 100);
+        hr = DI_OK;
+    } else
     for (;;) {
         count = 100;
         hr = m_device->GetDeviceData(sizeof(DIDEVICEOBJECTDATA), bufferedEvents, &count, 0);

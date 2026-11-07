@@ -12,7 +12,11 @@
 #include "../GameLogic/SquadManager/ISquadManager.h"
 #if !DEDICATED
 #include "../GeneralSettings.h"          // limitCoopPlayers' two client-only bot-count pushes
+#include "../../Sound/BfSound.h"
+#include "../Main/BF2ClientSeams.h"       // hudManager - the radio spam notice of a hosted game
+#include "../../Menu/BF2HudManager.h"
 #endif
+#include "ServerInfo.h"                    // radioBlockedDuration - the spam notice's seconds
 #include "../Common/GameEventManager.h"    // onNewConnection queues the ChallengeEvent
 #include "../Common/GhostManager.h"        // the per-connection ghost update
 #include "../../Core/System.h"             // WorldPref::getTickCount
@@ -122,6 +126,7 @@
 #include <iostream>                            // the empty-maplist refusal writes to std::cout
 #include <sstream>
 #include "../../Scene/Object/WorldObjTemplPortal/PortalManager.h"  // IPortalManager::update, +0x40
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -504,7 +509,13 @@ bool GameServer::startServer(const std::string& a1, int port, int /* dead - neve
     if (m_netServer)
     {
         // NetServer initialization returns zero on success; other results destroy the listener and fail startup.
-        if (m_netServer->init(a1, port, true) != 0)      // +0x10
+        const int netInit = m_netServer->init(a1, port, true);
+#if defined(__APPLE__)
+        // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-singleplayer-hosting-validated]
+        if (std::getenv("BF2_HOST_TRACE"))
+            std::fprintf(stderr, "[host] NetServer::init(%s, %d) -> %d\n", a1.c_str(), port, netInit);
+#endif
+        if (netInit != 0)                                // +0x10
         {
             if (m_netServer)
                 delete m_netServer;
@@ -563,7 +574,13 @@ bool GameServer::startServer(const std::string& a1, int port, int /* dead - neve
 
     if (!levelName.empty())
     {
-        if (!game->loadPath(levelName))                     // IGame vtable +0x24 - THE handoff
+        const bool loaded = game->loadPath(levelName);
+#if defined(__APPLE__)
+        // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-singleplayer-hosting-validated]
+        if (std::getenv("BF2_HOST_TRACE"))
+            std::fprintf(stderr, "[host] loadPath(%s) -> %d\n", levelName.c_str(), loaded ? 1 : 0);
+#endif
+        if (!loaded)                                        // IGame vtable +0x24 - THE handoff
         {
 #if !DEDICATED
             // [PLATFORM] A listen server's failed map load disables the required profiler and fails startup without quitting the engine.
@@ -587,6 +604,11 @@ bool GameServer::startServer(const std::string& a1, int port, int /* dead - neve
     if (!isDedicated())
     {
         const int localPlayer = createPlayer(settings->stringGet("GSPlayerName", "player"), false);
+#if defined(__APPLE__)
+        // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-singleplayer-hosting-validated]
+        if (std::getenv("BF2_HOST_TRACE"))
+            std::fprintf(stderr, "[host] createPlayer -> %d\n", localPlayer);
+#endif
         if (localPlayer == -1)
             return false;
     }
@@ -615,8 +637,8 @@ bool GameServer::loadPath(const std::string& levelName)
     limitCoopPlayers();
 
     // The challenge ordinal is random 0..9, seeded from the wall clock in milliseconds.
-    srand((int)(g_system->getWallClockTime() * 1000.0));    // System +0x1C; flt_888B168 = 1000.0f
-    m_mapInfo.setChallengeOrdinal(rand() % 10);             // MapInfo at +0x04, by value
+    bf2crt::srand((int)(g_system->getWallClockTime() * 1000.0));    // System +0x1C; flt_888B168 = 1000.0f
+    m_mapInfo.setChallengeOrdinal(bf2crt::rand() % 10);             // MapInfo at +0x04, by value
 
     if (m_loadState)                                        // +0xA0 nonzero = something is loaded
         unload();                                           // virtual, IGame slot +0x28
@@ -1461,38 +1483,88 @@ bool GameServer::destroyObject(world::IObject* object)
     return Game::destroyObject(object);
 }
 
+namespace {
+// The spam notice a hosted game shows its own human player when the radio filter refuses one of
+// their messages: the shared "spam" game-info line, then the localized seconds-left chat line.
+// The same arm as GameClient::radioMessage; in BF2.exe it is inlined into GameServer::radioMessage
+// (0x4C523E..0x4C5348) and radioMessageFromPlayer (0x4C4FCC..0x4C50D6). A dedicated server has no
+// HUD; the Linux dedicated image omits the arm.
+void showRadioSpamNotice(Game* game, world::IPlayer* player)
+{
+#if !DEDICATED
+    game->localGameInfoMessage(static_cast<TargetChannel>(14), std::string("spam"));   // PE +0x60
+    if (!hudManager)
+        return;
+    const int blockedDuration = serverInfo->m_block.radioBlockedDuration;
+    const int seconds = static_cast<int>(
+        player->getRadioSpamFilterFlagTimer()                         // PE +0x320
+        + blockedDuration + 1.0f
+        - WorldPref::getWorldTime());
+    const std::wstring text = hudManager->replaceWideTokenFromInt(    // +0x44
+        hudManager->getLocalizedString(                               // +0x38
+            std::string("HUD_HUD_MENU_CHAT_SPAM_MESSAGE")),
+        std::string("#SEC#"), seconds);
+    hudManager->addServerChat(text, player->getTeam());               // +0x130, team read last
+#else
+    (void)game;
+    (void)player;
+#endif
+}
+} // namespace
+
+// Sends a radio message from a player through the server's own radio relay. A hosted game (the
+// client image running the server) also plays the message back for its local human player and
+// shows them the spam notice; the client image tests isDedicated() at run time for both arms
+// (BF2.exe 0x4C5180), while the Linux dedicated image has neither (ELF 0x080AD3E0 keeps only the
+// discarded local-player query). localPlayback is cleared for anyone but the local human player.
 bool GameServer::radioMessage(TargetChannel channel, const std::string& message,
                               world::IPlayer* player, unsigned int extra,
-                              bool /*unused*/, bool bypassSpamCheck)
+                              bool localPlayback, bool bypassSpamCheck)
 {
     if (!player)
         return true;
 
-    // Retail performs this virtual call even though it discards the result.
-    world::playerManager->getLocalHumanPlayer();
+    if (player != world::playerManager->getLocalHumanPlayer())         // +0x30
+        localPlayback = false;
 
     int messageId;
     const std::string empty1;
     const std::string empty2;
-    if (static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
-            &messageId, 0, 0, message, empty1, empty2) &&
-        (bypassSpamCheck || !player->getIsThisASpam(true)))
+    if (!static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
+            &messageId, 0, 0, message, empty1, empty2))
+        return true;
+
+    if (!bypassSpamCheck && player->getIsThisASpam(true))              // PE +0x308 = ELF +0x30C
     {
-        EventNode* node = createRadioMessageReceivedEvent(
-            -1,
-            static_cast<unsigned char>(messageId),
-            static_cast<unsigned char>(player->getId()),
-            static_cast<unsigned char>(player->getTeam()),
-            static_cast<unsigned char>(extra),
-            static_cast<int>(channel), 3);
-        eventManager->postEvent(ECNetwork, node, 0.0f);
+        if (!isDedicated() && localPlayback && !player->getIsAIPlayer())   // 0x440510, PE +0x60
+            showRadioSpamNotice(this, player);
+        return true;
+    }
+
+    EventNode* node = createRadioMessageReceivedEvent(
+        -1,
+        static_cast<unsigned char>(messageId),
+        static_cast<unsigned char>(player->getId()),
+        static_cast<unsigned char>(player->getTeam()),
+        static_cast<unsigned char>(extra),
+        static_cast<int>(channel), 3);
+    eventManager->postEvent(ECNetwork, node, 0.0f);
+
+    if (!isDedicated() && localPlayback)                              // BF2.exe 0x4C53B2..0x4C53E0
+    {
+        const int id   = player->getId();                             // getId first in this arm
+        const int team = player->getTeam();
+        playbackRadioMessage(channel, static_cast<ChannelMessageType>(3), team, id, messageId);
     }
     return true;
 }
 
+// As radioMessage, for a player named by id. AI senders keep their id as the relay connection,
+// everyone else is relayed as the server (-1). The hosted-game arms are those of radioMessage
+// (BF2.exe 0x4C4F10; ELF 0x080AD1F0 has neither), but localPlayback is not narrowed here.
 bool GameServer::radioMessageFromPlayer(TargetChannel channel, const std::string& message,
                                         unsigned int playerId, unsigned int extra,
-                                        bool /*unused*/, bool bypassSpamCheck)
+                                        bool localPlayback, bool bypassSpamCheck)
 {
     world::IPlayer* player = world::playerManager->getPlayerFromId(static_cast<int>(playerId));
     if (!player)
@@ -1501,43 +1573,64 @@ bool GameServer::radioMessageFromPlayer(TargetChannel channel, const std::string
     int messageId;
     const std::string empty1;
     const std::string empty2;
-    if (static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
-            &messageId, 0, 0, message, empty1, empty2) &&
-        (bypassSpamCheck || !player->getIsThisASpam(true)))
+    if (!static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
+            &messageId, 0, 0, message, empty1, empty2))
+        return true;
+
+    if (!bypassSpamCheck && player->getIsThisASpam(true))
     {
-        const int connectionId = player->getIsAIPlayer()
-                                   ? static_cast<unsigned char>(playerId)
-                                   : 0xFF;
-        EventNode* node = createRadioMessageReceivedEvent(
-            connectionId,
-            static_cast<unsigned char>(messageId),
-            static_cast<unsigned char>(playerId),
-            static_cast<unsigned char>(player->getTeam()),
-            static_cast<unsigned char>(extra),
-            static_cast<int>(channel), 3);
-        eventManager->postEvent(ECNetwork, node, 0.0f);
+        if (!isDedicated() && localPlayback && !player->getIsAIPlayer())
+            showRadioSpamNotice(this, player);
+        return true;
+    }
+
+    const int connectionId = player->getIsAIPlayer()
+                               ? static_cast<unsigned char>(playerId)
+                               : 0xFF;
+    EventNode* node = createRadioMessageReceivedEvent(
+        connectionId,
+        static_cast<unsigned char>(messageId),
+        static_cast<unsigned char>(playerId),
+        static_cast<unsigned char>(player->getTeam()),
+        static_cast<unsigned char>(extra),
+        static_cast<int>(channel), 3);
+    eventManager->postEvent(ECNetwork, node, 0.0f);
+
+    if (!isDedicated() && localPlayback)                              // BF2.exe 0x4C5133..0x4C5161
+    {
+        // The player's own getId, not the argument (GameClient's overload passes the argument).
+        const int id   = player->getId();
+        const int team = player->getTeam();
+        playbackRadioMessage(channel, static_cast<ChannelMessageType>(3), team, id, messageId);
     }
     return true;
 }
 
+// Sends a server game-info line (type 0). A hosted game plays it back locally as well
+// (BF2.exe 0x4C53F0; not in the Linux dedicated image), with a in the team and b in the sender
+// position, as GameClient::gameInfoMessage does.
 bool GameServer::gameInfoMessage(TargetChannel channel, const std::string& message,
-                                 unsigned int a, unsigned int b, bool /*unused*/)
+                                 unsigned int a, unsigned int b, bool localPlayback)
 {
     int messageId;
     const std::string empty1;
     const std::string empty2;
-    if (static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
+    if (!static_cast<GameLogic*>(gameLogic)->getVoiceMessages()->namesToIds(
             &messageId, 0, 0, message, empty1, empty2))
-    {
-        EventNode* node = createRadioMessageReceivedEvent(
-            -1,
-            static_cast<unsigned char>(messageId),
-            static_cast<unsigned char>(a),
-            static_cast<unsigned char>(b),
-            static_cast<unsigned char>(b),
-            static_cast<int>(channel), 0);
-        eventManager->postEvent(ECNetwork, node, 0.0f);
-    }
+        return true;
+
+    EventNode* node = createRadioMessageReceivedEvent(
+        -1,
+        static_cast<unsigned char>(messageId),
+        static_cast<unsigned char>(a),
+        static_cast<unsigned char>(b),
+        static_cast<unsigned char>(b),
+        static_cast<int>(channel), 0);
+    eventManager->postEvent(ECNetwork, node, 0.0f);
+
+    if (!isDedicated() && localPlayback)                              // BF2.exe 0x4C54AA..0x4C54C7
+        playbackRadioMessage(channel, static_cast<ChannelMessageType>(0),
+                             static_cast<int>(a), static_cast<int>(b), messageId);
     return true;
 }
 
@@ -2394,9 +2487,13 @@ bool GameServer::update(int steps, float dt)
             updateConnections(elapsed);
             processGameStateAndSendPackets(elapsed);
         }
-        // [PLATFORM] NOT  - BF2.exe 0x4D1138..0x4D1151, a listen-server arm the dedicated ELF
-        // folded away: `if (!isDedicated() && i == steps - 1)` the sound owner (ds:0xA23DC0) vslot
-        // +0x18(steps). Its identity is unread.
+#if !DEDICATED
+        // A listen server updates the local listener and mixer once, after the last simulation step.
+        // BF2.exe 0x4D1138..0x4D1151: isDedicated (0x440510), then ds:0xA23DC0 (the BfSound that
+        // 0x7E1774 stores after its 0x148-byte construction) vslot +0x18(steps).
+        if (!isDedicated() && i == steps - 1)
+            g_bfSound->update(steps);
+#endif
     }
     // [PLATFORM] NOT  - BF2.exe 0x4D1162..0x4D1173: `if (isLightmapRenderingNode())`
     // (0x440530) ds:0x987350 vslot +0x28() - a lightmap-farm tool arm the dedicated ELF folded away.

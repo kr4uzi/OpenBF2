@@ -11,7 +11,6 @@
 #include "../AIBotBehaviourPattern/PlanGenerator.h"
 #include "../AIBotActionPlan/BotScript.h"
 #include "../AIUtils/checkPointer.h"
-#include "../Main/AIDllFrontier.h"
 
 namespace dice {
 namespace hfe {
@@ -45,12 +44,6 @@ BotBehaviour::BotBehaviour(float* modifiers, UrgeCurve* urgeCurve)
     , m_activeUrgency(0)
     , m_urgeCurve(urgeCurve)
 {
-}
-
-// [TEMP] S0 skeleton default constructor (see the header).
-BotBehaviour::BotBehaviour()
-{
-    BF2_AI_FRONTIER("dice::hfe::ai::BotBehaviour::BotBehaviour (S0 skeleton default constructor: a derived constructor is not recovered)");
 }
 
 // ELF 0x225A70 (D2; D1 0x225B00, D0 0x225B90). The pattern is owned (deleting destructor, slot +4);

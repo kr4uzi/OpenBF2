@@ -270,6 +270,17 @@ void profileManagerGPIgnore(GPConnection* /*connection*/, void* /*arg*/, void* /
 {
 }
 
+// 0x4A5B80 - the gpSuggestUniqueNick callback requestNickSuggestions installs. `param` is the
+// owner's suggestion vector; one entry is appended per suggested nick (push_back 0x450C10). The
+// result field is not read: a failed request answers zero suggestions.
+void profileManagerGPSuggestions(GPConnection* /*connection*/, void* arg, void* param)
+{
+    const GPSuggestUniqueNickResponseArg* response = static_cast<const GPSuggestUniqueNickResponseArg*>(arg);
+    std::vector<std::string>* suggestions = static_cast<std::vector<std::string>*>(param);
+    for (int i = 0; i < response->numSuggestedNicks; ++i)
+        suggestions->push_back(std::string(response->suggestedNicks[i]));
+}
+
 } // namespace
 
 // the connection's own error text, or "general error" when it is empty.
@@ -694,22 +705,127 @@ bool ProfileManager::getProfileInformation(int profileId, ProfileInformation& ou
     return true;
 }
 
-// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: profile-manager-account-operations]
-// All parameters and returns below are proved by complete PE bodies/callers.
-// Their account/GP callback bodies remain visible stops under the client startup
-// publication exception. No fabricated account state or successful login is returned.
-#define PROFILE_MANAGER_FRONTIER(method) \
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::ProfileManager::" #method " reached\n"); \
-    std::fflush(stderr); \
-    std::abort()
+// Adds a GameSpy profile (unique nick) to the logged-in account. PE 0x4A6EB0.
+// Refuses without a current profile, or with a nick the host's validator rejects (posted as a
+// type-3 message when the host exists). Otherwise the account's e-mail and password are copied, the
+// current unique nick remembered, and the session ended (logout). A fresh connection then creates
+// the new profile with gpConnectNewUser; on success it becomes the current profile exactly as
+// createOnlineAccount's does. On failure the error is reported and the old unique nick logs in
+// again; when that also fails the host gets the profile-transition text.
+bool ProfileManager::createProfile(const std::string& uniqueNick, const std::string& country)
+{
+    if (!m_currentProfile)
+        return false;
+    IBase* host = classManager->getSingleton(std::string("SwiffHost"));     // kept for the end, unguarded
+    std::string error;
+    if (!validateProfileName(uniqueNick, error))                           // virtual +0x54
+    {
+        IBase* validatorHost = classManager->getSingleton(std::string("SwiffHost"));
+        if (validatorHost)
+            static_cast<ui::ISwiffHost*>(validatorHost)->postMessage(SwiffHostMessage(3, error, 3));   // +0x1E4
+        return false;
+    }
+    std::string previousUniqueNick;
+    std::string password(m_currentProfile->password);                     // record +0x1C
+    std::string email(m_currentProfile->email);                           // record +0x00
+    getUniqueNick(previousUniqueNick);                                     // virtual +0x34
+    logout();                                                              // virtual +0x28
+    bool created = false;
+    int profileId;                                                         // written by the callback only
+    if (gpInitialize(&m_connection, kGameSpyProductId, kGameSpyNamespaceId, GP_PARTNERID_GAMESPY) != GP_NO_ERROR)
+        reportError(std::string("serveroffline"), true);
+    else
+    {
+        gpSetCallback(&m_connection, GP_ERROR, &profileManagerGPError, this);
+        if (gpConnectNewUser(&m_connection, uniqueNick.c_str(), uniqueNick.c_str(), email.c_str(),
+                             password.c_str(), NULL, GP_NO_FIREWALL, GP_BLOCKING,
+                             &profileManagerGPProfileId, &profileId) != GP_NO_ERROR)
+            reportError(lastErrorString(), false);
+        else
+            created = true;
+    }
+    if (!created)
+    {
+        // 0x4A7016: the shared failure tail - log out again and restore the previous profile.
+        logout();                                                          // virtual +0x28
+        if (!login(previousUniqueNick, password))                          // virtual +0x14
+            static_cast<ui::ISwiffHost*>(host)->handleProfileTransition(
+                std::string("Connection to profile server lost."));        // +0x244
+        return false;
+    }
+    createStatsPlayer(profileId, country, uniqueNick);                     // result unread
+    setCurrentProfile(email, password, profileId, uniqueNick);
+    fetchProfileList(m_currentProfile->profiles);
+    static_cast<ui::ISwiffHost*>(host)->setSelectedPlayerId(profileId);   // +0x220, unguarded
+    return true;
+}
 
-bool ProfileManager::createProfile(const std::string&, const std::string&)
-{ PROFILE_MANAGER_FRONTIER(createProfile); }
+// Deletes the current GameSpy profile. PE 0x4A54B0.
+// Refuses without a current profile, and with fewer than two profiles on the account (an
+// untranslated type-1 message). The first other profile is remembered, gpDeleteProfile is issued
+// with a no-op callback (0x5AB2A0), and on success the session ends and that other profile logs in
+// (by its nick, entry +4, as shipped). When the login fails the host gets the transition text.
 bool ProfileManager::deleteProfile()
-{ PROFILE_MANAGER_FRONTIER(deleteProfile); }
-bool ProfileManager::requestNickSuggestions(const std::string&)
-{ PROFILE_MANAGER_FRONTIER(requestNickSuggestions); }
-#undef PROFILE_MANAGER_FRONTIER
+{
+    if (!m_currentProfile)
+        return false;
+    if (m_currentProfile->profiles.size() <= 1)
+    {
+        reportError(std::string("Unable to delete profile, you must have at least 1 profile"), false);
+        return false;
+    }
+    IBase* host = classManager->getSingleton(std::string("SwiffHost"));     // unguarded below
+    const std::string email(m_currentProfile->email);                     // copied and never read
+    std::string password(m_currentProfile->password);
+    (void)email;
+    OnlineProfileEntry other;
+    other.profileId = 0;
+    // The size is re-read on each pass; the loop stops at the first entry that is not the
+    // current profile id (record +0x48).
+    for (std::size_t index = 0; index < m_currentProfile->profiles.size(); ++index)
+    {
+        if (m_currentProfile->profiles[index].profileId != m_currentProfile->profileId)
+        {
+            other.profileId  = m_currentProfile->profiles[index].profileId;
+            other.nick       = m_currentProfile->profiles[index].nick;
+            other.uniqueNick = m_currentProfile->profiles[index].uniqueNick;
+            break;
+        }
+    }
+    if (gpDeleteProfile(&m_connection, &profileManagerGPIgnore, &other) != GP_NO_ERROR)
+    {
+        reportError(lastErrorString(), false);
+        return false;
+    }
+    logout();                                                              // virtual +0x28
+    if (!login(other.nick, password))                                      // virtual +0x14
+    {
+        static_cast<ui::ISwiffHost*>(host)->handleProfileTransition(
+            std::string("Connection to profile server lost."));            // +0x244
+        return false;
+    }
+    return true;
+}
+
+// Fetches unique-nick suggestions for `nick` into the owner's list. PE 0x4A5BD0.
+// The list is emptied and its buffer released first. The request runs on a private,
+// short-lived connection; a failed initialisation reports the OWNER connection's error text (the
+// shipped body reads this+0x0C, not the local connection) and answers false. The suggestion
+// request's own result is not read, and the answer is then true.
+bool ProfileManager::requestNickSuggestions(const std::string& nick)
+{
+    std::vector<std::string>().swap(m_nickSuggestions);                    // 0x445E70
+    GPConnection connection;
+    if (gpInitialize(&connection, kGameSpyProductId, kGameSpyNamespaceId, GP_PARTNERID_GAMESPY) != GP_NO_ERROR)
+    {
+        reportError(lastErrorString(), false);
+        return false;
+    }
+    gpSuggestUniqueNick(&connection, nick.c_str(), GP_BLOCKING, &profileManagerGPSuggestions,
+                        &m_nickSuggestions);
+    gpDestroy(&connection);
+    return true;
+}
 
 } }
 #endif

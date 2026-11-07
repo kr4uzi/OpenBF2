@@ -1,5 +1,10 @@
 // Path: [INFERRED] - see MaskObject.h. Every own body read in both dedicated images.
 #include "MaskObject.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native static geometry tables retain PE slot order.
+#include "../../../Geom/NativeGeometrySlots.h"
+#endif
 #include "Soldier.h"
 #include "../IPlayer.h"
 #include "../../../Animation/BoneAnimation/Skeleton.h"
@@ -75,12 +80,11 @@ void MaskObject::updateGeometryPosition(Soldier* soldier)
 #if defined(_MSC_VER)
         typedef void (__thiscall* GeometryPoseFn)(void*, void*, int);
         const unsigned int slot = 0x54 / 4;
-#else
-        typedef void (*GeometryPoseFn)(void*, void*, int);
-        const unsigned int slot = 0x58 / 4;
-#endif
         reinterpret_cast<GeometryPoseFn>((*reinterpret_cast<void***>(m_geometry))[slot])(
             m_geometry, skeleton->m_transforms, skeleton->m_boneCount);
+#else
+        geometry_part::setBoneTransforms(m_geometry, skeleton->m_transforms, skeleton->m_boneCount);   // ELF +0x58
+#endif
     }
 }
 

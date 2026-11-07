@@ -4,7 +4,9 @@
 #define CORE_PLUGINDLL_H
 
 #if !defined(_WIN32)
-// [PLATFORM] ELF wrappers over dlopen/dlsym/dlclose, defined in PluginDll.cpp.
+// [PLATFORM] The ELF's global-namespace LoadLibrary/GetProcAddress/FreeLibrary wrappers over
+// dlopen/dlsym/dlclose, defined in PluginDll.cpp. Under BF2_STATIC_PLUGINS (the macOS client) they
+// answer the statically linked plugin images first.
 void* LoadLibrary(const char* name);
 void* GetProcAddress(void* handle, const char* name);
 bool  FreeLibrary(void* handle);

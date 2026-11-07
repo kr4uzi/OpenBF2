@@ -32,6 +32,9 @@ inline std::string registryKey(const ConsoleObject* object)
 } // anonymous namespace
 
 // Default-constructs the lookup hash, binding map and registration-order list.
+// RendDX9.dll copy PE 0x1007B7E0, unreached there (no code or data reference): Hash (stack functor
+// byte, 3011 = 0xBC3 buckets) via 0x1007B840, the multimap head (0x1007BAF0; nil byte +0x2D set,
+// links to itself, size 0), the list head (0x1007B890, size 0), in member order.
 ConsoleObjects::ConsoleObjects()
 {
 }
@@ -82,6 +85,8 @@ const ConsoleObjects::ConsoleObjectList& ConsoleObjects::getConsoleObjects() con
 
 // Returns the first active binding in the key's equal range, or null.
 // Inactive bindings stay registered and allow later duplicates to match.
+// RendDX9.dll copy PE 0x1007B320 (lower_bound 0x101C0A60, upper_bound 0x1007BA80, vslot +0x2C per
+// entry); unreached there (only its dead caller 0x1007B3B0 refers to it).
 ConsoleObject* ConsoleObjects::findInMultiMap(const std::string& key)
 {
     std::multimap<std::string, ConsoleObject*, NoCaseStringCompare>::iterator it =
@@ -102,6 +107,8 @@ ConsoleObject* ConsoleObjects::findInMultiMap(const std::string& key)
 // Resolves a console binding by exact name, then case-insensitive get/set prefixes.
 // The fallback accepts property types 1/3 for get and 1/2 for set. This differs from the command
 // dispatcher's read/write polarity; preserve those constants until both call paths justify a change.
+// RendDX9.dll copy PE 0x1007B3B0 (`retn 8`; _strnicmp, substr(3, size - 3), vslot +0x10 getType),
+// unreached there (no code or data reference).
 ConsoleObject* ConsoleObjects::getConsoleObject(const std::string& objectName,
                                                 const std::string& methodName)
 {
@@ -133,15 +140,11 @@ ConsoleObject* ConsoleObjects::getConsoleObject(const std::string& objectName,
 }
 
 // Registers a case-insensitive conversion key. Returns false for an existing key without replacing it.
+// RendDX9.dll copy: the wrapper PE 0x1007B310 tail-jumps to the Hash member (Hash::insertUnique,
+// cited in Core/Hash.h). Unreached in RendDX9 (no code or data reference).
 bool ConsoleObjects::registerTypeConversion(const std::string& from, const std::string& to)
 {
-    const unsigned int bucket = m_typeConversions.bucketOf(from);
-
-    if (m_typeConversions.exists(from, bucket))
-        return false;
-
-    m_typeConversions.insert(from, to, bucket);
-    return true;
+    return m_typeConversions.insertUnique(from, to);
 }
 
 // typeAsString -
@@ -149,6 +152,7 @@ bool ConsoleObjects::registerTypeConversion(const std::string& from, const std::
 // A lookup with the key as its own default: an unregistered type name is returned unchanged. The
 // leading `_InterlockedAdd(&_S_empty_rep_storage.refcount, 1)` in the decompilation is libstdc++
 // constructing an empty std::string, i.e. compiler scaffolding, not a member being touched.
+// RendDX9.dll copy PE 0x1007B2C0 over the Hash::get copy PE 0x1007BA20; unreached there.
 std::string ConsoleObjects::typeAsString(const std::string& type) const
 {
     std::string converted;

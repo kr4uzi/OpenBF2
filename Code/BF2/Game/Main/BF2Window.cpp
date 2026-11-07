@@ -2,12 +2,14 @@
 
 #include "BF2Window.h"
 
-#if !DEDICATED
+// [CHOSEN, not recovered] The macOS client uses BF2Window_macos.cpp instead.
+#if !DEDICATED && defined(_WIN32)
 
 #include "BF2Engine.h"                              // menuLogic - the active menu (Window::wndProc)
 #include "../../Core/EventManager.h"                // eventManager->postEvent on WM_ACTIVATEAPP
 #include "../IEventListener.h"                      // EventCategory
 #include "../Utility/Vars.h"                        // opt-window-x / opt-window-y
+#include "../../Platform/Windows/WinInputScript.h"  // [TEMP] BF2_INPUT_SCRIPT focus
 #include <cstring>
 
 namespace dice {
@@ -117,7 +119,9 @@ bool Window::create(const std::string& title, int width, int height, bool fullsc
 }
 
 bool               Window::isCreated() const      { return m_hwnd != 0; }
-bool               Window::getHasFocus() const    { return m_hasFocus; }
+// [TEMP] [CHOSEN, not recovered] A BF2_INPUT_SCRIPT run reports focus (WinInputScript.h).
+// [RETIRE-WHEN: client-test-automation-replaced]
+bool               Window::getHasFocus() const    { return m_hasFocus || inputscript::winInputScriptActive(); }
 const std::string& Window::getTitle() const       { return m_title; }
 int                Window::getWidth() const       { return m_width; }
 int                Window::getHeight() const      { return m_height; }
@@ -317,4 +321,4 @@ void BF2Window::toggleFullscreenStyle()
 } // namespace hfe
 } // namespace dice
 
-#endif // !dedicated
+#endif // !dedicated && _WIN32

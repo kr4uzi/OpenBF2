@@ -189,8 +189,16 @@ public:
     virtual float buttonPressedSampleLatency(InputDeviceButtons button) const = 0; // +0x64
 };
 
-// Duplicate-key result collection. [UNRESOLVED] Original element type.
-typedef std::vector<int> DuplicateKeyVector;   // [UNRESOLVED] element type
+// The bindings ControlMap::findDuplicate found for one device input: the axis or trigger id, whether
+// the clash is on the negative half of an axis pair, and whether it is the alternate binding. The
+// ELF mangles it as a class (_ZN...18DuplicateKeyVectorE); in ia-32 findDuplicate and mapNextInput
+// it is three parallel vectors at +0x00 (int), +0x0C and +0x20 (bool). Member names [INFERRED].
+struct DuplicateKeyVector
+{
+    std::vector<int>  ids;          // +0x00
+    std::vector<bool> negative;     // +0x0C
+    std::vector<bool> alternate;    // +0x20
+};
 
 // Input identifiers. None is the one-past-end sentinel and has no mapping bit.
 enum PlayerInputMap
@@ -361,7 +369,9 @@ public:
 
     // 5,146 bytes in the ELF (0x8497AC0) - the "press a key to bind it" capture mode, and the
     // single largest routine in the whole input subsystem.
-    virtual bool         mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d,
+    // Returns an int status, not a Boolean: ControlSettings +0x30 (BF2.exe 0x4B2CA0) passes this
+    // full EAX on, and SwiffPlayer mapInput (sub_1000EDA0) compares it with 1 (duplicate) and 2.
+    virtual int          mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d,
                                       std::string& out)                     = 0;  // +0x38
     virtual float        getRepeatRate(int id, bool b)                      = 0;  // +0x3C
     virtual void         applyActive()                                      = 0;  // +0x40

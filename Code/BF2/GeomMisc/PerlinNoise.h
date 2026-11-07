@@ -52,7 +52,7 @@ public:
     virtual bool makeScript(::dice::hfe::io::IStream* stream);                  // 0x1009F460 -> false
 
     // The TU's own members (non-virtual in the image)
-    int   nextRandom();                                                         // 0x1009EF30 lcgrand
+    int   nextRandom();                                                         // lcgrandStep
     float baseNoise(int n);
     float interpolatedNoise(int n, float t);
     float octaveSum(float x);

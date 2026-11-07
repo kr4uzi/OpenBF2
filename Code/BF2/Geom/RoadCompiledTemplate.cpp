@@ -4,6 +4,7 @@
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "RoadCompiledTemplate.h"
+#include "../RendDX9/RendDX9Math.h"   // rendmath::unitScale (sub_1007B220)
 #include "RoadCompiled.h"
 #include "Terrain.h"                     // TerrainRawReader - the raw reader family 0x10075DE0..0x100763A0
 
@@ -11,7 +12,7 @@
 #include "../RendDX9/Texture.h"          // EngineTexture, textureDtor
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #include <new>
 #include <stdexcept>
@@ -42,31 +43,23 @@ void releaseOwnedTexture(dx9rend::EngineTexture* texture)
     }
 }
 
-// sub_1007B220's shared `static const Vec3(1, 1, 1)` - decompressPosition's only source. MeshTemplate.cpp
-// transcribes the same function-local static for its own table; the value is a constant.
-const Vec3& unitScale()
-{
-    static Vec3 value = { 1.0f, 1.0f, 1.0f };
-    return value;
-}
-
 } // anonymous namespace
 
 // Initializes template resources and strings. Priority and the byte at +0x04 remain untouched.
+// PE 0x1013AF80
 RoadCompiledTemplate::RoadCompiledTemplate()
-    : m_refCount(1)
+    : m_refCount((m_dword08 = 0, 1)) // Clear the inherited word before the instance list allocates.
     , m_loaded(0)
     , m_texture0(0)
     , m_texture1(0)
     , m_blendFactor(0.0f)
+    , m_fadeOff{0.0f, 0.0f}
 {
-    m_dword08    = 0;
-    m_fadeOff[0] = 0.0f;
-    m_fadeOff[1] = 0.0f;
 }
 
 // the two textures released owner-side (texture0 first), then the members in reverse
 // order: the path string, the name string and the instance list (0x1000EAD0).
+// PE 0x1013AFE0
 RoadCompiledTemplate::~RoadCompiledTemplate()
 {
     releaseOwnedTexture(m_texture0);
@@ -92,6 +85,7 @@ int RoadCompiledTemplate::getRef()
 
 // the destructor body is called directly (the table has no deleting-destructor slot),
 // then the block goes back to the engine heap.
+// PE 0x1013B2B0
 int RoadCompiledTemplate::release()
 {
     const int remaining = --m_refCount;
@@ -116,24 +110,27 @@ void* RoadCompiledTemplate::queryInterface(unsigned int iid) const
 
 
 unsigned int RoadCompiledTemplate::getClassId() const { return CID_RoadCompiledTemplate; }
-void RoadCompiledTemplate::setName(const vc71::string& name) { m_name = name; }
-const vc71::string& RoadCompiledTemplate::getName() const { return m_name; }
-void RoadCompiledTemplate::setPath(const vc71::string& path) { m_path = path; }
-const vc71::string& RoadCompiledTemplate::getPath() const { return m_path; }
+// PE 0x1013B280
+void RoadCompiledTemplate::setName(const std::string& name) { m_name = name; }
+const std::string& RoadCompiledTemplate::getName() const { return m_name; }
+// PE 0x1013B290
+void RoadCompiledTemplate::setPath(const std::string& path) { m_path = path; }
+const std::string& RoadCompiledTemplate::getPath() const { return m_path; }
 bool RoadCompiledTemplate::isLoaded() const { return m_loaded != 0; }
 
-// createGeometry. A new 0x194-byte RoadCompiled joins the END of the instance list (the
+// createGeometry. A new RoadCompiled (retail 0x194 bytes) joins the END of the instance list (the
 // list holds the null too if the allocation failed); a template no one has asked for yet loads its
 // `_compiled.dat` right here unless the ResourceManager is deferring loads (its +0x04 byte, sub_1000D950)
 // - then GeometryTemplateManager::loadUsedTemplates loads it with the others. Either way the keep byte
 // goes up, and the caller gets the IGeometry subobject (instance + 4), or null.
 // The load is a virtual call (`call [eax+2Ch]`), and it is made on the keep byte, NOT on +0x10: a
 //   template the manager already marked is never loaded here, loaded or not.
+// PE 0x1013B050
 void* RoadCompiledTemplate::createInstance()
 {
-    void* const storage = ::renddx9abi::engineAlloc(0x194);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(RoadCompiled));
     RoadCompiled* const instance = storage ? new (storage) RoadCompiled(this) : 0;
-    m_instances.insert(m_instances.head, instance);                          // push_back
+    m_instances.push_back(instance);
 
     if (!m_keepData && !dx9rend::resourceManagerIsReady())
         load();                                                              // +0x2C
@@ -147,19 +144,20 @@ void* RoadCompiledTemplate::createInstance()
 // priority. The shipped body tests neither the open nor a single read.
 // The file name is built as `(path + name) + "_compiled.dat"` - VC7.1's operator+ inlined twice
 //   (0x1013AE49..0x1013AEAB); only the finished string is observable.
+// PE 0x1013AE30
 bool RoadCompiledTemplate::load()
 {
     if (m_loaded)
         return false;
 
-    vc71::string file(m_path);
+    std::string file(m_path);
     file += m_name;
     file += "_compiled.dat";
 
     TerrainRawReader reader;
     reader.open(file, 2, 0, 0);
 
-    vc71::string line;
+    std::string line;
     reader.readLine(line, '\n');
     m_texture0 = static_cast<dx9rend::EngineTexture*>(
         dx9rend::textureManagerGetTexture(line));
@@ -213,7 +211,7 @@ int RoadCompiledTemplate::getLodPrimitiveCount(unsigned int) { return 0; }
 // the input is never read.
 Vec3* RoadCompiledTemplate::decompressPosition(Vec3* out, const Vec3*)
 {
-    const Vec3& scale = unitScale();
+    const Vec3& scale = rendmath::unitScale();
     out->y = scale.y;
     out->x = scale.x;
     out->z = scale.z;
@@ -224,16 +222,16 @@ Vec3* RoadCompiledTemplate::decompressPosition(Vec3* out, const Vec3*)
 void RoadCompiledTemplate::releaseDeviceResources() { }
 
 
-// RefFactory 0x100B09DC - `if (outer) return 0`, allocate 0x70, construct, queryInterface(iid) through
-// the NEW object without testing the allocation (a failed allocation faults on the QI, as shipped),
-// and release it when the interface is refused.
+// RefFactory 0x100B09DC - `if (outer) return 0`, allocate the object (retail 0x70 bytes), construct,
+// queryInterface(iid) through the NEW object without testing the allocation (a failed allocation
+// faults on the QI, as shipped), and release it when the interface is refused.
 
 IBase* __fastcall createRoadCompiledTemplate(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
 
-    void* const storage = ::renddx9abi::engineAlloc(0x70);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(RoadCompiledTemplate));
     RoadCompiledTemplate* self = 0;
     if (storage)
         self = new (storage) RoadCompiledTemplate();

@@ -14,6 +14,7 @@
 #include <cstdlib>                    // rand - getValue's root-bone jitter
 #include "../../Math/Quat.h"          // Quat::slerp
 #include "../../Math/Vec3.h"
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 
 namespace dice {
@@ -325,12 +326,12 @@ void BoneAnimation::getValue(int bone, float time, hfe::Quat& rotation, hfe::Vec
         position.z = ta.z;
     }
 
-    if (bone == 0 && m_jitterChance != 0 && rand() % 10 < m_jitterChance)
+    if (bone == 0 && m_jitterChance != 0 && bf2crt::rand() % 10 < m_jitterChance)
     {
         const float amplitudeX = jitter * m_jitterAmplitude;
-        position.x = amplitudeX * static_cast<float>(rand() % 256 - 128) * 0.00390625f + position.x;
+        position.x = amplitudeX * static_cast<float>(bf2crt::rand() % 256 - 128) * 0.00390625f + position.x;
         const float amplitudeY = jitter * m_jitterAmplitude;
-        position.y = 0.00390625f * (static_cast<float>(rand() % 256 - 128) * amplitudeY) + position.y;
+        position.y = 0.00390625f * (static_cast<float>(bf2crt::rand() % 256 - 128) * amplitudeY) + position.y;
     }
 }
 

@@ -10,21 +10,32 @@
 #include <new>
 namespace dice { namespace hfe { namespace Rend {
 
-EnvMapObjectTemplate::EnvMapObjectTemplate(const vc71::string& name) : m_name(name)
+// PE 0x101C4380
+EnvMapObjectTemplate::EnvMapObjectTemplate(const std::string& name) : m_name(name)
 {
     setSize(1.0f);
     setIsStatic(true);
 }
-const vc71::string& EnvMapObjectTemplate::getName() const { return m_name; }
+// PE 0x101C4330: the constructor's two default stores through the virtual setters (setSize(1.0f)
+// at slot +0x04, then setIsStatic(true) at slot +0x0C). [INFERRED] name; unreachable in 1.50: no
+// code or data references.
+void EnvMapObjectTemplate::resetDefaults()
+{
+    setSize(1.0f);
+    setIsStatic(true);
+}
+const std::string& EnvMapObjectTemplate::getName() const { return m_name; }
 void EnvMapObjectTemplate::setSize(float value) { m_size=value; }
 float EnvMapObjectTemplate::getSize() const { return m_size; }
 void EnvMapObjectTemplate::setIsStatic(bool flag) { m_isStatic=flag; }
 bool EnvMapObjectTemplate::getIsStatic() const { return m_isStatic; }
 EnvMapObjectTemplate::~EnvMapObjectTemplate() {}
 
+// PE 0x101C4150
 EnvMapObject::EnvMapObject(EnvMapObjectTemplate* objectTemplate)
     : m_enabled(true),m_template(objectTemplate),m_entry(0),m_value10(1),m_count(0),m_limit(20)
 {}
+// PE 0x101C40E0
 void EnvMapObject::setEnabled(bool enabled) { m_enabled=enabled; }
 bool EnvMapObject::getEnabled() const { return m_enabled; }
 unsigned int EnvMapObject::getCount() const { return m_count; }
@@ -69,6 +80,7 @@ void EnvMapObject::clear()
     m_entry=0;
     m_count=0;
 }
+// PE 0x101C4120
 void EnvMapObject::release()
 {
     // 101C4120 repeats the clear operations directly, then makes the +18 call.

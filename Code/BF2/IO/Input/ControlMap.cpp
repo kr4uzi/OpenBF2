@@ -906,9 +906,42 @@ void ControlMap::reset()
     m_keyboardSensitivity = 0.1f;
 }
 
-// [CHOSEN-STUB] - the selective reset.
-void ControlMap::reset(int /*id*/, bool /*a*/, bool /*b*/, bool /*c*/)
+// ELF 0x8492AC0. Clears one binding of input id (mapNextInput's Escape). A trigger loses its
+// primary or alternate mapping whole. An axis loses its positive half, its negative half, or (both
+// set) everything; once neither half holds a key or button the mapping also drops its device and
+// axis (15 = none).
+void ControlMap::reset(int id, bool positive, bool negative, bool alternate)
 {
+    std::map<int, TriggerRemap*>::iterator t = m_triggerMappings.find(id);
+    if (t != m_triggerMappings.end())
+    {
+        (alternate ? t->second->alternate : t->second->primary).reset();
+        return;
+    }
+    std::map<int, AxisRemap*>::iterator a = m_axisMappings.find(id);
+    if (a == m_axisMappings.end())
+        return;
+    AxisMapping& m = alternate ? a->second->alternate : a->second->primary;
+    if (positive)
+    {
+        if (negative)
+        {
+            m.reset();
+            return;
+        }
+        m.positiveKey = 0;
+        m.positiveButton = 0;
+    }
+    else if (negative)
+    {
+        m.negativeKey = 0;
+        m.negativeButton = 0;
+    }
+    if (m.positiveKey == 0 && m.negativeKey == 0 && m.positiveButton == 0 && m.negativeButton == 0)
+    {
+        m.axis = 15;
+        m.device = 0;
+    }
 }
 
 
@@ -1204,13 +1237,108 @@ void ControlMap::dump(bool /*b*/)
 {
 }
 
-// [CHOSEN-STUB] Duplicate-input detection is unimplemented.
-// A complete implementation must account for axis, trigger and button equivalences.
-bool ControlMap::findDuplicate(InputDeviceFlags& /*device*/, InputDeviceAxes& /*axis*/,
-                               InputDeviceButtons& /*button*/, InputDeviceKeys& /*key*/,
-                               DuplicateKeyVector& /*out*/)
+// ELF 0x8494960 (4595 bytes). Collects every binding of this map that already uses the device
+// input (device, axis, button, key) into out and answers whether there was any. A keyboard key
+// held by an unassigned trigger answers true at once with nothing collected. Keyboard bindings
+// are matched on the key alone (the device argument is not consulted for them); other bindings
+// need the same device and the axis (15 = none) or button (0 = none). Triggers whose threshold
+// is 1000 (the double-tap companions, e.g. c_PIAltSprint) never count as duplicates.
+bool ControlMap::findDuplicate(InputDeviceFlags& device, InputDeviceAxes& axis,
+                               InputDeviceButtons& button, InputDeviceKeys& key,
+                               DuplicateKeyVector& out)
 {
-    return false;
+    if (device == 2)                                    // IDFKeyboard
+    {
+        for (unsigned int i = 0; i < m_unassignedTriggerMappings.size(); ++i)
+            if (m_unassignedTriggerMappings[i]->key == key)
+                return true;
+    }
+
+    for (std::map<int, AxisRemap*>::iterator it = m_axisMappings.begin(); it != m_axisMappings.end(); ++it)
+    {
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            const AxisMapping& m = slot != 0 ? it->second->alternate : it->second->primary;
+            if (m.device == 0)
+                continue;
+            if (m.device == 2)
+            {
+                if (key == 0)
+                    continue;
+                if (key == m.positiveKey)
+                {
+                    out.ids.push_back(it->first);
+                    out.negative.push_back(false);
+                    out.alternate.push_back(slot > 0);
+                }
+                else if (key == m.negativeKey)
+                {
+                    out.ids.push_back(it->first);
+                    out.negative.push_back(true);
+                    out.alternate.push_back(slot > 0);
+                }
+            }
+            else if (device == m.device)
+            {
+                if (axis != 15 && axis == m.axis)
+                {
+                    out.ids.push_back(it->first);
+                    out.negative.push_back(false);
+                    out.alternate.push_back(slot > 0);
+                }
+                else if (button != 0)
+                {
+                    if (button == m.positiveButton)
+                    {
+                        out.ids.push_back(it->first);
+                        out.negative.push_back(false);
+                        out.alternate.push_back(slot > 0);
+                    }
+                    else if (button == m.negativeButton)
+                    {
+                        out.ids.push_back(it->first);
+                        out.negative.push_back(true);
+                        out.alternate.push_back(slot > 0);
+                    }
+                }
+            }
+        }
+    }
+
+    for (std::map<int, TriggerRemap*>::iterator it = m_triggerMappings.begin(); it != m_triggerMappings.end(); ++it)
+    {
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            const TriggerMapping& m = slot != 0 ? it->second->alternate : it->second->primary;
+            if (m.device == 0)
+                continue;
+            if (m.device == 2)
+            {
+                if (key != 0 && key == m.key && m.threshold != 1000.0f)
+                {
+                    out.ids.push_back(it->first);
+                    out.negative.push_back(false);
+                    out.alternate.push_back(slot > 0);
+                }
+            }
+            else if (m.type == 1)
+            {
+                if (device == m.device && axis != 15 && axis == m.axis)
+                {
+                    out.ids.push_back(it->first);
+                    out.negative.push_back(false);
+                    out.alternate.push_back(slot > 0);
+                }
+            }
+            else if (device == m.device && button != 0 && button == m.button)
+            {
+                out.ids.push_back(it->first);
+                out.negative.push_back(false);
+                out.alternate.push_back(slot > 0);
+            }
+        }
+    }
+    return out.ids.size() != 0;
 }
 
 // ELF 0x8495B60. [CHOSEN-STUB]

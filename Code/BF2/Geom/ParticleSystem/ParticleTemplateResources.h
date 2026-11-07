@@ -7,23 +7,27 @@
 #include "../../RendDX9/TextureAtlas/TextureAtlas.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../../RendDX9Abi/EngineFile.h"
+#include "../../GeomMisc/Debug.h"
 #include <cstdio>
 #include <cstdlib>
 
 namespace dice { namespace hfe { namespace geom {
 
 // Manager an atlas-owned region, with no added reference for the caller.
-dx9rend::TextureAtlasEntry* particleSystemFindTextureRegion(const vc71::string& name);
+dx9rend::TextureAtlasEntry* particleSystemFindTextureRegion(const std::string& name);
 
-// [CHOSEN helper factoring, recovered body] Both retail loaders reject an empty name before
+// [CHOSEN helper factoring, recovered body] Both retail loaders reject an empty C string before
 // releasing the old direct texture or replacing the region. The atlas success arm leaves the
 // direct texture null: the region's page owns the texture used by rendering.
+// PE 0x10176C20
+// PE 0x101784E0
 inline bool particleTemplateLoadTexture(dx9rend::EngineTexture*& texture,
                                        dx9rend::TextureAtlasEntry*& region,
-                                       const vc71::string& name,
-                                       const char* qualifiedName, unsigned int diagnosticLine)
+                                       const std::string& name,
+                                       const char* diagnosticFile, unsigned int diagnosticLine)
 {
-    if (name.empty())
+    // The retail comparison uses _stricmp against "", so a leading NUL also refuses.
+    if (name.c_str()[0] == '\0')
         return false;
 
     dx9rend::textureReleaseRef(texture);
@@ -31,7 +35,7 @@ inline bool particleTemplateLoadTexture(dx9rend::EngineTexture*& texture,
     if (region)
         return true;
 
-    vc71::string path(name);
+    std::string path(name);
     path += ".dds";
     if (::renddx9abi::engineFileExists(path))
     {
@@ -44,13 +48,9 @@ inline bool particleTemplateLoadTexture(dx9rend::EngineTexture*& texture,
     }
     else
     {
-        // [TEMP] [CHOSEN, not recovered] The only remaining loader boundary is the configurable
-        // Debug type-6 dispatch, not the normal texture/atlas path.
-        // [RETIRE-WHEN: particle-template-texture-debug-dispatch]
-        std::fprintf(stderr, "[FRONTIER] %s (Debug type 6, line %u): File %s not found!\n",
-                     qualifiedName, diagnosticLine, name.c_str());
-        std::fflush(stderr);
-        std::abort();
+        // PE 0x10176D68 / 0x10178628.
+        ::renddx9abi::Debug(DebugTypeError, diagnosticFile, diagnosticLine, "")
+            << "File " << name << " not found!";
     }
     return texture != 0;
 }

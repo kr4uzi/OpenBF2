@@ -5,11 +5,10 @@
 
 #include "../../RendDX9Abi/PluginAbi.h"
 
-#if BF2_PLUGIN_ABI_NATIVE
 
 #include "UndergrowthSystem.h"
 
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 #include "../Core/ConsoleObjectMacro.h"
 #include "../Core/ConsoleObjects.h"
 
@@ -23,18 +22,14 @@ namespace {
 
 const char kUndergrowthConsoleTag[] = "geom.undergrowth";
 
+// The console metadata spells this 32-bit unsigned type "uint".
+typedef unsigned int uint;
+
 // g_UndergrowthSystem is published as an IBase*; UndergrowthSystem derives from IBase alone, so the
 // downcast adjusts nothing.
 inline UndergrowthSystem* undergrowth()
 {
     return static_cast<UndergrowthSystem*>(g_UndergrowthSystem);
-}
-
-// the row copies its argument and calls +0x10 with the copy. The console speaks this
-// toolchain's std::string; the object keeps the 28-byte VC7.1 one.
-void undergrowthLoad(const std::string& levelPath)
-{
-    undergrowth()->load(vc71::string(levelPath.c_str()));
 }
 
 void undergrowthReload() { undergrowth()->reload(); }                                // +0x18
@@ -61,28 +56,80 @@ void setViewDistanceFade(float value)                                           
 
 BF2_CONSOLE_OBJECT("undergrowth", 2, 0)
 
-BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(load, undergrowthLoad, undergrowth() != 0, std::string,
-                                   kUndergrowthConsoleTag)
+// [INFERRED] local name for the retail load binding.
+class UndergrowthLoadBinding : public ConsoleObjectBaseImpl
+{
+public:
+    // PE 0x100C4981
+    UndergrowthLoadBinding()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "load";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 1;
+        m_returnType = "void";
+        m_hasReturnValue = false;
+        m_isDynamic = false;
+        m_argTypes[0] = "std::string";
+        m_argNeedsConversion[0] = 0;
+        consoleBindingList(kUndergrowthConsoleTag).push_back(this);
+    }
+
+    virtual bool isObjectActive() const { return undergrowth() != 0; }
+
+    // PE 0x100C49FE
+    virtual void executeObjectMethod()
+    {
+        if (m_argCount != 1)
+            return;
+        const std::string levelPath(BF2_CC_ARG(std::string, 0));
+        m_hasReturnValue = false;
+        undergrowth()->load(levelPath);
+    }
+
+    // PE 0x100C4A3D
+    virtual void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(std::string, 1)
+    }
+
+    BF2_CC_NO_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+};
+
+UndergrowthLoadBinding s_undergrowthLoadBinding;
+
+// PE 0x100C4AB2: constructor.
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(reload, undergrowthReload, undergrowth() != 0,
                                    kUndergrowthConsoleTag)
+// PE 0x100C4B1F, 0x100C4B90, 0x100C4BDD: constructor, argument conversion, executor.
 BF2_CONSOLE_PROPERTY_FN(enabled, bool, undergrowth() != 0,
                         undergrowth()->getEnabled(), setEnabled, kUndergrowthConsoleTag)
+// PE 0x100C4C2E, 0x100C4C9F, 0x100C4CEC: constructor, argument conversion, executor.
 BF2_CONSOLE_PROPERTY_FN(dynamicShadowsEnable, bool, undergrowth() != 0,
                         undergrowth()->getDynamicShadowsEnable(), setDynamicShadowsEnable,
                         kUndergrowthConsoleTag)
+// PE 0x100C4D5D, 0x100C4DCE, 0x100C4E1B: constructor, argument conversion, executor.
 BF2_CONSOLE_PROPERTY_FN(simpleShaderEnable, bool, undergrowth() != 0,
                         undergrowth()->getSimpleShaderEnable(), setSimpleShaderEnable,
                         kUndergrowthConsoleTag)
+// PE 0x100C4E6C, 0x100C4EDD: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(zPassPatchCount, unsigned int, undergrowth() != 0,
                         undergrowth()->getZPassPatchCount(), setZPassPatchCount,
                         kUndergrowthConsoleTag)
-BF2_CONSOLE_PROPERTY_FN(test, unsigned int, undergrowth() != 0,
+// PE 0x100C4F70, 0x100C4FE1: constructor, argument conversion.
+BF2_CONSOLE_PROPERTY_FN(test, uint, undergrowth() != 0,
                         undergrowth()->testValue(), setTest, kUndergrowthConsoleTag)
+// PE 0x100C506B, 0x100C50DC: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(test2, float, undergrowth() != 0,
                         undergrowth()->test2Value(), setTest2, kUndergrowthConsoleTag)
+// PE 0x100C5169, 0x100C51DA: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(viewDistanceScale, float, undergrowth() != 0,
                         undergrowth()->getViewDistanceScale(), setViewDistanceScale,
                         kUndergrowthConsoleTag)
+// PE 0x100C5270, 0x100C52E1: constructor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(viewDistanceFade, float, undergrowth() != 0,
                         undergrowth()->viewDistanceFade(), setViewDistanceFade,
                         kUndergrowthConsoleTag)
@@ -105,5 +152,4 @@ bool unregisterUndergrowthConsoleObjects()
 } // namespace hfe
 } // namespace dice
 
-#endif // BF2_PLUGIN_ABI_NATIVE
 #endif // BF2_IMAGE_RENDDX9

@@ -8,6 +8,7 @@
 #include "ConsoleObjects.h"
 #include <string>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 #include <list>
 
@@ -27,6 +28,60 @@ const char*   consoleDefaultName();
 unsigned int  consoleDefaultAccess();
 unsigned char consoleDefaultCategory();
 
+#if defined(BF2_IMAGE_RENDDX9)
+// The defaults' object name as passed, before the first character is lowercased (RendDX9 PE
+// 0x10247C20; ELF ConsoleObject::mDefaultStaticObjectName). Four RendDX9 binding constructors
+// read it. Defined by the RendDX9 image's copy in Code/RendDX9Abi/NativeConsoleObjects.cpp.
+const char*   consoleDefaultStaticName();
+#endif
+
+// Where BF2_CC_CONVERT extracts one console argument: its persistent per-type static. Every image extracts straight
+// into the static with no stream-state test: RendDX9.dll PE 0x10054B20 (bool), BF2.exe PE 0x00411DD1
+// (bool) and PE 0x00411CEC (float), Linux bf2 ELF 0x08822DE0 (std::string) and ELF 0x087609E0 (int).
+// Their libraries (MSVCP71, GCC 3.x libstdc++) leave a scalar target unchanged when the read fails or
+// is out of range; C++11 libraries store 0 or the range limit there instead. [PLATFORM] Scalars are
+// therefore read through a local that starts as the stored value and stored only when the read
+// succeeds, which gives the retail result on every library. Every other type (std::string, the Vec
+// types, the template proxies) is extracted in place, partial component writes included, as retail.
+template<class T, bool IsScalar = std::is_scalar<T>::value>
+struct ConsoleArgumentSlot
+{
+    explicit ConsoleArgumentSlot(T& stored) : m_target(stored) {}
+    T&   target() { return m_target; }
+    void commit(bool) {}
+
+    T& m_target;
+};
+
+template<class T>
+struct ConsoleArgumentSlot<T, true>
+{
+    explicit ConsoleArgumentSlot(T& stored) : m_stored(stored), m_value(stored) {}
+    T&   target() { return m_value; }
+    void commit(bool succeeded) { if (succeeded) m_stored = m_value; }
+
+    T& m_stored;
+    T  m_value;
+};
+
+#if defined(_WIN32) && !DEDICATED && defined(_MSC_VER) && _MSC_VER > 1310
+// [PLATFORM] [CHOSEN, not recovered] The shipped client calls MSVCP71's operator>>(float&)
+// (BF2.exe imports ...QAEAAV01@AAM@Z, not the double overload), which parses through a double
+// before narrowing. A modern CRT's direct float extraction can change near-midpoint values and
+// reject values that only exceed the float range, so newer toolchains read a double here. The
+// VC7.1 matching build keeps the retail float extraction. Preserve failed reads.
+template<>
+struct ConsoleArgumentSlot<float, true>
+{
+    explicit ConsoleArgumentSlot(float& stored) : m_stored(stored), m_value(stored) {}
+    double& target() { return m_value; }
+    void    commit(bool succeeded) { if (succeeded) m_stored = static_cast<float>(m_value); }
+
+    float& m_stored;
+    double m_value;
+};
+#endif
+
 // Token paste with __LINE__ needs two levels, or you paste the literal text
 #define BF2_CC_CAT2(a, b)  a##b
 #define BF2_CC_CAT(a, b)   BF2_CC_CAT2(a, b)
@@ -38,18 +93,17 @@ unsigned char consoleDefaultCategory();
     static ::dice::hfe::SetConsoleClassDefaults                                                    \
         BF2_CC_CAT(s_consoleDefaults, __LINE__)((objectName), (accessLevel), (categoryId));
 
-// Converts one-based arguments into persistent per-type storage.
-// Extract into a temporary and commit only on success so malformed input preserves the previous value.
-// String extraction takes one token; normal string arguments bypass this through execute's raw branch.
+// Converts one-based arguments into persistent per-type storage, extracting straight into it (see
+// ConsoleArgumentSlot). String extraction takes one token; normal string arguments bypass
+// this through execute's raw branch.
 #define BF2_CC_CONVERT(T, oneBasedIndex)                                                           \
         if (index == (oneBasedIndex))                                                              \
         {                                                                                          \
             static T s;                                                                            \
-            T tmp = s;                                                                             \
             std::istringstream in(value);                                                          \
-            in >> tmp;                                                                             \
-            if (!in.fail())                                                                        \
-                s = tmp;                                                                           \
+            ::dice::hfe::ConsoleArgumentSlot<T> slot(s);                                           \
+            in >> slot.target();                                                                   \
+            slot.commit(!in.fail());                                                               \
             m_args[(oneBasedIndex) - 1] = reinterpret_cast<std::string*>(&s);                      \
         }
 

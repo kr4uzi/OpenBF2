@@ -13,9 +13,6 @@
 // Match XpLightManager's engine-interface import: retail HfeAbi already supplies
 // ClassManager's VC7.1 registration carriers. Only the virtual interfaces below
 // cross this boundary; native STL fields are never read in retail mode.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../Game/Objects/IPlayer.h"
 #include "../Game/Objects/ICameraObject.h"
 #include "../Game/Objects/IObject.h"
@@ -24,10 +21,9 @@
 #include "../Game/Objects/Visual/LightSourceTemplate.h"
 #include "../Scene/Object/PlayerManager.h"
 #include "../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#endif
 #include "../RendDX9/Texture.h"
+#include "../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
+#include "BoxCorners.h"                    // worldHeight's eight-corner box
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -52,6 +48,9 @@ using dx9rend::Ra::RaLightingParameters;
 
 template<class T> T& field(void* p,unsigned int offset)
 { return *reinterpret_cast<T*>(static_cast<unsigned char*>(p)+offset); }
+// The material's Ra parameter block (material +0x10); the `+0xNN` comments below are the retail
+// material offsets the shipped draw writes.
+RaMaterialParameters& materialParams(BundledMeshMaterial* m) { return bundledMeshMaterialParameters(m); }
 template<class R> R slot(void* p,unsigned int offset)
 {
     typedef R(__thiscall* Fn)(void*);
@@ -70,126 +69,31 @@ world::IPlayerControlObject* controlObject(void* object)
     {
         void* const found=current->queryInterface(50373u);
         if(found) return static_cast<world::IPlayerControlObject*>(found);
-#if BF2_PLUGIN_ABI_NATIVE
         current=current->getParent();
-#else
-        current=field<world::IObject*>(current,0x28);
-#endif
     }
     return 0;
 }
 const world::LightSourceTemplate* lightTemplate(world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<const world::LightSourceTemplate*>(light->getTemplate());
-#else
-    return field<const world::LightSourceTemplate*>(light,0x144);
-#endif
 }
 float lightRange(world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return light->getAttenuationRange2();
-#else
-    return slot<float>(light,0x190);
-#endif
 }
 const Vec3& lightColor(world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return light->getColor();
-#else
-    return slot<const Vec3&>(light,0x198);
-#endif
 }
 const Vec3& lightDirection(world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return light->getDirection();
-#else
-    return slot<const Vec3&>(light,0x17C);
-#endif
 }
 
-// 100777A0, including the unit-length early return and zero-length refusal.
-void normalize(Vec3& v)
-{
-    const float lengthSquared=v.x*v.x+v.y*v.y+v.z*v.z;
-    const double epsilon=1.1920928955078125e-7;
-    if(std::fabs(lengthSquared-1.0)>=epsilon)
-    {
-        if(std::fabs(static_cast<double>(lengthSquared))<epsilon)
-            v.x=v.y=v.z=0.0f;
-        else
-        {
-            const double scale=1.0/std::sqrt(static_cast<double>(lengthSquared));
-            v.x=static_cast<float>(scale*v.x);
-            v.y=static_cast<float>(scale*v.y);
-            v.z=static_cast<float>(scale*v.z);
-        }
-    }
-}
 Vec3 subtract(const Vec3& a,const Vec3& b)
 { const Vec3 result={a.x-b.x,a.y-b.y,a.z-b.z};return result; }
 const Vec3& position(const Mat4& m) { return *reinterpret_cast<const Vec3*>(m.m+12); }
 void copy3(float* out,const Vec3& value) { std::memcpy(out,&value,sizeof(value)); }
-
-// VC7.1 resize specializations 10106DC0/10102850->10102690. These POD carriers
-// retain the vector shape used by the renderer even when hosted by the native EXE.
-// The grow policy is the shipped max(required, capacity+capacity/2), from
-// shrinking retains the allocation.
-void resizePod(vc71::vector_layout& v,unsigned int count,unsigned int stride,bool lights)
-{
-    const unsigned int old=vc71::vectorSizeIn(v,stride);
-    const unsigned int capacity=v.first?static_cast<unsigned int>(v.end-v.first)/stride:0;
-    const unsigned int maximum=0xFFFFFFFFu/stride;
-    if(count>maximum)throw std::length_error("vector<T> too long");
-    if(count>capacity)
-    {
-        unsigned int next=capacity<=maximum-capacity/2?capacity+capacity/2:0;
-        if(next<count)next=count;
-        char* const data=static_cast<char*>(::operator new(next*stride));
-        if(old)std::memcpy(data,v.first,old*stride);
-        if(v.first)::operator delete(v.first);
-        v.first=data;v.end=data+next*stride;
-    }
-    if(count>old)
-    {
-        if(lights)
-            for(unsigned int i=old;i<count;++i)
-            {
-                RaLightRecord& record=*reinterpret_cast<RaLightRecord*>(v.first+i*stride);
-                std::memset(&record,0,0x38);
-                // +38 is uninitialized in the shipped default and overwritten by draw.
-                record.float3C=record.float40=1.0f;
-            }
-        else std::memset(v.first+old*stride,0,(count-old)*stride);
-    }
-    if(v.first)v.last=v.first+count*stride;
-}
-
-// 10106E40/10106F90, vector assignment. The empty-source case really releases
-// its destination allocation; it is not the resize(0) behavior above.
-void assignPod(vc71::vector_layout& dest,const vc71::vector_layout& src,unsigned int stride)
-{
-    if(&dest==&src)return;
-    const unsigned int count=vc71::vectorSizeIn(src,stride);
-    if(!count)
-    {
-        if(dest.first)::operator delete(dest.first);
-        dest.first=dest.last=dest.end=0;
-        return;
-    }
-    const unsigned int capacity=dest.first?static_cast<unsigned int>(dest.end-dest.first)/stride:0;
-    if(count>capacity)
-    {
-        if(dest.first)::operator delete(dest.first);
-        dest.first=static_cast<char*>(::operator new(count*stride));
-        dest.end=dest.first+count*stride;
-    }
-    std::memcpy(dest.first,src.first,count*stride);
-    dest.last=dest.first+count*stride;
-}
 
 // typed parameter assignment preserves each holder's own vptr. The
 // two texture values are COM interfaces (the PE pushes this, then calls stdcall
@@ -213,65 +117,44 @@ void copyLighting(RaLightingParameters& dest,const RaLightingParameters& src)
     dest.matBones.a=src.matBones.a;dest.matBones.b=src.matBones.b;
     std::memcpy(dest.overGrowthAmbient.value,src.overGrowthAmbient.value,16);
     std::memcpy(&dest.shadowViewProj.value,&src.shadowViewProj.value,64);
-    assignPod(dest.shadowViewProjArray.value,src.shadowViewProjArray.value,64);
-    assignPod(dest.clampViewProjArray.value,src.clampViewProjArray.value,64);
-    assignPod(dest.shadowPosArray.value,src.shadowPosArray.value,16);
-    assignPod(dest.shadowSizeArray.value,src.shadowSizeArray.value,16);
+    // 10106E40/10106F90, vector assignment: an empty source releases the destination's storage.
+    dx9rend::Ra::raAssignParamBytes(dest.shadowViewProjArray.value,src.shadowViewProjArray.value);
+    dx9rend::Ra::raAssignParamBytes(dest.clampViewProjArray.value,src.clampViewProjArray.value);
+    dx9rend::Ra::raAssignParamBytes(dest.shadowPosArray.value,src.shadowPosArray.value);
+    dx9rend::Ra::raAssignParamBytes(dest.shadowSizeArray.value,src.shadowSizeArray.value);
     dest.shadowCount.value=src.shadowCount.value;
-    assignPod(dest.tail0FC,src.tail0FC,16);
+    dx9rend::Ra::raAssignParamBytes(dest.tail0FC,src.tail0FC);
     dest.tail10C=src.tail10C;
 }
 
-// 100CE120 -> 101C6750/101C67F0 -> 101C6C70/101C6E10. The eight corners are
-// emitted in x/y/z bit order; maximum/minimum comparisons retain NaN behavior.
+// The height of the bounds' world box: the eight-corner box (geom::BoxCorners, BoxCorners.h:
+// constructor, maximum, minimum) over the MeshBounds, which is the LocalBoundingBox record, then
+// maximum.y - minimum.y. [INFERRED] the caller's inline arithmetic, no retail function of its own.
 float worldHeight(const MeshBounds& bounds,const Mat4& world)
 {
-    Vec3 corners[8]={};
-    for(unsigned int i=0;i<8;++i)
-    {
-        const float x=(i&4)?bounds.max.x:bounds.min.x;
-        const float y=(i&2)?bounds.max.y:bounds.min.y;
-        const float z=(i&1)?bounds.max.z:bounds.min.z;
-        corners[i].x=i==0?z*world.m[8]+x*world.m[0]+y*world.m[4]+world.m[12]
-                              :world.m[4]*y+z*world.m[8]+x*world.m[0]+world.m[12];
-        corners[i].y=i==0?x*world.m[1]+y*world.m[5]+z*world.m[9]+world.m[13]
-                              :x*world.m[1]+z*world.m[9]+y*world.m[5]+world.m[13];
-        corners[i].z=z*world.m[10]+x*world.m[2]+y*world.m[6]+world.m[14];
-    }
-    Vec3 maximum=corners[0],minimum=corners[0];
-    for(unsigned int i=1;i<8;++i)
-    {
-        if(maximum.x<corners[i].x)maximum.x=corners[i].x;
-        if(maximum.y<corners[i].y)maximum.y=corners[i].y;
-        if(maximum.z<corners[i].z)maximum.z=corners[i].z;
-    }
-    for(unsigned int i=1;i<8;++i)
-    {
-        if(minimum.x>corners[i].x)minimum.x=corners[i].x;
-        if(minimum.y>corners[i].y)minimum.y=corners[i].y;
-        if(minimum.z>corners[i].z)minimum.z=corners[i].z;
-    }
-    return maximum.y-minimum.y;
+    const BoxCorners corners(reinterpret_cast<const LocalBoundingBox&>(bounds),world);
+    return corners.maximum().y-corners.minimum().y;
 }
 void configureAlpha(BundledMeshMaterial* material,unsigned int mask)
 {
+    RaMaterialParameters& p=materialParams(material);
     if(material->m_kind==2)
     {
-        field<unsigned char>(material,0x2C)=1;
+        p.alphaTest.value=1;                                     // +0x2C
         if(material->m_state->m_alphaTest)
         {
-            if(mask&0x400)field<int>(material,0xB4)=15;
-            else field<unsigned char>(material,0x2C)=0;
+            if(mask&0x400)p.alphaTestRef.value=15;               // +0xB4
+            else p.alphaTest.value=0;
         }
-        else field<int>(material,0xB4)=127;
+        else p.alphaTestRef.value=127;
     }
     else if(material->m_kind==1)
     {
-        field<unsigned char>(material,0x2C)=1;
-        field<int>(material,0xB4)=0;
-        field<unsigned char>(material,0x1C)=1;
-        field<int>(material,0xAC)=1;
-        field<unsigned char>(material,0x24)=0;
+        p.alphaTest.value=1;
+        p.alphaTestRef.value=0;
+        p.alphaBlendEnable.value=1;                              // +0x1C
+        p.cullMode.value=1;                                      // +0xAC
+        p.depthWrite.value=0;                                    // +0x24
     }
 }
 void setEntry(RenderQueueEntry* entry,BundledMeshMaterial* material,void* object,
@@ -282,6 +165,13 @@ void setEntry(RenderQueueEntry* entry,BundledMeshMaterial* material,void* object
 }
 } // anonymous namespace
 
+// [CHOSEN, not recovered] Shared source entry for PE 0x10107250, used by the water adapters.
+void geometryCopyLightingParameters(RaLightingParameters& destination, const RaLightingParameters& source)
+{
+    copyLighting(destination, source);
+}
+
+// PE 0x10104F70: the draw. Its three stack arguments are unused (`retn 0xC`).
 void BundledMesh::draw(void*,void*,void*)
 {
     if(!g_bundledMeshStateManager->getEnabled())return;
@@ -294,7 +184,7 @@ void BundledMesh::draw(void*,void*,void*)
     void* const view=slot<void*>(dx9rend::g_rendererBase,0x48);
     const Mat4* const transform=getGeometryTransformation();
     const Mat4& camera=slot<const Mat4&>(view,0x64);
-    const Vec3 difference=subtract(position(*transform),position(camera));
+    const Vec3 difference=rendmath::subtract(position(camera),position(*transform));   // PE 0x1007AFE0
     m_distanceToCamera=static_cast<float>(std::sqrt(
         difference.z*difference.z+difference.y*difference.y+difference.x*difference.x));
     std::memcpy(&m_parameters.tail220,&m_distanceToCamera,4);
@@ -324,22 +214,25 @@ void BundledMesh::draw(void*,void*,void*)
         {
             const Vec2& range=g_LightManager->getShadowSunHeightOverFade();
             float u=(m_shadowSunHeight-range.x)/(range.y-range.x);
-            // 101051BA consumes the clamp's ST0 result at 101051BF..CA.
+            // PE 0x1000ED40 (called at 101051BA) tests the high bound first and lands an unordered value
+            // on the low bound; the result is consumed in ST0 at 101051BF..CA.
             if(u>=1.0f)u=1.0f;
-            if(u<0.0f)u=0.0f;
+            if(!(u>=0.0f))u=0.0f;
             factor=u+(1.0f-u)*sample;
         }
         hemiFactor=static_cast<float>(std::pow(static_cast<double>(factor),
                      static_cast<double>(g_LightManager->getShadowSunScalePower())));
     }
-    void* const timer=field<void*>(dx9rend::g_Renderer,0x5DC);
+    void* const timer=dx9rend::rendererFrameTimer();                          // +0x5DC
+    // The timer is a raw 48-byte block of integers and doubles (BF2Render.cpp), so its total time
+    // sits at +0x20 on every target.
     const double now=field<double>(timer,0x20);
     const double elapsed=now-m_shadowFadeTime;
     m_shadowFadeTime=now;
-    double fraction=elapsed/field<double>(g_LightManager,0x838);
+    double fraction=elapsed/lightManagerShadowFadeDuration(g_LightManager);   // +0x838
     if(fraction>1.0)fraction=1.0;
     m_shadowFade=static_cast<float>(m_shadowFade+fraction*(fadeTarget-m_shadowFade));
-    m_lights.last=m_lights.first;
+    m_lights.clear();
 
     bool acceptLights=true,staticSun=false;
     world::ICameraObject* cameraGate=0;
@@ -368,15 +261,22 @@ void BundledMesh::draw(void*,void*,void*)
         const int maximum=g_LightManager->getMaxLightsPerBundledMesh();
         g_LightManager->gatherLightsForGeometry(this,m_lights,maximum,required,0,true);
     }
-    const unsigned int lightCount=vc71::vectorSizeIn(m_lights,4);
-    resizePod(m_lightRecords,lightCount,sizeof(RaLightRecord),true);
+    const unsigned int lightCount=static_cast<unsigned int>(m_lights.size());
+    {
+        // 10102850->10102690: new records are zero up to +38 with 1.0f at +3C and +40; +38 is
+        // uninitialized in the shipped default and overwritten below.
+        RaLightRecord fill;
+        std::memset(&fill,0,0x38);
+        fill.float3C=fill.float40=1.0f;
+        m_lightRecords.resize(lightCount,fill);
+    }
     for(unsigned int i=0;i<lightCount;++i)
     {
-        world::LightSource* const light=reinterpret_cast<world::LightSource**>(m_lights.first)[i];
+        world::LightSource* const light=m_lights[i];
         float range=lightRange(light);
         const world::LightSourceTemplate* templ=lightTemplate(light);
         if(templ && templ->getIsDynamic())range*=g_LightManager->getDynamicLightRangeScale();
-        RaLightRecord& record=reinterpret_cast<RaLightRecord*>(m_lightRecords.first)[i];
+        RaLightRecord& record=m_lightRecords[i];
         copy3(record.position,light->getAbsolutePosition());
         record.invRangeSq=1.0f/(range*range);
         Vec3 color=lightColor(light);
@@ -429,7 +329,7 @@ void BundledMesh::draw(void*,void*,void*)
             }
         }
     }
-    const unsigned int materialCount=vc71::vectorSizeIn(*m_lodMaterials,4);
+    const unsigned int materialCount=static_cast<unsigned int>(m_lodMaterials->size());
     const Mat4& animationCamera=slot<const Mat4&>(slot<void*>(dx9rend::g_rendererBase,0x50),0x64);
     const unsigned int animation=animationIndex(position(animationCamera));
     const float heightScale=2.0f/worldHeight(m_template->m_bounds,*m_partTransforms[0]);
@@ -440,12 +340,12 @@ void BundledMesh::draw(void*,void*,void*)
 
     for(unsigned int index=0;index<materialCount;++index)
     {
-        BundledMeshMaterial* const material=reinterpret_cast<BundledMeshMaterial**>(m_lodMaterials->first)[index];
+        BundledMeshMaterial* const material=(*m_lodMaterials)[index];
         BundledMeshState* const state=material->m_state;
         unsigned int mask=materialFeatures(material,false,caps);
         if(inside && !(mask&0x1000))mask=(mask&~0x100u)|0x200u;
-        unsigned int quality=field<unsigned int>(dx9rend::g_Renderer,0x6CC);
-        if(field<unsigned char>(dx9rend::g_Renderer,0x708) && m_shaderLod>quality)quality=m_shaderLod;
+        unsigned int quality=dx9rend::rendererRaPath();                         // +0x6CC
+        if(dx9rend::rendererTailByte(0x708) && m_shaderLod>quality)quality=m_shaderLod;
         const unsigned int qualityMask=bundledMeshQualityMask(quality);
         mask&=qualityMask;if(!(mask&0x5F))mask|=1;
         RenderQueueEntry* const entry=dx9rend::renderEntryPoolAcquire();
@@ -460,7 +360,7 @@ void BundledMesh::draw(void*,void*,void*)
                                 color.z+(damage.z-color.z)*damagePulse};
             copy3(sun->color,blended);
             sun->scaled24=ambient.z*0.33f+ambient.y*0.33f+ambient.x*0.33f;
-            copy3(sun->unread28,Vec3::getZero());
+            copy3(sun->unread28,rendmath::zeroVector());                // PE 0x1007B1E0
         }
         else
         {
@@ -475,13 +375,15 @@ void BundledMesh::draw(void*,void*,void*)
             }
         }
         configureAlpha(material,mask);
-        field<dx9rend::Ra::RaShader*>(material,0x15C)=bundledMeshShaderForBits(mask);
-        field<float>(material,0x94)=static_cast<float>(m_template->getMaterialValue100(
+        RaMaterialParameters& params=materialParams(material);
+        raMaterialShaderSlot(params)=bundledMeshShaderForBits(mask);                    // +0x15C
+        params.specularPower.value=static_cast<float>(m_template->getMaterialValue100(  // +0x94
             m_geomIndex,m_lodIndex,static_cast<unsigned char>(index)));
         if(state->m_envMap)
         {
             dx9rend::EngineTexture* const texture=bundledMeshEnvironmentTexture();
-            dx9rend::EngineTexture*& old=field<dx9rend::EngineTexture*>(material,0x130);
+            dx9rend::EngineTexture*& old=                                               // +0x130
+                reinterpret_cast<dx9rend::EngineTexture*&>(params.cubeMap.value);
             if(old!=texture)
             {
                 if(old && --old->refCount==0)
@@ -491,24 +393,26 @@ void BundledMesh::draw(void*,void*,void*)
             }
             const int lod=getLodIndex();
             const int geom=getGeomIndex();
-            field<float>(material,0xA4)=m_template->slot_0x44(geom,lod,index);
+            params.reflectivity.value=m_template->slot_0x44(geom,lod,index);           // +0xA4
         }
         if(state->m_feature39)
-            field<float>(material,0x104)=m_template->getSpecularStaticGloss(
+            params.staticGloss.value=m_template->getSpecularStaticGloss(               // +0x104
                 m_geomIndex,m_lodIndex,static_cast<unsigned char>(index));
         unsigned int currentFovBits;std::memcpy(&currentFovBits,&m_fov,4);
         void* const projectionView=slot<void*>(dx9rend::g_rendererBase,
                                                 currentFovBits==0xBF800000u?0x50:0xD4);
-        m_parameters.geomBones.a=reinterpret_cast<unsigned int>(m_partTransforms);
+        // A pointer in the holder's first word: RaParamPair must be pointer-sized on x64.
+        m_parameters.geomBones.a=reinterpret_cast<uintptr_t>(m_partTransforms);
         m_parameters.geomBones.b=m_lodRecord->partCount;
         std::memcpy(&m_parameters.viewProjection.value,
                     &slot<const Mat4&>(projectionView,0x84),sizeof(Mat4));
         if(state->m_animated)
         {
             const unsigned int count=m_template->m_dword10C+1;
-            resizePod(m_parameters.userData.value,count<<6,1,false);
+            // 10106DC0: resize the byte vector; new bytes are zero-filled.
+            m_parameters.userData.value.resize(count<<6);
             for(int i=0;i<static_cast<int>(count);++i)
-                std::memcpy(m_parameters.userData.value.first+64*i,
+                std::memcpy(m_parameters.userData.value.data()+64*i,
                     m_uvMatrices?&m_uvMatrices[i]:&Mat4::getIdentity(),64);
         }
         if(castsDynamicShadow())
@@ -516,9 +420,10 @@ void BundledMesh::draw(void*,void*,void*)
             const unsigned int shadowFrame=frameOrdinal();
             if(getShadowCasterFrame()==shadowFrame && m_shadowProjection && !(staticSun && state->m_cockpit))
             {
-                std::memcpy(&m_parameters.shadowProjMat.value,&field<Mat4>(m_shadowProjection,0x2F8),64);
-                std::memcpy(&m_parameters.shadowTrapMat.value,&field<Mat4>(m_shadowProjection,0x3B8),64);
-                std::memcpy(&m_parameters.shadowOccProjMat.value,&field<Mat4>(m_shadowProjection,0x338),64);
+                const LightShadowRecord* const record=static_cast<const LightShadowRecord*>(m_shadowProjection);
+                std::memcpy(&m_parameters.shadowProjMat.value,&record->matrices[4],64);     // +0x2F8
+                std::memcpy(&m_parameters.shadowTrapMat.value,&record->matrices[7],64);     // +0x3B8
+                std::memcpy(&m_parameters.shadowOccProjMat.value,&record->matrices[5],64);  // +0x338
             }
         }
         if(slot<bool>(dx9rend::g_Renderer,0xAC))
@@ -529,8 +434,9 @@ void BundledMesh::draw(void*,void*,void*)
         }
         else copy3(m_parameters.hemiMapSkyColor.value,g_LightManager->getSkyColor());
         configureAlpha(material,mask);                    // repeated in the shipped draw
-        field<float>(material,0x114)=heightScale;
-        setEntry(entry,material,&m_parameters,field<dx9rend::Ra::RaShader*>(material,0x15C));
+        params.invHemiHeightScale.value=heightScale;                                   // +0x114
+        setEntry(entry,material,&m_parameters,
+                 static_cast<dx9rend::Ra::RaShader*>(raMaterialShaderSlot(params)));   // +0x15C
         if(material->m_kind==1)
         {
             if(m_template->m_primitiveType==4)entry->lighting.tail10C=3*animation*material->m_primitiveCount;
@@ -543,11 +449,11 @@ void BundledMesh::draw(void*,void*,void*)
             else
             {
                 Vec3 direction=lightDirection(skyLight);
-                if(field<unsigned char>(dx9rend::g_Renderer,0x69C))
+                if(dx9rend::rendererRenderSwitch(0x69C))
                 {
                     const Mat4& eye=slot<const Mat4&>(slot<void*>(dx9rend::g_Renderer,0x48),0x64);
                     direction=subtract(position(*getGeometryTransformation()),position(eye));
-                    normalize(direction);
+                    rendmath::normalize(direction);
                 }
                 copy3(sun->direction,direction);
             }
@@ -563,12 +469,12 @@ void BundledMesh::draw(void*,void*,void*)
             const Vec3 direction=subtract(position(*getGeometryTransformation()),origin);
             void* hitObject=0;
             const bool hit=bundledMeshTraceAdditive(this,origin,direction,hitObject);
-            float& fade=field<float>(this,0x2A0);
+            float& fade=*reinterpret_cast<float*>(&m_dword2A0);         // +2A0
             if(!hit || hitObject==refreshRootObject())fade=1.0f;
             else if(fade>epsilon)
             {
-                fade=static_cast<float>(fade-field<float>(dx9rend::g_Renderer,0x59C)
-                                              *field<double>(dx9rend::g_Renderer,0x5E8));
+                fade=static_cast<float>(fade-dx9rend::rendererTailFloat(0x59C)
+                                              *dx9rend::rendererTailDouble(0x5E8));
                 if(fade<0.0f || m_dword2A4+1<frameOrdinal())fade=0.0f;
             }
             m_parameters.transparency.value=fade;
@@ -578,11 +484,11 @@ void BundledMesh::draw(void*,void*,void*)
                 const Mat4& eye=slot<const Mat4&>(view,0x64);
                 Vec3& forward=*reinterpret_cast<Vec3*>(m_inverseTransform->m+8);
                 forward.x=-eye.m[8];forward.y=-eye.m[9];forward.z=-eye.m[10];
-                normalize(forward);
+                rendmath::normalize(forward);
                 Vec3 up=*reinterpret_cast<const Vec3*>(root.m+4);
-                normalize(up);
+                rendmath::normalize(up);
                 if(up.z*forward.z+up.y*forward.y+up.x*forward.x>0.99f)
-                { up=*reinterpret_cast<const Vec3*>(root.m);normalize(up); }
+                { up=*reinterpret_cast<const Vec3*>(root.m);rendmath::normalize(up); }
                 Vec3& right=*reinterpret_cast<Vec3*>(m_inverseTransform->m);
                 right.x=up.y*forward.z-up.z*forward.y;
                 right.y=up.z*forward.x-up.x*forward.z;
@@ -592,10 +498,10 @@ void BundledMesh::draw(void*,void*,void*)
                 vertical.y=right.x*forward.z-forward.x*right.z;
                 vertical.z=forward.x*right.y-right.x*forward.y;
                 copy3(m_inverseTransform->m+12,position(root));
-                m_parameters.geomBones.a=reinterpret_cast<unsigned int>(&m_inverseTransform);
+                m_parameters.geomBones.a=reinterpret_cast<uintptr_t>(&m_inverseTransform);
                 m_parameters.geomBones.b=1;
                 entry->shader=dx9rend::Ra::getShader(
-                    static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues),vc71::string("BMadditive"),false);
+                    static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues),std::string("BMadditive"),false);
                 dx9rend::renderQueueAddToSlot(10,entry);
                 m_dword2A4=frameOrdinal();
             }
@@ -621,12 +527,11 @@ void BundledMesh::draw(void*,void*,void*)
                 if(state->m_alphaTest)delta|=0x400;delta|=0x800;
                 delta&=qualityMask;if(!(delta&0x5F))delta|=1;
                 dx9rend::Ra::RaShader* const shader=bundledMeshShaderForBits(delta);
-                for(unsigned int i=0;i<vc71::vectorSizeIn(m_lightRecords,sizeof(RaLightRecord));++i)
+                for(unsigned int i=0;i<m_lightRecords.size();++i)
                 {
                     RenderQueueEntry* const lit=dx9rend::renderEntryPoolAcquire();
                     setEntry(lit,material,&m_parameters,shader);
-                    *static_cast<RaLightRecord*>(lit->lightArray.lights.value)=
-                        reinterpret_cast<RaLightRecord*>(m_lightRecords.first)[i];
+                    *static_cast<RaLightRecord*>(lit->lightArray.lights.value)=m_lightRecords[i];
                     copyLighting(lit->lighting,entry->lighting);
                     dx9rend::renderQueueEnqueue(lit,transparent,firstPerson,true);
                 }

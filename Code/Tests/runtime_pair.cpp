@@ -1494,6 +1494,17 @@ public:
     explicit ObjectComponentRuntimeProbe(const IObjectTemplate* objectTemplate)
         : Object(objectTemplate) {}
 
+    // ~Object calls objectDestroyed on its template without a null check (PE 0x007200D0). Probes
+    // built without a template get a component-free one before the base destructor runs.
+    virtual ~ObjectComponentRuntimeProbe()
+    {
+        if (!m_template)
+        {
+            static FactorySimpleTemplate placeholder;
+            m_template = &placeholder;
+        }
+    }
+
     void* fastField(unsigned int iid) const
     {
         if (iid == dice::hfe::ai::IID_IAIObject) return m_aiObject;
@@ -5996,8 +6007,12 @@ void testObjectChildHierarchyLifecycle(Checks& checks)
         dice::hfe::world::objectManager;
     dice::hfe::world::ResponsePhysicsManager* savedResponseManager =
         dice::hfe::world::responsePhysicsManager;
+    // Object::setParent republishes through the class static (PE 0x0071E3D0), so the probe is
+    // installed there too; earlier tests leave their own manager in it.
+    dice::hfe::world::ObjectManager* savedStaticManager = Object::mObjectManager;
     dice::hfe::world::objectManager =
         reinterpret_cast<dice::hfe::world::ObjectManager*>(&manager);
+    Object::mObjectManager = dice::hfe::world::objectManager;
     dice::hfe::world::responsePhysicsManager =
         reinterpret_cast<dice::hfe::world::ResponsePhysicsManager*>(&responseManager);
 
@@ -6217,6 +6232,7 @@ void testObjectChildHierarchyLifecycle(Checks& checks)
     }
 
     dice::hfe::world::responsePhysicsManager = savedResponseManager;
+    Object::mObjectManager = savedStaticManager;
     dice::hfe::world::objectManager = savedObjectManager;
 }
 

@@ -1,5 +1,8 @@
 // Frustum setup and intersection queries.
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "Frustum.h"
 #include "../Core/Debug.h"
 
@@ -33,7 +36,8 @@ inline void normalizePlaneNormal(Vec3& n)
 }
 } // namespace
 
-// ELF 0x1A0D00.
+// ELF 0x1A0D00; RendDX9.dll copy PE 0x10030F30 (listing read: the same stores, including the
+// bounding box's own constructor values; nothing else is written).
 // Initializes plane normals, corners, bounds, centre, and identity transform; marks derived data dirty.
 // Leaves plane distances, outcodes, radii, and projection scalars untouched.
 Frustum::Frustum()
@@ -59,7 +63,7 @@ Frustum::Frustum()
     m_type = 2;                                                  // +0x1E4
 }
 
-// ELF 0x494130. Copies setup parameters and transformation, then rebuilds derived planes and corners.
+// ELF 0x494130 (RendDX9.dll's copy is rendmath::frustumAssign). Copies setup parameters and transformation, then rebuilds derived planes and corners.
 Frustum& Frustum::operator=(const Frustum& other)
 {
     m_fov        = other.m_fov;
@@ -128,7 +132,7 @@ void Frustum::setPerspective(float fov, float aspect, float nearDist, float farD
     updateSecondarySizes();
 }
 
-// ELF 0x494A20; engine ELF 0x83B1500 / client PE6DD4C0 / renderer PE1007A7F0. Width/height and distance
+// ELF 0x494A20; engine ELF 0x83B1500 / client PE6DD4C0 (RendDX9.dll's copy is rendmath::frustumSetOrtho). Width/height and distance
 // stores, six axial planes, native plane transform/sign masks, matrix and centre,
 // then the same secondary-size recompute as perspective. FOV/aspect stay untouched.
 void Frustum::setOrtho(float width, float height, float nearDist, float farDist, const Mat4& m)
@@ -216,6 +220,18 @@ void Frustum::setOrtho(float width, float height, float nearDist, float farDist,
         fstp dword ptr [edx+8]
     }
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real midpoint = (static_cast<bf2x87::Real>(nearDist) + farDist) * 0.5L;
+    m_boundingRadius = static_cast<float>(midpoint);
+    m_boundingRadiusSq = static_cast<float>(midpoint * midpoint);
+    m_center.x = m_center.y = 0.0f;
+    m_center.z = static_cast<float>(midpoint);
+    const bf2x87::Real x = m_center.x, y = m_center.y, z = m_center.z;
+    m_center.z = static_cast<float>(m.m[10] * z + m.m[6] * y + m.m[2] * x + m.m[14]);
+    m_center.y = static_cast<float>(m.m[9] * z + m.m[5] * y + m.m[1] * x + m.m[13]);
+    m_center.x = static_cast<float>(m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12]);
+#else
     const long double midpoint = (static_cast<long double>(nearDist) + farDist) * 0.5L;
     m_boundingRadius = static_cast<float>(midpoint);
     m_boundingRadiusSq = static_cast<float>(midpoint * midpoint);
@@ -225,6 +241,7 @@ void Frustum::setOrtho(float width, float height, float nearDist, float farDist,
     m_center.z = static_cast<float>(m.m[10] * z + m.m[6] * y + m.m[2] * x + m.m[14]);
     m_center.y = static_cast<float>(m.m[9] * z + m.m[5] * y + m.m[1] * x + m.m[13]);
     m_center.x = static_cast<float>(m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12]);
+#endif
 #endif
     updateSecondarySizes();
 }
@@ -288,7 +305,7 @@ void Frustum::transform(const Mat4& transformation)
     reSetup();
 }
 
-// ELF 0x4956B0; engine ELF 0x83B2050 / PE6DD7F0: unconditional store followed by reSetup.
+// ELF 0x4956B0; engine ELF 0x83B2050 / PE6DD7F0 (RendDX9.dll's copy is rendmath::frustumSetFarDist): unconditional store followed by reSetup.
 void Frustum::setFarDist(float distance)
 {
     m_farDist = distance;

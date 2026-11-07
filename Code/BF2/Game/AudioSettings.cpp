@@ -7,7 +7,14 @@
 #include "../Core/Ids.h"
 #include "../Core/SmartItf.h"         // classManager
 #include "../Sound/BfSound.h"
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sys/sysctl.h>               // [CHOSEN, not recovered] hw.memsize for the GlobalMemoryStatus arm
+#include <cstdint>
+#endif
+#include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <ostream>
 #include <sstream>
@@ -19,9 +26,23 @@ namespace {
 int physicalMemoryMegabytes()
 {
     try {
+#if defined(_WIN32)
         MEMORYSTATUS status;
         GlobalMemoryStatus(&status);
         int megabytes = static_cast<int>((status.dwTotalPhys + 0x7FFFFu) >> 20);
+#else
+        // [CHOSEN, not recovered] GlobalMemoryStatus for the large-address-aware 32-bit BF2.exe:
+        // dwTotalPhys is a 32-bit DWORD saturated at 0xFFFFFFFF above 4 GB. The same DWORD
+        // arithmetic follows, so a machine with 4 GB or more wraps to 0 MB and selects "Low", as
+        // the retail client does on such a machine.
+        std::uint64_t physical = 0;
+        std::size_t length = sizeof(physical);
+        if (sysctlbyname("hw.memsize", &physical, &length, 0, 0) != 0)
+            physical = 0;
+        const std::uint32_t totalPhys = physical > 0xFFFFFFFFull ? 0xFFFFFFFFu
+                                                                 : static_cast<std::uint32_t>(physical);
+        int megabytes = static_cast<int>(static_cast<std::uint32_t>(totalPhys + 0x7FFFFu) >> 20);
+#endif
         const int remainder = megabytes % 4;
         if (remainder) megabytes += 4 - remainder;
         return megabytes;
@@ -313,6 +334,19 @@ bool AudioSettings::apply(bool reportErrors)
         } else {
             applyRecord(m_current, reportErrors);
             g_bfSound->engine()->playMusic();
+        }
+        // [TEMP] [CHOSEN, not recovered] BF2_AUDIO_TRACE=1: what an apply left in the sound
+        // facade, for unattended option runs. [RETIRE-WHEN: macos-options-validated]
+        const char* trace = std::getenv("BF2_AUDIO_TRACE");
+        if (trace && trace[0] == '1')
+        {
+            std::fprintf(stderr, "[TEMP] [AUDIO] apply result=%d status=%d provider=\"%s\" eax=%d quality=\"%s\" "
+                         "groups effects=%.3f music=%.3f voice=%.3f effects3=%.3f\n",
+                         result ? 1 : 0, m_status, m_current.provider.c_str(), m_current.enableEAX ? 1 : 0,
+                         m_current.soundQuality.c_str(), g_bfSound->getVolumeForGroup(0),
+                         g_bfSound->getVolumeForGroup(1), g_bfSound->getVolumeForGroup(2),
+                         g_bfSound->getVolumeForGroup(3));
+            std::fflush(stderr);
         }
     }
     return result;

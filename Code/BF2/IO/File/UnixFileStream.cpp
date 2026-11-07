@@ -262,6 +262,14 @@ bool UnixFileStream::open(const std::string& name, FileMode mode, FileAccess acc
 
     if (mode == FileMode(0) || mode == FileMode(1))
         m_fileSystem.createDirectory(extractFilePath(file, '/'));
+#if defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] The macOS client stands in for the Win32 client, whose stream also
+    // creates the parent directories for open-always (Win32FileSystem.cpp openFile: modes 0, 1
+    // and 3); the ELF does it for modes 0 and 1 only. The screenshot capture opens its file with
+    // mode 3 under @HOME@/Screenshots, which nothing else creates.
+    else if (mode == FileMode(3))
+        m_fileSystem.createDirectory(extractFilePath(file, '/'));
+#endif
 
     m_fd = ::open(file.c_str(), flags, 0600);               // 0x180: owner read/write only
     if (m_fd == -1)

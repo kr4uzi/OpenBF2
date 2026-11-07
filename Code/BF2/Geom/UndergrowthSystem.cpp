@@ -5,6 +5,9 @@
 
 #include "UndergrowthSystem.h"
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 #include "../Physics/Heightmap.h"
 #include "../Physics/HeightmapCluster.h"
 #include "../RendDX9/RendDX9Base.h"
@@ -27,7 +30,7 @@ namespace dx9rend {
 // BufferManager.cpp - declared per TU, as the other clients do.
 extern void* g_bufferManager;                                              // dword_1023B978
 void* createVertexBuffer(void* bufferManager, unsigned int count, unsigned int stride,
-                         const vc71::string& name, unsigned int usage);
+                         const std::string& name, unsigned int usage);
 void* bufferManagerCreateIndexBuffer(unsigned int count, unsigned int usage,
                                      unsigned int format);
 void  vertexBufferRelease(void* wrapper);                                  // --ref, sub_10014510, free
@@ -46,10 +49,18 @@ namespace {
 float clampRange(float value, float low, float high)
 {
     float v = value;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FCOMI signals invalid for quiet NaNs as well.
+    if (bf2x87::greaterEqual(bf2x87::Real(v), bf2x87::Real(high)))
+        v = high;
+    if (!bf2x87::greaterEqual(bf2x87::Real(v), bf2x87::Real(low)))
+        v = low;
+#else
     if (v >= high)
         v = high;
     if (!(v >= low))
         v = low;
+#endif
     return v;
 }
 
@@ -61,6 +72,21 @@ void releaseParameter(dx9rend::ShaderParameter*& parameter)
         parameter->release();                                                // vtable +0x08
         parameter = 0;
     }
+}
+
+void destroyParameter(dx9rend::ShaderParameter* parameter)
+{
+    if (parameter)
+        parameter->release();
+}
+
+template <typename T>
+void retireVector(std::vector<T>& values)
+{
+    // Destroy elements and release storage before replacing the member with an empty vector.
+    typedef std::vector<T> Vector;
+    values.~Vector();
+    new (&values) Vector();
 }
 
 world::IHeightmapCluster* heightmapCluster()
@@ -78,10 +104,10 @@ world::IHeightmapCluster* heightmapCluster()
 // the constructor. Field order as the instruction stream stores it. Members the shipped
 // constructor does NOT write are left out of the list: m_patchVertexCount / m_patchIndexCount (+0x58),
 // m_terrain (+0xD8), the cell-grid words (+0xE0..+0xE8), the wind speed/amplitude/phase tables
-// (+0x10C..+0x1C8), m_heightmap (+0x568) and the density map's size (+0x578). The profiler stat at
-// +0x300 (sub_10047F20(this+0x300, "Undergrowth")) is stat-only scaffolding and is not reproduced (the
-// RenderQueue precedent). The atlas is allocated last, after every field is set.
+// (+0x10C..+0x1C8), m_heightmap (+0x568) and the density map's size (+0x578).
+// The atlas is allocated last, after every field is set.
 
+// PE 0x1014AD40
 UndergrowthSystem::UndergrowthSystem()
     : m_refCount(1)
     , m_test(1)
@@ -121,21 +147,22 @@ UndergrowthSystem::UndergrowthSystem()
     , m_alphaRef(0.15f)
     , m_atlas(0)
     , m_random()
-    , m_dynamicShadowsEnable(true)
-    , m_simpleShaderEnable(false)
-    , m_zPassPatchCount(0)
-    , m_viewDistanceScale(1.0f)
-    , m_viewDistanceFade(0.2f)
-    , m_editorMode(false)
 {
-    m_visibleCells.first = m_visibleCells.last = m_visibleCells.end = 0;     // +0x2D8..+0x2E0
-    m_drawOrder.first = m_drawOrder.last = m_drawOrder.end = 0;              // +0x2E8..+0x2F0
     m_lastRebuildPosition.x = 0.0f;                                          // +0x2F4..+0x2FC
     m_lastRebuildPosition.y = 0.0f;
     m_lastRebuildPosition.z = 0.0f;
+    static_assert(sizeof(m_profilerStat) >= sizeof(dx9rend::QueueProfiler),
+                  "Undergrowth profiler storage must fit this compiler's STL layout");
+    new (&m_profilerStat) dx9rend::QueueProfiler(std::string("Undergrowth"));
     m_invHeightmapScale.x = 0.0f;                                            // +0x56C..+0x574
     m_invHeightmapScale.y = 0.0f;
     m_invHeightmapScale.z = 0.0f;
+    m_dynamicShadowsEnable = true;
+    m_simpleShaderEnable = false;
+    m_zPassPatchCount = 0;
+    m_viewDistanceScale = 1.0f;
+    m_viewDistanceFade = 0.2f;
+    m_editorMode = false;
 
     // 0x1014AF31..0x1014AF73: `new TextureAtlas` - engineAlloc(0x14), and the constructor only on a
     // non-null block.
@@ -146,52 +173,65 @@ UndergrowthSystem::UndergrowthSystem()
 
 // (through the deleting destructor 0x10151FB0, slot +0x70). The body: clear() if loaded,
 // then the atlas deleted. Everything after that is the member destruction the compiler generated, in
-// reverse declaration order - written out here in that order: the stat (not reproduced), the two
+// reverse declaration order - written out here in that order: the stat, the two
 // plain vectors, the material vector, the 27 parameters from +0xD4 down to +0x6C (including +0x78,
 // which clear() never releases) and the effect, then the atlas texture, and the path string last.
 // None of these member releases nulls its slot.
 
+// PE 0x1014B340
 UndergrowthSystem::~UndergrowthSystem()
 {
     if (m_loaded)
         clear();
 
-    if (m_atlas)
+    dx9rend::TextureAtlas* const atlas = m_atlas;
+    if (atlas)
     {
-        dx9rend::textureAtlasDtor(m_atlas);
-        ::renddx9abi::engineFree(m_atlas);
+        dx9rend::textureAtlasDtor(atlas);
+        ::renddx9abi::engineFree(atlas);
     }
 
-    // sub_10032E40(this + 0x300) - the profiler stat's destructor, not reproduced.
+    reinterpret_cast<dx9rend::QueueProfiler*>(&m_profilerStat)->~QueueProfiler();
 
-    if (m_drawOrder.first)
-        ::renddx9abi::engineFree(m_drawOrder.first);                         // +0x2E8
-    m_drawOrder.first = m_drawOrder.last = m_drawOrder.end = 0;
-    if (m_visibleCells.first)
-        ::renddx9abi::engineFree(m_visibleCells.first);                      // +0x2D8
-    m_visibleCells.first = m_visibleCells.last = m_visibleCells.end = 0;
-    m_materials.clear();                                                     // +0xF8: 101518E0 + free
+    retireVector(m_drawOrder);                                              // +0x2E4
+    retireVector(m_visibleCells);                                           // +0x2D4
+    retireVector(m_materials);                                              // +0xF8
 
-    dx9rend::ShaderParameter* const parameters[] =
-    {
-        m_paramShadowTrapMatrix, m_paramShadowProjMatrix, m_paramShadowMap, m_paramCameraToWater,
-        m_paramTransparencyX8, m_paramAlphaRef, m_paramPointLightColor, m_paramPointLightPosAtten,
-        m_paramWaterFogColor, m_paramWaterFogRange, m_paramAmbientIlluminationRange, m_paramFogColor,
-        m_paramFogRange, m_paramStaticPointColor, m_paramGIColor, m_paramSunColor,
-        m_paramFadeAndHeightScaleOffset, m_paramSwayOffset, m_paramCameraPos,
-        m_paramTerrainTexCoordScaleAndOffset, m_paramPosOffsetAndScale, m_paramWorldView,
-        m_paramWorldViewProjection, m_param078, m_paramTexLayer2, m_paramTexLayer1, m_paramTexLayer0
-    };                                                                       // +0xD4 .. +0x6C
-    for (unsigned int i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i)
-        if (parameters[i])
-            parameters[i]->release();                                        // vtable +0x08
+    destroyParameter(m_paramShadowTrapMatrix);
+    destroyParameter(m_paramShadowProjMatrix);
+    destroyParameter(m_paramShadowMap);
+    destroyParameter(m_paramCameraToWater);
+    destroyParameter(m_paramTransparencyX8);
+    destroyParameter(m_paramAlphaRef);
+    destroyParameter(m_paramPointLightColor);
+    destroyParameter(m_paramPointLightPosAtten);
+    destroyParameter(m_paramWaterFogColor);
+    destroyParameter(m_paramWaterFogRange);
+    destroyParameter(m_paramAmbientIlluminationRange);
+    destroyParameter(m_paramFogColor);
+    destroyParameter(m_paramFogRange);
+    destroyParameter(m_paramStaticPointColor);
+    destroyParameter(m_paramGIColor);
+    destroyParameter(m_paramSunColor);
+    destroyParameter(m_paramFadeAndHeightScaleOffset);
+    destroyParameter(m_paramSwayOffset);
+    destroyParameter(m_paramCameraPos);
+    destroyParameter(m_paramTerrainTexCoordScaleAndOffset);
+    destroyParameter(m_paramPosOffsetAndScale);
+    destroyParameter(m_paramWorldView);
+    destroyParameter(m_paramWorldViewProjection);
+    destroyParameter(m_param078);
+    destroyParameter(m_paramTexLayer2);
+    destroyParameter(m_paramTexLayer1);
+    destroyParameter(m_paramTexLayer0);
     if (m_effect)
         dx9rend::effectRelease(m_effect);                                    // +0x68, vtable +0x08
 
-    if (m_atlasTexture && --m_atlasTexture->refCount == 0)                   // +0x64
+    dx9rend::EngineTexture* const atlasTexture = m_atlasTexture;
+    if (atlasTexture && --atlasTexture->refCount == 0)                        // +0x64
     {
-        dx9rend::textureDtor(m_atlasTexture);
-        ::renddx9abi::engineFree(m_atlasTexture);
+        dx9rend::textureDtor(atlasTexture);
+        ::renddx9abi::engineFree(atlasTexture);
     }
     // m_levelPath's destructor follows as the last member; m_materials' finds the vector empty.
 }
@@ -224,6 +264,7 @@ int UndergrowthSystem::release()
 }
 
 // IBase (1) and IID_IUndergrowthSystem (0xB801DCFF, dword_1021AE90) answer `this`.
+// PE 0x10151ED0
 void* UndergrowthSystem::queryInterface(unsigned int iid) const
 {
     if (iid == 1)
@@ -236,10 +277,19 @@ void* UndergrowthSystem::queryInterface(unsigned int iid) const
 // Keeps the destructor-only +0x78 handle. Fog range is released twice, with the second
 // release seeing null; water fog color is released before water fog range.
 
+// PE 0x1014AF90
 void UndergrowthSystem::clear()
 {
-    if (m_atlasTexture)                                                      // +0x64
-        dx9rend::textureReleaseRef(m_atlasTexture);                          // --ref; dtor + free; null
+    dx9rend::EngineTexture* const atlasTexture = m_atlasTexture;             // +0x64
+    if (atlasTexture)
+    {
+        if (--atlasTexture->refCount == 0)
+        {
+            dx9rend::textureDtor(atlasTexture);
+            ::renddx9abi::engineFree(atlasTexture);
+        }
+        m_atlasTexture = 0;
+    }
     if (m_effect)                                                            // +0x68
     {
         dx9rend::effectRelease(m_effect);
@@ -281,14 +331,14 @@ void UndergrowthSystem::clear()
     m_densityMap = 0;
     m_patchCount = 0;
 
-    m_materials.clear();                                                     // +0xF8, freed
+    retireVector(m_materials);                                              // +0xF8, freed
 
     m_patchVertexCount = 0;
     m_patchIndexCount = 0;
     m_loaded = false;
 }
 
-// the patch record's destructor: the vertex buffer (+0x10), then the index buffer.
+// PE 0x10146310. The patch record's destructor: the vertex buffer (+0x10), then the index buffer.
 UndergrowthPatch::~UndergrowthPatch()
 {
     if (vertexBuffer)
@@ -305,6 +355,7 @@ bool UndergrowthSystem::isLoaded() const { return m_loaded; }                   
 // +0x18, only a loaded system reloads - through the virtual isLoaded and load, the
 // non-virtual clear in between, and the patch rebuild at the scaled view distance. In a game nothing
 // writes m_levelPath (only load's dead editor arm does), so this hands load an empty path - as shipped.
+// PE 0x1014B300
 void UndergrowthSystem::reload()
 {
     if (!isLoaded())
@@ -316,6 +367,7 @@ void UndergrowthSystem::reload()
 
 // +0x1C, the level-unload sweep's call: clear, then hand every distinct atlas page back
 // to the TextureManager's cache. The atlas itself survives (its entries emptied).
+// PE 0x1014B280
 void UndergrowthSystem::unload()
 {
     clear();
@@ -328,7 +380,7 @@ void UndergrowthSystem::unload()
         dx9rend::textureManagerEvictFromCache(pages[i]);
 }
 
-// +0x24, the wind. For each of the sixteen waves: advance the phase by speed * time and
+// PE 0x10145A20. +0x24, the wind. For each of the sixteen waves: advance the phase by speed * time and
 // wrap it into [0, 2pi) with fmod against the double 6.2831854820251465 (dbl_1020AAE8, the float 2pi
 // widened); then x/y = amplitude * sin/cos(phase) and z/w are multiplied by the amplitude IN place -
 // every frame, so they compound. Transcribed, not tidied.
@@ -353,6 +405,7 @@ void UndergrowthSystem::update(float time)
 
 // +0x28, the GeneralHeight of the material painted under (x, z) - the first material
 // whose id matches the density byte, 0 when none does.
+// PE 0x10147990
 float UndergrowthSystem::getTypeHeightAt(float x, float z)
 {
     const int id = densityAt(x, z);
@@ -371,6 +424,7 @@ float UndergrowthSystem::getTypeHeightAt(float x, float z)
 //     ViewDistanceHeight2Scale, dist = ViewDistance);
 //   * result = fade * height - (position.y - terrain height); negative results become 0.
 // The cluster's getPrimaryHeightmap (+0x40) is called and its result discarded, as shipped.
+// PE 0x10147A20
 float UndergrowthSystem::getGrassHeightAbove(const Vec3& position, const Vec3& viewer)
 {
     if (!m_loaded)
@@ -397,6 +451,25 @@ float UndergrowthSystem::getGrassHeightAbove(const Vec3& position, const Vec3& v
         }
     }
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The x distance and first interpolation have float stores;
+    // the y/z distances and the second interpolation remain in x87 registers.
+    typedef bf2x87::Real Real;
+    const float top = bf2x87::store((Real(heights[1]) - heights[0]) * fracX + heights[0]);
+    const float dx = bf2x87::store(Real(viewer.x) - position.x);
+    const Real dy = Real(viewer.y) - position.y;
+    const Real dz = Real(viewer.z) - position.z;
+    const Real distance = bf2x87::squareRoot(dz * dz + Real(dx) * dx + dy * dy);
+    const float quotient = bf2x87::store(
+        (distance - Real(m_viewDistanceHeight2Scale) * m_viewDistance)
+        / ((Real(1.0f) - m_viewDistanceHeight2Scale) * m_viewDistance));
+    const float fade = clampRange(quotient, 0.0f, 1.0f);
+    const Real height = ((Real(heights[3]) - heights[2]) * fracX + heights[2] - top) * fracZ + top;
+    const Real result = height * fade - (Real(position.y) - groundY);
+    if (bf2x87::less(result, Real(0.0f)))
+        return 0.0f;
+    return bf2x87::store(result);
+#else
     const float top = (heights[1] - heights[0]) * fracX + heights[0];
     const float dx = viewer.x - position.x;
     const float dy = viewer.y - position.y;
@@ -411,16 +484,21 @@ float UndergrowthSystem::getGrassHeightAbove(const Vec3& position, const Vec3& v
     if (result < 0.0f)
         return 0.0f;
     return result;
+#endif
 }
 
+// PE 0x10145E20
 void UndergrowthSystem::setEnabled(bool enabled) { m_enabled = enabled; }           // +0x30
 bool UndergrowthSystem::getEnabled() const { return m_enabled; }                    // +0x34
+// PE 0x10151F00
 void UndergrowthSystem::setDynamicShadowsEnable(bool enable) { m_dynamicShadowsEnable = enable; }
 bool UndergrowthSystem::getDynamicShadowsEnable() const { return m_dynamicShadowsEnable; }
 bool UndergrowthSystem::getSimpleShaderEnable() const { return m_simpleShaderEnable; }
+// PE 0x10151F20
 void UndergrowthSystem::setZPassPatchCount(unsigned int count) { m_zPassPatchCount = count; }
 unsigned int UndergrowthSystem::getZPassPatchCount() const { return m_zPassPatchCount; }
 float UndergrowthSystem::getViewDistance() const { return m_viewDistance; }         // +0x64
+// PE 0x10151F50
 void UndergrowthSystem::setViewDistanceScale(float scale)                           // +0x68
 {
     m_viewDistanceScale = clampRange(scale, 0.0f, 1.0f);
@@ -440,6 +518,7 @@ bool UndergrowthSystem::isEditable() const { return false; }
 // +0x40, simpleShaderEnable. Only a change does anything; on a loaded system every
 // patch gets NEW buffers - the vertex stride follows the shader (24 bytes simple, 16 full) - and the
 // patches are rebuilt at the scaled view distance.
+// PE 0x10148E90
 void UndergrowthSystem::setSimpleShaderEnable(bool enable)
 {
     if (m_simpleShaderEnable == enable)
@@ -458,7 +537,7 @@ void UndergrowthSystem::setSimpleShaderEnable(bool enable)
             dx9rend::indexBufferRelease(patch.indexBuffer);
         patch.vertexBuffer = dx9rend::createVertexBuffer(dx9rend::g_bufferManager,
                                                          m_patchVertexCount, stride,
-                                                         vc71::string("UndergrowthSystem"), 8u);
+                                                         std::string("UndergrowthSystem"), 8u);
         patch.indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(m_patchIndexCount, 8u,
                                                                     101u);  // D3DFMT_INDEX16
         if (patch.cell)
@@ -474,7 +553,7 @@ void UndergrowthSystem::setSimpleShaderEnable(bool enable)
 // The two density queries. worldToDensityCell (0x10145B90) is the render path's.
 
 
-// the density byte of the cell under (x, z), bounded by the map's own size
+// PE 0x10145C60. The density byte of the cell under (x, z), bounded by the map's own size
 // (+0x578 x +0x57C); 0 outside.
 int UndergrowthSystem::densityAt(float x, float z)
 {
@@ -491,6 +570,7 @@ int UndergrowthSystem::densityAt(float x, float z)
 // the four density bytes around (x, z) - (c, r), (c+1, r), (c, r+1), (c+1, r+1) - each 0
 // outside the map, plus the fractions. The bounds AND the row stride here come from the primary
 // heightmap's size (getPrimaryHeightmap()->getSize), not from the density map's own +0x578/+0x57C.
+// PE 0x10145CD0
 void UndergrowthSystem::densityCornersAt(float x, float z, int ids[4], float* fracX, float* fracZ)
 {
     world::IHeightmapCluster* const cluster = heightmapCluster();
@@ -502,9 +582,17 @@ void UndergrowthSystem::densityCornersAt(float x, float z, int ids[4], float* fr
     worldToDensityCell(x, z, &col, &row, fracX, fracZ);
 
     const bool colIn  = col >= 0 && col < width;
-    const bool col1In = col + 1 >= 0 && col + 1 < width;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] LEA wraps at 32 bits even for an invalid conversion result.
+    const int nextCol = bf2x87::lowWord(static_cast<std::int64_t>(col) + 1);
+    const int nextRow = bf2x87::lowWord(static_cast<std::int64_t>(row) + 1);
+#else
+    const int nextCol = col + 1;
+    const int nextRow = row + 1;
+#endif
+    const bool col1In = nextCol >= 0 && nextCol < width;
     const bool rowIn  = row >= 0 && row < height;
-    const bool row1In = row + 1 >= 0 && row + 1 < height;
+    const bool row1In = nextRow >= 0 && nextRow < height;
     ids[0] = (colIn && rowIn)   ? m_densityMap[width * row + col] : 0;
     ids[1] = (col1In && rowIn)  ? m_densityMap[width * row + col + 1] : 0;
     ids[2] = (colIn && row1In)  ? m_densityMap[width * (row + 1) + col] : 0;
@@ -520,7 +608,7 @@ IBase* __fastcall createUndergrowthSystem(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
-    void* const storage = ::renddx9abi::engineAlloc(0x598);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(UndergrowthSystem));
     UndergrowthSystem* const self = storage ? new (storage) UndergrowthSystem() : 0;
     void* const itf = self->queryInterface(iid);
     if (!itf)

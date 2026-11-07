@@ -11,6 +11,10 @@
 #include "../../RendDX9/ShaderParameter.h"   // the TEXLAYER0 handle
 #include "../../RendDX9/Texture.h"           // EngineTexture, textureReleaseRef
 #include "../../RendMisc/IRenderView.h"      // the viewport the draw maps pixels through
+#include "../../Math/Vec3.h"                 // Vec2 - the scale pair (+0x28/+0x2C)
+#include <d3dx9.h>                            // HRESULT, RECT, D3DCOLOR, STDMETHODCALLTYPE
+#include <cstdio>
+#include <cstdlib>
 
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +27,7 @@ namespace dx9rend {
 // them already exist in the tree (BufferManager.cpp, ShaderManager.cpp, StateManager.cpp) except
 // the three marked NEW, whose bodies the dc_console report gives for BufferManager.cpp / Effect.cpp.
 extern void* g_shaderManager;                                       // dword_1023B97C
+extern void* g_rendererBase;                                        // dword_1023B970 (EditorFont)
 int   bufferManagerSwapPool(int value);                             // sub_100113B0 - BufferManager+0x08
 void* bufferManagerCreateVertexBuffer(unsigned int count, unsigned int stride,
                                       unsigned int usage, const char* name);   // sub_10011FF0
@@ -80,24 +85,26 @@ public:
     virtual int   release();                                // +0x08
     virtual void* queryInterface(unsigned int iid) const;   // +0x0C
 
-    virtual bool load(const vc71::string& path);            // +0x10  0x100876A0   read
+    virtual bool load(const std::string& path);            // +0x10  0x100876A0   read
     // Separate draw names preserve virtual slot order; MSVC may regroup same-named virtual overloads.
-    virtual void drawTextColoured(float x, float y, const vc71::string& text,
+    virtual void drawTextColoured(float x, float y, const std::string& text,
                                   unsigned int colour);     // +0x14  0x10087A90   written
-    virtual void drawText(float x, float y, const vc71::string& text);   // +0x18  0x10087130  written
+    virtual void drawText(float x, float y, const std::string& text);   // +0x18  0x10087130  written
     virtual int  getHeight();                               // +0x1C  0x10087150   written
-    // [FRONTIER] Remaining character metrics, scaling and default-color virtuals need typed implementations.
-    virtual void slot_0x20();
-    virtual void slot_0x24();
-    virtual void slot_0x28();
-    virtual void slot_0x2C();
-    virtual void slot_0x30();
-    virtual void slot_0x34();                               // 0x10087210   the last slot
+    virtual int  getCharacterWidth(unsigned char character); // +0x20  0x100871B0   written
+    virtual int  getTextWidth(const std::string& text);     // +0x24  0x10087160   written
+    // The text scale at +0x08/+0x0C. [INFERRED] names and spellings: no caller in either image;
+    // the setter takes two dwords (`retn 8`), the getter returns the pair through the hidden
+    // return pointer (`retn 4`), as OverlayTexture's size/position getters do.
+    virtual void setScale(float x, float y);                // +0x28  0x100872E0
+    virtual Vec2 getScale() const;                          // +0x2C  0x10087300
+    virtual void setColour(unsigned colour);                // +0x30  0x10087200   written
+    virtual unsigned getColour();                           // +0x34  0x10087210   the last slot
 
     // , `retn 10h` - not a vtable slot. Its only caller in the image is
     // NameTagRenderer::bufferItem (0x101B2467), which blits a player's name into the name texture.
     float drawToTexture(dx9rend::EngineTexture* target, POINT* position,
-                        const vc71::string& text, bool fromSystemMemory);
+                        const std::string& text, bool fromSystemMemory);
 
 private:
     int           m_refCount;      // +0x004  ctor: 1
@@ -119,14 +126,13 @@ private:
     unsigned char m_padC26[2];
     int           m_textureWidth;  // +0xC28  "TextureWidth = %d"
     int           m_textureHeight; // +0xC2C  "TextureHeight = %d"
-    vc71::string  m_textureName;   // +0xC30  the "Texture = %s" value
+    std::string  m_textureName;   // +0xC30  the "Texture = %s" value
     void*         m_texture;       // +0xC4C  loaded from m_textureName
     void*         m_textureDef;    // +0xC50  loaded from m_textureName + "_def"
     void*         m_textureSys; // System-memory texture cache; loaded on first use and released before the other textures.
 };
 
-static_assert(sizeof(FontPorted) == 0xC58,
-              "geom_DebugTextWriter_ctor allocates 0xC58 for it - see 0x1009B7C0");
+
 
 
 // The first font creates shared draw resources; later instances add references.
@@ -197,14 +203,14 @@ FontPorted::FontPorted()
         s_portedFontEffect = static_cast<dx9rend::Effect*>(dx9rend::shaderManagerGetEffect(
             dx9rend::g_shaderManager, "mods/xpack/Shaders/PortedFontShader"));
         s_portedFontTexLayer0 =
-            dx9rend::effectGetShaderParameterTyped(s_portedFontEffect, vc71::string("TEXLAYER0"));
+            dx9rend::effectGetShaderParameterTyped(s_portedFontEffect, std::string("TEXLAYER0"));
 
         // [CHOSEN] diagnostic, not in retail (once, on the first construction).
-        ::renddx9abi::logf("Font::Ported: shared draw resources created - PortedFontRend 0x%08X, "
-                           "PortedFontShader 0x%08X, TEXLAYER0 0x%08X",
-                           ::renddx9abi::addr(s_portedFontVertexBuffer),
-                           ::renddx9abi::addr(s_portedFontEffect),
-                           ::renddx9abi::addr(s_portedFontTexLayer0));
+        ::renddx9abi::logf("Font::Ported: shared draw resources created - PortedFontRend 0x%p, "
+                           "PortedFontShader 0x%p, TEXLAYER0 0x%p",
+                           s_portedFontVertexBuffer,
+                           static_cast<const void*>(s_portedFontEffect),
+                           static_cast<const void*>(s_portedFontTexLayer0));
     }
     else
     {
@@ -237,6 +243,7 @@ int  FontPorted::getRef() { return m_refCount; }
 
 // release - 0x10087E30: `--[this+4]`; at zero the destructor 0x10087220 and then sub_1005F360 (the
 // engine free); returns the decremented count either way.
+// PE 0x10087E30
 int FontPorted::release()
 {
     const int remaining = --m_refCount;
@@ -248,6 +255,7 @@ int FontPorted::release()
     return remaining;
 }
 
+// PE 0x10088030: IDs 1 and 80001 (word 0x1020AE20) answer the receiver, everything else null; ret 4.
 void* FontPorted::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IFontPorted)
@@ -258,7 +266,7 @@ void* FontPorted::queryInterface(unsigned int iid) const
 // Loads font metrics and the normal/default-pool textures through the host filesystem.
 // Glyph widths remain in texels; UVs are normalized and biased to texel centres.
 // Returns success without reloading once the default-pool texture exists.
-bool FontPorted::load(const vc71::string& path)
+bool FontPorted::load(const std::string& path)
 {
     RD9_TRACE("dice::hfe::geom::Font::Ported::load", 0x10);
 
@@ -287,7 +295,7 @@ bool FontPorted::load(const vc71::string& path)
     const char* cur = reinterpret_cast<const char*>(file.data);
     const char* end = cur + file.size;
 
-    vc71::string textureName;
+    std::string textureName;
     int glyphCount = 0;
 
     while (cur < end)
@@ -366,17 +374,17 @@ bool FontPorted::load(const vc71::string& path)
 
     // sub_10017E20(0) around the "_def" load only: the def texture is created in D3DPOOL_DEFAULT.
     const int savedManaged = dx9rend::textureManagerSwapManaged(0);
-    vc71::string defName(m_textureName);
+    std::string defName(m_textureName);
     defName += "_def";
     m_textureDef = dx9rend::textureManagerGetTexture(defName);
     dx9rend::textureManagerSwapManaged(savedManaged);
 
     ::renddx9abi::logf("Font::Ported::load(\"%s\"): PARSED - texture=\"%s\" %dx%d, height=%d "
                        "between=%d space=%d alphaTest=%d alphaBlend=%d, %d glyphs; textures "
-                       "0x%08X and (def, DEFAULT pool) 0x%08X",
+                       "0x%p and (def, DEFAULT pool) 0x%p",
                        path.c_str(), textureName.c_str(), m_textureWidth, m_textureHeight,
                        m_height, m_betweenWidth, m_spaceWidth, m_alphaTest, m_alphaBlend,
-                       glyphCount, ::renddx9abi::addr(m_texture), ::renddx9abi::addr(m_textureDef));
+                       glyphCount, m_texture, m_textureDef);
     return true;
 }
 
@@ -384,7 +392,7 @@ bool FontPorted::load(const vc71::string& path)
 // [INFERRED] method name. The text must fit the shared 1024-glyph buffer; no bounds check is made.
 // Coordinates ignore the viewport origin and use no half-pixel offset. Lock/unlock failure
 // Abandons the draw. Float intermediates depend on the renderer's 24-bit precision (RW-240).
-void FontPorted::drawTextColoured(float x, float y, const vc71::string& text, unsigned int colour)
+void FontPorted::drawTextColoured(float x, float y, const std::string& text, unsigned int colour)
 {
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();
     const float inverseWidth = 1.0f / view->getViewport()[2];
@@ -444,7 +452,7 @@ void FontPorted::drawTextColoured(float x, float y, const vc71::string& text, un
     if (!glyphCount)
         return;
 
-    dx9rend::effectSetTechniqueByName(s_portedFontEffect, vc71::string("Text"));
+    dx9rend::effectSetTechniqueByName(s_portedFontEffect, std::string("Text"));
     dx9rend::effectBeginCurrentTechniqueStates(s_portedFontEffect);         // "Text_States"
     s_portedFontTexLayer0->setValue(m_texture, 0);                          // +0xC4C
     dx9rend::effectBegin(s_portedFontEffect);
@@ -457,7 +465,7 @@ void FontPorted::drawTextColoured(float x, float y, const vc71::string& text, un
 }
 
 // Draws text through the colored virtual overload using the current default color.
-void FontPorted::drawText(float x, float y, const vc71::string& text)
+void FontPorted::drawText(float x, float y, const std::string& text)
 {
     drawTextColoured(x, y, text, m_colour);
 }
@@ -468,20 +476,41 @@ int FontPorted::getHeight()
     return m_height;
 }
 
-#define RD9_FP_FRONTIER(method, slotOffset)                                     \
-    void FontPorted::method()                                                   \
-    {                                                                           \
-        RD9_FRONTIER("dice::hfe::geom::Font::Ported::" #method, slotOffset);    \
-    }
+// +0x20, PE 0x100871B0: a space returns SpaceWidth (+0xC20); any other byte is its glyph width
+// (+0x20 + 12 * c), truncated by the fistp under a chop control word, plus BetweenWidth (+0xC1C).
+int FontPorted::getCharacterWidth(unsigned char character)
+{
+    return character == ' ' ? m_spaceWidth : static_cast<int>(m_glyphs[character].width) + m_betweenWidth;
+}
 
-RD9_FP_FRONTIER(slot_0x20, 0x20)
-RD9_FP_FRONTIER(slot_0x24, 0x24)
-RD9_FP_FRONTIER(slot_0x28, 0x28)
-RD9_FP_FRONTIER(slot_0x2C, 0x2C)
-RD9_FP_FRONTIER(slot_0x30, 0x30)
-RD9_FP_FRONTIER(slot_0x34, 0x34)
+// +0x24, PE 0x10087160: the sum of the +0x20 widths, each byte through the virtual slot.
+int FontPorted::getTextWidth(const std::string& text)
+{
+    int width = 0;
+    for (unsigned i = 0; i < text.size(); ++i)
+        width += getCharacterWidth(static_cast<unsigned char>(text.c_str()[i]));
+    return width;
+}
 
-#undef RD9_FP_FRONTIER
+// +0x30 (PE 0x10087200) and +0x34 (PE 0x10087210): the default colour at +0x14.
+void FontPorted::setColour(unsigned colour) { m_colour = colour; }
+unsigned FontPorted::getColour() { return m_colour; }
+
+// +0x28, PE 0x100872E0: store both words, x to +0x08 and y to +0x0C.
+void FontPorted::setScale(float x, float y)
+{
+    m_scaleX = x;
+    m_scaleY = y;
+}
+
+// +0x2C, PE 0x10087300: copy {+0x08, +0x0C} out through the hidden return pointer.
+Vec2 FontPorted::getScale() const
+{
+    Vec2 scale;
+    scale.x = m_scaleX;
+    scale.y = m_scaleY;
+    return scale;
+}
 
 // RefFactory_geom_Font_Ported, 0x1007C7C0. Same shape and __fastcall convention as the others.
 IBase* __fastcall createFontPorted(unsigned int iid, IBase* outer)
@@ -504,11 +533,240 @@ IBase* createFontPortedDirect()
 }
 
 
+// =================================================================================================
+// EditorFont - "dice.hfe.geom.Font.Editor" (getClassList 0x1007D811, class id dword_1020AF20 =
+// 81043, factory 0x1007C810), the IFont (IID 80001) implementation on a D3DX font that the editor
+// uses. [INFERRED] class name from the registry name; [INFERRED] placement in this TU from its
+// bodies (0x10087EA0..0x100880B0) directly following FontPorted's; it has no Debug emitter, so no
+// __FILE__ string attests it. No caller exists in any inspected image (BF2.exe references neither
+// the class id nor the name); it is reached only through the class registry.
+// Layout (retail 0x10 bytes): +0x00 IBase vptr (0x1020B0B4), +0x04 device-listener vptr
+// (0x1020B0A8), +0x08 reference count, +0x0C the D3DX font.
+// =================================================================================================
+
+// The ID3DXFont the editor font draws through, in d3dx9core.h (April 2005) slot order; EditorFont
+// calls Release (+0x08), DrawTextA (+0x38), OnLostDevice (+0x40) and OnResetDevice (+0x44).
+// [CHOSEN, not recovered] local name: the D3DX headers of the native backends declare no ID3DXFont.
+struct EditorFontD3DX
+{
+    virtual HRESULT STDMETHODCALLTYPE QueryInterface(const void* iid, void** object) = 0;
+    virtual ULONG   STDMETHODCALLTYPE AddRef() = 0;
+    virtual ULONG   STDMETHODCALLTYPE Release() = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9** device) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDescA(void* desc) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDescW(void* desc) = 0;
+    virtual BOOL    STDMETHODCALLTYPE GetTextMetricsA(void* metrics) = 0;
+    virtual BOOL    STDMETHODCALLTYPE GetTextMetricsW(void* metrics) = 0;
+    virtual void*   STDMETHODCALLTYPE GetDC() = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetGlyphData(UINT glyph, void** texture, RECT* blackBox,
+                                                   POINT* cellInc) = 0;
+    virtual HRESULT STDMETHODCALLTYPE PreloadCharacters(UINT first, UINT last) = 0;
+    virtual HRESULT STDMETHODCALLTYPE PreloadGlyphs(UINT first, UINT last) = 0;
+    virtual HRESULT STDMETHODCALLTYPE PreloadTextA(const char* text, INT count) = 0;
+    virtual HRESULT STDMETHODCALLTYPE PreloadTextW(const wchar_t* text, INT count) = 0;
+    virtual INT     STDMETHODCALLTYPE DrawTextA(void* sprite, const char* text, INT count,
+                                                RECT* rect, DWORD format, D3DCOLOR colour) = 0;
+    virtual INT     STDMETHODCALLTYPE DrawTextW(void* sprite, const wchar_t* text, INT count,
+                                                RECT* rect, DWORD format, D3DCOLOR colour) = 0;
+    virtual HRESULT STDMETHODCALLTYPE OnLostDevice() = 0;
+    virtual HRESULT STDMETHODCALLTYPE OnResetDevice() = 0;
+};
+
+// The D3DXCreateFontA import PE 0x10087E87 calls (d3dx9_25.dll): device, height 12, width 8,
+// weight 400, mip levels 0, italic 0, charset 0, output precision 4, quality 4, pitch and family 0,
+// "Arial", out. [FRONTIER] [TEMP] [CHOSEN, not recovered]: no backend of this tree provides the
+// D3DX font, so the call reports and stops. Missing pieces (reviewed in round 16): (1) a system
+// TrueType rasterizer for "Arial" at 12x8, weight 400 - the native backends have no GDI and the tree
+// uses neither CoreText nor FreeType anywhere; (2) an ID3DXFont object in the Metal D3DX subset
+// (Platform/Gfx/Metal/D3DX*, D3DX9Subset.h) with a glyph texture and a sprite-less DrawTextA quad
+// path that saves and restores device state as D3DXLine.cpp does, honouring DT_CALCRECT (0x400) and
+// DT_NOCLIP (0x100); (3) D3DXCreateFontA in Code/RendDX9Abi/D3dx9_25.def for the Windows images.
+// EditorFont has no caller in any inspected image (class registry only), so no game path reaches
+// this stop. [RETIRE-WHEN: d3dx-font] those pieces exist; then call D3DXCreateFontA with the
+// arguments above, validated by an editor run that draws text through EditorFont.
+HRESULT editorFontCreateD3DXFont(IDirect3DDevice9* /*device*/, EditorFontD3DX** /*font*/)
+{
+    std::fprintf(stderr, "[FRONTIER] dice::hfe::geom::editorFontCreateD3DXFont reached: "
+                         "D3DXCreateFontA (12x8, weight 400, \"Arial\") has no backend\n");
+    std::fflush(stderr);
+    std::abort();
+}
+
+class EditorFont : public IBase, public dx9rend::DeviceLostResetListener
+{
+public:
+    EditorFont();
+    ~EditorFont();                                          // not a slot; release() calls it
+
+    virtual void  addRef();                                 // +0x00  0x1001A010 (folded)
+    virtual int   getRef();                                 // +0x04  0x10051870 (folded)
+    virtual int   release();                                // +0x08  0x10088070
+    virtual void* queryInterface(unsigned int iid) const;   // +0x0C  0x10088030 (FontPorted's)
+
+    virtual bool load(const std::string& path);            // +0x10  0x10087E60
+    virtual void drawTextColoured(float x, float y, const std::string& text,
+                                  unsigned int colour);     // +0x14  0x10087EC0
+    virtual void drawText(float x, float y, const std::string& text);   // +0x18  0x10087EA0
+    // +0x1C..+0x34: the shared do-nothing bodies the image folds (0x100ED3B0 `xor eax, eax; ret`,
+    // 0x10088060 `xor eax, eax; ret 4`, 0x100E1480 `ret 8`, 0x100525C0 the zeroed pair through the
+    // hidden return, 0x100E13B0 `ret 4`).
+    virtual int  getHeight();                               // +0x1C  0x100ED3B0
+    virtual int  getCharacterWidth(unsigned char character); // +0x20  0x10088060
+    virtual int  getTextWidth(const std::string& text);     // +0x24  0x10088060
+    virtual void setScale(float x, float y);                // +0x28  0x100E1480
+    virtual Vec2 getScale() const;                          // +0x2C  0x100525C0
+    virtual void setColour(unsigned colour);                // +0x30  0x100E13B0
+    virtual unsigned getColour();                           // +0x34  0x100ED3B0
+    virtual void releaseFont();                             // +0x38  0x10087F60 [INFERRED] name
+
+    virtual void onDeviceLost();                            // listener +0x00  0x10087F80
+    virtual void onDeviceReset();                           // listener +0x04  0x10087F90
+    virtual void onDeviceDestroy();                         // listener +0x08  0x10087FA0
+
+private:
+    int             m_refCount;                             // +0x08  ctor: 1
+    EditorFontD3DX* m_font;                                 // +0x0C
+};
+
+// PE 0x10087FF0. The listener vptr passes through the base table (0x101DC4A0), the count becomes 1
+// and the listener is registered at priority 1 (renderer list +0x5C, 0x10009D60).
+// [CHOSEN, not recovered] m_font = 0: retail never initialises +0x0C (the engine heap does not
+// zero), so a font released before load() reads a stale pointer; the memory-safety exception
+// keeps that uninitialised read out (docs/tracks/rend/codex/rules.md).
+EditorFont::EditorFont()
+    : m_refCount(1), m_font(0)
+{
+    dx9rend::registerDeviceLostResetListener(this, 1);
+}
+
+// PE 0x10087FB0: unregister while a renderer exists, then release the font.
+EditorFont::~EditorFont()
+{
+    if (dx9rend::g_rendererBase)
+        dx9rend::unregisterDeviceLostResetListener(this);
+    if (m_font)
+    {
+        m_font->Release();
+        m_font = 0;
+    }
+}
+
+void EditorFont::addRef() { ++m_refCount; }
+int  EditorFont::getRef() { return m_refCount; }
+
+// PE 0x10088070: the decremented count; at zero the destructor and the engine free (0x1005F360).
+int EditorFont::release()
+{
+    const int remaining = --m_refCount;
+    if (remaining == 0)
+    {
+        this->~EditorFont();
+        ::renddx9abi::engineFree(this);
+    }
+    return remaining;
+}
+
+// PE 0x10088030, shared with FontPorted: IBase or IID 80001.
+void* EditorFont::queryInterface(unsigned int iid) const
+{
+    if (iid == RD9_IID_IBASE || iid == IID_IFontPorted)
+        return const_cast<EditorFont*>(static_cast<const EditorFont*>(this));
+    return 0;
+}
+
+// PE 0x10087E60 (`retn 4`): the path is never read; the D3DX font is created on the renderer's
+// device (+0x0C) into +0x0C, and the answer is whether D3DXCreateFontA returned exactly S_OK.
+bool EditorFont::load(const std::string& /*path*/)
+{
+    return editorFontCreateD3DXFont(
+        static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->device, &m_font) == 0;
+}
+
+// PE 0x10087EC0. The rectangle collapses to the truncated position; DrawTextA runs twice, first
+// with DT_CALCRECT (0x400), then with DT_NOCLIP (0x100), both without a sprite. The font is called
+// without a null test (shipped: drawing before a successful load dereferences null).
+void EditorFont::drawTextColoured(float x, float y, const std::string& text, unsigned int colour)
+{
+    RECT rect;
+    rect.left = static_cast<LONG>(x);
+    rect.right = rect.left;
+    rect.top = static_cast<LONG>(y);
+    rect.bottom = rect.top;
+    m_font->DrawTextA(0, text.c_str(), static_cast<INT>(text.size()), &rect, 0x400u, colour);
+    m_font->DrawTextA(0, text.c_str(), static_cast<INT>(text.size()), &rect, 0x100u, colour);
+}
+
+// PE 0x10087EA0: the coloured draw through its own slot +0x14 in opaque black.
+void EditorFont::drawText(float x, float y, const std::string& text)
+{
+    drawTextColoured(x, y, text, 0xFF000000u);
+}
+
+int  EditorFont::getHeight() { return 0; }
+int  EditorFont::getCharacterWidth(unsigned char) { return 0; }
+int  EditorFont::getTextWidth(const std::string&) { return 0; }
+void EditorFont::setScale(float, float) {}
+Vec2 EditorFont::getScale() const
+{
+    Vec2 scale;
+    scale.x = 0.0f;
+    scale.y = 0.0f;
+    return scale;
+}
+void EditorFont::setColour(unsigned) {}
+unsigned EditorFont::getColour() { return 0; }
+
+// PE 0x10087F60: release the font and clear the member.
+void EditorFont::releaseFont()
+{
+    if (m_font)
+    {
+        m_font->Release();
+        m_font = 0;
+    }
+}
+
+// PE 0x10087F80 / 0x10087F90: forward the device events to the font when one exists.
+void EditorFont::onDeviceLost()
+{
+    if (m_font)
+        m_font->OnLostDevice();
+}
+void EditorFont::onDeviceReset()
+{
+    if (m_font)
+        m_font->OnResetDevice();
+}
+
+// PE 0x10087FA0: adjust to the primary object and dispatch its slot +0x38.
+void EditorFont::onDeviceDestroy()
+{
+    releaseFont();
+}
+
+// RefFactory_geom_Font_Editor, PE 0x1007C810: refuse aggregation, construct, ask the requested
+// interface, release on refusal. The shipped body queries without testing the allocation.
+IBase* __fastcall createEditorFont(unsigned int iid, IBase* outer)
+{
+    if (outer)
+        return 0;
+
+    EditorFont* self = new EditorFont();
+
+    void* itf = self->queryInterface(iid);
+    if (!itf)
+        self->release();
+    return static_cast<IBase*>(itf);
+}
+
+extern const unsigned int CID_EditorFont = 81043u;          // dword_1020AF20
+
+
 // Draws text into the target texture, advances x and returns the total advance; empty text returns zero.
 // Spaces advance without drawing. System-memory sources use UpdateSurface; other sources use StretchRect.
 
 float FontPorted::drawToTexture(dx9rend::EngineTexture* target, POINT* position,
-                                const vc71::string& text, bool fromSystemMemory)
+                                const std::string& text, bool fromSystemMemory)
 {
     const int length = static_cast<int>(text.size());
     if (length <= 0)
@@ -517,7 +775,7 @@ float FontPorted::drawToTexture(dx9rend::EngineTexture* target, POINT* position,
     if (fromSystemMemory && !m_textureSys)
     {
         const int savedManaged = dx9rend::textureManagerSwapManaged(2);   // sub_10017E20
-        vc71::string sysName(m_textureName);                             // sub_100019A0:
+        std::string sysName(m_textureName);                             // sub_100019A0:
         sysName += "_sys";                                                //   name + "_sys"
         m_textureSys = dx9rend::textureManagerGetTexture(sysName);        // sub_10019260
         dx9rend::textureManagerSwapManaged(savedManaged);
@@ -568,13 +826,13 @@ float FontPorted::drawToTexture(dx9rend::EngineTexture* target, POINT* position,
 
 // The two seams NameTagRenderer.cpp declares. Font::Ported vslot +0x10 is load(const std::string&)
 // (0x100876A0); the typed call below dispatches through that same slot.
-bool fontPortedLoad(IBase* font, const vc71::string& path)
+bool fontPortedLoad(IBase* font, const std::string& path)
 {
     return static_cast<FontPorted*>(font)->load(path);
 }
 
 float fontPortedDrawToTexture(IBase* font, dx9rend::EngineTexture* target, POINT* position,
-                              const vc71::string& text, bool fromSystemMemory)
+                              const std::string& text, bool fromSystemMemory)
 {
     return static_cast<FontPorted*>(font)->drawToTexture(target, position, text, fromSystemMemory);
 }
@@ -585,10 +843,17 @@ int fontPortedGetHeight(IBase* font)
     return static_cast<FontPorted*>(font)->getHeight();
 }
 
-void fontPortedDrawText(IBase* font, float x, float y, const vc71::string& text)
+void fontPortedDrawText(IBase* font, float x, float y, const std::string& text)
 {
     static_cast<FontPorted*>(font)->drawText(x, y, text);
 }
+
+int fontPortedGetTextWidth(IBase* font, const std::string& text)
+{ return static_cast<FontPorted*>(font)->getTextWidth(text); }
+unsigned fontPortedGetColour(IBase* font)
+{ return static_cast<FontPorted*>(font)->getColour(); }
+void fontPortedSetColour(IBase* font, unsigned colour)
+{ static_cast<FontPorted*>(font)->setColour(colour); }
 
 } // namespace geom
 } // namespace hfe

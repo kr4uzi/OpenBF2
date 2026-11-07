@@ -142,7 +142,7 @@ public:
 
     virtual void  removeMapping(unsigned int id);
     virtual void  reset();
-    virtual void  reset(int id, bool a, bool b, bool c);
+    virtual void  reset(int id, bool positive, bool negative, bool alternate); // 0x8492AC0, 256  recovered
 
     virtual void  setButtonRiseTime(float t);                   // 0x8492BE0,   14   recovered
     virtual void  setButtonFallTime(float t);                   // 0x8492C00,   14   recovered

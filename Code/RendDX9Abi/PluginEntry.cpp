@@ -3,8 +3,43 @@
 #include "PluginEntry.h"
 #include "PluginModules.h"
 #include "Frontier.h"
+#include "../BF2/Core/Debug.h"
 
 #include <cassert>
+
+namespace renddx9abi {
+
+// The Memory.dll name tag (PE dword_10244A8C) that the image's engine-heap operator new and new[]
+// pass to bf_malloc as its second argument (PE 0x1005F323, 0x1005F343). Zero until initDll names
+// the image. Nothing here reads it: the shipped bf_malloc ignores that argument (Code/BF2/Memory/
+// Memory.cpp), and engineAlloc (BfMemory.cpp) takes no tag.
+int memoryNameTag = 0;
+
+namespace {
+
+// [CHOSEN, not recovered] Host side of the import Memory.dll!addMemoryName (IAT slot 0x101DB37C).
+// No game image links Memory.dll (Code/BF2/Memory is its own image, issue #7,
+// https://github.com/B2BF/OpenBF2/issues/7), so the call ends here and answers what the shipped
+// Memory.dll answers for every name: its addMemoryName (Memory.dll PE 0x10002230, recovered in
+// Code/BF2/Memory/Memory.cpp) is compiled out and returns 0.
+int hostAddMemoryName(const char* name)
+{
+    (void)name;
+    return 0;
+}
+
+} // anonymous namespace
+
+// PE 0x1005F300. Names the image's heap category once: while the tag is still zero it asks
+// Memory.dll for the name's tag and stores the answer. The shipped Memory.dll answers 0, so the
+// guard never closes and every call asks again; initDll calls it once per load.
+void registerMemoryName(const char* name)
+{
+    if (memoryNameTag == 0)
+        memoryNameTag = hostAddMemoryName(name);
+}
+
+} // namespace renddx9abi
 
 namespace dice {
 namespace hfe {
@@ -14,23 +49,19 @@ namespace hfe {
 // Native mode uses typed interfaces where available.
 IClassManager* classManager           = 0;
 
-#if BF2_PLUGIN_ABI_NATIVE
 SettingsRepostitory* settings         = 0;   // 0x10244A90  "SettingsRepostitory"  (dice's typo)
-#else
-IBase* settings                       = 0;   // legacy host's unadjusted primary pointer
-#endif
 ConsoleObjects* mainConsoleObjects    = 0;
 IBase* mainConsole                    = 0;
 ::renddx9abi::HostFileManager* fileManager = 0;
 IBase* fileChangeManager              = 0;
-IBase* bfGlobal_callback              = 0;
-IBase* bfGlobal_callbackData          = 0;
-IBase* debugOn                        = 0;
-IBase* debugModules                   = 0;
+// [CHOSEN, not recovered] The four debug pointers (PE 0x10244A9C..0x10244AA8, null until initDll in
+// the shipped image) are defined by Core/Debug.cpp, which renddx9.cmd links for the recovered Math
+// code; there they start at that file's own arrays. initDll below rebinds all four to the host's.
 IBase* profilerClient                 = 0;
 class System;
 System* g_system                      = 0;   // 0x10244AC0, shared Core/System.h type
-IBase* loadStat                       = 0;   // 0x10244AB8   not required
+class LoadStat;
+LoadStat* loadStat                    = 0;   // 0x10244AB8   not required; Core/LoadStat.h's type
 EventManager* eventManager            = 0;
 IBase* frameEventManager              = 0;
 IBase* objectManager                  = 0;
@@ -74,18 +105,24 @@ int getNoModules()
 }
 
 
+// PE 0x10073DA0 (Core/DllModule.cpp by its assert string). The shipped body starts with the
+// once-only Memory.dll name registration sub_1005F300("renderer") (0x10073DA8..0x10073DB5), before
+// the pClsMgr assert.
 extern "C" bool initDll(IClassManager* pClsMgr)
 {
     // Ours, not dice's: open the instrument before anything can trip over. A replacement DLL that
     // dies without saying where is worth nothing, and this is the earliest point at which the log
     // can exist.
     renddx9abi::logOpen();
-    renddx9abi::logf("initDll(classManager=0x%08X) - replacement RendDX9",
-                     renddx9abi::addr(pClsMgr));
+    renddx9abi::logf("initDll(classManager=0x%p) - replacement RendDX9",
+                     static_cast<const void*>(pClsMgr));
 
     // Ours too, and for the same reason: BF2's own handler and the WER minidump both arrive after
     // the stack that explains the fault has been overwritten. See CrashReport.cpp. Report-only.
     renddx9abi::installCrashReporter();
+
+    // sub_1005F300("renderer"), the first call of the shipped body.
+    renddx9abi::registerMemoryName("renderer");
 
     // Requires the host class-manager pointer before any registration or lookup.
     assert(pClsMgr);
@@ -101,13 +138,14 @@ extern "C" bool initDll(IClassManager* pClsMgr)
     fileManager           = static_cast<renddx9abi::HostFileManager*>(
         classManager->getSingleton(renddx9abi::HostString("FileManager")));
     fileChangeManager     = classManager->getSingleton(renddx9abi::HostString("FileChangeManager"));
-    bfGlobal_callback     = classManager->getSingleton(renddx9abi::HostString("BfGlobal_callback"));
-    bfGlobal_callbackData = classManager->getSingleton(renddx9abi::HostString("BfGlobal_callbackData"));
-    debugOn               = classManager->getSingleton(renddx9abi::HostString("DebugOn"));
-    debugModules          = classManager->getSingleton(renddx9abi::HostString("DebugModules"));
+    // PE 0x10073ECE..0x10073F4F: getSingleton returns the arrays themselves, not IBase objects.
+    bfGlobal_callback     = reinterpret_cast<DebugCallback*>(classManager->getSingleton(renddx9abi::HostString("BfGlobal_callback")));
+    bfGlobal_callbackData = reinterpret_cast<void**>(classManager->getSingleton(renddx9abi::HostString("BfGlobal_callbackData")));
+    debugOn               = reinterpret_cast<bool*>(classManager->getSingleton(renddx9abi::HostString("DebugOn")));
+    debugModules          = reinterpret_cast<decltype(debugModules)>(classManager->getSingleton(renddx9abi::HostString("DebugModules")));
     profilerClient        = classManager->getSingleton(renddx9abi::HostString("Profiler"));
     g_system              = reinterpret_cast<System*>(classManager->getSingleton(renddx9abi::HostString("System")));
-    loadStat              = classManager->getSingleton(renddx9abi::HostString("LoadStat"));
+    loadStat              = reinterpret_cast<LoadStat*>(classManager->getSingleton(renddx9abi::HostString("LoadStat")));
     eventManager          = reinterpret_cast<EventManager*>(
         classManager->getSingleton(renddx9abi::HostString("EventManager")));
     frameEventManager     = classManager->getSingleton(renddx9abi::HostString("FrameEventManager"));
@@ -154,8 +192,9 @@ extern "C" bool initDll(IClassManager* pClsMgr)
         IBase* const values[16] =
         {
             reinterpret_cast<IBase*>(settings), reinterpret_cast<IBase*>(mainConsoleObjects), mainConsole, fileManager,
-            fileChangeManager, bfGlobal_callback, bfGlobal_callbackData, debugOn,
-            debugModules, profilerClient, reinterpret_cast<IBase*>(g_system), objectManager,
+            fileChangeManager, reinterpret_cast<IBase*>(bfGlobal_callback),
+            reinterpret_cast<IBase*>(bfGlobal_callbackData), reinterpret_cast<IBase*>(debugOn),
+            reinterpret_cast<IBase*>(debugModules), profilerClient, reinterpret_cast<IBase*>(g_system), objectManager,
             objectTemplateManager, playerManager, reinterpret_cast<IBase*>(eventManager),
             frameEventManager
         };
@@ -181,6 +220,7 @@ extern "C" bool initDll(IClassManager* pClsMgr)
 }
 
 
+// PE 0x10074240.
 extern "C" void deinitDll()
 {
     renddx9abi::logf("deinitDll: %d modules", getNoModules());

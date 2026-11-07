@@ -43,7 +43,7 @@ public:
     virtual IObject* createObject() const;                    // dedicated null; client PE 0x642680
     virtual void preCache() const;                            // flags-gated grandparent call
     virtual bool makeScript(io::IStream*);                    // ELF/PE recovered
-    virtual bool makeMemberScript(const TemplateInfo*, io::IStream*);   // dedicated ELF81FC410 / PE5F9250; client frontier
+    virtual bool makeMemberScript(const TemplateInfo*, io::IStream*);   // ELF81FC410 / PE5F9250; client 6416E0
     virtual TemplateInfo* createTemplateInfo(const std::string&);       // news an EffectInfo
 
     virtual void  setEmitFrequencyScaleFactorLowerBound(float);   // the +0x30C store

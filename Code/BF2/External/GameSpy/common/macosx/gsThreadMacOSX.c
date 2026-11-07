@@ -23,14 +23,13 @@
 
 gsi_u32 gsiInterlockedIncrement(gsi_u32 * value)
 {
-	GS_ASSERT_STR(gsi_false, "gsiInterlockIncrement is unsupported for Mac OSX in the current version of the SDK\n");
-	return 1;
+	/* [CHOSEN, not recovered] POSIX atomic increment returns the new value, as Win32 does. */
+	return __atomic_add_fetch(value, 1, __ATOMIC_SEQ_CST);
 }
 
 gsi_u32 gsiInterlockedDecrement(gsi_u32 * value)
 {
-	GS_ASSERT_STR(gsi_false, "gsiInterlockIncrement is unsupported for Mac OSX in the current version of the SDK\n");
-	return 1;
+	return __atomic_sub_fetch(value, 1, __ATOMIC_SEQ_CST);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

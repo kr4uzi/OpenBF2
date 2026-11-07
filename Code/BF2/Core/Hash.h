@@ -71,6 +71,8 @@ public:
     };
 
     // Constructs maxSize buckets and explicitly zeroes them.
+    // RendDX9.dll copy PE 0x1007B840 (`retn 8`: functor reference, maxSize; it stores the functor
+    // address at +0x08, which this rebuild keeps null).
     // The default 3011 is [CHOSEN, not recovered] syntax for the observed standard bucket count.
     explicit Hash(unsigned int maxSize = 3011)
     {
@@ -92,6 +94,7 @@ public:
     }
 
     // Returns whether key exists in the specified bucket. The caller must supply a valid reduced bucket index.
+    // RendDX9.dll copy (StringHashFunc) PE 0x100748F0.
     bool exists(const K& key, unsigned int bucket) const
     {
         for (Node* n = m_buckets[bucket]; n != 0; n = n->next)
@@ -114,6 +117,7 @@ public:
     }
 
     // Copies the matching value to value and returns true. A miss leaves value unchanged and returns false.
+    // RendDX9.dll copy (StringHashFunc, string value) PE 0x1007BA20, unreached there.
     bool get(const K& key, V& value) const
     {
         for (Node* n = m_buckets[bucketOf(key)]; n != 0; n = n->next)
@@ -128,6 +132,7 @@ public:
     }
 
     // Deletes every node while retaining the bucket array and capacity for reuse.
+    // RendDX9.dll copy (StringHashFunc) PE 0x10074A50.
     void clear()
     {
         for (unsigned int i = 0; i < m_maxSize; ++i)
@@ -144,6 +149,7 @@ public:
     }
 
     // Removes the first matching key and returns true. Returns false when the key is absent.
+    // RendDX9.dll copy (StringHashFunc) PE 0x100749C0.
     bool remove(const K& key)
     {
         const unsigned int bucket = bucketOf(key);
@@ -167,6 +173,23 @@ public:
     }
 
     unsigned int bucketOf(const K& key) const { return HashFunc()(key) % m_maxSize; }
+
+    // Inserts key/value unless the key is already present; answers false for an existing key.
+    // RendDX9.dll copy (StringHashFunc, string value) PE 0x1007B9A0 (`retn 8`): bucket from the
+    // hash modulo +0x04, exists, then a 0x3C-byte node whose next is the old head, key and value
+    // copy-constructed, stored as the head; true. The engine ELF inlines the same steps into
+    // ConsoleObjects::registerTypeConversion. [PLATFORM] the PE engine allocator can return null,
+    // and that arm stores the null as the bucket head (dropping the chain) and still answers true;
+    // operator new here throws instead, so the arm cannot occur.
+    // [INFERRED] name; the member is unreached in RendDX9 (only the dead wrapper PE 0x1007B310).
+    bool insertUnique(const K& key, const V& value)
+    {
+        const unsigned int bucket = bucketOf(key);
+        if (exists(key, bucket))
+            return false;
+        insert(key, value, bucket);
+        return true;
+    }
     // [CHOSEN, not recovered] Convenience overloads compute the bucket before forwarding.
     bool exists(const K& key) const          { return exists(key, bucketOf(key)); }
     void insert(const K& key, const V& value) { insert(key, value, bucketOf(key)); }

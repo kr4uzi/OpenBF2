@@ -5,6 +5,15 @@
 // Specialized client/effect branches retain named [FRONTIER] boundaries.
 
 #include "GenericProjectile.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] One native scale-interface declaration in every image.
+#include "../../../Geom/IScaleable.h"
+#endif
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native static geometry tables retain PE slot order.
+#include "../../../Geom/NativeGeometrySlots.h"
+#endif
 
 #include <cfloat>                                   // FLT_EPSILON
 #include <cmath>
@@ -58,11 +67,15 @@ namespace {
 
 // IScaleable consists of the IBase quartet followed by setScale. Both activate and updateTracer
 // query exactly this IID before making the typed call at +0x10.
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+using IScaleable = geom::IScaleable;
+#else
 class IScaleable : public IBase
 {
 public:
     virtual void setScale(const Vec3&) = 0;
 };
+#endif
 
 float unitRandom(Random& random)
 {
@@ -109,13 +122,13 @@ IObjectTemplate* getGeometryTemplate(IBase* geometry)
     // ordinal, including its single destructor slot, with eight-byte entries.
     enum { GetTemplateIndex = 0x38 / 4 };
     typedef IObjectTemplate* (__thiscall *GetTemplateFn)(void*);
-#else
-    enum { GetTemplateIndex = 0x3C / 4 };
-    typedef IObjectTemplate* (*GetTemplateFn)(void*);
-#endif
     void** const vtable = *reinterpret_cast<void***>(geometry);
     GetTemplateFn const getTemplate = reinterpret_cast<GetTemplateFn>(vtable[GetTemplateIndex]);
     return getTemplate(geometry);
+#else
+    // Non-MSVC: the named geometry_part operation (ELF +0x3C).
+    return static_cast<IObjectTemplate*>(geometry_part::getTemplate(geometry));
+#endif
 }
 
 IPlayerControlObject* findPlayerControlObject(IObject* object)

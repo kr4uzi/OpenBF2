@@ -2,7 +2,7 @@
 // Token indices are unsigned; m_tokens[m_count] is the end token.
 // The selected Windows build places bodies in RendDX9. [CHOSEN, not recovered] build placement
 // and native STL containers keep these objects local to their image; PE and ELF sizes differ.
-// Member names are [INFERRED]; unimplemented cursor/numeric helpers remain declarations.
+// Member names are [INFERRED] where the ELF carries no symbol.
 #ifndef BF2_IO_TOKENIZER_H
 #define BF2_IO_TOKENIZER_H
 
@@ -23,6 +23,12 @@ public:
 
     // Advances to the next token, stopping at the end token, and returns this cursor.
     Token& operator++();
+    // Steps back one token, stopping at the first, and returns this cursor.
+    Token& operator--();
+    // Advances by count tokens, stopping at the end token, and returns this cursor.
+    Token& operator+=(unsigned int count);
+    // The token count positions ahead of this cursor, clamped to the end token.
+    const Token& operator[](unsigned int count) const;
 
     Tokenizer*     owner;     // RendDX9 +0x00
     unsigned int   index;     // RendDX9 +0x04
@@ -57,6 +63,10 @@ public:
     bool init(const char* data, unsigned int size);
     // 0x8439530 / sub_10076880 - the name to one NUL character, no tokens, count 0.
     void clean();
+
+    // The integer starting at token, consuming its tokens: a "-" or "+" token is glued to the next
+    // token, then the text is converted with _atoi64.
+    static long long getInt64Number(Token& token);
 
     // [INFERRED] accessors: the shipped users inline these reads (the water loader reads
     // m_tokens[0] and m_tokens[m_count]); the ELF carries no out-of-line accessor.

@@ -2,8 +2,21 @@
 // [RETIRE-WHEN: swiff-host-bodies] Complete and validate the corresponding SwiffHost operation.
 #include "../Core/BuildConfig.h"
 #if !DEDICATED
+#if defined(_WIN32)
 #include <winsock2.h>                       // before windows.h: gethostbyname / inet_addr / inet_ntoa / ntohl
 #include <windows.h>
+#else
+// [CHOSEN, not recovered] Native POSIX: BSD sockets for the Winsock 1.1 calls (no WSAStartup);
+// on macOS the Cocoa host for the cursor handles. docs/macos-port.md, "Win32 and CRT items".
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <cstdint>
+#if defined(__APPLE__)
+#include "../Platform/macOS/CocoaHost.h"
+#endif
+#endif
 #include "SwiffHost.h"
 #include "IMenuTeamManager.h"
 #include "ISwiffPlayer.h"
@@ -14,6 +27,7 @@
 #include "../Core/Ids.h"
 #include "../Core/SettingsRepostitory.h"
 #include "../Core/StringUtil.h"             // formatString, compareIgnoreCase, setLowerCase
+#include "../Core/StringTokenizer.h"        // parseResolution's "x@Hz" tokenizer (0x59E1B0/0x59E1F0)
 #include "../Core/SystemInfo.h"
 #include "../Game/IGame.h"
 #include "../Game/IGameLogic.h"
@@ -67,7 +81,14 @@ std::string s_selectedServerAddress;        // unk_9A6A04   setSelectedServer / 
 int  s_selectedServerQueryPort = 0;         // dword_9A6708
 int  s_selectedServerHostPort = 0;          // dword_9A670C
 char s_resolvedAddress[256];                // unk_9A6A28   resolveHostName's answer
-unsigned long s_lastInetAddr = 0;           // dword_9A6B28 isPrivateAddress's inet_addr result
+// An IPv4 address word as inet_addr answers it: Winsock's 32-bit u_long, a 32-bit in_addr_t on the
+// LP64 POSIX ports (where unsigned long would read past the 4-byte h_addr_list entry).
+#if defined(_WIN32)
+typedef unsigned long InetAddrWord;
+#else
+typedef std::uint32_t InetAddrWord;
+#endif
+InetAddrWord s_lastInetAddr = 0;           // dword_9A6B28 isPrivateAddress's inet_addr result
 #define SWIFF_HOST_FRONTIER(method, evidence)                                                        \
     do {                                                                                             \
         std::fprintf(stderr, "[FRONTIER] dice::hfe::SwiffHost::" method " reached (" evidence ")\n"); \
@@ -139,7 +160,7 @@ void runMenuScript(const char* file)
 }
 
 // RFC 1918 test on a network-order address; a null pointer counts as private.
-int isPrivateNetworkAddress(const unsigned long* address)
+int isPrivateNetworkAddress(const InetAddrWord* address)
 {
     if (!address)
         return 1;
@@ -422,7 +443,7 @@ int SwiffHost::getCurrentMapMaxPlayers() { return game ? game->getCurrentMapMaxP
 int SwiffHost::getCurrentMapSize()       { return game ? game->getCurrentMapSize() : 0; }
 
 // SwiffPlayer +0x60, then the window stops hiding the cursor (+0x3B).
-bool SwiffHost::setPlayerRenderCapability0(int value)
+bool SwiffHost::setPlayerRenderCapability0(intptr_t value)
 {
     IBase* player = classManager->getSingleton(std::string("SwiffPlayer"));
     if (!player || !static_cast<ui::ISwiffPlayer*>(player)->renderCapability0(value))
@@ -437,16 +458,30 @@ void* SwiffHost::getCursor(int which)
     if (s_cursorsLoaded)
         return m_cursors[which];
     std::string arrow = io::fileManager->fileExistsEx(std::string("menu/external/flashmenu/cursor/cursor_arrow.ani"), true);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] AppKit cannot load .ani cursors; each handle is the host's token for
+    // the nearest system shape (the keybinding cursor shows the arrow), and null, as
+    // LoadCursorFromFileA answers, when the file cannot be read. docs/macos-s2-4.md, "Open items".
+    m_cursors[0] = (!arrow.empty() && ::access(arrow.c_str(), R_OK) == 0)
+                       ? macos::CocoaHost::cursorHandle(macos::HostCursorArrow) : 0;
+    std::string busy = io::fileManager->fileExistsEx(std::string("menu/external/flashmenu/cursor/cursor_busy.ani"), true);
+    m_cursors[1] = (!busy.empty() && ::access(busy.c_str(), R_OK) == 0)
+                       ? macos::CocoaHost::cursorHandle(macos::HostCursorBusy) : 0;
+    std::string keybinding = io::fileManager->fileExistsEx(std::string("menu/external/flashmenu/cursor/cursor_keybinding.ani"), true);
+    m_cursors[2] = (!keybinding.empty() && ::access(keybinding.c_str(), R_OK) == 0)
+                       ? macos::CocoaHost::cursorHandle(macos::HostCursorArrow) : 0;
+#else
     m_cursors[0] = LoadCursorFromFileA(arrow.c_str());
     std::string busy = io::fileManager->fileExistsEx(std::string("menu/external/flashmenu/cursor/cursor_busy.ani"), true);
     m_cursors[1] = LoadCursorFromFileA(busy.c_str());
     std::string keybinding = io::fileManager->fileExistsEx(std::string("menu/external/flashmenu/cursor/cursor_keybinding.ani"), true);
     m_cursors[2] = LoadImageA(GetModuleHandleA(0), keybinding.c_str(), IMAGE_CURSOR, 0, 0, LR_LOADFROMFILE | LR_SHARED);
+#endif
     s_cursorsLoaded = true;
     return m_cursors[which];
 }
 
-bool SwiffHost::setPlayerRenderCapability1(int value)
+bool SwiffHost::setPlayerRenderCapability1(intptr_t value)
 {
     IBase* player = classManager->getSingleton(std::string("SwiffPlayer"));
     return player && static_cast<ui::ISwiffPlayer*>(player)->renderCapability1(value) != 0;
@@ -971,9 +1006,51 @@ void SwiffHost::setIntE98(int value)                          { m_intE98 = value
 int  SwiffHost::getIntE98()                                   { return m_intE98; }
 std::string SwiffHost::getGameMode()                          { return m_gameMode; }
 void SwiffHost::setGameMode(const std::string& mode)          { m_gameMode = mode; }
+// 0x497E90 (718 B). Refused while a join is pending (+0xEC4). Otherwise the page is reset, the
+// GameServerSettings applied, and the "playNow" list refreshed synchronously and sorted by ping.
+// The first row that is ranked, pure, open (no password), on the current mod and on this build's
+// version is queried again (fillRecord, basic keys, no cache); a row that answers with players,
+// a free slot and a ping becomes the selected server and is joined. The first join that is queued
+// answers true. With no such row the front end gets the type-3 "noplaynowservers" message.
 bool SwiffHost::playNow()
 {
-    SWIFF_HOST_FRONTIER("playNow", "PE 0x497E90, 718 B: the playNow ServerBrowser list and its 580-byte rows are unrecovered");
+    if (m_flagEC4 == 1)                                                        // byte +0xEC4
+        return false;
+    setPage(0);                                                                // +0x2C0
+    IBase* gameServerSettings = classManager->getSingleton(std::string("GameServerSettings"));
+    static_cast<IGameServerSettings*>(gameServerSettings)->apply();            // +0x18, unguarded
+    ui::IServerBrowser* list = getServerList(std::string("playNow"));          // +0x7C, unguarded
+    list->reset();                                                             // +0x24
+    list->startUpdate(false);                                                  // +0x28
+    list->sort(std::string("ping"), true, 0);                                  // +0x38
+    // The bound and every row are read through getRecords() (+0x20) again on each pass.
+    for (unsigned int index = 0; index < list->getRecords()->records.size(); ++index)
+    {
+        ui::ServerBrowserRecord* row = &list->getRecords()->records[index];
+        // One condition, evaluated left to right; both temporaries are flag-guarded in the PE
+        // (0x497FAD/0x497FD3) and destroyed before the join below.
+        const bool candidate = row
+            && row->entry.ranked                                               // record +0xE9
+            && row->entry.pure == true                                         // record +0x10B
+            && !row->entry.password                                            // record +0x8C
+            && row->entry.gameVariant == currentModName()                      // record +0xB0, 0x59F3F0
+            && compareIgnoreCase(row->entry.gameVersion, getVersionStringValue()) == 0;   // +0xCC, +0x270
+        if (!candidate)
+            continue;
+        ui::ServerBrowserRecord fresh;                                         // 0x482190 / 0x4835C0
+        list->fillRecord(row->server, &fresh, false, false);                   // +0x40, result unread
+        if (fresh.entry.numPlayers > 0                                         // record +0x64
+            && fresh.entry.maxPlayers != fresh.entry.numPlayers                // record +0x68
+            && fresh.entry.ping > 0)                                           // record +0x60
+        {
+            setSelectedServer(fresh.entry.address, fresh.entry.queryPort, fresh.entry.hostPort);   // +0x10C
+            if (joinServer(fresh.entry.address, fresh.entry.hostPort, fresh.entry.queryPort))      // +0x100
+                return true;
+        }
+    }
+    SwiffHostMessage message(3, std::string("noplaynowservers"), 3);
+    postMessage(message);                                                      // +0x1E4
+    return false;
 }
 // Clears previous round results. [CHOSEN, not recovered] Returns zero; existing callers ignore the result.
 int SwiffHost::resetEndOfRoundInfo()
@@ -1011,9 +1088,14 @@ bool SwiffHost::getModCount(int* out)
     *out = static_cast<int>(mods->size());
     return true;
 }
-bool SwiffHost::slot194(int, int)
+// 0x4A2B00: the indexed row of the mod list assigned to the caller's record (0x481490 is
+// IModInfo::Mod's implicit operator=: nine strings, the map vector 0x4811D0, the mode vector
+// 0x47F260, two strings). The index is not range-checked and the answer is always true.
+bool SwiffHost::getModAt(int index, IModInfo::Mod* out)
 {
-    SWIFF_HOST_FRONTIER("slot194", "PE 0x4A2B00: 0x481490 on the indexed Mod is unrecovered");
+    std::vector<IModInfo::Mod>* mods = static_cast<IModInfo*>(getModInfo())->getModList();   // +0x120, +0x14
+    *out = (*mods)[index];
+    return true;
 }
 // event 11 (activateMod), or the "no mod specified" type-1 message for a null name.
 bool SwiffHost::requestActivateMod(const std::string* mod)
@@ -1839,13 +1921,17 @@ void SwiffHost::handleProfileTransition(const std::string& name)
 // 0x488440 (188 B): Winsock 1.1, gethostbyname, the first address as a dotted quad in a static buffer.
 std::string SwiffHost::resolveHostName(const std::string& name)
 {
+#if defined(_WIN32)
     WSADATA data;
     if (WSAStartup(0x101, &data))
         return std::string("");
+#endif
     hostent* host = gethostbyname(name.c_str());
     if (!host)
     {
+#if defined(_WIN32)
         WSACleanup();
+#endif
         return std::string("");
     }
     in_addr address;
@@ -1860,7 +1946,9 @@ std::string SwiffHost::resolveHostName(const std::string& name)
         *out++ = *text++;
     }
     while (c);
+#if defined(_WIN32)
     WSACleanup();
+#endif
     return std::string(s_resolvedAddress);
 }
 // inet_addr, or a host lookup when the text is not numeric; the RFC 1918 test on it.
@@ -1872,7 +1960,7 @@ bool SwiffHost::isPrivateAddress(const std::string& address)
         return isPrivateNetworkAddress(&s_lastInetAddr) != 0;
     hostent* host = gethostbyname(text);
     if (host)
-        return isPrivateNetworkAddress(reinterpret_cast<const unsigned long*>(host->h_addr_list[0])) != 0;
+        return isPrivateNetworkAddress(reinterpret_cast<const InetAddrWord*>(host->h_addr_list[0])) != 0;
     return isPrivateNetworkAddress(0) != 0;
 }
 // 0x488380 (190 B): digits and exactly three dots, each octet under 256.
@@ -2059,7 +2147,12 @@ void SwiffHost::setFlagEA8(bool value)                        { m_flagEA8 = valu
 bool SwiffHost::setBusy(int busy)
 {
     m_busy = busy;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Nothing to repaint synchronously; UpdateWindow fails only without a window.
+    return bf2Engine->window->getHwnd() != 0;
+#else
     return UpdateWindow(bf2Engine->window->getHwnd()) != 0;
+#endif
 }
 void SwiffHost::clearBusy()                                   { m_busy = 0; }
 int  SwiffHost::getBusy()                                     { return m_busy; }
@@ -2214,7 +2307,7 @@ int  SwiffHost::getIntF4C()                                   { return m_intF4C;
 void SwiffHost::setIntF4C(int value)                          { m_intF4C = value; }
 bool SwiffHost::isPlayingDemo()                               { return game && game->isPlayingDemo(); }
 std::string SwiffHost::getModName()                           { return currentModName(); }
-bool SwiffHost::slot368(int, int, int)                        { return true; }
+bool SwiffHost::slot368(const std::string&, const std::string&, int) { return true; }
 // 0x4890D0 (190 B): 1 for xpack, 2 for xpack2, else 0; an empty name means the current mod.
 int SwiffHost::getExpansionPack(const std::string& modName)
 {
@@ -2232,9 +2325,20 @@ std::string SwiffHost::getLanguageSetting()
     std::string language = settings->stringGet(std::string("GSLanguage"), std::string("English"));
     return language;
 }
-void SwiffHost::parseResolution(const std::string&, int*, int*, int*)
+// 0x489210: "WxH@RHz" split on the four delimiter characters 'x', '@', 'H' and 'z'. Each of the
+// three tokens is atoi'd; a missing (empty) token stores 0. The nextToken results are unread.
+void SwiffHost::parseResolution(const std::string& text, int* width, int* height, int* hz)
 {
-    SWIFF_HOST_FRONTIER("parseResolution", "PE 0x489210: the \"x@Hz\" tokenizer 0x59E1B0/0x59E1F0 is unrecovered");
+    StringTokenizer tokens(text, std::string("x@Hz"));
+    std::string widthText;
+    std::string heightText;
+    std::string hzText;
+    tokens.nextToken(widthText);
+    tokens.nextToken(heightText);
+    tokens.nextToken(hzText);
+    *width  = widthText.size()  ? std::atoi(widthText.c_str())  : 0;
+    *height = heightText.size() ? std::atoi(heightText.c_str()) : 0;
+    *hz     = hzText.size()     ? std::atoi(hzText.c_str())     : 0;
 }
 bool SwiffHost::getFlagF2C()                                  { return m_flagF2C; }
 void SwiffHost::setFlagF2C(bool value)                        { m_flagF2C = value; }

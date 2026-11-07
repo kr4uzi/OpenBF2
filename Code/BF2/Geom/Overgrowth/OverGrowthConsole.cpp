@@ -4,12 +4,11 @@
 // the multimap resolves its first active entry. Compatibility builds publish no console rows.
 #ifdef BF2_IMAGE_RENDDX9
 #include "../../../RendDX9Abi/PluginAbi.h"
-#if BF2_PLUGIN_ABI_NATIVE
 
 #include "OverGrowth.h"
 
 #include "../../../RendDX9Abi/PluginEntry.h"
-#include "../../../RendDX9Abi/Vc71String.h"
+#include <string>
 #include "../../Core/ConsoleObjectMacro.h"
 #include "../../Core/ConsoleObjects.h"
 #include "../../Math/Vec3.h"
@@ -44,16 +43,15 @@ inline bool overGrowthActive()
     return dx9rend::g_OverGrowth != 0;
 }
 
-// The console boundary is the only place a string changes representation: the host console speaks
-// this toolchain's std::string, the owner keeps the 28-byte VC7.1 one.
-inline std::string toConsole(const vc71::string& value)
+// The console boundary copies the owner's string for the host console (both are std::string).
+inline std::string toConsole(const std::string& value)
 {
     return ::renddx9abi::toHostString(value);
 }
 
-inline vc71::string toRetail(const std::string& value)
+inline std::string toRetail(const std::string& value)
 {
-    return ::renddx9abi::toVc71String(value);
+    return ::renddx9abi::fromHostString(value);
 }
 
 // Overgrowth
@@ -201,46 +199,61 @@ void consoleSetTypeRandomScale(const Vec2& value) { overGrowth()->setTypeRandomS
 
 BF2_CONSOLE_OBJECT("Overgrowth", 2, 0)
 
+// PE 0x100C5471: the argument conversion.
+// PE 0x100C5407: executor.
 BF2_CONSOLE_PROPERTY_FN(path, std::string, overGrowthActive(),
                         consoleGetPath(), consoleSetPath, kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(preLoad, consolePreLoad, overGrowthActive(),
                                    kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(postLoad, consolePostLoad, overGrowthActive(),
                                    kOverGrowthConsoleTag)
+// PE 0x100C562A: executor.
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(getMaterialList, consoleGetMaterialList, std::string,
                                 overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C5751, 0x100C5700: argument conversion, executor.
 BF2_CONSOLE_METHOD_2_RET_ACTIVE(addMaterial, consoleAddMaterial, bool, overGrowthActive(),
                                 std::string, uint, kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(removeActiveMaterial, consoleRemoveActiveMaterial, bool,
                                 overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C5929, 0x100C58EA: argument conversion, executor.
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setActiveMaterial, consoleSetActiveMaterial,
                                    overGrowthActive(), std::string, kOverGrowthConsoleTag)
+// PE 0x100C59FD: executor.
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(getActiveMaterialName, consoleGetActiveMaterialName,
                                 std::string, overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C5AA0: executor.
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(getTypeList, consoleGetTypeList, std::string,
                                 overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C5B57, 0x100C5BA2: executor, argument conversion.
 BF2_CONSOLE_METHOD_1_RET_ACTIVE(addType, consoleAddType, bool, overGrowthActive(),
                                 std::string, kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(removeActiveType, consoleRemoveActiveType, bool,
                                 overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C5D03, 0x100C5D42: executor, argument conversion.
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setActiveType, consoleSetActiveType,
                                    overGrowthActive(), std::string, kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(save, consoleSave, overGrowthActive(),
                                    kOverGrowthConsoleTag)
+// PE 0x100C5E24 / 0x100C5E95: the first row's constructor and argument conversion.
 BF2_CONSOLE_PROPERTY_FN(viewDistance, float, overGrowthActive(),
                         consoleGetViewDistance(), consoleSetViewDistance, kOverGrowthConsoleTag)
+// PE 0x100C5F2B / 0x100C5F9C: the second row's constructor and argument conversion.
 BF2_CONSOLE_PROPERTY_FN(viewDistance, float, overGrowthActive(),
                         consoleGetViewDistance(), consoleSetViewDistance, kOverGrowthConsoleTag)
+// PE 0x100C605A: the argument conversion.
 BF2_CONSOLE_PROPERTY_FN(viewDistanceScale, float, overGrowthActive(),
                         consoleGetViewDistanceScale(), consoleSetViewDistanceScale,
                         kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(exportToTerrainTexture, consoleExportToTerrainTexture,
                                    overGrowthActive(), kOverGrowthConsoleTag)
+// PE 0x100C621F: argument conversion and executor (one body).
 BF2_CONSOLE_METHOD_4_STATIC_ACTIVE(paintMaterial, consolePaintMaterial, overGrowthActive(),
                                    float, float, float, int, kOverGrowthConsoleTag)
+// PE 0x100C641F: argument conversion and executor (one body).
 BF2_CONSOLE_METHOD_4_STATIC_ACTIVE(paintShadowmap, consolePaintShadowmap,
                                    overGrowthActive(), float, float, float, int,
                                    kOverGrowthConsoleTag)
+// PE 0x100C65B3: executor.
 BF2_CONSOLE_METHOD_0_RET_ACTIVE(getGeometryList, consoleGetGeometryList, std::string,
                                 overGrowthActive(), kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(generateAll, consoleGenerateAll, overGrowthActive(),
@@ -249,34 +262,45 @@ BF2_CONSOLE_METHOD_0_RET_ACTIVE(getLodDistance, consoleGetLodDistance, float,
                                 overGrowthActive(), kOverGrowthConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(generateAtlas, consoleGenerateAtlas, overGrowthActive(),
                                    kOverGrowthConsoleTag)
+// PE 0x100C67BD: argument conversion and executor (property at OverGrowth +0xC8).
 BF2_CONSOLE_PROPERTY_FN(closeDistPercentage, float, overGrowthActive(),
                         consoleGetCloseDistPercentage(), consoleSetCloseDistPercentage,
                         kOverGrowthConsoleTag)
+// PE 0x100C6850, 0x100C68C1: constructor, argument conversion and executor (+0xCC).
 BF2_CONSOLE_PROPERTY_FN(closeDistFade, float, overGrowthActive(),
                         consoleGetCloseDistFade(), consoleSetCloseDistFade, kOverGrowthConsoleTag)
+// PE 0x100C6954, 0x100C69C5: constructor, argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(lodTimer, float, overGrowthActive(),
                         consoleGetLodTimer(), consoleSetLodTimer, kOverGrowthConsoleTag)
+// PE 0x100C6AC9, 0x100C6B16: argument conversion, executor (reads the flag as float).
 BF2_CONSOLE_PROPERTY_FN(editorEnable, float, overGrowthActive(),
                         consoleGetEditorEnable(), consoleSetEditorEnable, kOverGrowthConsoleTag)
 
 BF2_CONSOLE_OBJECT("OvergrowthType", 2, 0)
 
+// PE 0x100C6C01, 0x100C6C78: executor, argument conversion.
 BF2_CONSOLE_PROPERTY_FN(geometry, std::string, overGrowthActive(),
                         consoleGetTypeGeometry(), consoleSetTypeGeometry, kOverGrowthConsoleTag)
+// PE 0x100C6D5E: argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(density, float, overGrowthActive(),
                         consoleGetTypeDensity(), consoleSetTypeDensity, kOverGrowthConsoleTag)
+// PE 0x100C6E65: argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(normalScale, float, overGrowthActive(),
                         consoleGetTypeNormalScale(), consoleSetTypeNormalScale,
                         kOverGrowthConsoleTag)
+// PE 0x100C6F6C: argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(rotationScale, float, overGrowthActive(),
                         consoleGetTypeRotationScale(), consoleSetTypeRotationScale,
                         kOverGrowthConsoleTag)
+// PE 0x100C7073: argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(minRadiusToSame, float, overGrowthActive(),
                         consoleGetTypeMinRadiusToSame(), consoleSetTypeMinRadiusToSame,
                         kOverGrowthConsoleTag)
+// PE 0x100C717A: argument conversion and executor.
 BF2_CONSOLE_PROPERTY_FN(minRadiusToOthers, float, overGrowthActive(),
                         consoleGetTypeMinRadiusToOthers(), consoleSetTypeMinRadiusToOthers,
                         kOverGrowthConsoleTag)
+// PE 0x100C729C, 0x100C7307: argument conversion, executor.
 BF2_CONSOLE_PROPERTY_FN(randomScale, Vec2, overGrowthActive(),
                         consoleGetTypeRandomScale(), consoleSetTypeRandomScale,
                         kOverGrowthConsoleTag)
@@ -301,5 +325,4 @@ bool unregisterOverGrowthConsoleObjects()
 } // namespace hfe
 } // namespace dice
 
-#endif // BF2_PLUGIN_ABI_NATIVE
 #endif // BF2_IMAGE_RENDDX9

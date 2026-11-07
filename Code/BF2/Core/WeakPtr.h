@@ -32,6 +32,7 @@ public:
         releaseControl(m_ctrl);
     }
 
+    // PE 0x101326F0: the IPlayer specialization; the other retail copies are identical.
     WeakPtr& operator=(const WeakPtr& other)
     {
         // Both recovered assignment specializations retain the incoming block first. This also

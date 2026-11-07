@@ -15,6 +15,7 @@
 #include "../Core/SystemInfo.h"
 #include "../External/GameSpy/md5.h"
 #include "../IO/Network/NetworkLayer/Socket/UDPSocket.h"
+#include "../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 #if defined(_WIN32)
 #  include <winsock2.h>
@@ -623,12 +624,12 @@ VOIP::VRESULT CBF2VoipServerInstance::InitChallengeString()
     {
         const char* text = dateTime.c_str();
         int length = static_cast<int>(dateTime.size());
-        std::srand(text[length - 5] * text[length - 4] * text[length - 2] * text[length - 1]);
+        bf2crt::srand(text[length - 5] * text[length - 4] * text[length - 2] * text[length - 1]);
     }
 
     for (int i = 0; i < 10; ++i)
     {
-        int random = std::rand();
+        int random = bf2crt::rand();
         int count = m_field09B8.m_count;
         if (count <= 0x63)
         {

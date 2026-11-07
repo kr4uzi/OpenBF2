@@ -1,6 +1,11 @@
 // Single-shot firing and template properties.
 
 #include "SingleFireComp.h"
+#include "../../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native static geometry tables retain PE slot order.
+#include "../../../../Geom/NativeGeometrySlots.h"
+#endif
 
 #include <cstddef>
 #include <sstream>
@@ -37,14 +42,9 @@ typedef void (__thiscall *GeometrySetLodFn)(void*, int);
 const std::size_t kGeometryGetSubgeomSlot = 0x70 / 4;
 const std::size_t kGeometrySetLodSlot     = 0x78 / 4;
 const std::size_t kGeometryGetLodCountSlot = 0x80 / 4;
-#else
-typedef int  (*GeometryGetIntFn)(void*);
-typedef void (*GeometrySetLodFn)(void*, int);
-const std::size_t kGeometryGetSubgeomSlot = 0x74 / 4;
-const std::size_t kGeometrySetLodSlot     = 0x7C / 4;
-const std::size_t kGeometryGetLodCountSlot = 0x84 / 4;
 #endif
 
+#if defined(_MSC_VER)
 void** geometryVtable(void* geometry)
 {
     return *reinterpret_cast<void***>(geometry);
@@ -67,6 +67,12 @@ int geometryGetLodCount(void* geometry)
     return reinterpret_cast<GeometryGetIntFn>(
         geometryVtable(geometry)[kGeometryGetLodCountSlot])(geometry);
 }
+#else
+// Non-MSVC: the named geometry_part operations (static native: Geom/NativeGeometrySlots.h).
+int geometryGetSubgeom(void* geometry) { return geometry_part::getSubgeom(geometry); }
+void geometrySetLod(void* geometry, int lod) { geometry_part::setLod(geometry, lod); }
+int geometryGetLodCount(void* geometry) { return geometry_part::getLodCount(geometry); }
+#endif
 
 } // namespace
 

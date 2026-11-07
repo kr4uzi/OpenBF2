@@ -11,6 +11,9 @@
 
 
 #include "gameswf.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
+#endif
 #include "gameswf_types.h"
 #include <wchar.h>
 
@@ -37,6 +40,46 @@ namespace gameswf
 	// [DICE-MOD SwiffPlayer #38] the narrow twin: Mod.getCurrentModName (sub_1004F950) assigns the
 	// +44 tu_string from a plain host string and CLEARS the +60 wide side, the mirror of the above.
 	void	assign_dice_string_object_narrow(as_object_interface* object, const char* text);
+
+#if !defined(_WIN32)
+	// [CHOSEN, not recovered] gameswf and DICE's String object keep text as 16-bit Windows
+	// wchar_t units (Uint16). The host's std::wstring/wchar_t is 32 bits on POSIX, so the
+	// shipped `reinterpret_cast<const Uint16*>(wide)` handed over 'W',0,'e',0,... and every
+	// localized menu string ended after its first character. dice_utf16 converts one wchar_t
+	// to one Uint16 (count-preserving; above U+FFFF becomes U+FFFD). The temporary lives to
+	// the end of the full expression that names it (docs/macos-c-asan-heap.md).
+	struct dice_utf16
+	{
+		explicit dice_utf16(const wchar_t* wide)
+		{
+			if (!wide) { m_null = true; return; }
+			for (; *wide; ++wide) m_units.push_back(unit(*wide));
+			m_units.push_back(0);
+		}
+		operator const Uint16*() const { return m_null ? 0 : &m_units[0]; }
+	private:
+		static Uint16	unit(wchar_t c) { return (unsigned int) c > 0xFFFFu ? (Uint16) 0xFFFD : (Uint16) c; }
+		array<Uint16>	m_units;
+		bool	m_null = false;
+	};
+	// The opposite boundary: Uint16 text to the renderer's native wchar_t (text_set).
+	struct dice_wide
+	{
+		explicit dice_wide(const Uint16* units)
+		{
+			if (units) for (; *units; ++units) m_chars.push_back((wchar_t) *units);
+			m_chars.push_back(0);
+		}
+		operator const wchar_t*() const { return &m_chars[0]; }
+	private:
+		array<wchar_t>	m_chars;
+	};
+#define BF2_DICE_UTF16(wide)	((const Uint16*) ::gameswf::dice_utf16(wide))
+#define BF2_DICE_WIDE(units)	((const wchar_t*) ::gameswf::dice_wide(units))
+#else
+#define BF2_DICE_UTF16(wide)	(reinterpret_cast<const Uint16*>(wide))
+#define BF2_DICE_WIDE(units)	((const wchar_t*) (units))
+#endif
 	void	array_object_push(as_object* arr, const as_value& v);
 
 
@@ -275,7 +318,11 @@ namespace gameswf
 			// way to do it.  Everything else just
 			// continues to work.
 
-#if (WCHAR_MAX != MAXINT)
+#if !defined(_WIN32) && (WCHAR_MAX > 0xFFFF)
+			// [CHOSEN, not recovered] MAXINT is undefined here, so the stock test below picked
+			// the 16-bit decoder for the 32-bit POSIX wchar_t. Decode native characters.
+			tu_string::encode_utf8_from_wchar(&m_string_value, (const uint32 *)wstr);
+#elif (WCHAR_MAX != MAXINT)
 			tu_string::encode_utf8_from_wchar(&m_string_value, (const uint16 *)wstr);
 #else
 # if (WCHAR_MAX != MAXSHORT)
@@ -394,7 +441,12 @@ namespace gameswf
 		void	operator^=(const as_value& v) { set_int(int(this->to_number()) ^ int(v.to_number())); }
 		void	shl(const as_value& v) { set_int(int(this->to_number()) << int(v.to_number())); }
 		void	asr(const as_value& v) { set_int(int(this->to_number()) >> int(v.to_number())); }
+#if defined(__APPLE__)
+		// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+		void	lsr(const as_value& v) { set_int((bf2x87::lowUInt32(this->to_number()) >> int(v.to_number()))); }
+#else
 		void	lsr(const as_value& v) { set_int((Uint32(this->to_number()) >> int(v.to_number()))); }
+#endif
 
 		void	string_concat(const tu_string& str);
 
@@ -773,6 +825,17 @@ namespace gameswf
 			assert(m_action_buffer);
 		}
 
+		// Releases the property object lazy_create_properties took a reference on (stock 2006 had
+		// no destructor and leaked it with every function used as an object).
+		// [CHOSEN, not recovered] issue #7 (https://github.com/B2BF/OpenBF2/issues/7).
+		~as_as_function()
+		{
+			if (m_properties)
+			{
+				m_properties->drop_ref();
+			}
+		}
+
 		void	set_is_function2() { m_is_function2 = true; }
 		void	set_local_register_count(uint8 ct) { assert(m_is_function2); m_local_register_count = ct; }
 		void	set_function2_flags(uint16 flags) { assert(m_is_function2); m_function2_flags = flags; }
@@ -954,7 +1017,40 @@ namespace gameswf
 		// [DICE-MOD SwiffPlayer: dotted-path resolution through OBJECT members, with the shipped
 		// _global fallback - the resolver get_variable/set_variable use. See the .cpp.]
 		as_object_interface*	find_object_path(const tu_string& path, as_object_interface* start) const;
+
+		// Movie teardown: appends every object or function held on the stack, in the registers,
+		// the variables and the local frames to *held, then empties them.
+		// [CHOSEN, not recovered] issue #7; see release_script_objects.
+		void	release_values(array<as_value>* held);
 	};
+
+
+	// Appends v to *held when it is an object or an ActionScript function, the only values that
+	// can keep another object alive. A helper of the movie teardown (release_script_objects).
+	// [CHOSEN, not recovered] issue #7.
+	inline void	hold_script_value(array<as_value>* held, const as_value& v)
+	{
+		if (v.get_type() == as_value::OBJECT || v.get_type() == as_value::AS_FUNCTION)
+		{
+			held->push_back(v);
+		}
+	}
+
+	// Breaks every script reference cycle between the live script objects, so plain reference
+	// counting can free them once their owners let go. Every registered clip and object (see
+	// register_script_object), reachable from the movie or not, is cleared: a clip's environment,
+	// event handlers and children (without UNLOAD events), an object's members, accessors and
+	// prototype. Runs no ActionScript. Afterwards every script object is unusable and _global is
+	// empty: call it only when the whole player is going away, right before its movie's last
+	// reference is dropped and _global is reset, and only when no other player is alive
+	// (SwiffPlayer::releaseMovie counts them), so nothing still in use is cleared.
+	// [CHOSEN, not recovered] issue #7 (https://github.com/B2BF/OpenBF2/issues/7): our gameswf
+	// replaces the shipped player, whose own teardown is not recovered.
+	void	release_script_objects();
+
+	// Drops the Object.registerClass bindings of every library definition (gameswf_impl.cpp).
+	// Part of release_script_objects. [CHOSEN, not recovered] issue #7.
+	void	release_library_classes();
 
 
 	// Parameters/environment for C functions callable from ActionScript.

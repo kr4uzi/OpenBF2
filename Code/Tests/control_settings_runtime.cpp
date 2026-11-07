@@ -82,10 +82,10 @@ struct Manager : io::IControlMapManager {
     void setActive(const std::string&) override { std::abort(); }
     void setActive(const io::IControlMap* map) override { callLog.push_back("setActive "+nameOf(map)); active=const_cast<io::IControlMap*>(map); }
     io::IControlMap* getActive() const override { callLog.push_back("getActive"); return active; }
-    bool mapNextInput(io::IControlMap* map,int id,bool a,bool b,bool c,bool d,std::string& out) override
+    int mapNextInput(io::IControlMap* map,int id,bool a,bool b,bool c,bool d,std::string& out) override
     {
         char buffer[128]; std::snprintf(buffer,sizeof buffer,"mapNextInput %s %d %d %d %d %d",nameOf(map).c_str(),id,a,b,c,d);
-        callLog.push_back(buffer); out="KEY_X"; return true;
+        callLog.push_back(buffer); out="KEY_X"; return 2;
     }
     float getRepeatRate(int,bool) override { std::abort(); }
     void applyActive() override { std::abort(); }
@@ -243,7 +243,7 @@ int main(int argc,char** argv)
 
     // capture
     api->selectControlMap(std::string("InfantryPlayerInputControlMap")); callLog.clear();
-    check(api->mapNextInput(8,true,0,false,false),"mapNextInput returns the manager's answer");
+    check(api->mapNextInput(8,true,0,false,false)==2,"mapNextInput returns the manager's full int answer");
     check(joined()=="mapNextInput InfantryPlayerInputControlMap 8 1 0 0 1;postEvent 10 12 null 2;","trigger input: alternate passed, not an axis, player input, event (10,12) after two seconds");
     check(api->isMappingInput() && api->getMappedInputName()=="KEY_X","the flag is raised and the manager's name kept");
     callLog.clear(); api->mapNextInput(3,false,0,true,false);

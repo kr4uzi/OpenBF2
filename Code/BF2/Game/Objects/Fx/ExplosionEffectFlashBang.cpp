@@ -1,6 +1,10 @@
 // [INFERRED] path: see header. ELF 812C030..812CD34 / dedicated PE 620780..62113E.
 // All lifecycle, immediate/persistent/update instructions and both vtables read in full.
 #include "ExplosionEffectFlashBang.h"
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] This native provider is an explicit PE-order table.
+#include "../../../RendMisc/NativePostProductionSlots.h"
+#endif
 #include "PersistentExplosionEffectManager.h"
 #include "../IPlayer.h"
 #include "../ICameraObject.h"
@@ -43,6 +47,9 @@ template<class Function> Function postSlot(void* object, unsigned int peOrdinal)
 {
 #if defined(_MSC_VER)
     const unsigned int ordinal = peOrdinal;
+#elif defined(BF2_STATIC_PLUGINS)
+    // [CHOSEN, not recovered] No compiler-generated destructor is inserted here.
+    const unsigned int ordinal = dx9rend::native_post::slot(peOrdinal);
 #else
     const unsigned int ordinal = peOrdinal + 1;
 #endif

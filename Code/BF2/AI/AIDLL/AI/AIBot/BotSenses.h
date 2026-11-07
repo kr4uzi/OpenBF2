@@ -28,20 +28,20 @@ public:
     // (`operator new(0x94)` in SensingAgent's constructor).
     explicit BotSenses(BotMain* owner);
     ~BotSenses();
-    void reset();                            // - (two arms frontier)
+    void reset();                            // ELF 0x199D40
 
     // attested: an 11-byte body that returns `this + 112`.
     const std::map<unsigned int, SensedObject*>& getSensedObjects() const { return m_sensedObjects; }
 
     typedef std::pair<FireObject*, unsigned int>  FireEntry;
 
-    // ELF 0x198420 (6421 bytes) [FRONTIER].
+    // ELF 0x198420 (6421 bytes).
     void see(const double& slice);
     // ELF 0x19a040: hearing, fire objects, then seeing with the remaining slice.
     void updateSensing(const double& slice);
-    void updateHearing(const double& slice);      // ELF 0x19be60 [FRONTIER]
-    void updateFireObjects(const double& slice);  // ELF 0x19c460 [FRONTIER]
-    void updateSeeing(const double& slice);       // ELF 0x19a0f0 [FRONTIER]
+    void updateHearing(const double& slice);      // ELF 0x19be60
+    void updateFireObjects(const double& slice);  // ELF 0x19c460
+    void updateSeeing(const double& slice);       // ELF 0x19a0f0
     // ELF 0x19d8a0: the record for a handle, or null.
     SensedObject* getSensedObjectFromHandle(unsigned int handle) const;
     // ELF 0x19C930: the attacker map's fire time for a shooter, else -1000.0.

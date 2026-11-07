@@ -1,6 +1,7 @@
 // BF2Audio envelope evaluation; excluded from host images.
 #if defined(BF2_IMAGE_BF2AUDIO)
 #include "SoundEvaluator.h"
+#include "../../Platform/MsvcRand.h"   // [CHOSEN, not recovered] MSVCR71 rand range (RAND_MAX 0x7FFF)
 
 #include <algorithm>
 #include <cmath>
@@ -50,7 +51,7 @@ void SoundEvaluator::rebuild()
     {
         for (unsigned int i = 0; i < m_points.size(); ++i)
         {
-            const float r = (float) std::rand() * 0.000030518509f;     // rand() / 32768
+            const float r = (float) bf2crt::rand() * 0.000030518509f;  // rand() / 32767
             m_values[i + row * m_points.size()] = (m_points[i].yMax - m_points[i].yMin) * r + m_points[i].yMin;
         }
     }

@@ -3,6 +3,9 @@
 // Use typed IPlayer calls so destructor-slot differences between PE and ELF remain correct.
 // Source placement [INFERRED].
 
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "PlayerManager.h"
 #include "PlayerScoreData.h"
 #include <algorithm>
@@ -21,6 +24,7 @@
 #include "../../Game/IGame.h"
 #include "../../Game/GameServer/ServerSettings.h"
 #include "../../Game/Python/PythonHost.h" // removePlayer's final Python wrapper invalidation
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -726,6 +730,20 @@ int PlayerManager::getTeamToAddPlayer(float team1Weight, float team2Weight)
     const float target2 = static_cast<float>(team2Weight * reciprocalWeightSum);
     const float error2 = static_cast<float>(static_cast<long double>(team2AsFloat) / total - target2);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const float team1AsFloat = static_cast<float>(team1Count);
+    const float totalAsFloat = static_cast<float>(team1Count + team2Count);
+    const float team2AsFloat = static_cast<float>(team2Count);
+    const bf2x87::Real fraction1 = static_cast<bf2x87::Real>(team1AsFloat) / totalAsFloat;
+    const float fraction2 = static_cast<float>(static_cast<bf2x87::Real>(team2AsFloat) / totalAsFloat);
+    const bf2x87::Real extendedWeightSum = static_cast<bf2x87::Real>(team1Weight) + team2Weight;
+    const bf2x87::Real extendedError1 = fraction1 - team1Weight / extendedWeightSum;
+    const bf2x87::Real extendedError2 = fraction2 - team2Weight / extendedWeightSum;
+    const float weightSum = static_cast<float>(extendedWeightSum);
+    const float error1 = static_cast<float>(extendedError1);
+    const float error2 = static_cast<float>(extendedError2);
+#else
     const float team1AsFloat = static_cast<float>(team1Count);
     const float totalAsFloat = static_cast<float>(team1Count + team2Count);
     const float team2AsFloat = static_cast<float>(team2Count);
@@ -737,6 +755,7 @@ int PlayerManager::getTeamToAddPlayer(float team1Weight, float team2Weight)
     const float weightSum = static_cast<float>(extendedWeightSum);
     const float error1 = static_cast<float>(extendedError1);
     const float error2 = static_cast<float>(extendedError2);
+#endif
 #endif
 
     std::string gameMode;
@@ -750,11 +769,20 @@ int PlayerManager::getTeamToAddPlayer(float team1Weight, float team2Weight)
         const long double actualBotRatio = static_cast<long double>(team1BotsAsFloat) /
             configuredBotCount * 100.0L;
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+        const int configuredBotCount = serverSettings->getCoopBotCount();
+        const float team1BotsAsFloat = static_cast<float>(team1BotCount);
+        const float configuredBotsAsFloat = static_cast<float>(configuredBotCount);
+        const bf2x87::Real actualBotRatio = static_cast<bf2x87::Real>(team1BotsAsFloat) /
+            configuredBotsAsFloat * 100.0L;
+#else
         const int configuredBotCount = serverSettings->getCoopBotCount();
         const float team1BotsAsFloat = static_cast<float>(team1BotCount);
         const float configuredBotsAsFloat = static_cast<float>(configuredBotCount);
         const long double actualBotRatio = static_cast<long double>(team1BotsAsFloat) /
             configuredBotsAsFloat * 100.0L;
+#endif
 #endif
         // Unordered selects team 1: PE test ah,1; ELF jnb takes only the team-2 arm.
         if (!(actualBotRatio >= desiredBotRatio))
@@ -777,6 +805,19 @@ int PlayerManager::getTeamToAddPlayer(float team1Weight, float team2Weight)
         (static_cast<long double>(team1Count) / secondTotal - target1) -
         (static_cast<long double>(team2Count + 1) / secondTotal - target2));
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real target1 = static_cast<bf2x87::Real>(team1Weight) / weightSum;
+    const bf2x87::Real target2 = static_cast<bf2x87::Real>(team2Weight) / weightSum;
+    const float firstTotal = static_cast<float>(team2Count + (team1Count + 1));
+    const float secondTotal = static_cast<float>((team2Count + 1) + team1Count);
+    const float placement1 = static_cast<float>(bf2x87::abs(
+        (static_cast<bf2x87::Real>(static_cast<float>(team1Count + 1)) / firstTotal - target1) -
+        (static_cast<bf2x87::Real>(team2AsFloat) / firstTotal - target2)));
+    const float placement2 = static_cast<float>(bf2x87::abs(
+        (static_cast<bf2x87::Real>(team1AsFloat) / secondTotal - target1) -
+        (static_cast<bf2x87::Real>(static_cast<float>(team2Count + 1)) / secondTotal - target2)));
+#else
     const long double target1 = static_cast<long double>(team1Weight) / weightSum;
     const long double target2 = static_cast<long double>(team2Weight) / weightSum;
     const float firstTotal = static_cast<float>(team2Count + (team1Count + 1));
@@ -788,11 +829,12 @@ int PlayerManager::getTeamToAddPlayer(float team1Weight, float team2Weight)
         (static_cast<long double>(team1AsFloat) / secondTotal - target1) -
         (static_cast<long double>(static_cast<float>(team2Count + 1)) / secondTotal - target2)));
 #endif
+#endif
     if (placement1 > placement2)
         return 2;
     if (placement2 > placement1)
         return 1;
-    return (std::rand() & 1) + 1;
+    return (bf2crt::rand() & 1) + 1;
 }
 
 // Counts every registered player, including bots.

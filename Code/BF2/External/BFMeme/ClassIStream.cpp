@@ -30,8 +30,8 @@ bool ForwardingIStream::streamInt(int* p, const char* label) { return m_input->s
 bool ForwardingIStream::streamString(char** p, const char* label) { return m_input->streamString(p,label); }
 bool ForwardingIStream::streamWideString(wchar_t** p, const char* label) { return m_input->streamWideString(p,label); }
 bool ForwardingIStream::streamCharacter(wchar_t* p, const char* label) { return m_input->streamCharacter(p,label); }
-bool ForwardingIStream::streamTexture(System* s, int* p, const char* label) { return m_input->streamTexture(s,p,label); }
-bool ForwardingIStream::streamFont(System* s, int* p, const char* label) { return m_input->streamFont(s,p,label); }
+bool ForwardingIStream::streamTexture(System* s, TextureHandle* p, const char* label) { return m_input->streamTexture(s,p,label); }
+bool ForwardingIStream::streamFont(System* s, FontHandle* p, const char* label) { return m_input->streamFont(s,p,label); }
 bool ForwardingIStream::streamSound(System* s, int* p, const char* label) { return m_input->streamSound(s,p,label); }
 bool ForwardingIStream::streamCollection(System* s, ObjectCollection* p, const char* label) { return m_input->streamCollection(s,p,label); }
 bool ForwardingIStream::streamEnum(int* p, EnumNext next, EnumName name, const char* label) { return m_input->streamEnum(p,next,name,label); }
@@ -49,6 +49,14 @@ ClassIStream::~ClassIStream()
     char** entry = m_strings;
     while (*entry) { ::operator delete(*entry); *entry++ = nullptr; }
 }
+// 83C2B0: guarded "dice::meme::ClassIStream" descriptor; base slot 83C1D0 jumps to IStream's
+// getter, factory 83C1E0 allocates 0x814 bytes and runs ClassIStream(nullptr) inline.
+TypeDescriptor* ClassIStream::getClassType()
+{
+    static ClassTypeDescriptor<ClassIStream, IStream> type("dice::meme::ClassIStream");
+    return &type;
+}
+TypeDescriptor* ClassIStream::getType() { return getClassType(); }
 unsigned int ClassIStream::getObjectSize() { return sizeof(ClassIStream); }
 bool ClassIStream::init(System* system)
 {
@@ -188,7 +196,9 @@ bool readObject(System* system, Object*& value, IStream* input)
         + static_cast<unsigned long>(start))); // Return ignored; signed backward skip is possible.
     return true;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(ForwardingIStream) == 16, "forwarding input layout");
 static_assert(sizeof(ClassIStream) == 0x814, "class input dictionary layout");
+#endif
 } }
 #endif

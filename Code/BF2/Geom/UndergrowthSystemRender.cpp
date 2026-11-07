@@ -2,16 +2,19 @@
 // [CHOSEN, not recovered] split from UndergrowthSystem.cpp for file size.
 // A patch cache builds nearby density cells, normally one per frame; forced updates build all.
 // Rendering culls patches, sorts near-to-far and groups draws by lighting/shadow technique.
-// Preserve float evaluation order and unordered-comparison behavior. Profiling brackets are omitted.
+// Preserve float evaluation order and unordered-comparison behavior.
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "UndergrowthSystem.h"
+#include "../RendDX9/RendDX9Math.h"   // the RendDX9 Frustum::operator= copy
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 #include "Terrain.h"
 #include "MeshTemplate.h"
 #include "StaticMesh.h"
@@ -19,14 +22,8 @@
 // The host (BF2.exe) light interfaces render dispatches into - typed in both flavours (RW-266); the
 // retail-ABI flavour takes HfeAbi's ClassManager carriers in place of Core/ClassManager.h, exactly as
 // SkinnedMesh.cpp includes the same two headers.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../Game/Objects/Visual/LightSource.h"
 #include "../Game/Objects/Visual/LightSourceTemplate.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#endif
 #include "../Math/Frustum.h"
 #include "../Math/Mat4.h"
 #include "../Math/Vec3.h"
@@ -78,6 +75,12 @@ extern LightManager* g_LightManager;                                         // 
 
 namespace {
 
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Native helper returns retain x87 register values through their callers.
+typedef bf2x87::Real UndergrowthScalar;
+#else
+typedef float UndergrowthScalar;
+#endif
 
 // constants
 
@@ -207,41 +210,14 @@ struct UndergrowthCellDistanceLess
 {
     bool operator()(UndergrowthCellDistance a, UndergrowthCellDistance b) const
     {
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The inlined comparator uses FCOM, including quiet-NaN invalid.
+        return bf2x87::less(UndergrowthScalar(a.key), UndergrowthScalar(b.key));
+#else
         return a.key < b.key;
+#endif
     }
 };
-
-
-// [CHOSEN, not recovered] Typed access to compatibility-layout vectors on the engine heap.
-// Growth uses capacity + capacity/2, matching the corresponding deallocation ownership.
-
-template <typename T>
-inline unsigned int vcCount(const vc71::vector_layout& v)                 // VC7.1 size(): 0 when null
-{
-    return v.first ? static_cast<unsigned int>(v.last - v.first) / static_cast<unsigned int>(sizeof(T))
-                   : 0u;
-}
-
-template <typename T>
-inline T* vcAt(const vc71::vector_layout& v, unsigned int index)
-{
-    return reinterpret_cast<T*>(v.first) + index;
-}
-
-template <typename T>
-inline void vcPushBack(vc71::vector_layout& v, const T& value)            // push_back
-{
-    vc71::vectorRef<T>(&v).push_back(value);
-}
-
-// resize(0) - VC7.1's `if (0 < size()) erase(begin(), end())`, which on trivially destructible
-// elements is `last = first`; capacity is kept.
-template <typename T>
-inline void vcResizeToZero(vc71::vector_layout& v)
-{
-    if (vcCount<T>(v) != 0 && v.first != v.last)
-        v.last = v.first;
-}
 
 
 // UndergrowthVertex::texCoord - two shorts - as the ONE dword buildPatch copies into the patch vertex
@@ -260,11 +236,38 @@ inline unsigned int packedTexCoord(const UndergrowthVertex& v)
 float clampFloat(float value, float low, float high)
 {
     float result = value;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FCOMI also raises invalid for quiet NaNs.
+    if (bf2x87::greaterEqual(bf2x87::Real(result), bf2x87::Real(high)))
+        result = high;
+    if (!bf2x87::greaterEqual(bf2x87::Real(result), bf2x87::Real(low)))
+        result = low;
+#else
     if (result >= high)
         result = high;
     if (!(result >= low))
         result = low;
+#endif
     return result;
+}
+
+bool undergrowthLess(float a, float b)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] These comparisons use FCOM rather than FUCOM.
+    return bf2x87::less(UndergrowthScalar(a), UndergrowthScalar(b));
+#else
+    return a < b;
+#endif
+}
+
+bool undergrowthGreater(float a, float b)
+{
+#if defined(__APPLE__)
+    return bf2x87::greater(UndergrowthScalar(a), UndergrowthScalar(b));
+#else
+    return a > b;
+#endif
 }
 
 // lcgrand_step, RendDX9's copy of dice::hfe::Random::getRaw: two Schrage steps, 24112
@@ -289,21 +292,41 @@ unsigned int lcgNext(unsigned int& seed)
 
 // (ecx = a, edx = b; the answer on the x87 stack) - |b - a|. The sum is (dx^2 + dz^2) +
 // dy^2: the body squares z first and adds x, then y (faddp order), which associates like this.
-float distanceBetween(const Vec3& a, const Vec3& b)
+// PE 0x1014DF30
+UndergrowthScalar distanceBetween(const Vec3& a, const Vec3& b)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Only the x difference is spilled before the squared sum.
+    const float dx = bf2x87::store(UndergrowthScalar(b.x) - a.x);
+    const UndergrowthScalar dy = UndergrowthScalar(b.y) - a.y;
+    const UndergrowthScalar dz = UndergrowthScalar(b.z) - a.z;
+    return bf2x87::squareRoot(dz * dz + UndergrowthScalar(dx) * dx + dy * dy);
+#else
     const float dx = b.x - a.x;
     const float dy = b.y - a.y;
     const float dz = b.z - a.z;
     return std::sqrt(dx * dx + dz * dz + dy * dy);
+#endif
 }
 
-// the same body without the fsqrt (outside the attested range: a Math helper).
+// (ecx = a, edx = b; the answer on the x87 stack) - |b - a| squared: the Math distanceSquared
+// helper render calls (outside this TU's range), the same body as above without the fsqrt. The
+// caller stores the answer to a float.
 float distanceSquaredBetween(const Vec3& a, const Vec3& b)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Only the x difference is spilled; the squared sum stays wide until
+    // the caller's store.
+    const float dx = bf2x87::store(UndergrowthScalar(b.x) - a.x);
+    const UndergrowthScalar dy = UndergrowthScalar(b.y) - a.y;
+    const UndergrowthScalar dz = UndergrowthScalar(b.z) - a.z;
+    return bf2x87::store(dz * dz + UndergrowthScalar(dx) * dx + dy * dy);
+#else
     const float dx = b.x - a.x;
     const float dy = b.y - a.y;
     const float dz = b.z - a.z;
     return dx * dx + dz * dz + dy * dy;
+#endif
 }
 
 // (ecx = point, edx = origin, two stack arguments, retn 8) - the squared distance from a
@@ -311,9 +334,38 @@ float distanceSquaredBetween(const Vec3& a, const Vec3& b)
 // (exact for perpendicular edges, which is how rebuildPatches calls it: the top face of a cell box).
 
 // Uses edge1's squared length for both axes; behavior differs for nonsquare cells.
-float squaredDistanceToQuad(const Vec3& point, const Vec3& origin, const Vec3& edge1,
+// PE 0x101461B0
+UndergrowthScalar squaredDistanceToQuad(const Vec3& point, const Vec3& origin, const Vec3& edge1,
                             const Vec3& edge2)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep deltas and the result wide; lengths and dot products are spilled.
+    const UndergrowthScalar dx = UndergrowthScalar(origin.x) - point.x;
+    const UndergrowthScalar dy = UndergrowthScalar(origin.y) - point.y;
+    const UndergrowthScalar dz = UndergrowthScalar(origin.z) - point.z;
+    const float lengthSq = bf2x87::store(UndergrowthScalar(edge1.x) * edge1.x
+        + UndergrowthScalar(edge1.y) * edge1.y + UndergrowthScalar(edge1.z) * edge1.z);
+    const float along1 = bf2x87::store(dz * edge1.z + dx * edge1.x + dy * edge1.y);
+    const float along2 = bf2x87::store(dz * edge2.z + dy * edge2.y + dx * edge2.x);
+    const float s = -along1;
+    const float t = -along2;
+    UndergrowthScalar result = dx * dx + dz * dz + dy * dy;
+    if (!bf2x87::less(UndergrowthScalar(s), UndergrowthScalar(0.0f)))
+    {
+        if (bf2x87::lessEqual(UndergrowthScalar(s), UndergrowthScalar(lengthSq)))
+            result = UndergrowthScalar(s) / lengthSq * along1 + result;
+        else
+            result = (UndergrowthScalar(along1) + along1) + result + lengthSq;
+    }
+    if (!bf2x87::less(UndergrowthScalar(t), UndergrowthScalar(0.0f)))
+    {
+        if (bf2x87::lessEqual(UndergrowthScalar(t), UndergrowthScalar(lengthSq)))
+            result = UndergrowthScalar(t) / lengthSq * along2 + result;
+        else
+            result = (UndergrowthScalar(along2) + along2) + result + lengthSq;
+    }
+    return bf2x87::abs(result);
+#else
     const float dx = origin.x - point.x;
     const float dy = origin.y - point.y;
     const float dz = origin.z - point.z;
@@ -339,6 +391,7 @@ float squaredDistanceToQuad(const Vec3& point, const Vec3& origin, const Vec3& e
             distanceSq = distanceSq + (along2 + along2) + edge2LengthSq;
     }
     return std::fabs(distanceSq);
+#endif
 }
 
 // (retn 4) - scale the 3x3 part's columns by s; write order m0 m4 m8 m1 m5 m9 m2 m6 m10.
@@ -361,24 +414,24 @@ void mat4ScaleColumns3x3(Mat4& m, const Vec3& s)
 // file-local probe TerrainDraw.cpp and FSQuadDrawer.cpp carry.
 bool isMultisampleActive()
 {
-    unsigned char* const base = static_cast<unsigned char*>(dx9rend::g_rendererBase);
-    if (base[0x514])
+    const dx9rend::RendDX9Base* const base =
+        static_cast<const dx9rend::RendDX9Base*>(dx9rend::g_rendererBase);
+    if (base->forceMultisample)
         return true;
-    if (base[0x515])
+    if (base->disableMultisample)
         return false;
-    unsigned int* const first = *reinterpret_cast<unsigned int**>(base + 0xC0);
-    unsigned int* const last  = *reinterpret_cast<unsigned int**>(base + 0xC4);
-    return first && ((last - first) >> 1) && *reinterpret_cast<int*>(first) > 0;
+    return dx9rend::multiSampleListActive(base);
 }
 
-inline unsigned char* raConstants()
+// The Ra constants block (g_raShaderConstants) words, by their retail x86 byte offsets.
+inline unsigned char* raConstantAt(unsigned int byteOffset)
 {
-    return static_cast<unsigned char*>(dx9rend::g_raShaderConstants);
+    return dx9rend::raShaderConstantsAt(byteOffset);
 }
 
 inline float raConstantF(unsigned int byteOffset)
 {
-    return *reinterpret_cast<const float*>(raConstants() + byteOffset);
+    return *reinterpret_cast<const float*>(raConstantAt(byteOffset));
 }
 
 // The "HeightmapCluster" singleton by name - rebuildPatches and buildPatch look it up on every call
@@ -407,21 +460,16 @@ void resetBounds(MeshBounds& bounds)
 // so native builds use the accessor while plugin builds read the fixed retail offset.
 const world::LightSourceTemplate* lightSourceTemplate(world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<const world::LightSourceTemplate*>(light->getTemplate());
-#else
-    return *reinterpret_cast<const world::LightSourceTemplate* const*>(
-        reinterpret_cast<unsigned char*>(light) + 0x144);
-#endif
 }
 
 // Queries drawer occlusion; dirty bounds may be finalized in place.
 // Requires a live drawer and a compatibility-layout MeshBounds.
 inline bool objectDrawerOccludesBounds(IBase* drawer, MeshBounds* bounds)
 {
-    typedef bool (__fastcall* OccludedFn)(void*, void*, MeshBounds*);
+    typedef bool (__thiscall* OccludedFn)(void*, MeshBounds*);
     void** const table = *reinterpret_cast<void***>(drawer);
-    return reinterpret_cast<OccludedFn>(table[0x3C / sizeof(void*)])(drawer, 0, bounds);
+    return reinterpret_cast<OccludedFn>(table[0x3C / 4])(drawer, bounds);
 }
 
 
@@ -434,6 +482,7 @@ inline bool objectDrawerOccludesBounds(IBase* drawer, MeshBounds* bounds)
 // channels are widened by a plain shift (no bit replication, so white is 0xF8FCF8); the 3-colour arm
 // (c0 <= c1) leaves colour 3 opaque black (alpha 0xFF, not the specification's transparent black);
 // and the interpolants are integer (2a + b) / 3 and (a + b) / 2 on the widened bytes.
+// PE 0x101457C0
 void decodeDxt1Block(const unsigned char* block, unsigned int* out, unsigned int stride)
 {
     unsigned char palette[4][4];                                          // [ebp-14h], B G R A
@@ -511,12 +560,18 @@ void lerpColor(unsigned int* out, const unsigned int* a, const unsigned int* b, 
 
 // The address of block `index` of a DXT1 image, in retail's 32-bit arithmetic: the index is formed
 // unsigned and scaled by 8 with wrap-around, so the bilinear arm's (x - 2) >> 2 for x < 2 (0x3FFFFFFF)
-// lands 8 bytes before the row it names - an out-of-bounds read at the top-left, shipped. This image is
-// x86-only (agents.md), where uintptr_t arithmetic wraps exactly like retail's `lea`.
+// lands 8 bytes before the row it names - an out-of-bounds read at the top-left, shipped. On x86 the
+// uintptr_t arithmetic wraps exactly like retail's `lea`.
 inline const unsigned char* dxt1BlockAt(const unsigned char* bits, unsigned int index)
 {
+#if defined(_M_IX86)
     return reinterpret_cast<const unsigned char*>(
         reinterpret_cast<std::uintptr_t>(bits) + static_cast<std::uintptr_t>(index * 8u));
+#else
+    // [PLATFORM] x64: the wrapped 32-bit byte offset is sign-extended, so the underflowed index still
+    // lands 8 bytes before its row as on x86, not 4 GiB past the image.
+    return bits + static_cast<std::ptrdiff_t>(static_cast<int>(index * 8u));
+#endif
 }
 
 // (ecx = the locked bits, edx = width; stack: height, uv, out; retn 0Ch) - the terrain map
@@ -524,13 +579,24 @@ inline const unsigned char* dxt1BlockAt(const unsigned char* bits, unsigned int 
 // The bilinear arm is transcribed too - dead in the shipped image - with its own quirks: the 2x2
 // block neighbourhood starts at ((x - 2) >> 2, (y - 2) >> 2), unsigned; the lerps are 0x101456C0's.
 // The row pitch LockRect returned is ignored; blocks are addressed as (width / 4) per row.
+// PE 0x10145F30
 void sampleDxt1(const unsigned char* bits, unsigned int width, unsigned int height,
                 const float uv[2], unsigned int* out)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Unsigned dimensions are exact until the final coordinate stores.
+    const float u = bf2x87::store((UndergrowthScalar(width) - 1.0f)
+        * clampFloat(uv[0], 0.0f, 1.0f));
+    const float v = bf2x87::store((UndergrowthScalar(height) - 1.0f)
+        * clampFloat(uv[1], 0.0f, 1.0f));
+    const int x = bf2x87::toIntTruncate(u);
+    const int y = bf2x87::toIntTruncate(v);
+#else
     const float u = clampFloat(uv[0], 0.0f, 1.0f) * (static_cast<float>(width) - 1.0f);
     const float v = clampFloat(uv[1], 0.0f, 1.0f) * (static_cast<float>(height) - 1.0f);
     const int x = static_cast<int>(u);
     const int y = static_cast<int>(v);
+#endif
     if (kPointSampleTerrainMaps)
     {
         const unsigned int blockX = static_cast<unsigned int>(x) >> 2;
@@ -543,8 +609,8 @@ void sampleDxt1(const unsigned char* bits, unsigned int width, unsigned int heig
         return;
     }
 
-    const unsigned int blockX = static_cast<unsigned int>(x - 2) >> 2;
-    const unsigned int blockY = static_cast<unsigned int>(y - 2) >> 2;
+    const unsigned int blockX = (static_cast<unsigned int>(x) - 2u) >> 2;
+    const unsigned int blockY = (static_cast<unsigned int>(y) - 2u) >> 2;
     const unsigned int blocksPerRow = width >> 2;
     unsigned int texels[64];                                              // [ebp-158h], filled 0xFF
     std::memset(texels, 0xFF, sizeof(texels));
@@ -568,22 +634,46 @@ void sampleDxt1(const unsigned char* bits, unsigned int width, unsigned int heig
 
 } // anonymous namespace
 
+// PE 0x101462C0: the square root of squaredDistanceToQuad, same register arguments (ecx = point,
+// edx = origin) and the same two stack arguments (retn 8). [INFERRED] name. Unreachable in 1.50: no code
+// or data references.
+UndergrowthScalar distanceToQuad(const Vec3& point, const Vec3& origin, const Vec3& edge1,
+                                 const Vec3& edge2)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FSQRT keeps the wide result, as in the rebuildPatches reach test.
+    return bf2x87::squareRoot(squaredDistanceToQuad(point, origin, edge1, edge2));
+#else
+    return std::sqrt(squaredDistanceToQuad(point, origin, edge1, edge2));
+#endif
+}
+
 
 // Writes a row-major cell's world bounds; margin adds one unit in x/z only.
 // Leaves bounds untouched when the cell array is absent. Index division is unsigned,
 // while centering uses signed half-grid arithmetic.
 
+// PE 0x10145AC0
 void UndergrowthSystem::cellBounds(const UndergrowthCell* cell, MeshBounds* bounds, bool margin) const
 {
     if (!m_cells)
         return;
     const unsigned int index = static_cast<unsigned int>(cell - m_cells);  // imul 4EC4EC4Fh (/ 104)
     const int half = static_cast<int>(m_cellsPerSide) / 2;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] SUB wraps before FILD; the integer converts only at the product store.
+    const int row = bf2x87::lowWord(static_cast<std::int64_t>(index / m_cellsPerSide) - half);
+    const int column = bf2x87::lowWord(static_cast<std::int64_t>(index % m_cellsPerSide) - half);
+    bounds->min.x = bf2x87::store(UndergrowthScalar(column) * m_cellSize);
+    bounds->min.y = cell->minHeight;
+    bounds->min.z = bf2x87::store(UndergrowthScalar(row) * m_cellSize);
+#else
     const int row = static_cast<int>(index / m_cellsPerSide) - half;
     const int column = static_cast<int>(index % m_cellsPerSide) - half;
     bounds->min.x = static_cast<float>(column) * m_cellSize;
     bounds->min.y = cell->minHeight;
     bounds->min.z = static_cast<float>(row) * m_cellSize;
+#endif
     bounds->max.x = m_cellSize + bounds->min.x;
     bounds->max.y = cell->maxHeight;
     bounds->max.z = m_cellSize + bounds->min.z;
@@ -603,6 +693,7 @@ void UndergrowthSystem::cellBounds(const UndergrowthCell* cell, MeshBounds* boun
 // Uses an unsigned half-size shift and signed bounds tests. The far edge is accepted here;
 // consumers reject coordinates at size. z retains x87 precision while x is rounded to float.
 
+// PE 0x10145B90
 void UndergrowthSystem::worldToDensityCell(float x, float z, int* col, int* row, float* fracX,
                                            float* fracZ)
 {
@@ -612,10 +703,26 @@ void UndergrowthSystem::worldToDensityCell(float x, float z, int* col, int* row,
     const double floorZ = std::floor(static_cast<double>(scaledZ));
     *fracX = scaledX - floorX;
     *fracZ = static_cast<float>(static_cast<double>(scaledZ) - floorZ);
+#if defined(__APPLE__)
+    *col = bf2x87::toIntTruncate(floorX);
+#else
     *col = static_cast<int>(floorX);
+#endif
+#if defined(__APPLE__)
+    *row = bf2x87::toIntTruncate(floorZ);
+#else
     *row = static_cast<int>(floorZ);
+#endif
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] ADD keeps its low 32 bits, including integer-indefinite input.
+    *col = bf2x87::lowWord(static_cast<std::int64_t>(*col)
+        + (static_cast<unsigned int>(m_densityWidth) >> 1));
+    *row = bf2x87::lowWord(static_cast<std::int64_t>(*row)
+        + (static_cast<unsigned int>(m_densityHeight) >> 1));
+#else
     *col += static_cast<int>(static_cast<unsigned int>(m_densityWidth) >> 1);
     *row += static_cast<int>(static_cast<unsigned int>(m_densityHeight) >> 1);
+#endif
     if (*col > m_densityWidth || *col < 0)
         *col = 0;
     if (*row > m_densityHeight || *row < 0)
@@ -627,6 +734,7 @@ void UndergrowthSystem::worldToDensityCell(float x, float z, int* col, int* row,
 // Forced updates build every pending patch; ordinary updates build only the nearest candidate.
 // Disabled, unloaded or viewless systems do nothing.
 
+// PE 0x10148850
 void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
 {
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderViewDup();          // Renderer +0x50
@@ -636,33 +744,61 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
     world::IHeightmapCluster* const cluster = heightmapClusterByName();
     (void)cluster->getPrimaryHeightmap();                                            // +0x40 (host)
 
-    vcResizeToZero<UndergrowthCell*>(m_visibleCells);                                // (0, 0)
+    m_visibleCells.resize(0);                                                        // (0, 0)
 
     // the camera's cell, x by division and z by the reciprocal.
     const Mat4* const cameraForX = view->getViewMatrixPtr();                         // +0x64
+#if defined(__APPLE__)
+    const int cameraColumn = bf2x87::toIntTruncate(
+        (UndergrowthScalar(m_cellsPerSide >> 1) * m_cellSize + cameraForX->m[12]) / m_cellSize);
+#else
     const int cameraColumn = static_cast<int>(
         (static_cast<float>(m_cellsPerSide >> 1) * m_cellSize + cameraForX->m[12]) / m_cellSize);
+#endif
     const Mat4* const cameraForZ = view->getViewMatrixPtr();                         // +0x64 again
-    const float inverseCellSize = 1.0f / m_cellSize;
+    const UndergrowthScalar inverseCellSize = UndergrowthScalar(1.0f) / m_cellSize;
+#if defined(__APPLE__)
+    const int cameraRow = bf2x87::toIntTruncate(
+        (UndergrowthScalar(m_cellsPerSide >> 1) * m_cellSize + cameraForZ->m[14]) * inverseCellSize);
+#else
     const int cameraRow = static_cast<int>(
         (static_cast<float>(m_cellsPerSide >> 1) * m_cellSize + cameraForZ->m[14]) * inverseCellSize);
+#endif
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The reciprocal stays retained, the ceil argument is a double,
+    // and the integer LEA wraps at 32 bits after conversion.
+    const int radius = bf2x87::toIntTruncate(UndergrowthScalar(
+        std::ceil(bf2x87::storeDouble(inverseCellSize * viewDistance))));
+    const int span = bf2x87::lowWord(static_cast<std::int64_t>(radius) * 2 + 1);
+#else
     const int span = 2 * static_cast<int>(
         std::ceil(static_cast<double>(inverseCellSize * viewDistance))) + 1;
+#endif
 
     for (int row = 0; row < span; ++row)
     {
         for (int column = 0; column < span; ++column)
         {
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Each coordinate repeats its double-argument ceil/FISTP.
+            const int xRadius = bf2x87::toIntTruncate(UndergrowthScalar(std::ceil(
+                bf2x87::storeDouble(UndergrowthScalar(viewDistance) / m_cellSize))));
+            const int x = bf2x87::lowWord(static_cast<std::int64_t>(column) - xRadius + cameraColumn);
+            const int zRadius = bf2x87::toIntTruncate(UndergrowthScalar(std::ceil(
+                bf2x87::storeDouble(UndergrowthScalar(viewDistance) / m_cellSize))));
+            const int z = bf2x87::lowWord(static_cast<std::int64_t>(row) - zRadius + cameraRow);
+#else
             const int x = column - static_cast<int>(
                 std::ceil(static_cast<double>(viewDistance / m_cellSize))) + cameraColumn;
             const int z = row - static_cast<int>(
                 std::ceil(static_cast<double>(viewDistance / m_cellSize))) + cameraRow;
+#endif
             if (x >= 0 && x < static_cast<int>(m_cellsPerSide) && z >= 0
                 && z < static_cast<int>(m_cellsPerSide))
             {
                 UndergrowthCell* const cell = m_cells + (m_cellsPerSide * static_cast<unsigned int>(z)
                                                          + static_cast<unsigned int>(x));
-                vcPushBack(m_visibleCells, cell);
+                m_visibleCells.push_back(cell);
             }
         }
     }
@@ -676,9 +812,9 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
         if (!cell)
             continue;
         bool listed = false;
-        for (unsigned int k = 0; k < vcCount<UndergrowthCell*>(m_visibleCells); ++k)
+        for (unsigned int k = 0; k < m_visibleCells.size(); ++k)
         {
-            if (*vcAt<UndergrowthCell*>(m_visibleCells, k) == cell)
+            if (m_visibleCells[k] == cell)
             {
                 listed = true;
                 break;
@@ -692,9 +828,9 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
     }
 
     // give each newly listed cell the least recently drawn free entry.
-    for (unsigned int k = 0; k < vcCount<UndergrowthCell*>(m_visibleCells); ++k)
+    for (unsigned int k = 0; k < m_visibleCells.size(); ++k)
     {
-        UndergrowthCell* const cell = *vcAt<UndergrowthCell*>(m_visibleCells, k);
+        UndergrowthCell* const cell = m_visibleCells[k];
         if (cell->patch)
             continue;
         UndergrowthPatch* best = 0;
@@ -735,7 +871,7 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
 
     // m_drawOrder.resize(0), inlined here (the out-of-line instantiation
     // 0x1014FE60 is what render calls for the same statement).
-    vcResizeToZero<UndergrowthCellDistance>(m_drawOrder);
+    m_drawOrder.resize(0);
 
     // the view frustum at viewDistance, copy-constructed (0x100F58A0) into a
     // local while the far plane is swapped, then the far plane restored.
@@ -769,36 +905,49 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
         edgeZ.y = 0.0f;
         edgeZ.z = bounds.max.z - bounds.min.z;
         const Mat4* const camera = view->getViewMatrixPtr();                         // +0x64
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] FSQRT and the reach comparison have no intervening float store.
+        const UndergrowthScalar reach = bf2x87::squareRoot(squaredDistanceToQuad(
+            *reinterpret_cast<const Vec3*>(&camera->m[12]), corner, edgeX, edgeZ));
+        if (bf2x87::less(UndergrowthScalar(kBuildReachFactor) * viewDistance, reach))
+#else
         const float reach = std::sqrt(squaredDistanceToQuad(
             *reinterpret_cast<const Vec3*>(&camera->m[12]), corner, edgeX, edgeZ));
         if (kBuildReachFactor * viewDistance < reach)                                // fcompp; jnp
+#endif
             continue;
 
         const Mat4* const cameraAgain = view->getViewMatrixPtr();                    // +0x64 again
         if (bounds.dirty)
             meshBoundsFinalize(bounds);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Only dx is spilled before the X/Z/Y squared sum.
+        const float dx = bf2x87::store(UndergrowthScalar(cameraAgain->m[12]) - bounds.center.x);
+        const UndergrowthScalar dy = UndergrowthScalar(cameraAgain->m[13]) - bounds.center.y;
+        const UndergrowthScalar dz = UndergrowthScalar(cameraAgain->m[14]) - bounds.center.z;
+        float key = bf2x87::store(UndergrowthScalar(dx) * dx + dz * dz + dy * dy);
+#else
         const float dx = cameraAgain->m[12] - bounds.center.x;
         const float dy = cameraAgain->m[13] - bounds.center.y;
         const float dz = cameraAgain->m[14] - bounds.center.z;
         float key = dx * dx + dz * dz + dy * dy;
+#endif
         if (!terrainFrustumIntersectsBox(&frustum, &bounds.min.x))
             key = key + kOffscreenPenalty;
 
         UndergrowthCellDistance entry;
         entry.key = key;
         entry.cell = patch.cell;
-        vcPushBack(m_drawOrder, entry);          // inlined push_back (_Ufill 0x1014E460 / 0x1014EC90)
+        m_drawOrder.push_back(entry);            // inlined push_back (_Ufill 0x1014E460 / 0x1014EC90)
     }
 
     // std::sort(begin, end) nearest first, unconditionally (VC7.1 _Sort 0x10150100:
     // _ISORT_MAX 32, introsort; an empty or one-element range is a no-op there as here).
-    std::sort(reinterpret_cast<UndergrowthCellDistance*>(m_drawOrder.first),
-              reinterpret_cast<UndergrowthCellDistance*>(m_drawOrder.last),
-              UndergrowthCellDistanceLess());
+    std::sort(m_drawOrder.begin(), m_drawOrder.end(), UndergrowthCellDistanceLess());
 
     // stream in the nearest one.
-    if (vcCount<UndergrowthCellDistance>(m_drawOrder) != 0)
-        buildPatch(vcAt<UndergrowthCellDistance>(m_drawOrder, 0)->cell, false);
+    if (m_drawOrder.size() != 0)
+        buildPatch(m_drawOrder[0].cell, false);
 }
 
 // Builds a cell's cached grass geometry from density, slope and mesh settings.
@@ -806,6 +955,7 @@ void UndergrowthSystem::rebuildPatches(bool force, float viewDistance)
 // Per-cell seeding makes placement deterministic. Skew requires the expected eight vertices.
 // The resumable cursor retains the current column on budget exhaustion; a resume repeats it.
 // Buffer-lock failure still runs both unlocks.
+// PE 0x10146B60
 void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
 {
     (void)unusedFlag;
@@ -820,10 +970,10 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
 
     // the cell's corner: every term converted unsigned (the 2^32 fix-ups).
     const unsigned int half = m_cellsPerSide >> 1;
-    const float halfSpan = static_cast<float>(half) * m_cellSize;
-    const float originX = static_cast<float>(index % m_cellsPerSide) * m_cellSize - halfSpan;   // [ebp-5Ch]
+    const UndergrowthScalar halfSpan = UndergrowthScalar(half) * m_cellSize;
+    const float originX = static_cast<float>(UndergrowthScalar(index % m_cellsPerSide) * m_cellSize - halfSpan);   // [ebp-5Ch]
     m_random.m_seed = index & 0x7FFFFFFFu;                                      // +0x2D0
-    const float originZ = static_cast<float>(index / m_cellsPerSide) * m_cellSize - halfSpan;   // [ebp-58h]
+    const float originZ = static_cast<float>(UndergrowthScalar(index / m_cellsPerSide) * m_cellSize - halfSpan);   // [ebp-58h]
 
     unsigned char* vertexWrite = static_cast<unsigned char*>(dx9rend::vertexBufferLock(
         patch->vertexBuffer, patch->vertexCount, m_patchVertexCount - patch->vertexCount, 0));
@@ -858,26 +1008,21 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
         static_cast<IDirect3DTexture9*>(cell->colorMap->baseTexture);        // [ebp-0E0h]
     IDirect3DTexture9* const lightTexture =
         static_cast<IDirect3DTexture9*>(cell->lightMap->baseTexture);        // [ebp-44h]
-    // [ebp-138h] / [ebp-140h]. Retail leaves both uninitialised; each is read only under the same
-    // m_simpleShaderEnable test that locked it, so these zeroes are never observed - [CHOSEN, not
-    // recovered], they only settle C4701.
+    // Lock failures leave these records unwritten; results are used without a success check.
     D3DLOCKED_RECT colorRect;
     D3DLOCKED_RECT lightRect;
-    colorRect.Pitch = 0;
-    colorRect.pBits = 0;
-    lightRect.Pitch = 0;
-    lightRect.pBits = 0;
     if (m_simpleShaderEnable)
     {
         colorTexture->LockRect(0, &colorRect, 0, D3DLOCK_READONLY);         // vtable +0x4C
         lightTexture->LockRect(0, &lightRect, 0, D3DLOCK_READONLY);
     }
 
-    // thirty-two Y rotations, 11.25 degrees apart. Retail default-constructs
-    // the array first (sub_10001000, the eh vector constructor, with Mat4::Mat4 = identity,
-    // sub_10030D80); this tree's Mat4 is an aggregate, and setRotateYDeg (0x10077E30) rewrites every
-    // element in full anyway.
+    // thirty-two Y rotations, 11.25 degrees apart. Retail default-constructs the array first
+    // (sub_10001000, the eh vector constructor, with the image's Mat4 constructor sub_10030D80,
+    // 0x10146E00); setRotateYDeg (0x10077E30) then rewrites every element in full.
     Mat4 rotations[32];                                                      // [ebp-968h]
+    for (unsigned int i = 0; i < 32u; ++i)
+        rendmath::constructIdentity(rotations[i]);
     for (unsigned int i = 0; i < 32u; ++i)
         setRotateYDeg(rotations[i], static_cast<float>(i) * kRotationStepDegrees);
 
@@ -897,41 +1042,51 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
             if (type.density == 0.0f)
                 continue;
 
-            const float root = std::sqrt(type.density);
-            const float jitter = type.variation / root;                      // [ebp-68h]
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] FSQRT stays retained through both the jitter and lattice uses.
+            const UndergrowthScalar root = bf2x87::squareRoot(UndergrowthScalar(type.density));
+#else
+            const UndergrowthScalar root = std::sqrt(type.density);
+#endif
+            const float jitter = static_cast<float>(UndergrowthScalar(type.variation) / root);                      // [ebp-68h]
+#if defined(__APPLE__)
+            const unsigned int lattice = static_cast<unsigned int>(
+                bf2x87::toIntTruncate(root * m_cellSize));                        // [ebp-48h], fistp
+#else
             const unsigned int lattice = static_cast<unsigned int>(
                 static_cast<int>(root * m_cellSize));                        // [ebp-48h], fistp
+#endif
             const float latticeF = static_cast<float>(lattice);              // [ebp-64h], unsigned
 
             for (; patch->buildRow < lattice; ++patch->buildRow, patch->buildColumn = 0)
             {
-                const float rowFraction = static_cast<float>(patch->buildRow) / latticeF;      // [ebp-40h]
+                const float rowFraction = static_cast<float>(UndergrowthScalar(patch->buildRow) / latticeF);      // [ebp-40h]
                 for (; patch->buildColumn < lattice; ++patch->buildColumn)
                 {
                     const float columnFraction =
-                        static_cast<float>(patch->buildColumn) / latticeF;                     // [ebp-4]
+                        static_cast<float>(UndergrowthScalar(patch->buildColumn) / latticeF);                     // [ebp-4]
                     const unsigned int random = lcgNext(m_random.m_seed);                         // [ebp-8]
 
                     float x;                                                                   // [ebp-1Ch]
                     float z;                                                                   // [ebp-14h]
-                    if (type.variation < 0.0f)                               // test ah,5 / jp
+                    if (undergrowthLess(type.variation, 0.0f))                               // test ah,5 / jp
                     {
-                        x = static_cast<float>(random & 0xFFu) * uniformStep + originX;
-                        z = static_cast<float>((random >> 8) & 0xFFu) * uniformStep + originZ;
+                        x = static_cast<float>(UndergrowthScalar(random & 0xFFu) * uniformStep + originX);
+                        z = static_cast<float>(UndergrowthScalar((random >> 8) & 0xFFu) * uniformStep + originZ);
                     }
                     else
                     {
-                        x = (static_cast<float>(random & 0xFFu) * kJitterUnit - 1.0f) * jitter
-                            + columnFraction * m_cellSize + originX;
-                        z = (static_cast<float>((random >> 8) & 0xFFu) * kJitterUnit - 1.0f) * jitter
-                            + rowFraction * m_cellSize + originZ;
-                        if (x > bounds.max.x)
+                        x = static_cast<float>((UndergrowthScalar(random & 0xFFu) * kJitterUnit - 1.0f) * jitter
+                            + UndergrowthScalar(columnFraction) * m_cellSize + originX);
+                        z = static_cast<float>((UndergrowthScalar((random >> 8) & 0xFFu) * kJitterUnit - 1.0f) * jitter
+                            + UndergrowthScalar(rowFraction) * m_cellSize + originZ);
+                        if (undergrowthGreater(x, bounds.max.x))
                             x = x - m_cellSize;
-                        else if (x < bounds.min.x)
+                        else if (undergrowthLess(x, bounds.min.x))
                             x = x + m_cellSize;
-                        if (z > bounds.max.z)
+                        if (undergrowthGreater(z, bounds.max.z))
                             z = z - m_cellSize;
-                        else if (z < bounds.min.z)
+                        else if (undergrowthLess(z, bounds.min.z))
                             z = z + m_cellSize;
                     }
 
@@ -959,15 +1114,15 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                     normal.y = 0.0f;
                     normal.z = 0.0f;
                     cluster->getNormalInWorldCoords(x, z, normal);                             // +0x7C (host)
-                    if (normal.y < type.slopeRange.x)
+                    if (undergrowthLess(normal.y, type.slopeRange.x))
                         continue;
-                    if (normal.y > type.slopeRange.y)
+                    if (undergrowthGreater(normal.y, type.slopeRange.y))
                         continue;
 
                     const float groundHeight = cluster->getHeightInWorldCoords(x, z);          // +0x6C (host)
-                    const float size = (type.randomSizeScale.y - type.randomSizeScale.x)
-                        * static_cast<float>((random >> 16) & 0x3Fu) * kSizeRandomUnit
-                        + type.randomSizeScale.x;                                                  // [ebp-38h]
+                    const float size = static_cast<float>((UndergrowthScalar(type.randomSizeScale.y) - type.randomSizeScale.x)
+                        * UndergrowthScalar((random >> 16) & 0x3Fu) * kSizeRandomUnit
+                        + type.randomSizeScale.x);                                                  // [ebp-38h]
 
                     // the rotation copied (Mat4 copy constructor, 0x10030DD0), then
                     // re-based on the terrain normal. Every product is the shipped operand order.
@@ -975,12 +1130,12 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                     basis.m[4] = normal.x;
                     basis.m[5] = normal.y;
                     basis.m[6] = normal.z;
-                    basis.m[0] = basis.m[10] * normal.y - basis.m[9] * normal.z;
-                    basis.m[1] = basis.m[8] * normal.z - basis.m[10] * normal.x;
-                    basis.m[2] = basis.m[9] * normal.x - basis.m[8] * normal.y;
-                    basis.m[8] = basis.m[1] * normal.z - basis.m[2] * normal.y;
-                    basis.m[9] = basis.m[2] * normal.x - basis.m[0] * normal.z;
-                    basis.m[10] = basis.m[0] * normal.y - basis.m[1] * normal.x;
+                    basis.m[0] = static_cast<float>(UndergrowthScalar(basis.m[10]) * normal.y - UndergrowthScalar(basis.m[9]) * normal.z);
+                    basis.m[1] = static_cast<float>(UndergrowthScalar(basis.m[8]) * normal.z - UndergrowthScalar(basis.m[10]) * normal.x);
+                    basis.m[2] = static_cast<float>(UndergrowthScalar(basis.m[9]) * normal.x - UndergrowthScalar(basis.m[8]) * normal.y);
+                    basis.m[8] = static_cast<float>(UndergrowthScalar(basis.m[1]) * normal.z - UndergrowthScalar(basis.m[2]) * normal.y);
+                    basis.m[9] = static_cast<float>(UndergrowthScalar(basis.m[2]) * normal.x - UndergrowthScalar(basis.m[0]) * normal.z);
+                    basis.m[10] = static_cast<float>(UndergrowthScalar(basis.m[0]) * normal.y - UndergrowthScalar(basis.m[1]) * normal.x);
                     Vec3 scale;                                                                // [ebp-130h]
                     scale.x = size;
                     scale.y = size;
@@ -989,8 +1144,13 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
 
                     const unsigned char swayIndex =
                         static_cast<unsigned char>((random >> 22) & 0xFu);                     // [ebp-0Dh]
+#if defined(__APPLE__)
+                    const unsigned char heightByte = static_cast<unsigned char>(
+                        bf2x87::toInt64Truncate(UndergrowthScalar(size) * type.size.y * kHeightByteScale));         // __ftol2
+#else
                     const unsigned char heightByte = static_cast<unsigned char>(
                         static_cast<long long>(size * type.size.y * kHeightByteScale));         // __ftol2
+#endif
                     const float heightF = static_cast<float>(static_cast<int>(heightByte));    // [ebp-4]
                     const float relativeX = x - center.x;                                      // [ebp-1Ch]
                     const float relativeY = groundHeight - center.y;                           // [ebp-18h]
@@ -1008,31 +1168,56 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                              ++k, ++out)
                         {
                             const UndergrowthVertex& v = source[k];
-                            const float tx = basis.m[4] * v.position.y + basis.m[8] * v.position.z
-                                           + basis.m[0] * v.position.x;
-                            const float ty = basis.m[5] * v.position.y + basis.m[9] * v.position.z
-                                           + basis.m[1] * v.position.x;
-                            const float tz = basis.m[6] * v.position.y + basis.m[10] * v.position.z
-                                           + basis.m[2] * v.position.x;
-                            const float px = tx + relativeX;                                   // [ebp-0D0h]
-                            const float pz = tz + relativeZ;                                   // [ebp-0C8h]
+                            const UndergrowthScalar tx = UndergrowthScalar(basis.m[4]) * v.position.y + UndergrowthScalar(basis.m[8]) * v.position.z
+                                           + UndergrowthScalar(basis.m[0]) * v.position.x;
+                            const UndergrowthScalar ty = UndergrowthScalar(basis.m[5]) * v.position.y + UndergrowthScalar(basis.m[9]) * v.position.z
+                                           + UndergrowthScalar(basis.m[1]) * v.position.x;
+                            const UndergrowthScalar tz = UndergrowthScalar(basis.m[6]) * v.position.y + UndergrowthScalar(basis.m[10]) * v.position.z
+                                           + UndergrowthScalar(basis.m[2]) * v.position.x;
+                            const float px = static_cast<float>(tx + relativeX);                                   // [ebp-0D0h]
+                            const float pz = static_cast<float>(tz + relativeZ);                                   // [ebp-0C8h]
+#if defined(__APPLE__)
+                            out->base.position[0] = static_cast<short>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(px) * kPositionScale));
+#else
                             out->base.position[0] = static_cast<short>(
                                 static_cast<long long>(px * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->base.position[1] = static_cast<short>(
+                                bf2x87::toInt64Truncate(ty * kPositionScale));
+#else
                             out->base.position[1] = static_cast<short>(
                                 static_cast<long long>(ty * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->base.position[2] = static_cast<short>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(pz) * kPositionScale));
+#else
                             out->base.position[2] = static_cast<short>(
                                 static_cast<long long>(pz * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->base.position[3] = static_cast<short>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(relativeY) * kPositionScale));
+#else
                             out->base.position[3] = static_cast<short>(
                                 static_cast<long long>(relativeY * kPositionScale));
+#endif
                             out->base.texCoord = packedTexCoord(v);
                             out->base.swayIndex = swayIndex;
+#if defined(__APPLE__)
+                            out->base.swayAmount = static_cast<unsigned char>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(heightF) * v.sway));
+#else
                             out->base.swayAmount = static_cast<unsigned char>(
                                 static_cast<long long>(heightF * v.sway));
+#endif
                             out->base.heightByte = heightByte;
                             out->base.colorScale = v.colorScale;
                             float uv[2];                                                       // [ebp-0D8h]
-                            uv[0] = (px + center.x) * cell->texScaleU + cell->texOffsetU;
-                            uv[1] = (pz + center.z) * cell->texScaleV + cell->texOffsetV;
+                            uv[0] = static_cast<float>((UndergrowthScalar(px) + center.x) * cell->texScaleU + cell->texOffsetU);
+                            uv[1] = static_cast<float>((UndergrowthScalar(pz) + center.z) * cell->texScaleV + cell->texOffsetV);
                             sampleDxt1(static_cast<const unsigned char*>(colorRect.pBits),
                                        colorWidth, colorHeight, uv, &out->colorSample);
                             sampleDxt1(static_cast<const unsigned char*>(lightRect.pBits),
@@ -1048,11 +1233,22 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                             std::memcpy(v[3].base.position, v[0].base.position, 6);
                             std::memcpy(v[6].base.position, v[5].base.position, 6);
                             std::memcpy(v[7].base.position, v[4].base.position, 6);
+#if defined(__APPLE__)
+                            const int lift = bf2x87::toIntTruncate(UndergrowthScalar(size) * type.size.y * kPositionScale);  // fistp
+#else
                             const int lift = static_cast<int>(size * type.size.y * kPositionScale);  // fistp
+#endif
+#if defined(__APPLE__)
+                            v[2].base.position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[2].base.position[1]) + lift);
+                            v[3].base.position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[3].base.position[1]) + lift);
+                            v[6].base.position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[6].base.position[1]) + lift);
+                            v[7].base.position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[7].base.position[1]) + lift);
+#else
                             v[2].base.position[1] = static_cast<short>(v[2].base.position[1] + lift);
                             v[3].base.position[1] = static_cast<short>(v[3].base.position[1] + lift);
                             v[6].base.position[1] = static_cast<short>(v[6].base.position[1] + lift);
                             v[7].base.position[1] = static_cast<short>(v[7].base.position[1] + lift);
+#endif
                         }
                     }
                     else
@@ -1065,23 +1261,45 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                              ++k, ++out)
                         {
                             const UndergrowthVertex& v = source[k];
-                            const float tx = basis.m[0] * v.position.x + basis.m[4] * v.position.y
-                                           + basis.m[8] * v.position.z;
-                            const float ty = basis.m[1] * v.position.x + basis.m[5] * v.position.y
-                                           + basis.m[9] * v.position.z;
-                            const float tz = basis.m[2] * v.position.x + basis.m[6] * v.position.y
-                                           + basis.m[10] * v.position.z;
-                            const float px = tx + relativeX;
-                            const float pz = tz + relativeZ;                                   // [ebp-144h]
+                            const UndergrowthScalar tx = UndergrowthScalar(basis.m[0]) * v.position.x + UndergrowthScalar(basis.m[4]) * v.position.y
+                                           + UndergrowthScalar(basis.m[8]) * v.position.z;
+                            const UndergrowthScalar ty = UndergrowthScalar(basis.m[1]) * v.position.x + UndergrowthScalar(basis.m[5]) * v.position.y
+                                           + UndergrowthScalar(basis.m[9]) * v.position.z;
+                            const UndergrowthScalar tz = UndergrowthScalar(basis.m[2]) * v.position.x + UndergrowthScalar(basis.m[6]) * v.position.y
+                                           + UndergrowthScalar(basis.m[10]) * v.position.z;
+                            const UndergrowthScalar px = tx + relativeX;
+                            const float pz = static_cast<float>(tz + relativeZ);                                   // [ebp-144h]
+#if defined(__APPLE__)
+                            out->position[0] = static_cast<short>(bf2x87::toInt64Truncate(UndergrowthScalar(px) * kPositionScale));
+#else
                             out->position[0] = static_cast<short>(static_cast<long long>(px * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->position[1] = static_cast<short>(bf2x87::toInt64Truncate(ty * kPositionScale));
+#else
                             out->position[1] = static_cast<short>(static_cast<long long>(ty * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->position[2] = static_cast<short>(bf2x87::toInt64Truncate(UndergrowthScalar(pz) * kPositionScale));
+#else
                             out->position[2] = static_cast<short>(static_cast<long long>(pz * kPositionScale));
+#endif
+#if defined(__APPLE__)
+                            out->position[3] = static_cast<short>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(relativeY) * kPositionScale));
+#else
                             out->position[3] = static_cast<short>(
                                 static_cast<long long>(relativeY * kPositionScale));
+#endif
                             out->texCoord = packedTexCoord(v);
                             out->swayIndex = swayIndex;
+#if defined(__APPLE__)
+                            out->swayAmount = static_cast<unsigned char>(
+                                bf2x87::toInt64Truncate(UndergrowthScalar(heightF) * v.sway));
+#else
                             out->swayAmount = static_cast<unsigned char>(
                                 static_cast<long long>(heightF * v.sway));
+#endif
                             out->heightByte = heightByte;
                             out->colorScale = v.colorScale;
                         }
@@ -1092,11 +1310,22 @@ void UndergrowthSystem::buildPatch(UndergrowthCell* cell, bool unusedFlag)
                             std::memcpy(v[3].position, v[0].position, 6);
                             std::memcpy(v[6].position, v[5].position, 6);
                             std::memcpy(v[7].position, v[4].position, 6);
+#if defined(__APPLE__)
+                            const int lift = bf2x87::toIntTruncate(UndergrowthScalar(size) * type.size.y * kPositionScale);
+#else
                             const int lift = static_cast<int>(size * type.size.y * kPositionScale);
+#endif
+#if defined(__APPLE__)
+                            v[2].position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[2].position[1]) + lift);
+                            v[3].position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[3].position[1]) + lift);
+                            v[6].position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[6].position[1]) + lift);
+                            v[7].position[1] = bf2x87::lowShort(static_cast<std::int64_t>(v[7].position[1]) + lift);
+#else
                             v[2].position[1] = static_cast<short>(v[2].position[1] + lift);
                             v[3].position[1] = static_cast<short>(v[3].position[1] + lift);
                             v[6].position[1] = static_cast<short>(v[6].position[1] + lift);
                             v[7].position[1] = static_cast<short>(v[7].position[1] + lift);
+#endif
                         }
                     }
 
@@ -1145,18 +1374,25 @@ unlock:
 // Skips unloaded/disabled systems and rebuilds the cache after large camera moves.
 // Draws near patches in a depth prepass, then batches lighting/shadow techniques.
 // Preserve origin-based light-gather radius and the existing camera/water-fog constant behavior.
-
+// PE 0x10149880
 void UndergrowthSystem::render(float time)
 {
     (void)time;
     if (!m_loaded || !m_enabled)
         return;
 
-    // the stat bracket's open (sub_10046EE0 on +0x300): not reproduced.
+    // The early returns below leave this bracket open, as shipped.
+    reinterpret_cast<dx9rend::QueueProfiler*>(&m_profilerStat)->begin();
 
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderViewDup();          // Renderer +0x50
     const float viewDistance = m_viewDistanceScale * m_viewDistance;                 // [ebp-1Ch]
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FST stores viewDistance without popping its retained product.
+    const float halfViewDistance = bf2x87::store(
+        UndergrowthScalar(m_viewDistanceScale) * m_viewDistance * 0.5f);
+#else
     const float halfViewDistance = viewDistance * 0.5f;                              // [ebp-0Ch]
+#endif
 
     RenderStatics& statics = g_renderStatics;
     if ((statics.onceFlags & 1u) == 0)
@@ -1174,7 +1410,13 @@ void UndergrowthSystem::render(float time)
         statics.cameraPosition.z = camera->m[14];
     }
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The caller compares the retained helper result with its float bound.
+    if (bf2x87::greater(distanceBetween(statics.cameraPosition, m_lastRebuildPosition),
+                        UndergrowthScalar(halfViewDistance)))
+#else
     if (distanceBetween(statics.cameraPosition, m_lastRebuildPosition) > halfViewDistance)
+#endif
         rebuildPatches(true, viewDistance);
     m_lastRebuildPosition = statics.cameraPosition;
     rebuildPatches(false, viewDistance);
@@ -1192,12 +1434,12 @@ void UndergrowthSystem::render(float time)
     {
         const float savedFarPlane = view->getFarPlane();                     // +0x3C
         view->setFarPlane(viewDistance);                                     // +0x38
-        frustum = *view->getFrustumPtr();                                    // +0x74,
+        rendmath::frustumAssign(frustum, *view->getFrustumPtr());                                    // +0x74,
         view->setFarPlane(savedFarPlane);
     }
 
     // the visible, built entries, keyed by squared camera distance.
-    vcResizeToZero<UndergrowthCellDistance>(m_drawOrder);                   // (0, {0, 0})
+    m_drawOrder.resize(0);                                                   // (0, {0, 0})
     for (unsigned int i = 0; i < m_patchCount; ++i)
     {
         UndergrowthPatch& patch = m_patches[i];
@@ -1219,14 +1461,14 @@ void UndergrowthSystem::render(float time)
         entry.key = distanceSquaredBetween(bounds.center,
                                            *reinterpret_cast<const Vec3*>(&camera->m[12]));
         entry.cell = patch.cell;
-        vcPushBack(m_drawOrder, entry);
+        m_drawOrder.push_back(entry);
     }
 
-    const unsigned int drawCount = vcCount<UndergrowthCellDistance>(m_drawOrder);
+    const unsigned int drawCount = static_cast<unsigned int>(m_drawOrder.size());
     if (drawCount == 0)
         return;
     {
-        UndergrowthCellDistance* const first = vcAt<UndergrowthCellDistance>(m_drawOrder, 0);
+        UndergrowthCellDistance* const first = m_drawOrder.data();
         std::sort(first, first + drawCount, UndergrowthCellDistanceLess());
     }
 
@@ -1234,13 +1476,14 @@ void UndergrowthSystem::render(float time)
     // the first dynamic-shadow record (LightManager +0x79C, 1176 bytes each),
     // NOT gated on dynamicShadowsEnable; the record vector is fetched three times, as shipped.
     {
-        const vc71::vector_layout& records = terrainShadowRecords();
-        if (records.first && (records.last - records.first) / 1176 != 0)
+        const std::vector<LightShadowRecord>& records = lightManagerShadowRecords(g_LightManager);
+        if (records.size() != 0)
         {
-            m_paramShadowMap->setValue(*reinterpret_cast<void* const*>(
-                reinterpret_cast<unsigned char*>(g_LightManager) + 0x21C), 0);
-            m_paramShadowProjMatrix->setValue(terrainShadowRecords().first + 0x2F8, 0);
-            m_paramShadowTrapMatrix->setValue(terrainShadowRecords().first + 0x3B8, 0);
+            m_paramShadowMap->setValue(lightManagerShadowMapTexture(g_LightManager), 0);   // +0x21C
+            m_paramShadowProjMatrix->setValue(
+                &lightManagerShadowRecords(g_LightManager)[0].matrices[4], 0);            // +0x2F8
+            m_paramShadowTrapMatrix->setValue(
+                &lightManagerShadowRecords(g_LightManager)[0].matrices[7], 0);            // +0x3B8
         }
     }
 
@@ -1274,7 +1517,7 @@ void UndergrowthSystem::render(float time)
     color.z = rgb.z;
     m_paramStaticPointColor->setValue(&color, 0);
 
-    m_paramFogRange->setValue(raConstants() + 0xA8, 0);                     // FogRange holder
+    m_paramFogRange->setValue(raConstantAt(0xA8), 0);                     // FogRange holder
 
     Vec4 fogColor;                                                           // [ebp-18h], a copy
     fogColor.x = raConstantF(0xBC);
@@ -1292,14 +1535,20 @@ void UndergrowthSystem::render(float time)
 
     dx9rend::postProductionUpdateFog(dx9rend::underwaterDepth());           // sub_1004FDA0(sub_100F7B00())
 
-    m_paramWaterFogRange->setValue(raConstants() + 0xF8, 0);
+    m_paramWaterFogRange->setValue(raConstantAt(0xF8), 0);
     m_paramTexLayer0->setValue(m_atlasTexture, 0);
     m_paramWorldViewProjection->setValue(view->getViewProjectionMatrixPtr(), 0);   // +0x84
     m_paramWorldView->setValue(view->getInverseViewMatrixPtr(), 0);                // +0x68
 
     Vec4 fade;                                                               // [ebp-14Ch]
     fade.x = viewDistance;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The product stays on the x87 stack for the fdivr.
+    fade.y = bf2x87::store(UndergrowthScalar(1.0f)
+        / (UndergrowthScalar(viewDistance) * m_viewDistanceFade));
+#else
     fade.y = 1.0f / (viewDistance * m_viewDistanceFade);
+#endif
     fade.z = 0.0f;
     fade.w = 0.0f;
     m_paramFadeAndHeightScaleOffset->setValue(&fade, 0);
@@ -1307,16 +1556,26 @@ void UndergrowthSystem::render(float time)
     m_paramSwayOffset->setValue(m_windWaves, 0);                             // +0x1CC, 16 float4
     m_paramCameraPos->setValue(&statics.cameraPosition, 0);                 // w = the guard word
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] fistp truncates the unrounded x87 product.
+    int alphaRef = bf2x87::toIntTruncate(UndergrowthScalar(m_alphaRef) * kAlphaRefScale);  // [ebp-10Ch]
+#else
     int alphaRef = static_cast<int>(m_alphaRef * kAlphaRefScale);            // [ebp-10Ch], fistp
-    float transparencyScale = 1.0f;                                          // [ebp-8]
+#endif
+    // [ebp-8] holds 1; the quotient below is never stored, it stays on the x87 stack for the fmul.
+    UndergrowthScalar transparencyScale = 1.0f;
     if (isMultisampleActive()
         && reinterpret_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->hasAlphaToCoverage
         && m_alphaRef > 0.0f)
     {
         alphaRef = 0;
-        transparencyScale = 1.0f / m_alphaRef;
+        transparencyScale = UndergrowthScalar(1.0f) / m_alphaRef;
     }
+#if defined(__APPLE__)
+    const float transparencyX8 = bf2x87::store(transparencyScale * kTransparencyX8Scale);
+#else
     const float transparencyX8 = transparencyScale * kTransparencyX8Scale;
+#endif
     Vec4 transparency;                                                       // [ebp-13Ch]
     transparency.x = transparencyX8;
     transparency.y = transparencyX8;
@@ -1331,7 +1590,7 @@ void UndergrowthSystem::render(float time)
     {
         dx9rend::stateManagerPush();
         dx9rend::effectSetTechniqueByName(m_effect,
-            vc71::string(m_simpleShaderEnable ? "ZOnly_Simple" : "ZOnly"));
+            std::string(m_simpleShaderEnable ? "ZOnly_Simple" : "ZOnly"));
         dx9rend::effectBegin(m_effect);
         dx9rend::effectBeginPass(m_effect, 0);
         if (dx9rend::deviceCapsIsNvidia())
@@ -1344,9 +1603,9 @@ void UndergrowthSystem::render(float time)
             dx9rend::stateManagerSetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
         }
         for (unsigned int i = 0;
-             i < vcCount<UndergrowthCellDistance>(m_drawOrder) && i < m_zPassPatchCount; ++i)
+             i < m_drawOrder.size() && i < m_zPassPatchCount; ++i)
         {
-            UndergrowthCell* const cell = vcAt<UndergrowthCellDistance>(m_drawOrder, i)->cell;
+            UndergrowthCell* const cell = m_drawOrder[i].cell;
             MeshBounds bounds;
             resetBounds(bounds);
             cellBounds(cell, &bounds, false);
@@ -1373,11 +1632,11 @@ void UndergrowthSystem::render(float time)
     // 8. classify every sorted entry into the draw list
     dx9rend::stateManagerPush();
     UndergrowthDrawList drawList;                                            // 0x1014E370 head node
-    for (unsigned int i = 0; i < vcCount<UndergrowthCellDistance>(m_drawOrder); ++i)
+    for (unsigned int i = 0; i < m_drawOrder.size(); ++i)
     {
         const bool zPrepassed = i < m_zPassPatchCount;                      // `setb`
-        vc71::vector_layout lights = { 0, 0, 0, 0 };                         // [ebp-104h]
-        UndergrowthCell* const cell = vcAt<UndergrowthCellDistance>(m_drawOrder, i)->cell;
+        std::vector<world::LightSource*> lights;                             // [ebp-104h]
+        UndergrowthCell* const cell = m_drawOrder[i].cell;
         MeshBounds bounds;                                                   // [ebp-0F0h]
         resetBounds(bounds);
         cellBounds(cell, &bounds, false);
@@ -1390,19 +1649,17 @@ void UndergrowthSystem::render(float time)
             meshBoundsFinalize(bounds);
         g_LightManager->gatherLights(bounds.center, gatherRadius, lights, 4u, 0xB09u, 0u, true);  // +0x1C
 
-        const unsigned int gathered = vcCount<world::LightSource*>(lights);
+        const unsigned int gathered = static_cast<unsigned int>(lights.size());
         const unsigned int lightCount = gathered >= 4u ? 4u : gathered;      // [ebp-0F4h]
 
         bool shadowed = false;                                               // [ebp-0B0h]
         if (m_dynamicShadowsEnable)
         {
-            const vc71::vector_layout& records = terrainShadowRecords();    // sub_1015C550, once
-            for (unsigned int k = 0;
-                 records.first && k < static_cast<unsigned int>((records.last - records.first) / 1176);
-                 ++k)
+            const std::vector<LightShadowRecord>& records =
+                lightManagerShadowRecords(g_LightManager);                   // sub_1015C550, once
+            for (unsigned int k = 0; k < records.size(); ++k)
             {
-                const Frustum* const shadowFrustum =
-                    reinterpret_cast<const Frustum*>(records.first + k * 1176u + 0x10);
+                const Frustum* const shadowFrustum = &records[k].frustum;
                 if (terrainFrustumIntersectsBox(shadowFrustum, &bounds.min.x))
                 {
                     shadowed = true;
@@ -1418,16 +1675,9 @@ void UndergrowthSystem::render(float time)
         // (the temporary dies there, 0x1014A5AB), and the pair converted to value_type for insert.
         const std::pair<const char*, UndergrowthDrawItem> entry(
             technique,
-            UndergrowthDrawItem{ cell,
-                                 std::vector<world::LightSource*>(
-                                     vcAt<world::LightSource*>(lights, 0),
-                                     vcAt<world::LightSource*>(lights, 0) + gathered),
+            UndergrowthDrawItem{ cell, lights,                       // the copy constructor
                                  lightCount, bounds, technique, shadowed, zPrepassed });
         drawList.insert(entry);
-
-        // gatherLights grows the vector with vc71::vectorPushBackIn (the engine heap).
-        if (lights.first)
-            ::renddx9abi::engineFree(lights.first);
     }
 
     // 9. draw, grouped by technique
@@ -1456,7 +1706,14 @@ void UndergrowthSystem::render(float time)
                 range = g_LightManager->getDynamicLightRangeScale() * range; // +0x2E0
             const Mat4& transform = light->getAbsoluteTransformation();      // +0x80 (host)
             // The pack below is 0x1008DD80 inlined in retail, on the same static (dword_1024B100).
-            const float* const position = staticMeshPackVec4(&transform.m[12], 1.0f / (range * range));
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] range * range stays on the x87 stack for the fdivr.
+            const float attenuation = bf2x87::store(UndergrowthScalar(1.0f)
+                / (UndergrowthScalar(range) * range));
+#else
+            const float attenuation = 1.0f / (range * range);
+#endif
+            const float* const position = staticMeshPackVec4(&transform.m[12], attenuation);
             lightPositions[k].x = position[0];
             lightPositions[k].y = position[1];
             lightPositions[k].z = position[2];
@@ -1490,7 +1747,7 @@ void UndergrowthSystem::render(float time)
         {
             if (currentTechnique)
                 dx9rend::effectEnd(m_effect);
-            dx9rend::effectSetTechniqueByName(m_effect, vc71::string(item.technique));
+            dx9rend::effectSetTechniqueByName(m_effect, std::string(item.technique));
             dx9rend::effectBegin(m_effect);
             dx9rend::effectBeginPass(m_effect, 0);
             stencilState = -1;
@@ -1536,8 +1793,8 @@ void UndergrowthSystem::render(float time)
         dx9rend::effectEnd(m_effect);
     dx9rend::stateManagerPop();
 
-    // the stat bracket's close: not reproduced. The draw list is destroyed at scope
-    // end (0x10150D20 then the head node's free), after the pop, as shipped.
+    dx9rend::QueueProfiler::end();
+    // The draw list is destroyed after the bracket closes.
 }
 
 // The foreign layouts this file depends on (the class's own offsets are pinned by the header's

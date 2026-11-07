@@ -1,5 +1,8 @@
 // so and AIDLL_w32ded.dll .
 
+#if defined(__APPLE__)
+#include "../../../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "IPIMobileKnown.h"
 
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
@@ -130,6 +133,24 @@ void IPIMobileKnown::getPositionEstimate(double time, Vec3& position)
     position.y = scaledY;
     position.z = scaledZ;
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    // [PLATFORM] ELF rounds age before security and retains one x87-wide scale for X/Y/Z.
+    const float age = static_cast<float>(m_time - time);
+    const float security = m_information->getSecurity(time);
+    const bf2x87::Real wideScale =
+        static_cast<bf2x87::Real>(security) * static_cast<bf2x87::Real>(age);
+    const float scaledX =
+        static_cast<float>(static_cast<bf2x87::Real>(m_speed.x) * wideScale);
+    const float scaledY =
+        static_cast<float>(static_cast<bf2x87::Real>(m_speed.y) * wideScale);
+    const float scaledZ =
+        static_cast<float>(static_cast<bf2x87::Real>(m_speed.z) * wideScale);
+    // ELF materializes its temporary Vec3 in Z, X, Y store order.
+    position.z = scaledZ;
+    position.x = scaledX;
+    position.y = scaledY;
+#else
     // [PLATFORM] ELF rounds age before security and retains one x87-wide scale for X/Y/Z.
     const float age = static_cast<float>(m_time - time);
     const float security = m_information->getSecurity(time);
@@ -145,6 +166,7 @@ void IPIMobileKnown::getPositionEstimate(double time, Vec3& position)
     position.z = scaledZ;
     position.x = scaledX;
     position.y = scaledY;
+#endif
 #endif
     const Vec3& knownPosition = m_information->getPosition();
     position.x += knownPosition.x;

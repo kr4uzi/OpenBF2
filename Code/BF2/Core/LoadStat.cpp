@@ -128,8 +128,19 @@ void LoadStat::registerLoadCallback(void (*fn)())
 // nothing is pushed. That matters for a rebuild tempted to add an observer here.
 void LoadStat::setCurrentFile(const std::string& file)
 {
-    // Update the polled loading filename without invoking callbacks or setting a dirty flag.
+#if !DEDICATED
+    // BF2.exe 0x45D610 (all seven FileManager/Win32FileSystem callers): `lea eax,[ecx+28h];
+    // push eax; add ecx,0Ch; call basic_string::assign; ret 4`. The client ignores the file name
+    // and copies the phase name (+0x28 in the MSVC layout, m_string10; resetLoadStats 0x45D6D0
+    // clears +0x28 then +0x0C, as the Linux reset clears m_string10 then m_string0C). So the
+    // loading screen's progressText (endOfRound.swf, dice.bf2.Client.getCurrentLoadFile) shows
+    // the load phase, never individual files.
+    (void) file;
+    m_string0C = m_string10;
+#else
+    // Linux server (0x83C4980): update the polled loading filename, no callback, no dirty flag.
     m_string0C = file;
+#endif
 }
 
 

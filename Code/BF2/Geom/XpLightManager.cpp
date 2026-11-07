@@ -4,34 +4,49 @@
 // Replace remaining boundaries after their resource lifecycle and draw paths are validated.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Compiler-typed native table entries.
+#include "../../RendDX9Abi/NativeVtable.h"
+#include "../RendDX9/RendDX9Base.h"
+#endif
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "XpLightManager.h"
+#include <cstdint>
+#include <cstdio>
+#include "LightMerger.h"
+#include "Terrain.h"
 #include "HemiMapManager/HemiMapManager.h"
 #include "MeshTemplate.h"                     // the geometry template's isWater (+0x50)
 #include "StaticMesh.h"                       // staticMeshRootParent - RendDX9's getRootParent
+#include "SkinnedMesh.h"                      // shared skinned shadow effect
 #include "StaticMeshRenderer.h"               // G3: the StaticMesh shadow Effect (+0x44)
+#if defined(_MSC_VER) && !defined(_WIN64)
+#include "StaticMeshTemplate.h"
+#endif
 #include "Overgrowth/OverGrowth.h"            // G3: the level OverGrowth's +0x38 shadow query
+#include "QuadPatch.h"                        // TerrainCuller - the culler slots' +0x0C query object
+#include "BoxCorners.h"                       // the eight-corner object box (0x100CE120)
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../../RendDX9Abi/PluginEntry.h"
-#include "../../RendDX9Abi/Vc71Map.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
 #include "../Math/Frustum.h"
+#include "../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
+#include "../GeomMisc/DebugRenderer.h"
+#include "../GeomMisc/Debug.h"
+#include "../Platform/X87Compat.h"
 #include "../RendMisc/IRenderView.h"
 #include "../Game/Main/IVideoOptions.h"
 #include "../RendDX9/RendDX9Base.h"
 #include "../RendDX9/ShaderParameter.h"
 #include "../RendDX9/Texture.h"
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 
 // HfeAbi.h supplies the same four-slot IBase contract for the retail VC7.1 host ABI.  Reuse that
 // declaration while importing the recovered engine class interfaces below; their virtual method
 // order is the contract we need, while STL-bearing arguments are bridged explicitly at the few
 // cross-compiler call sites.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_IBASE_H
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../Game/Objects/ObjectLayoutAccess.h"
 #include "../Game/Objects/IPlayer.h"
 #include "../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
@@ -44,13 +59,7 @@
 #include "../Scene/Object/ObjectPredicator.h"
 #include "../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 #include "../Scene/Object/PlayerManager.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#undef CORE_IBASE_H
-#endif
-#if BF2_PLUGIN_ABI_NATIVE
 #include "../Core/SettingsRepostitory.h"
-#endif
 
 #include <algorithm>
 #include <cstddef>
@@ -64,69 +73,9 @@
 #include <list>
 #include <set>
 #include <stdexcept>
+#include <unordered_set>
 #include <string.h>
 #include <vector>
-
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-
-// The modern SDK no longer ships D3DX9 import declarations.  lib.exe gives the plain .def export
-// a cdecl-shaped thunk name, while this correct winapi declaration asks for the stdcall-decorated
-// name.  Bridge those names without lying about the calling convention (eight arguments = @32).
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
-
-// dice's DirectX SDK supplied this interface through d3dx9mesh.h.  The current Windows SDK does
-// not, so retain the instruction-proven prefix used by LightManager::buildDebugGeometry rather
-// than taking a machine-local June 2010 SDK dependency.  The prefix ends at GetIndexBuffer because
-// no later ID3DXMesh slot is consumed here.
-struct RendD3dxMesh : public IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE DrawSubset(DWORD attributeId) = 0;       // +0x0C
-    virtual DWORD STDMETHODCALLTYPE GetNumFaces() = 0;                         // +0x10
-    virtual DWORD STDMETHODCALLTYPE GetNumVertices() = 0;                      // +0x14
-    virtual DWORD STDMETHODCALLTYPE GetFVF() = 0;                              // +0x18
-    virtual HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9*) = 0;  // +0x1C
-    virtual DWORD STDMETHODCALLTYPE GetNumBytesPerVertex() = 0;                // +0x20
-    virtual DWORD STDMETHODCALLTYPE GetOptions() = 0;                          // +0x24
-    virtual HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**) = 0;       // +0x28
-    virtual HRESULT STDMETHODCALLTYPE CloneMeshFVF(
-        DWORD options, DWORD fvf, IDirect3DDevice9* device,
-        RendD3dxMesh** clone) = 0;                                             // +0x2C
-    virtual HRESULT STDMETHODCALLTYPE CloneMesh(
-        DWORD options, const D3DVERTEXELEMENT9* declaration,
-        IDirect3DDevice9* device, RendD3dxMesh** clone) = 0;                   // +0x30
-    virtual HRESULT STDMETHODCALLTYPE GetVertexBuffer(IDirect3DVertexBuffer9**) = 0; // +0x34
-    virtual HRESULT STDMETHODCALLTYPE GetIndexBuffer(IDirect3DIndexBuffer9**) = 0;   // +0x38
-};
-
-extern "C" HRESULT WINAPI D3DXCreateSphere(
-    IDirect3DDevice9* device, float radius, unsigned int slices,
-    unsigned int stacks, RendD3dxMesh** mesh, void** adjacency);
-extern "C" HRESULT WINAPI D3DXCreateCylinder(
-    IDirect3DDevice9* device, float radius1, float radius2, float length,
-    unsigned int slices, unsigned int stacks, RendD3dxMesh** mesh, void** adjacency);
-extern "C" HRESULT WINAPI D3DXCreateBox(
-    IDirect3DDevice9* device, float width, float height, float depth,
-    RendD3dxMesh** mesh, void** adjacency);
-
-#pragma comment(linker, "/alternatename:_D3DXCreateSphere@24=_D3DXCreateSphere")
-#pragma comment(linker, "/alternatename:_D3DXCreateCylinder@32=_D3DXCreateCylinder")
-#pragma comment(linker, "/alternatename:_D3DXCreateBox@24=_D3DXCreateBox")
-
-// [PLATFORM] RendDX9 uses D3DX view/projection builders; the dedicated ELF counterparts
-// are empty. Mat4 and Vec3 supply the compatible float storage for these imports.
-struct D3DXMATRIX;
-struct D3DXVECTOR3;
-extern "C" D3DXMATRIX* WINAPI D3DXMatrixLookAtLH(
-    D3DXMATRIX* out, const D3DXVECTOR3* eye, const D3DXVECTOR3* at, const D3DXVECTOR3* up);
-extern "C" D3DXMATRIX* WINAPI D3DXMatrixOrthoLH(
-    D3DXMATRIX* out, float width, float height, float nearPlane, float farPlane);
-
-#pragma comment(linker, "/alternatename:_D3DXMatrixLookAtLH@16=_D3DXMatrixLookAtLH")
-#pragma comment(linker, "/alternatename:_D3DXMatrixOrthoLH@20=_D3DXMatrixOrthoLH")
 
 namespace dice {
 namespace hfe {
@@ -151,10 +100,14 @@ namespace world {
 // RendDX9 is a separate shipped image from BF2.exe. Both ABI builds now construct typed
 // BundledMesh collision filters and need this non-pure base slot. PE1012C350 / ELF8163FC0
 // are unconditional true; emit the recovered body locally as the original DLL did.
+#if !(defined(__APPLE__) && defined(BF2_STATIC_PLUGINS))
 bool ObjectPredicator::predicateSurface(int)
 {
     return true;
 }
+#else
+// [CHOSEN, not recovered] The static image shares this class's host key function/RTTI.
+#endif
 }
 
 extern IBase* objectManager;
@@ -174,74 +127,333 @@ extern IBase* g_Terrain;
 extern const unsigned int CID_LightManager  = 852417u;
 extern const unsigned int IID_ILightManager = 0xB801DCF9u;
 
-namespace {
+// PE 0x10100CD0. Nine identity matrices, zeroed bounds/pointers and an empty caster set.
+// Atlas placement and flags448 stay uninitialized, as do the last two tail bytes.
+LightShadowRecord::LightShadowRecord()
+    : frustum(), geometry(0), source(0), casters()
+{
+    for (unsigned int i = 0; i < 9; ++i)
+        matrices[i] = Mat4::getIdentity();
+    ::memset(atlasBounds, 0, sizeof(atlasBounds));
+    ::memset(pad458, 0, sizeof(pad458));
+    tail494[0] = tail494[1] = 0;
+}
 
-static const unsigned int kLightManagerSize = 0x980u;      // RefFactory_geom_LightManager
+// Vector growth and the +0x7CC -> +0x7DC range append each copy a record with its own caster set.
+LightShadowRecord::LightShadowRecord(const LightShadowRecord& other)
+    : frustum(other.frustum), geometry(0), source(0), casters()
+{
+    // Frustum has no owned allocation.  Copying the instruction-proven prefix byte-for-byte
+    // preserves all nine matrices and opaque flags.
+    ::memcpy(static_cast<void*>(this), &other, offsetof(LightShadowRecord, casters));
+    for (std::set<world::IObject*>::const_iterator it = other.casters.begin();
+         it != other.casters.end(); ++it)
+        casters.insert(*it);
+    ::memcpy(tail494, other.tail494, sizeof(tail494));
+}
+
+LightShadowRecord::~LightShadowRecord()
+{
+}
+
+namespace {
 
 extern const void* const kPrimaryVtable[189];
 extern const void* const kDeviceLostVtable[3];
 extern const void* const kRenderPathVtable[6];
 
-template <typename T>
-inline T& lmField(void* self, unsigned int offset)
+// One placement of the directional shadow atlas (+0x7BC elements).
+struct ShadowAtlasEntry
 {
-    return *reinterpret_cast<T*>(static_cast<unsigned char*>(self) + offset);
+    int x;
+    int y;
+    int width;
+    int height;
+    int tier;
+};
+
+#if defined(_M_IX86)
+static_assert(sizeof(ShadowAtlasEntry) == 0x14, "shadow-atlas entry layout drift");
+#endif
+
+// The PE's four 0x18-byte-node trees (allocator 0x100F5CF0): an unsigned key and a pointer value.
+// +0x964 maps a geometry template's reflection type to its shadow Effect (find-or-insert
+// 0x1015D000 inserts a null value; releases walk the values in key order).
+typedef std::map<unsigned int, dx9rend::Effect*> ShadowEffectMap;
+typedef std::map<unsigned int, void*> ShadowUnresolvedMap;   // [UNRESOLVED] value types
+
+// The shader-parameter handles of "Shaders/LightManager_r3x0", +0x848..+0x8B4 in the PE.
+enum LightShaderParameter
+{
+    kParamStencilFunc,              // +0x848  STENCILFUNC
+    kParamStencilRef,               // +0x84C  STENCILREF
+    kParamStencilPass,              // +0x850  STENCILPASS
+    kParamParaboloidZValues,        // +0x854  PARABOLOIDZVALUES
+    kParamLightWorldPos,            // +0x858  LIGHTWORLDPOS
+    kParamLightDir,                 // +0x85C  LIGHTDIR
+    kParamLightPos,                 // +0x860  LIGHTPOS
+    kParamLightCol,                 // +0x864  LIGHTCOL
+    kParamLightAttenuationRange,    // +0x868  LIGHTATTENUATIONRANGE
+    kParamLightAttenuationRangeInv, // +0x86C  LIGHTATTENUATIONRANGEINV
+    kParamProjectorMask,            // +0x870  PROJECTORMASK
+    kParamEyePos,                   // +0x874  EYEPOS
+    kParamEyeDof,                   // +0x878  EYEDOF
+    kParamViewProj,                 // +0x87C  VIEWPROJ
+    kParamWorldViewProj,            // +0x880  WORLDVIEWPROJ
+    kParamLightViewProj,            // +0x884  LIGHTVIEWPROJ
+    kParamLightOccluderViewProj,    // +0x888  LIGHTOCCLUDERVIEWPROJ
+    kParamViewportMap,              // +0x88C  VIEWPORTMAP
+    kParamViewportMap2,             // +0x890  VIEWPORTMAP2
+    kParamShadowIntensityBias,      // +0x894  SHADOWINTENSITYBIAS
+    kParamLightMapIntensityBias,    // +0x898  LIGHTMAPINTENSITYBIAS
+    kParamTexLayer0,                // +0x89C  TEXLAYER0 .. +0x8B4 TEXLAYER6
+    kParamTexLayer1,
+    kParamTexLayer2,
+    kParamTexLayer3,
+    kParamTexLayer4,
+    kParamTexLayer5,
+    kParamTexLayer6,
+    kLightShaderParameterCount
+};
+
+// The LightManager object (0x980 bytes in the PE, RefFactory_geom_LightManager; the `// +0xNN`
+// comments keep the retail offsets). Three hand-built tables sit at its start: the primary
+// interface, the DeviceLostResetListener subobject and the RenderPathListener subobject. The
+// default constructor builds the containers only; constructLightManager writes every field the
+// PE constructor writes, in its order, and leaves the rest as allocated. Names are [INFERRED]
+// except the console properties'.
+struct LightManagerData
+{
+    LightManagerData() {}
+
+    const void* const*         primaryVtable;                  // +0x000 kPrimaryVtable
+    const void* const*         deviceLostVtable;               // +0x004 the listener subobject
+    const void* const*         renderPathVtable;               // +0x008 the listener subobject
+    void*                      renderPathValue;                // +0x00C the render-path listener's
+                                                               //        getRenderPath; NOT constructed
+    int                        refCount;                       // +0x010
+    world::LightSource*        skyLight;                       // +0x014
+    Vec3                       skyColor;                       // +0x018
+    Vec3                       treeSunColor;                   // +0x024
+    Vec3                       treeSkyColor;                   // +0x030
+    Vec3                       ambientColor;                   // +0x03C
+    Vec3                       treeAmbientColor;               // +0x048
+    Vec3                       staticSunColor;                 // +0x054
+    Vec3                       staticSkyColor;                 // +0x060
+    Vec3                       staticSpecularColor;            // +0x06C
+    Vec3                       singlePointColor;               // +0x078
+    Vec3                       dynamicPointColor;              // +0x084
+    Vec3                       blendedColors[12];              // +0x090 high/low colour pairs
+    Vec3                       effectSunColor;                 // +0x120
+    Vec3                       effectShadowColor;              // +0x12C
+    float                      defaultEffectLightAffectionFactor; // +0x138
+    float                      lightCullDistance;              // +0x13C
+    int                        maxLightsPerBundledMesh;        // +0x140
+    int                        maxLightsPerStaticMesh;         // +0x144
+    int                        maxLightsPerSkinnedMesh;        // +0x148
+    int                        maxLightsPerTerrainPatch;       // +0x14C
+    unsigned int               terrainShadowLod;                  // +0x150 1
+    unsigned int               staticMeshShadowLod;            // +0x154
+    int                        bundledMeshShadowLod;           // +0x158
+    int                        skinnedMeshShadowLod;           // +0x15C
+    int                        shadowOverrideQuality;                  // +0x160 -1
+    float                      shadowRoofRayLength;            // +0x164
+    float                      shadowSunScalePower;            // +0x168
+    float                      shadowPullbackDistance;         // +0x16C the pull toward the light
+    unsigned char              shadowUseSweepTest;             // +0x170
+    Vec2                       shadowSunHeightOverFade;        // +0x174
+    // +0x17C / +0x180 - SimpleShadowmapIO.raw as a vector<bool>: the bit count, then the words.
+    unsigned int               simpleShadowIOBitCount;         // +0x17C
+    std::vector<unsigned int>  simpleShadowIOWords;            // +0x180
+    // +0x190..+0x1B0 - SimpleShadowmap.raw packed two bits per texel, and both maps' geometry.
+    unsigned char*             simpleShadowMap;                // +0x190
+    float                      simpleShadowLimit;              // +0x194 half the map, the clamp
+    int                        simpleShadowIOStride;           // +0x198
+    int                        simpleShadowIOColumnOrigin;     // +0x19C
+    int                        simpleShadowRowCount;           // +0x1A0
+    int                        simpleShadowIORowOrigin;        // +0x1A4
+    int                        simpleShadowStride;             // +0x1A8 bytes per packed row
+    int                        simpleShadowColumnOrigin;       // +0x1AC
+    int                        simpleShadowRowOrigin;          // +0x1B0
+    float                      skinnedMeshShaderLodDistance;   // +0x1B4
+    std::set<world::LightSource*> ownedLights;                 // +0x1B8 addLight's, owning
+    std::set<world::LightSource*> activeLights;                // +0x1C4 enableLight's, non-owning
+    std::vector<world::LightSource*> visibleLights;            // +0x1D0 update's frame list
+    std::vector<world::LightSource*> distanceLights;           // +0x1E0
+    LightDistanceMap          lightsByDistance;               // +0x1F0
+    Vec2                       lightMapAmbientAlphaCutoffRange; // +0x1FC
+    int                        shadowMapSize;                  // +0x204
+    int                        shadowTileSize;                 // +0x208
+    unsigned int               shadowMapFormat;                // +0x20C
+    unsigned int               shadowMapUsage;                 // +0x210
+    float                      shadowDistance;                 // +0x214 the camera frustum's far
+    float                      unresolved218;                  // +0x218 40; the +0xBC/+0xC0 pair's field
+    dx9rend::EngineTexture*    shadowMap;                      // +0x21C
+    dx9rend::EngineTexture*    shadowMap2;                     // +0x220 the static-occluder map
+    dx9rend::EngineTexture*    shadowDepthTexture;             // +0x224
+    IDirect3DSurface9*         shadowDepthSurface;             // +0x228
+    IDirect3DSurface9*         shadowDepthSurface2;            // +0x22C
+    dx9rend::EngineTexture*    pointShadowMap;                 // +0x230
+    dx9rend::EngineTexture*    pointShadowDepthTexture;        // +0x234
+    IDirect3DSurface9*         pointShadowDepthSurface;        // +0x238
+    dx9rend::EngineTexture*    whiteTexture;                   // +0x23C
+    dx9rend::EngineTexture*    blackTexture;                   // +0x240
+    dx9rend::EngineTexture*    framedTexture;                  // +0x244
+    dx9rend::EngineTexture*    blackCubeTexture;               // +0x248
+    dx9rend::EngineTexture*    normalCubeTexture;              // +0x24C
+    dx9rend::EngineTexture*    currentSpecularLut;             // +0x250
+    dx9rend::EngineTexture*    specularLuts[4];                // +0x254 the four-LUT ring
+    unsigned int               specularLutIndex;               // +0x264
+    unsigned char              shadowStaticFeature;            // +0x268
+    float                      shadowIntensityBias;            // +0x26C
+    float                      lightMapIntensityBias;          // +0x270
+    float                      dropShadowClipHeightOffset;     // +0x274
+    Frustum                    shadowFrustum;                  // +0x278 the light-space frustum
+    Frustum                    cameraFrustum;                  // +0x460
+    Mat4                       unresolvedMatrices648[5];       // +0x648 identity [UNRESOLVED]
+    unsigned char              showFrustums;                   // +0x788 the debug draw byte
+    RECT                       shadowScissor;                  // +0x78C
+    std::vector<LightShadowRecord> directionalRecords;         // +0x79C
+    std::vector<LightShadowRecord> secondaryRecords;           // +0x7AC
+    std::vector<ShadowAtlasEntry>  shadowAtlas;                // +0x7BC
+    std::vector<LightShadowRecord> spotRecords;                // +0x7CC
+    std::vector<LightShadowRecord> pointRecords;               // +0x7DC
+    unsigned char              dynamicShadowsEnabled;          // +0x7EC
+    unsigned char              firstPersonShadows;             // +0x7ED
+    unsigned char              dynamicStaticMeshShadowsEnabled;                  // +0x7EE 1
+    unsigned char              allowAlphaShadows;                  // +0x7EF 0
+    float                      alphaShadowThreshold;           // +0x7F0 0.2
+    float                      shadowUpdateFactor;                  // +0x7F4 1
+    unsigned char              stencilCullerResetEnabled;      // +0x7F8 1
+    unsigned char              shadowUpdatesEnabled;           // +0x7F9
+    float                      shadowOccluderOversizeFactor;                  // +0x7FC 1
+    unsigned char              shadowProjectionFlags[4];               // +0x800 0, 0, 1, 1
+    float                      shadowPSMZNearOffset;           // +0x804
+    float                      shadowPSMZFarOffset;            // +0x808
+    float                      shadowPSMZMinInfinityZ;                  // +0x80C 1.5
+    float                      shadowPSMFovY;                  // +0x810 60
+    float                      shadowTSMFocus;                 // +0x814
+    float                      shadow80Line;                  // +0x818 -0.6
+    unsigned char              shadowMergeDynamicShadowFrustums;                  // +0x81C 1
+    unsigned int               shadowMergeLodLimit;            // +0x820
+    float                      dynamicLightRangeScale;         // +0x824
+    float                      occludedSkyNightIntensity;      // +0x828
+    // +0x82C / +0x830 - D3DRS_DEPTHBIAS and D3DRS_SLOPESCALEDEPTHBIAS, handed to the state manager
+    // as their float bit patterns.
+    float                      shadowDepthBias;                // +0x82C
+    float                      shadowSlopeScaleDepthBias;      // +0x830
+    double                     shadowFadeDuration;             // +0x838
+    world::LightSource*        sunLight;                       // +0x840 the "sun" initialize creates
+    dx9rend::Effect*           shadowEffect;                   // +0x844 Shaders/LightManager_r3x0
+    dx9rend::ShaderParameter*  shaderParameters[kLightShaderParameterCount]; // +0x848
+    dx9rend::EngineTexture*    radialAttenuation;              // +0x8B8 RadialAtt2
+    dx9rend::EngineTexture*    conicalAttenuation;             // +0x8BC ConicalAtt
+    ShadowUnresolvedMap        unresolvedTree8C0;              // +0x8C0 [UNRESOLVED]
+    ShadowUnresolvedMap        unresolvedTree8CC;              // +0x8CC [UNRESOLVED]; the point pass clears it
+    IDirect3DVertexBuffer9*    sphereVertices;                 // +0x8D8 the debug meshes
+    IDirect3DIndexBuffer9*     sphereIndices;                  // +0x8DC
+    unsigned int               sphereVertexCount;              // +0x8E0
+    unsigned int               sphereFaceCount;                // +0x8E4
+    IDirect3DVertexBuffer9*    cylinderVertices;               // +0x8E8
+    IDirect3DIndexBuffer9*     cylinderIndices;                // +0x8EC
+    unsigned int               cylinderVertexCount;            // +0x8F0
+    unsigned int               cylinderFaceCount;              // +0x8F4
+    IDirect3DVertexBuffer9*    boxVertices;                    // +0x8F8
+    IDirect3DIndexBuffer9*     boxIndices;                     // +0x8FC
+    unsigned int               boxVertexCount;                 // +0x900
+    unsigned int               boxFaceCount;                   // +0x904
+    IDirect3DDevice9*          device;                         // +0x908
+    dx9rend::IRenderView*      renderView;                     // +0x90C renderShadowMaps' view
+    unsigned int               shadowMapMode;                  // +0x910 0 nvidia depth, 1 colour, 2 none
+    std::vector<world::IObject*> shadowCandidates;             // +0x914
+    std::vector<void*>         directionalGeometry;            // +0x924
+    std::vector<world::IObject*> staticShadowCasters;          // +0x934
+    std::vector<void*>         unresolvedGeometry944;          // +0x944 cleared only [UNRESOLVED]
+    std::vector<world::IObject*> directionalChildren;          // +0x954
+    ShadowEffectMap            shadowEffects;                  // +0x964
+    std::vector<void*>         overGrowthGeometry;             // +0x970
+
+private:
+    LightManagerData(const LightManagerData&);
+    LightManagerData& operator=(const LightManagerData&);
+};
+
+inline LightManagerData& lm(void* self)
+{
+    return *static_cast<LightManagerData*>(self);
 }
 
-template <typename T>
-inline const T& lmField(const void* self, unsigned int offset)
+inline const LightManagerData& lm(const void* self)
 {
-    return *reinterpret_cast<const T*>(static_cast<const unsigned char*>(self) + offset);
+    return *static_cast<const LightManagerData*>(self);
 }
 
-inline void lmSetVec3(void* self, unsigned int offset, float x, float y, float z)
+// The two listener subobjects hand their own address to the callbacks; the owner is that address
+// less the subobject's position.
+inline void* lmFromDeviceLostListener(void* listener)
 {
-    Vec3& value = lmField<Vec3>(self, offset);
-    value.x = x;
-    value.y = y;
-    value.z = z;
+    return static_cast<unsigned char*>(listener) - offsetof(LightManagerData, deviceLostVtable);
 }
 
-inline void constructEmptyVector(void* self, unsigned int offset)
+inline void* lmFromRenderPathListener(void* listener)
 {
-    vc71::vector_layout& vector = lmField<vc71::vector_layout>(self, offset);
-    // VC7.1's empty allocator base is not written by the shipped constructor.
-    vector.first = vector.last = vector.end = 0;
+    return static_cast<unsigned char*>(listener) - offsetof(LightManagerData, renderPathVtable);
 }
 
-inline void reserveEmptyVector(vc71::vector_layout& vector,
-                               unsigned int count, unsigned int elementSize)
+// The bit pattern of a float, as the depth-bias render states receive it.
+inline unsigned int floatBits(float value)
 {
-    char* const storage = static_cast<char*>(::operator new(count * elementSize));
-    vector.first = vector.last = storage;
-    vector.end = storage + count * elementSize;
+    unsigned int bits;
+    ::memcpy(&bits, &value, sizeof(bits));
+    return bits;
 }
 
-inline void setIdentityMatrix(void* self, unsigned int offset)
-{
-    lmField<Mat4>(self, offset) = Mat4::getIdentity();
-}
-
-void fillPowerLut(dx9rend::EngineTexture* texture, unsigned int count,
-                  const Vec3& rgb, float exponent, bool /*save*/)
+// PE 0x101C3F70 (ecx = texture, edx = count; exponent, &rgb, save on the stack). One A8R8G8B8 row:
+// texel i = 255 * pow(i / (count - 1), exponent) per channel, truncated (fistp under a chop control
+// word), alpha 0xFF. The power is the CRT's double _CIpow of the exact i * scale product; red keeps
+// value * rgb.x on the x87 stack, green and blue store value * rgb as floats first. The count is a
+// signed int. With `save` the row is written to "c:\lut_<exponent>_<texture>.dds" - the second %i
+// receives the texture pointer, a shipped quirk; no 1.50 caller sets it.
+void fillPowerLut(dx9rend::EngineTexture* texture, int count,
+                  const Vec3& rgb, float exponent, bool save)
 {
     dx9rend::TextureLockRecord* const lock =
         dx9rend::textureLock(texture, 0, 0x7FFFFFFFu);
-    unsigned int* const pixels = static_cast<unsigned int*>(lock->pBits);
+    unsigned int* pixel = static_cast<unsigned int*>(lock->pBits);
     const float scale = 1.0f / static_cast<float>(count - 1);
-    for (unsigned int i = 0; i < count; ++i)
+    for (int i = 0; i < count; ++i)
     {
-        const float value = std::pow(static_cast<float>(i) * scale, exponent);
-        const unsigned int red = static_cast<unsigned int>(255.0f * value * rgb.x);
-        const unsigned int green = static_cast<unsigned int>(255.0f * value * rgb.y);
-        const unsigned int blue = static_cast<unsigned int>(255.0f * value * rgb.z);
-        pixels[i] = 0xFF000000u | ((red & 0xFFu) << 16)
-                  | ((green & 0xFFu) << 8) | (blue & 0xFFu);
+        const double value = std::pow(static_cast<double>(i) * scale, static_cast<double>(exponent));
+        const float green = static_cast<float>(value * rgb.y);
+        const float blue = static_cast<float>(value * rgb.z);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] the x87 red product and the fistp conversions.
+        using namespace bf2x87;
+        const int red = toIntTruncate(mul(wide(255.0f), mul(wide(value), wide(rgb.x))));
+        const int greenByte = toIntTruncate(mul(wide(green), wide(255.0f)));
+        const int blueByte = toIntTruncate(mul(wide(blue), wide(255.0f)));
+#else
+        const int red = static_cast<int>(255.0 * (value * rgb.x));
+        const int greenByte = static_cast<int>(static_cast<double>(green) * 255.0);
+        const int blueByte = static_cast<int>(static_cast<double>(blue) * 255.0);
+#endif
+        *pixel++ = (((((static_cast<unsigned int>(red) | 0xFFFFFF00u) << 8)
+                    | (static_cast<unsigned int>(greenByte) & 0xFFu)) << 8)
+                    | (static_cast<unsigned int>(blueByte) & 0xFFu));
     }
     dx9rend::textureUnlock(texture, lock);
+    if (save)
+    {
+        char buffer[0x1000];
+        std::snprintf(buffer, 0xFFF, "c:\\lut_%i_%i.dds", static_cast<int>(exponent),
+                      static_cast<int>(reinterpret_cast<std::intptr_t>(texture)));
+        dx9rend::textureManagerSaveTexture(texture, std::string(buffer));
+    }
 }
 
-dx9rend::EngineTexture* createPowerLut(unsigned int count, const Vec3& rgb,
+// PE 0x101C3DF0 (ecx = count, edx = &rgb; exponent, save on the stack): a count x 1 A8R8G8B8 texture
+// (one level, default pool), then the fillPowerLut body inline.
+dx9rend::EngineTexture* createPowerLut(int count, const Vec3& rgb,
                                       float exponent, bool save)
 {
     dx9rend::EngineTexture* const texture =
@@ -251,33 +463,131 @@ dx9rend::EngineTexture* createPowerLut(unsigned int count, const Vec3& rgb,
     return texture;
 }
 
-inline void normaliseCubeDirection(Vec3& value)
-{
-    const float lengthSquared = value.x * value.x + value.y * value.y + value.z * value.z;
-    if (std::fabs(lengthSquared - 1.0f) >= FLT_EPSILON)
-    {
-        const float inverseLength = 1.0f / std::sqrt(lengthSquared);
-        value.x *= inverseLength;
-        value.y *= inverseLength;
-        value.z *= inverseLength;
-    }
-}
+int shadowNormalizeInPlace(Vec3& value);
 
+// PE 0x101C3A30.
 inline unsigned int packNormalDirection(const Vec3& value)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Each floor argument is stored as binary64 by the x87 caller.
+    const int red = bf2x87::toIntTruncate(bf2x87::wide(std::floor(
+        bf2x87::storeDouble(bf2x87::wide(value.x) * 127.0f + 0.5f))) + 128.0f);
+    const int green = bf2x87::toIntTruncate(bf2x87::wide(std::floor(
+        bf2x87::storeDouble(bf2x87::wide(value.y) * 127.0f + 0.5f))) + 128.0f);
+    const int blue = bf2x87::toIntTruncate(bf2x87::wide(std::floor(
+        bf2x87::storeDouble(bf2x87::wide(value.z) * 127.0f + 0.5f))) + 128.0f);
+#else
     const int red = static_cast<int>(std::floor(value.x * 127.0f + 0.5f) + 128.0f);
     const int green = static_cast<int>(std::floor(value.y * 127.0f + 0.5f) + 128.0f);
     const int blue = static_cast<int>(std::floor(value.z * 127.0f + 0.5f) + 128.0f);
+#endif
     return 0xFF000000u | (static_cast<unsigned int>(red) << 16)
          | (static_cast<unsigned int>(green) << 8) | static_cast<unsigned int>(blue);
 }
 
-// PE 0x101C3B00's lookup-type-three arm. It locks each cube surface directly and deliberately
-// advances one dword per texel without consulting Pitch.
-void fillNormalCubeMip(dx9rend::EngineTexture* texture, unsigned int mip,
-                       unsigned int side)
+// PE 0x101C38E0.
+void normalCubeDirection(Vec3& direction, unsigned int face, unsigned int side,
+                         unsigned int x, unsigned int y)
 {
     const float denominator = static_cast<float>(side - 1);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The integer loads and quotient stay extended until each coordinate store.
+    const float u = bf2x87::store(bf2x87::wide(static_cast<int>(x)) / denominator * 2.0f - 1.0f);
+    const float v = bf2x87::store(bf2x87::wide(static_cast<int>(y)) / denominator * 2.0f - 1.0f);
+#else
+    const float u = static_cast<float>(x) / denominator * 2.0f - 1.0f;
+    const float v = static_cast<float>(y) / denominator * 2.0f - 1.0f;
+#endif
+    switch (face)
+    {
+    case 0: direction.x =  1.0f; direction.y = -v;   direction.z = -u;   break;
+    case 1: direction.x = -1.0f; direction.y = -v;   direction.z =  u;   break;
+    case 2: direction.x =  u;    direction.y =  1.0f; direction.z =  v;   break;
+    case 3: direction.x =  u;    direction.y = -1.0f; direction.z = -v;   break;
+    case 4: direction.x =  u;    direction.y = -v;   direction.z =  1.0f; break;
+    case 5: direction.x = -u;    direction.y = -v;   direction.z = -1.0f; break;
+    }
+    shadowNormalizeInPlace(direction);
+}
+
+// PE 0x101C36E0: cube lookup type 1 (ecx = side, eax = face, esi = out, edi = &offset; x, y on the
+// stack). The face direction of normalCubeDirection (side, x and y are signed here: fild), then
+// normalize(direction + offset), written back in place. Unreachable in 1.50 as a direct call: only
+// fillNormalCubeMip's type-1 arm reaches it, and the sole retail caller asks for type 3.
+// [CHOSEN, not recovered] plain float arithmetic: the retail x87 keeps u in extended precision,
+// but no 1.50 path executes the body.
+void normalCubeOffsetDirection(Vec3& direction, const Vec3& offset, unsigned int face,
+                               int side, int x, int y)
+{
+    const float denominator = static_cast<float>(side - 1);
+    const float u = static_cast<float>(x) / denominator * 2.0f - 1.0f;
+    const float v = static_cast<float>(y) / denominator * 2.0f - 1.0f;
+    switch (face)
+    {
+    case 0: direction.x =  1.0f; direction.y = -v;   direction.z = -u;   break;
+    case 1: direction.x = -1.0f; direction.y = -v;   direction.z =  u;   break;
+    case 2: direction.x =  u;    direction.y =  1.0f; direction.z =  v;   break;
+    case 3: direction.x =  u;    direction.y = -1.0f; direction.z = -v;   break;
+    case 4: direction.x =  u;    direction.y = -v;   direction.z =  1.0f; break;
+    case 5: direction.x = -u;    direction.y = -v;   direction.z = -1.0f; break;
+    }
+    shadowNormalizeInPlace(direction);
+    direction.x = offset.x + direction.x;
+    direction.y = offset.y + direction.y;
+    direction.z = offset.z + direction.z;
+    shadowNormalizeInPlace(direction);
+}
+
+// PE 0x101C37E0: cube lookup type 2, same register contract as 0x101C36E0. The face direction of
+// normalCubeDirection, normalized, then replaced by the scalar (offset.y * d.y + offset.z * d.z) +
+// offset.x * d.x stored in all three components. Unreachable in 1.50 as a direct call: only
+// fillNormalCubeMip's type-2 arm reaches it.
+void normalCubeDotDirection(Vec3& direction, const Vec3& offset, unsigned int face,
+                            int side, int x, int y)
+{
+    const float denominator = static_cast<float>(side - 1);
+    const float u = static_cast<float>(x) / denominator * 2.0f - 1.0f;
+    const float v = static_cast<float>(y) / denominator * 2.0f - 1.0f;
+    switch (face)
+    {
+    case 0: direction.x =  1.0f; direction.y = -v;   direction.z = -u;   break;
+    case 1: direction.x = -1.0f; direction.y = -v;   direction.z =  u;   break;
+    case 2: direction.x =  u;    direction.y =  1.0f; direction.z =  v;   break;
+    case 3: direction.x =  u;    direction.y = -1.0f; direction.z = -v;   break;
+    case 4: direction.x =  u;    direction.y = -v;   direction.z =  1.0f; break;
+    case 5: direction.x = -u;    direction.y = -v;   direction.z = -1.0f; break;
+    }
+    shadowNormalizeInPlace(direction);
+    const float dot = (offset.y * direction.y + offset.z * direction.z) + offset.x * direction.x;
+    direction.z = dot;
+    direction.y = dot;
+    direction.x = dot;
+}
+
+// PE 0x101C39F0 (ecx = texture; also inlined at the tail of fillNormalCubeMip): the debug save of a
+// cube texture to "c:\\cubedump_<texture>.dds", the %i receiving the texture pointer as in
+// fillPowerLut. Always answers true. Unreachable in 1.50: no code or data references to the
+// standalone copy.
+bool saveCubeDump(dx9rend::EngineTexture* texture)
+{
+    char buffer[0x1000];
+    std::snprintf(buffer, 0xFFF, "c:\\cubedump_%i.dds",
+                  static_cast<int>(reinterpret_cast<std::intptr_t>(texture)));
+    dx9rend::textureManagerSaveTexture(texture, std::string(buffer));
+    return true;
+}
+
+// PE 0x101C3B00 (ecx = texture, edx = mip; side, &light, save and lookup type on the stack, retn
+// 0x10). The light direction is normalized in place first. Type 1 formats each texel through
+// 0x101C36E0, type 2 through 0x101C37E0, type 3 through normalCubeDirection (the only type a
+// 1.50 caller passes); any other type reports the BumpmapUtil.cpp error and packs the previous
+// direction. It locks each cube surface directly and deliberately advances one dword per texel
+// without consulting Pitch.
+bool fillNormalCubeMip(dx9rend::EngineTexture* texture, unsigned int mip, int side,
+                       Vec3& light, bool save, int lookupType)
+{
+    Vec3 direction = { 0.0f, 0.0f, 0.0f };
+    shadowNormalizeInPlace(light);
     for (unsigned int face = 0; face != 6; ++face)
     {
         IDirect3DSurface9* const surface =
@@ -285,44 +595,77 @@ void fillNormalCubeMip(dx9rend::EngineTexture* texture, unsigned int mip,
         D3DLOCKED_RECT locked;
         surface->LockRect(&locked, 0, 0);
         unsigned int* output = static_cast<unsigned int*>(locked.pBits);
-        for (unsigned int y = 0; y != side; ++y)
+        for (int y = 0; y < side; ++y)
         {
-            const float v = static_cast<float>(y) / denominator * 2.0f - 1.0f;
-            for (unsigned int x = 0; x != side; ++x)
+            for (int x = 0; x < side; ++x)
             {
-                const float u = static_cast<float>(x) / denominator * 2.0f - 1.0f;
-                Vec3 direction;
-                switch (face)
+                switch (lookupType)
                 {
-                case 0: direction.x =  1.0f; direction.y = -v;   direction.z = -u;   break;
-                case 1: direction.x = -1.0f; direction.y = -v;   direction.z =  u;   break;
-                case 2: direction.x =  u;    direction.y =  1.0f; direction.z =  v;   break;
-                case 3: direction.x =  u;    direction.y = -1.0f; direction.z = -v;   break;
-                case 4: direction.x =  u;    direction.y = -v;   direction.z =  1.0f; break;
-                default:direction.x = -u;    direction.y = -v;   direction.z = -1.0f; break;
+                case 1:
+                    normalCubeOffsetDirection(direction, light, face, side, x, y);   // PE 0x101C36E0
+                    break;
+                case 2:
+                    normalCubeDotDirection(direction, light, face, side, x, y);      // PE 0x101C37E0
+                    break;
+                case 3:
+                    normalCubeDirection(direction, face, static_cast<unsigned int>(side),
+                                        static_cast<unsigned int>(x),
+                                        static_cast<unsigned int>(y));
+                    break;
+                default:
+                    Debug(DebugTypeError,
+                          "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendMisc\\BumpmapUtil.cpp",
+                          0x1AC, "") << "unknown cubemap lookup type specified!!!";
+                    break;
                 }
-                normaliseCubeDirection(direction);
                 *output++ = packNormalDirection(direction);
             }
         }
         surface->UnlockRect();
         surface->Release();
     }
+    if (save)
+        saveCubeDump(texture);                       // inlined copy of PE 0x101C39F0
+    return true;
+}
+
+// PE 0x101C3CD0 (ecx = side, edx = &light; save on the stack): a one-level A8R8G8B8 cube texture
+// filled with lookup type 1. Unreachable in 1.50: no code or data references.
+dx9rend::EngineTexture* createNormalCubeTextureType1(int side, Vec3& light, bool save)
+{
+    dx9rend::EngineTexture* const texture =
+        static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateCube(
+            side, D3DFMT_A8R8G8B8, 1, 0, 0));
+    fillNormalCubeMip(texture, 0, side, light, save, 1);
+    return texture;
+}
+
+// PE 0x101C3D10: as 0x101C3CD0 with lookup type 2. Unreachable in 1.50: no code or data references.
+dx9rend::EngineTexture* createNormalCubeTextureType2(int side, Vec3& light, bool save)
+{
+    dx9rend::EngineTexture* const texture =
+        static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateCube(
+            side, D3DFMT_A8R8G8B8, 1, 0, 0));
+    fillNormalCubeMip(texture, 0, side, light, save, 2);
+    return texture;
 }
 
 // The ATI/PS1 combination receives one mip; every other device receives three.
-dx9rend::EngineTexture* createNormalCubeTexture()
+// PE 0x101C3D50 (ecx = side, edx = &light, save on the stack); the sole caller
+// (lm_setSunDirection) supplies side 256, a zero light vector, save false and, internally, lookup
+// type 3.
+dx9rend::EngineTexture* createNormalCubeTexture(int side, Vec3& light, bool save)
 {
     const unsigned int mipLevels =
         dx9rend::deviceCapsIsAti() && dx9rend::deviceCapsPixelShaderMajor() == 1 ? 1u : 3u;
     dx9rend::EngineTexture* const texture =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateCube(
-            256, D3DFMT_A8R8G8B8, mipLevels, 0, 0));
-    fillNormalCubeMip(texture, 0, 256);
+            side, D3DFMT_A8R8G8B8, mipLevels, 0, 0));
+    fillNormalCubeMip(texture, 0, side, light, save, 3);
     if (mipLevels > 1)
     {
-        fillNormalCubeMip(texture, 1, 128);
-        fillNormalCubeMip(texture, 2, 64);
+        fillNormalCubeMip(texture, 1, side >> 1, light, save, 3);
+        fillNormalCubeMip(texture, 2, side >> 2, light, save, 3);
     }
     return texture;
 }
@@ -332,7 +675,7 @@ void createSmallLightTextures(void* self)
     dx9rend::EngineTexture* const white =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
             8, 8, D3DFMT_A8R8G8B8, 1, 0, 0));
-    lmField<dx9rend::EngineTexture*>(self, 0x23C) = white;
+    lm(self).whiteTexture = white;
     dx9rend::TextureLockRecord* lock = dx9rend::textureLock(white, 0, 0x7FFFFFFFu);
     ::memset(lock->pBits, 0xFF, (lock->bpp / 8) << 6);
     dx9rend::textureUnlock(white, lock);
@@ -340,7 +683,7 @@ void createSmallLightTextures(void* self)
     dx9rend::EngineTexture* const black =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
             8, 8, D3DFMT_A8R8G8B8, 1, 0, 0));
-    lmField<dx9rend::EngineTexture*>(self, 0x240) = black;
+    lm(self).blackTexture = black;
     lock = dx9rend::textureLock(black, 0, 0x7FFFFFFFu);
     ::memset(lock->pBits, 0, (lock->bpp / 8) << 6);
     dx9rend::textureUnlock(black, lock);
@@ -348,7 +691,7 @@ void createSmallLightTextures(void* self)
     dx9rend::EngineTexture* const framed =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
             8, 8, D3DFMT_A8R8G8B8, 1, 0, 0));
-    lmField<dx9rend::EngineTexture*>(self, 0x244) = framed;
+    lm(self).framedTexture = framed;
     lock = dx9rend::textureLock(framed, 0, 0x7FFFFFFFu);
     ::memset(lock->pBits, 0xFF, (lock->bpp / 8) << 6);
     const unsigned int bytesPerPixel = static_cast<unsigned int>(lock->bpp / 8);
@@ -363,7 +706,7 @@ void createSmallLightTextures(void* self)
     dx9rend::EngineTexture* const cube =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateCube(
             8, D3DFMT_X8R8G8B8, 1, 0, 0));
-    lmField<dx9rend::EngineTexture*>(self, 0x248) = cube;
+    lm(self).blackCubeTexture = cube;
     IDirect3DSurface9* const source =
         dx9rend::textureGetLevelSurface(black, 0, 0x7FFFFFFFu);
     for (unsigned int face = 0; face < 6; ++face)
@@ -376,258 +719,16 @@ void createSmallLightTextures(void* self)
     source->Release();
 }
 
-// PE allocator 0x100F5CF0 and its four tree owners.  These are not vc71::set_layout nodes: the
-// payload is eight bytes and the colour/isNil bytes sit at +0x14/+0x15 in a 0x18-byte node.
-struct ShadowTreeNode
+
+// +0x964's values are Effect*. Retail walks them in key order and calls release (+0x08) before
+// it tears the nodes down.
+void releaseShadowEffects(ShadowEffectMap& effects)
 {
-    ShadowTreeNode* left;
-    ShadowTreeNode* parent;
-    ShadowTreeNode* right;
-    unsigned int    key;
-    void*           value;
-    unsigned char   colour;
-    unsigned char   isNil;
-    unsigned char   pad16[2];
-};
-
-struct ShadowTree
-{
-    unsigned int    compareAllocator;
-    ShadowTreeNode* head;
-    unsigned int    size;
-};
-
-#if defined(_M_IX86)
-static_assert(sizeof(ShadowTreeNode) == 0x18, "LightManager shadow-tree node layout drift");
-static_assert(sizeof(ShadowTree) == 0x0C, "LightManager shadow-tree header layout drift");
-#endif
-
-ShadowTreeNode* createShadowTreeNode()
-{
-    ShadowTreeNode* const node = static_cast<ShadowTreeNode*>(
-        ::renddx9abi::engineAlloc(sizeof(ShadowTreeNode)));
-    // PE 0x100F5CF0 writes through the engine allocation without a null check.
-    node->left = node->parent = node->right = 0;
-    node->colour = 1;
-    node->isNil = 0;
-    return node;
-}
-
-void constructShadowTree(ShadowTree& tree)
-{
-    // PE's empty comparator/allocator occupies storage but its constructor emits no write.
-    tree.head = createShadowTreeNode();
-    tree.size = 0;
-    tree.head->isNil = 1;
-    tree.head->left = tree.head->parent = tree.head->right = tree.head;
-}
-
-void constructLightSet(vc71::set_layout& set)
-{
-    // LightManager's two inlined VC7.1 set constructors differ observably from the shared
-    // compatibility facade: the empty comparator dword is untouched and allocation is
-    // dereferenced unconditionally (PE 0x100F5BC0).
-    vc71::set_node* const node = static_cast<vc71::set_node*>(
-        ::renddx9abi::engineAlloc(sizeof(vc71::set_node)));
-    node->left = node->parent = node->right = 0;
-    node->color = 1;
-    node->isNil = 0;
-    node->isNil = 1;
-    node->left = node->parent = node->right = node;
-    set.head = node;
-    set.size = 0;
-}
-
-void rotateShadowTreeLeft(ShadowTree& tree, ShadowTreeNode* node)
-{
-    ShadowTreeNode* const pivot = node->right;
-    node->right = pivot->left;
-    if (!pivot->left->isNil)
-        pivot->left->parent = node;
-    pivot->parent = node->parent;
-    if (node == tree.head->parent)
-        tree.head->parent = pivot;
-    else if (node == node->parent->left)
-        node->parent->left = pivot;
-    else
-        node->parent->right = pivot;
-    pivot->left = node;
-    node->parent = pivot;
-}
-
-void rotateShadowTreeRight(ShadowTree& tree, ShadowTreeNode* node)
-{
-    ShadowTreeNode* const pivot = node->left;
-    node->left = pivot->right;
-    if (!pivot->right->isNil)
-        pivot->right->parent = node;
-    pivot->parent = node->parent;
-    if (node == tree.head->parent)
-        tree.head->parent = pivot;
-    else if (node == node->parent->right)
-        node->parent->right = pivot;
-    else
-        node->parent->left = pivot;
-    pivot->right = node;
-    node->parent = pivot;
-}
-
-ShadowTreeNode* shadowTreeFindOrInsert(ShadowTree& tree, unsigned int key)
-{
-    ShadowTreeNode* const head = tree.head;
-    ShadowTreeNode* parent = head;
-    ShadowTreeNode* node = head->parent;
-    bool insertLeft = true;
-
-    while (!node->isNil)
+    for (ShadowEffectMap::iterator it = effects.begin(); it != effects.end(); ++it)
     {
-        parent = node;
-        if (key < node->key)
-        {
-            insertLeft = true;
-            node = node->left;
-        }
-        else if (node->key < key)
-        {
-            insertLeft = false;
-            node = node->right;
-        }
-        else
-        {
-            return node;
-        }
+        if (it->second)
+            dx9rend::effectRelease(it->second);
     }
-
-    // PE 0x1015D000 carries the VC7.1 map/set maximum-size check before allocating a node.
-    if (tree.size >= 0x1FFFFFFEu)
-        throw std::length_error("map/set<T> too long");
-
-    node = createShadowTreeNode();
-    node->left = head;
-    node->parent = parent;
-    node->right = head;
-    node->key = key;
-    node->value = 0;
-    node->colour = 0; // red; the head sentinel and final root are black (1)
-
-    ++tree.size;
-    if (parent == head)
-    {
-        head->parent = node;
-        head->left = node;
-        head->right = node;
-    }
-    else if (insertLeft)
-    {
-        parent->left = node;
-        if (parent == head->left)
-            head->left = node;
-    }
-    else
-    {
-        parent->right = node;
-        if (parent == head->right)
-            head->right = node;
-    }
-
-    // PE 0x1015D000 is the ordinary VC7.1 red/black insertion fix-up.  Keep its colour
-    // convention (0 red, 1 black), rotations and root-parent sentinel relationship explicit.
-    ShadowTreeNode* current = node;
-    while (!current->parent->colour)
-    {
-        ShadowTreeNode* const parentNode = current->parent;
-        ShadowTreeNode* const grandparent = parentNode->parent;
-        if (parentNode == grandparent->left)
-        {
-            ShadowTreeNode* const uncle = grandparent->right;
-            if (!uncle->colour)
-            {
-                parentNode->colour = 1;
-                uncle->colour = 1;
-                grandparent->colour = 0;
-                current = grandparent;
-            }
-            else
-            {
-                if (current == parentNode->right)
-                {
-                    current = parentNode;
-                    rotateShadowTreeLeft(tree, current);
-                }
-                current->parent->colour = 1;
-                current->parent->parent->colour = 0;
-                rotateShadowTreeRight(tree, current->parent->parent);
-            }
-        }
-        else
-        {
-            ShadowTreeNode* const uncle = grandparent->left;
-            if (!uncle->colour)
-            {
-                parentNode->colour = 1;
-                uncle->colour = 1;
-                grandparent->colour = 0;
-                current = grandparent;
-            }
-            else
-            {
-                if (current == parentNode->left)
-                {
-                    current = parentNode;
-                    rotateShadowTreeRight(tree, current);
-                }
-                current->parent->colour = 1;
-                current->parent->parent->colour = 0;
-                rotateShadowTreeLeft(tree, current->parent->parent);
-            }
-        }
-    }
-    head->parent->colour = 1;
-    return node;
-}
-
-void freeShadowTreeBranch(ShadowTreeNode* node)
-{
-    while (!node->isNil)
-    {
-        freeShadowTreeBranch(node->right);
-        ShadowTreeNode* const left = node->left;
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-}
-
-void clearShadowTree(ShadowTree& tree)
-{
-    if (!tree.head)
-        return;
-    freeShadowTreeBranch(tree.head->parent);
-    tree.head->left = tree.head->parent = tree.head->right = tree.head;
-    tree.size = 0;
-}
-
-void releaseShadowTreeValues(ShadowTreeNode* node)
-{
-    if (node->isNil)
-        return;
-    releaseShadowTreeValues(node->left);
-    if (node->value)
-        dx9rend::effectRelease(static_cast<dx9rend::Effect*>(node->value));
-    releaseShadowTreeValues(node->right);
-}
-
-void destroyShadowTree(ShadowTree& tree, bool releaseValues)
-{
-    if (!tree.head)
-        return;
-    if (releaseValues)
-        // +0x964's values are Effect*. Retail walks them in key order and calls
-        // release (+0x08) before it tears the nodes down.
-        releaseShadowTreeValues(tree.head->parent);
-    clearShadowTree(tree);
-    ::renddx9abi::engineFree(tree.head);
-    tree.head = 0;
-    tree.size = 0;
 }
 
 void releaseSurface(IDirect3DSurface9*& surface)
@@ -637,18 +738,19 @@ void releaseSurface(IDirect3DSurface9*& surface)
     surface = 0;
 }
 
+// PE 0x100F2120.
 bool releaseShadowResources(void* self, bool result)
 {
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x21C));
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x220));
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x224));
-    releaseSurface(lmField<IDirect3DSurface9*>(self, 0x228));
-    releaseSurface(lmField<IDirect3DSurface9*>(self, 0x22C));
+    dx9rend::textureReleaseRef(lm(self).shadowMap);
+    dx9rend::textureReleaseRef(lm(self).shadowMap2);
+    dx9rend::textureReleaseRef(lm(self).shadowDepthTexture);
+    releaseSurface(lm(self).shadowDepthSurface);
+    releaseSurface(lm(self).shadowDepthSurface2);
 
     dx9rend::EngineTexture* const secondary =
-        lmField<dx9rend::EngineTexture*>(self, 0x230);
+        lm(self).pointShadowMap;
     IDirect3DSurface9* const secondaryDepth =
-        lmField<IDirect3DSurface9*>(self, 0x238);
+        lm(self).pointShadowDepthSurface;
     if (secondary && secondary->baseTexture && secondaryDepth)
     {
         // PE 0x100F21A0's alias-lifetime bracket is deliberately net-zero.  Preserve the exact
@@ -660,203 +762,171 @@ bool releaseShadowResources(void* self, bool result)
         secondary->baseTexture->Release();
         secondaryDepth->Release();
     }
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x230));
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x234));
-    releaseSurface(lmField<IDirect3DSurface9*>(self, 0x238));
+    dx9rend::textureReleaseRef(lm(self).pointShadowMap);
+    dx9rend::textureReleaseRef(lm(self).pointShadowDepthTexture);
+    releaseSurface(lm(self).pointShadowDepthSurface);
 
-    for (unsigned int offset = 0x21C; offset <= 0x238; offset += 4)
-        lmField<void*>(self, offset) = 0;
+    LightManagerData& d = lm(self);
+    d.shadowMap = 0;                                                        // +0x21C..+0x238
+    d.shadowMap2 = 0;
+    d.shadowDepthTexture = 0;
+    d.shadowDepthSurface = 0;
+    d.shadowDepthSurface2 = 0;
+    d.pointShadowMap = 0;
+    d.pointShadowDepthTexture = 0;
+    d.pointShadowDepthSurface = 0;
     return result;
 }
 
-void setRenderTargetTexture(unsigned int index, dx9rend::EngineTexture* texture)
+// PE 0x100057A0: substitutes Renderer +0x770 when passed null (this is not equivalent to handing a
+// literal null to StateManager +0x64), then calls StateManager +0x64 and returns true (al = 1);
+// every caller discards the result.
+bool setLightManagerDepthStencil(IDirect3DSurface9* surface)
 {
-    IDirect3DSurface9* surface = 0;
-    if (texture)
-        surface = dx9rend::textureGetLevelSurface(texture, 0, 0x7FFFFFFFu);
-    else if (index == 0)
-    {
-        unsigned char* const renderer =
-            static_cast<unsigned char*>(dx9rend::g_rendererBase);
-        surface = *reinterpret_cast<IDirect3DSurface9**>(renderer + 0x0F4);
-        if (!surface)
-            surface = *reinterpret_cast<IDirect3DSurface9**>(renderer + 0x76C);
-        if (surface)
-            surface->AddRef();
-    }
-    dx9rend::stateManagerSetRenderTarget(index, surface);
-    if (surface)
-        surface->Release();
-}
-
-void setLightManagerDepthStencil(IDirect3DSurface9* surface)
-{
-    // PE 0x100057A0 substitutes Renderer +0x770 when passed null; this is not equivalent to
-    // handing a literal null to StateManager +0x64.
     if (!surface)
-        surface = *reinterpret_cast<IDirect3DSurface9**>(
-            static_cast<unsigned char*>(dx9rend::g_rendererBase) + 0x770);
+        surface = dx9rend::rendererDepthStencilSurface();                  // +0x770
     dx9rend::stateManagerSetDepthStencilSurface(surface);
+    return true;
 }
 
 void restoreRendererTarget0()
 {
     // PE 0x10028070 first restores Renderer +0x7D4's EngineTexture. Only a null texture takes
-    // the generic 0x10005920 back-buffer fallback used by setRenderTargetTexture(0, 0).
-    dx9rend::EngineTexture* const texture =
-        *reinterpret_cast<dx9rend::EngineTexture**>(
-            static_cast<unsigned char*>(dx9rend::g_rendererBase) + 0x7D4);
-    setRenderTargetTexture(0, texture);
+    // the generic 0x10005920 back-buffer fallback of lightManagerSelectRenderTarget.
+    dx9rend::EngineTexture* const texture = dx9rend::rendererPathTarget(0x7D4);
+    lightManagerSetRenderTargetTexture(0, texture);
 }
 
+// PE 0x100F2350.
+// shipped defect: allocation failures leave the texture manager's managed flag cleared.
 bool createShadowResourcesBody(void* self)
 {
-    if (!lmField<unsigned char>(self, 0x7EC))
+    if (!lm(self).dynamicShadowsEnabled)
         return false;
 
     releaseShadowResources(self, true);
     const int oldManaged = dx9rend::textureManagerSwapManaged(0);
-    const int requested = lmField<int>(self, 0x204);
+    const int requested = lm(self).shadowMapSize;
     // PE uses signed `jl`: negative configured sizes survive this clamp and are passed onward as
     // their raw dword bit pattern. Do not turn them into the unsigned minimum's 2048.
     const int clampedSize = requested < 2048 ? requested : 2048;
     const unsigned int primarySize = static_cast<unsigned int>(clampedSize);
     const unsigned int secondarySize = static_cast<unsigned int>(clampedSize);
-    const unsigned int format = lmField<unsigned int>(self, 0x20C);
-    const unsigned int usage = lmField<unsigned int>(self, 0x210);
-
-    lmField<dx9rend::EngineTexture*>(self, 0x21C) =
+    lm(self).shadowMap =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
-            primarySize, primarySize, format, 1, usage, 0));
-    if (!lmField<void*>(self, 0x21C))
+            primarySize, primarySize, lm(self).shadowMapFormat, 1, lm(self).shadowMapUsage, 0));
+    if (!lm(self).shadowMap)
         return releaseShadowResources(self, false);
-    lmField<dx9rend::EngineTexture*>(self, 0x220) =
+    lm(self).shadowMap2 =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
-            primarySize, primarySize, format, 1, usage, 0));
-    if (!lmField<void*>(self, 0x220))
+            primarySize, primarySize, lm(self).shadowMapFormat, 1, lm(self).shadowMapUsage, 0));
+    if (!lm(self).shadowMap2)
         return releaseShadowResources(self, false);
 
-    const unsigned int mode = lmField<unsigned int>(self, 0x910);
-    if (mode != 0)
+    if (lm(self).shadowMapMode != 0)
     {
-        IDirect3DDevice9* const device = lmField<IDirect3DDevice9*>(self, 0x908);
+        IDirect3DDevice9* const device = lm(self).device;
         device->CreateDepthStencilSurface(
             primarySize, primarySize, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE,
-            &lmField<IDirect3DSurface9*>(self, 0x228), 0);
-        if (!lmField<void*>(self, 0x228))
+            &lm(self).shadowDepthSurface, 0);
+        if (!lm(self).shadowDepthSurface)
             return releaseShadowResources(self, false);
-        lmField<IDirect3DSurface9*>(self, 0x22C) =
-            lmField<IDirect3DSurface9*>(self, 0x228);
-        lmField<IDirect3DSurface9*>(self, 0x22C)->AddRef();
+        lm(self).shadowDepthSurface2 =
+            lm(self).shadowDepthSurface;
+        lm(self).shadowDepthSurface2->AddRef();
     }
     else
     {
-        lmField<dx9rend::EngineTexture*>(self, 0x224) =
+        lm(self).shadowDepthTexture =
             static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
                 primarySize, primarySize, 23, 1, D3DUSAGE_RENDERTARGET, 0));
-        if (!lmField<void*>(self, 0x224))
+        if (!lm(self).shadowDepthTexture)
             return releaseShadowResources(self, false);
-        lmField<IDirect3DSurface9*>(self, 0x228) =
+        lm(self).shadowDepthSurface =
             dx9rend::textureGetLevelSurface(
-                lmField<dx9rend::EngineTexture*>(self, 0x21C), 0, 0x7FFFFFFFu);
-        lmField<IDirect3DSurface9*>(self, 0x22C) =
+                lm(self).shadowMap, 0, 0x7FFFFFFFu);
+        lm(self).shadowDepthSurface2 =
             dx9rend::textureGetLevelSurface(
-                lmField<dx9rend::EngineTexture*>(self, 0x220), 0, 0x7FFFFFFFu);
+                lm(self).shadowMap2, 0, 0x7FFFFFFFu);
     }
 
-    lmField<dx9rend::EngineTexture*>(self, 0x230) =
+    lm(self).pointShadowMap =
         static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
-            secondarySize, secondarySize, format, 1, usage, 0));
-    if (!lmField<void*>(self, 0x230))
+            secondarySize, secondarySize, lm(self).shadowMapFormat, 1, lm(self).shadowMapUsage, 0));
+    if (!lm(self).pointShadowMap)
         return releaseShadowResources(self, false);
 
-    if (mode == 0)
+    if (lm(self).shadowMapMode == 0)
     {
         if (secondarySize == primarySize)
         {
-            lmField<dx9rend::EngineTexture*>(self, 0x234) =
-                lmField<dx9rend::EngineTexture*>(self, 0x224);
-            dx9rend::textureAddRef(lmField<dx9rend::EngineTexture*>(self, 0x234));
+            lm(self).pointShadowDepthTexture =
+                lm(self).shadowDepthTexture;
+            dx9rend::textureAddRef(lm(self).pointShadowDepthTexture);
         }
         else
         {
-            lmField<dx9rend::EngineTexture*>(self, 0x234) =
+            lm(self).pointShadowDepthTexture =
                 static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerCreateEmpty(
                     primarySize, primarySize, 23, 1, D3DUSAGE_RENDERTARGET, 0));
-            if (!lmField<void*>(self, 0x234))
+            if (!lm(self).pointShadowDepthTexture)
                 return releaseShadowResources(self, false);
         }
-        lmField<IDirect3DSurface9*>(self, 0x238) =
+        lm(self).pointShadowDepthSurface =
             dx9rend::textureGetLevelSurface(
-                lmField<dx9rend::EngineTexture*>(self, 0x230), 0, 0x7FFFFFFFu);
+                lm(self).pointShadowMap, 0, 0x7FFFFFFFu);
     }
     else if (secondarySize == primarySize)
     {
-        lmField<IDirect3DSurface9*>(self, 0x238) =
-            lmField<IDirect3DSurface9*>(self, 0x228);
-        lmField<IDirect3DSurface9*>(self, 0x238)->AddRef();
+        lm(self).pointShadowDepthSurface =
+            lm(self).shadowDepthSurface;
+        lm(self).pointShadowDepthSurface->AddRef();
     }
     else
     {
-        IDirect3DDevice9* const device = lmField<IDirect3DDevice9*>(self, 0x908);
+        IDirect3DDevice9* const device = lm(self).device;
         device->CreateDepthStencilSurface(
             secondarySize, secondarySize, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE,
-            &lmField<IDirect3DSurface9*>(self, 0x238), 0);
-        if (!lmField<void*>(self, 0x238))
+            &lm(self).pointShadowDepthSurface, 0);
+        if (!lm(self).pointShadowDepthSurface)
             return releaseShadowResources(self, false);
     }
 
     dx9rend::textureManagerSwapManaged(oldManaged);
     dx9rend::raShaderConstantsSetTexture(
-        0x268, lmField<dx9rend::EngineTexture*>(self, 0x21C)->baseTexture);
+        0x268, lm(self).shadowMap->baseTexture);
     dx9rend::raShaderConstantsSetTexture(
-        0x270, lmField<dx9rend::EngineTexture*>(self, 0x220)->baseTexture);
-    void* const publishedManager = g_LightManager;
+        0x270, lm(self).shadowMap2->baseTexture);
     dx9rend::raShaderConstantsSetTexture(
-        0x278, lmField<dx9rend::EngineTexture*>(publishedManager, 0x230)->baseTexture);
+        0x278, lm(g_LightManager).pointShadowMap->baseTexture);
     dx9rend::raShaderConstantsSetTexture(
-        0x288, lmField<dx9rend::EngineTexture*>(publishedManager, 0x244)->baseTexture);
+        0x288, lm(g_LightManager).framedTexture->baseTexture);
 
     // byte_102395B0 is initialised true and has no writer.  Every successful
     // resource rebuild binds and clears both shadow targets before restoring the back buffer.
     setLightManagerDepthStencil(
-        lmField<IDirect3DSurface9*>(self, 0x228));
-    setRenderTargetTexture(0, lmField<dx9rend::EngineTexture*>(
-        self, mode != 0 ? 0x21C : 0x224));
+        lm(self).shadowDepthSurface);
+    lightManagerSetRenderTargetTexture(0, lm(self).shadowMapMode != 0
+        ? lm(self).shadowMap : lm(self).shadowDepthTexture);
     dx9rend::stateManagerClear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
                                0xFFFFFFFFu, 1.0f, 0);
 
-    setRenderTargetTexture(0, lmField<dx9rend::EngineTexture*>(
-        self, mode != 0 ? 0x230 : 0x234));
+    lightManagerSetRenderTargetTexture(0, lm(self).shadowMapMode != 0
+        ? lm(self).pointShadowMap : lm(self).pointShadowDepthTexture);
     setLightManagerDepthStencil(
-        lmField<IDirect3DSurface9*>(self, 0x238));
+        lm(self).pointShadowDepthSurface);
     dx9rend::stateManagerClear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
                                0xFFFFFFFFu, 1.0f, 0);
 
     setLightManagerDepthStencil(0);
-    setRenderTargetTexture(0, 0);
+    lightManagerSetRenderTargetTexture(0, 0);
     dx9rend::flushRenderTargetsSeam();
 
-    RECT& rectangle = lmField<RECT>(self, 0x78C);
+    RECT& rectangle = lm(self).shadowScissor;
     rectangle.left = rectangle.top = 0;
-    rectangle.right = rectangle.bottom = requested;
+    rectangle.right = rectangle.bottom = lm(self).shadowMapSize;
     ::InflateRect(&rectangle, -3, -3);
     return true;
-}
-
-inline vc71::set_layout& lmOwnedLights(void* self)
-{
-    return lmField<vc71::set_layout>(self, 0x1B8);
-}
-
-inline vc71::set_layout& lmActiveLights(void* self)
-{
-    return lmField<vc71::set_layout>(self, 0x1C4);
-}
-
-inline unsigned int lmLightKey(world::LightSource* light)
-{
-    return reinterpret_cast<unsigned int>(light);
 }
 
 // Calls into BF2.exe use the recovered source interfaces themselves.  HostString is VC7.1's
@@ -864,98 +934,25 @@ inline unsigned int lmLightKey(world::LightSource* light)
 // changes the static spelling of that reference; no current-CRT string operation touches it.
 inline const std::string& hostStdString(const renddx9abi::HostString& value)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return value;
-#else
-    return *reinterpret_cast<const std::string*>(&value);
-#endif
 }
 
 inline const world::LightSourceTemplate* lightSourceTemplatePointer(
     const world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<const world::LightSourceTemplate*>(light->getTemplate());
-#else
-    return *reinterpret_cast<const world::LightSourceTemplate* const*>(
-        reinterpret_cast<const unsigned char*>(light) + 0x144);
-#endif
 }
 
 inline unsigned int lightSourceFlags(const world::LightSource* light)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return light->getFlags();
-#else
-    return *reinterpret_cast<const unsigned int*>(
-        reinterpret_cast<const unsigned char*>(light) + 0x04);
-#endif
 }
 
 inline const world::IObjectTemplate* objectTemplatePointer(const world::IObject* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return object->getTemplate();
-#else
-    return *reinterpret_cast<const world::IObjectTemplate* const*>(
-        reinterpret_cast<const unsigned char*>(object) + 0x14);
-#endif
 }
 
-#if !BF2_PLUGIN_ABI_NATIVE
-inline std::vector<world::IObject*>& hostObjectVector(vc71::vector_layout& value)
-{
-    // A retail ObjectManager consumes the VC7.1 vector object at this address.  The rebuilt DLL
-    // never evaluates a native std::vector operation through this reference; it only passes it on.
-    return *reinterpret_cast<std::vector<world::IObject*>*>(&value);
-}
-#endif
-
-template <typename T>
-inline T* vectorBegin(vc71::vector_layout& vector)
-{
-    return reinterpret_cast<T*>(vector.first);
-}
-
-template <typename T>
-inline const T* vectorBegin(const vc71::vector_layout& vector)
-{
-    return reinterpret_cast<const T*>(vector.first);
-}
-
-template <typename T>
-inline unsigned int vectorSize(const vc71::vector_layout& vector)
-{
-    return vector.first
-        ? static_cast<unsigned int>((vector.last - vector.first) / sizeof(T))
-        : 0u;
-}
-
-inline void clearPointerVector(vc71::vector_layout& vector)
-{
-    // std::vector<T*>::clear destroys no payload and retains its allocation.
-    vector.last = vector.first;
-}
-
-inline void destroyVectorStorage(vc71::vector_layout& vector)
-{
-    if (vector.first)
-        ::operator delete(vector.first);
-    vector.first = vector.last = vector.end = 0;
-}
-
-struct ShadowAtlasEntry
-{
-    int x;
-    int y;
-    int width;
-    int height;
-    int tier;
-};
-
-#if defined(_M_IX86)
-static_assert(sizeof(ShadowAtlasEntry) == 0x14, "shadow-atlas entry layout drift");
-#endif
 
 // PE 0x10239350..0x10239580, consumed by 0x100F3160 in this exact order.
 const ShadowAtlasEntry kShadowAtlas2048x1024[28] =
@@ -993,13 +990,13 @@ void publishShadowAtlasRectangle(unsigned int index, const ShadowAtlasEntry& ent
 // The atlas vector is destroyed and rebuilt, rather than merely cleared.  The
 // 1024x512 arm halves only the rectangle coordinates/sizes; the tier survives unchanged. Both
 // 28-entry arms also publish the parallel global rect table at PE 0x10259EE0.
+// PE 0x100F3160.
 void rebuildShadowAtlas(void* self)
 {
-    vc71::vector_layout& atlas = lmField<vc71::vector_layout>(self, 0x7BC);
-    destroyVectorStorage(atlas);
-    vc71::vectorRef<ShadowAtlasEntry> output(&atlas);
-    const int width = lmField<int>(self, 0x204);
-    const int height = lmField<int>(self, 0x208);
+    std::vector<ShadowAtlasEntry>& output = lm(self).shadowAtlas;
+    std::vector<ShadowAtlasEntry>().swap(output);
+    const int width = lm(self).shadowMapSize;
+    const int height = lm(self).shadowTileSize;
 
     if (width == 2048 && height == 1024)
     {
@@ -1037,17 +1034,18 @@ void rebuildShadowAtlas(void* self)
 
 void* getEffectParameter(void* effect, const char* semantic)
 {
-    vc71::string name(semantic);
+    std::string name(semantic);
     return dx9rend::effectGetShaderParameter(
         static_cast<dx9rend::Effect*>(effect), name);
 }
 
 dx9rend::EngineTexture* loadManagerTexture(const char* path)
 {
-    vc71::string name(path);
+    std::string name(path);
     return static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerGetTexture(name));
 }
 
+// PE 0x10160D50.
 void bindAndClearShadowTarget(void* self)
 {
     // byte_10260A08 is false in the shipped data image.  Performance flag 3 is the live bypass.
@@ -1055,16 +1053,16 @@ void bindAndClearShadowTarget(void* self)
         return;
 
     setLightManagerDepthStencil(
-        lmField<IDirect3DSurface9*>(self, 0x238));
-    if (lmField<unsigned int>(self, 0x910) != 0)
+        lm(self).pointShadowDepthSurface);
+    if (lm(self).shadowMapMode != 0)
     {
-        setRenderTargetTexture(0, lmField<dx9rend::EngineTexture*>(self, 0x230));
+        lightManagerSetRenderTargetTexture(0, lm(self).pointShadowMap);
         dx9rend::stateManagerClear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
                                    0xFFFFFFFFu, 1.0f, 0);
     }
     else
     {
-        setRenderTargetTexture(0, lmField<dx9rend::EngineTexture*>(self, 0x234));
+        lightManagerSetRenderTargetTexture(0, lm(self).pointShadowDepthTexture);
         dx9rend::stateManagerClear(D3DCLEAR_ZBUFFER, 0xFFFFFFFFu, 1.0f, 0);
         dx9rend::stateManagerSetRenderState(195, 0);
     }
@@ -1075,18 +1073,9 @@ inline float dot3(const Vec3& a, const Vec3& b)
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-inline float planeDistance(const Plane3& plane, const Vec3& point)
-{
-    return dot3(plane.normal, point) + plane.d;
-}
-
 inline void* objectGeometry(world::IObject* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return world::object_detail::LayoutAccess::geometry(object);
-#else
-    return *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(object) + 0x38);
-#endif
 }
 
 inline const Vec3& objectAbsolutePosition(world::IObject* object)
@@ -1101,26 +1090,22 @@ inline float objectVisualRadius(world::IObject* object)
 
 // Accepts enabled shadow casters with the required template flag, excluding water.
 // When accept is clear, also excludes the local player's first-person vehicle root.
+// PE 0x1016CBD0, ShadowCasterPredicator's first slot (table 0x1021EC70), `retn 4`.
 bool shadowCasterPredicateBody(world::IObject* object, unsigned char accept)
 {
     void* const geometry = objectGeometry(object);
     if (geometry)
     {
-        typedef void* (__fastcall* GetTemplateFn)(void*, void*);
+        typedef void* (__thiscall* GetTemplateFn)(void*);
         void** const vtbl = *reinterpret_cast<void***>(geometry);
         void* const geometryTemplate =
-            reinterpret_cast<GetTemplateFn>(vtbl[0x38 / sizeof(void*)])(geometry, 0);
+            reinterpret_cast<GetTemplateFn>(vtbl[0x38 / 4])(geometry);
         if (static_cast<MeshTemplate*>(geometryTemplate)->isWater())              // +0x50
             return false;
     }
 
     const world::IObjectTemplate* const objectTemplate = objectTemplatePointer(object);
-#if BF2_PLUGIN_ABI_NATIVE
     const unsigned int objectFlags = object->getFlags();
-#else
-    const unsigned int objectFlags = *reinterpret_cast<const unsigned int*>(
-        reinterpret_cast<const unsigned char*>(object) + 0x04);
-#endif
     if ((objectTemplate->getFlags() & 0x800u) == 0)                               // +0x44
         return false;
     if ((objectFlags & 2u) == 0)
@@ -1141,7 +1126,6 @@ bool shadowCasterPredicateBody(world::IObject* object, unsigned char accept)
     return player->getVehicle() != root;                                          // PE +0x44
 }
 
-#if BF2_PLUGIN_ABI_NATIVE
 class ShadowCasterPredicator : public world::ObjectPredicator
 {
 public:
@@ -1158,40 +1142,10 @@ private:
     unsigned char m_accept;
     unsigned char m_pad05[3];
 };
-#else
-struct ShadowCasterPredicator
-{
-    const void**  table;
-    unsigned char accept;
-    unsigned char pad05[3];
-};
-
-bool __fastcall shadowPredicate(void* self, void*, world::IObject* object)
-{
-    return shadowCasterPredicateBody(
-        object, static_cast<ShadowCasterPredicator*>(self)->accept);
-}
-unsigned int __fastcall shadowPredicateFlags(void*, void*) { return 0; }
-bool __fastcall shadowPredicateCull(void*, void*, world::IObject*) { return true; }
-bool __fastcall shadowPredicateSurface(void*, void*, int) { return true; }
-const void* const kShadowCasterPredicatorVtable[4] =
-{
-    reinterpret_cast<void*>(&shadowPredicate),
-    reinterpret_cast<void*>(&shadowPredicateFlags),
-    reinterpret_cast<void*>(&shadowPredicateCull),
-    reinterpret_cast<void*>(&shadowPredicateSurface)
-};
-#endif
 
 void constructShadowCasterPredicator(ShadowCasterPredicator& predicate)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     (void)predicate; // the native C++ constructor already installed the exact four-slot table
-#else
-    predicate.table = const_cast<const void**>(kShadowCasterPredicatorVtable);
-    predicate.accept = 1;
-    predicate.pad05[0] = predicate.pad05[1] = predicate.pad05[2] = 0;
-#endif
 }
 
 struct ShadowSweepClassifier
@@ -1201,6 +1155,7 @@ struct ShadowSweepClassifier
     Vec3 direction;
 };
 
+// PE 0x1016C530.
 void constructShadowSweepClassifier(ShadowSweepClassifier& classifier,
                                     const Frustum& frustum, const Vec3& direction)
 {
@@ -1222,107 +1177,129 @@ void constructShadowSweepClassifier(ShadowSweepClassifier& classifier,
     }
 }
 
+// The sweep's plane distance, (n.z * p.z + n.y * p.y) + n.x * p.x + d as shipped; the x87 body
+// compares the unrounded sum against the stored float radius.
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] the x87 sum, kept unrounded for the compares.
+typedef bf2x87::Real SweepDistance;
+inline SweepDistance sweepPlaneDistance(const Plane3& plane, const Vec3& point)
+{
+    using namespace bf2x87;
+    return add(add(add(mul(wide(plane.normal.z), wide(point.z)), mul(wide(plane.normal.y), wide(point.y))),
+                   mul(wide(plane.normal.x), wide(point.x))),
+               wide(plane.d));
+}
+inline bool sweepGreater(SweepDistance a, float b) { return bf2x87::greater(a, bf2x87::wide(b)); }
+inline bool sweepLess(SweepDistance a, float b) { return bf2x87::less(a, bf2x87::wide(b)); }
+#else
+typedef float SweepDistance;
+inline SweepDistance sweepPlaneDistance(const Plane3& plane, const Vec3& point)
+{
+    return (plane.normal.z * point.z + plane.normal.y * point.y) + plane.normal.x * point.x + plane.d;
+}
+inline bool sweepGreater(SweepDistance a, float b) { return a > b; }
+inline bool sweepLess(SweepDistance a, float b) { return a < b; }
+#endif
+
+// PE 0x1016C070 (thiscall on the classifier, `retn 4`). The radius (+0x90) is fetched before the
+// position (+0x68); both plane lists' ends are read once. A plane facing away whose sweep line is
+// parallel to it (Plane3::intersectLine 0x1007C6C0 answers false without writing) tests the toward
+// planes against the zero point the caller pre-stores.
 bool shadowSweepAccepts(const ShadowSweepClassifier& classifier, world::IObject* object)
 {
     const float radius = objectVisualRadius(object);
     const Vec3& centre = objectAbsolutePosition(object);
 
+    const std::vector<const Plane3*>::const_iterator towardEnd = classifier.toward.end();
     for (std::vector<const Plane3*>::const_iterator it = classifier.toward.begin();
-         it != classifier.toward.end(); ++it)
+         it != towardEnd; ++it)
     {
-        const float d = planeDistance(**it, centre);
-        if (d > radius)
+        const SweepDistance d = sweepPlaneDistance(**it, centre);
+        if (sweepGreater(d, radius))
             return false;
-        if (d > -radius)
+        if (sweepGreater(d, -radius))
             return true;
     }
 
+    const std::vector<const Plane3*>::const_iterator awayEnd = classifier.away.end();
     for (std::vector<const Plane3*>::const_iterator it = classifier.away.begin();
-         it != classifier.away.end(); ++it)
+         it != awayEnd; ++it)
     {
-        const Plane3& plane = **it;
-        if (planeDistance(plane, centre) < radius)
+        if (sweepLess(sweepPlaneDistance(**it, centre), radius))
             continue;
 
         Vec3 end;
-        end.x = centre.x + classifier.direction.x;
-        end.y = centre.y + classifier.direction.y;
-        end.z = centre.z + classifier.direction.z;
-        const Vec3 delta = { end.x - centre.x, end.y - centre.y, end.z - centre.z };
-        const float denominator = dot3(plane.normal, delta);
-        const float t = -planeDistance(plane, centre) / denominator;
+        end.x = classifier.direction.x + centre.x;
+        end.y = classifier.direction.y + centre.y;
+        end.z = classifier.direction.z + centre.z;
         Vec3 intersection;
-        intersection.x = centre.x + delta.x * t;
-        intersection.y = centre.y + delta.y * t;
-        intersection.z = centre.z + delta.z * t;
+        intersection.x = 0.0f;
+        intersection.y = 0.0f;
+        intersection.z = 0.0f;
+        bool insideSegment;
+        rendmath::intersectLine(**it, centre, end, intersection,      // PE 0x1007C6C0; result
+                                insideSegment);                       // unused, as shipped
 
         for (std::vector<const Plane3*>::const_iterator toward = classifier.toward.begin();
-             toward != classifier.toward.end(); ++toward)
+             toward != towardEnd; ++toward)
         {
-            if (planeDistance(**toward, intersection) > radius)
+            if (sweepGreater(sweepPlaneDistance(**toward, intersection), radius))
                 return false;
         }
     }
     return true;
 }
 
+// PE 0x1016C4D0.
 void filterShadowCandidates(const ShadowSweepClassifier& classifier,
-                            vc71::vector_layout& candidates)
+                            std::vector<world::IObject*>& candidates)
 {
-    world::IObject** current = vectorBegin<world::IObject*>(candidates);
-    world::IObject** end = reinterpret_cast<world::IObject**>(candidates.last);
-    while (current != end)
+    std::vector<world::IObject*>::iterator current = candidates.begin();
+    while (current != candidates.end())
     {
         if (shadowSweepAccepts(classifier, *current))
         {
             ++current;
             continue;
         }
-        ::memmove(current, current + 1,
-                  static_cast<unsigned int>(reinterpret_cast<unsigned char*>(end)
-                                           - reinterpret_cast<unsigned char*>(current + 1)));
-        --end;
-        candidates.last -= sizeof(world::IObject*);
+        current = candidates.erase(current);
     }
 }
 
 
 // Normalizes in place unless already within FLT_EPSILON of unit length.
 // Degenerate vectors become zero.
-void shadowNormalizeInPlace(Vec3& v)
+// PE 0x101682C0, identical to the shared PE 0x100777A0 instantiation.
+int shadowNormalizeInPlace(Vec3& v)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] PE 0x100777A0 stores the sum, retaining the reciprocal for all stores.
+    const float lengthSquared = bf2x87::store(bf2x87::wide(v.x) * v.x
+        + bf2x87::wide(v.y) * v.y + bf2x87::wide(v.z) * v.z);
+#else
     const float lengthSquared = v.x * v.x + v.y * v.y + v.z * v.z;
+#endif
     if (std::fabs(lengthSquared - 1.0f) < FLT_EPSILON)
-        return;
+        return 0;
     if (std::fabs(lengthSquared) < FLT_EPSILON)
     {
         v.x = 0.0f;
         v.y = 0.0f;
         v.z = 0.0f;
-        return;
+        return -20001;
     }
+#if defined(__APPLE__)
+    const bf2x87::Real inverse = bf2x87::wide(1.0f) / bf2x87::squareRoot(bf2x87::wide(lengthSquared));
+    v.x = bf2x87::store(inverse * v.x);
+    v.y = bf2x87::store(inverse * v.y);
+    v.z = bf2x87::store(inverse * v.z);
+#else
     const float inverse = 1.0f / std::sqrt(lengthSquared);
     v.x *= inverse;
     v.y *= inverse;
     v.z *= inverse;
-}
-
-// sub_100C8820 - re-orthonormalise a basis matrix in place, keeping its y row: rows 1 and 2 are
-// normalised, then row 0 = row1 x row2 and row 2 = row0 x row1, each component a two-product
-// difference in the shipped operand order. The w column is not touched.
-void orthonormalizeShadowBasis(Mat4& basis)
-{
-    Vec3& row0 = *reinterpret_cast<Vec3*>(&basis.m[0]);
-    Vec3& row1 = *reinterpret_cast<Vec3*>(&basis.m[4]);
-    Vec3& row2 = *reinterpret_cast<Vec3*>(&basis.m[8]);
-    shadowNormalizeInPlace(row1);
-    shadowNormalizeInPlace(row2);
-    row0.x = row2.z * row1.y - row2.y * row1.z;
-    row0.y = row1.z * row2.x - row2.z * row1.x;
-    row0.z = row2.y * row1.x - row1.y * row2.x;
-    row2.x = row1.z * row0.y - row1.y * row0.z;
-    row2.y = row1.x * row0.z - row1.z * row0.x;
-    row2.z = row1.y * row0.x - row1.x * row0.y;
+#endif
+    return 0;
 }
 
 // The directional pass's light basis (0x10164E7B..0x10164F96 for the shadow frustum, and again at
@@ -1346,7 +1323,7 @@ void buildShadowLightBasis(world::LightSource* sky, Mat4& basis)
         basis.m[5] = direction.z - xTimesZero;
         basis.m[6] = xTimesZero - direction.y;
     }
-    orthonormalizeShadowBasis(basis);
+    orthonormalizeKeepingY(basis);                                    // sub_100C8820
 }
 
 // One plane of the five fits (see the block comment above). 0x1016AFA0 alone sums corner 0's dot
@@ -1388,13 +1365,13 @@ float shadowCornerDistance(const Vec3& a, const Vec3& b)
     return std::sqrt(dz * dz + dy * dy + dx * dx);
 }
 
-// The extents tail every fit shares: the corners from the planes (0x10079E50, RendDX9's copy of
-// Frustum::recalcCorners), width |c2 - c0| and height |c1 - c0| (the all-plane fits only), far
+// The extents tail every fit shares: the corners from the planes (rendmath::frustumRecalcCorners,
+// RendDX9's copy of Frustum::recalcCorners), width |c2 - c0| and height |c1 - c0| (the all-plane fits only), far
 // |c4 - c0| - near, and the transformation re-seated at the near face's centre (c0 + c3) / 2 and
 // re-applied through Frustum::transform (copy, then reSetup - setOrtho for these).
 void refitShadowFrustumExtents(Frustum& frustum, bool widthAndHeight)
 {
-    frustum.recalcCorners();
+    rendmath::frustumRecalcCorners(frustum);                          // PE 0x10079E50
     const Vec3* const corner = frustum.m_corners;
     if (widthAndHeight)
     {
@@ -1406,7 +1383,7 @@ void refitShadowFrustumExtents(Frustum& frustum, bool widthAndHeight)
     transformation.m[12] = (corner[0].x + corner[3].x) * 0.5f;
     transformation.m[13] = (corner[3].y + corner[0].y) * 0.5f;
     transformation.m[14] = (corner[3].z + corner[0].z) * 0.5f;
-    frustum.transform(transformation);
+    rendmath::frustumTransform(frustum, transformation);
 }
 
 // sub_1016AB10 / sub_1016AFA0 / sub_1016B3C0 - all six planes, then width, height and far.
@@ -1417,8 +1394,117 @@ void fitShadowFrustumAllPlanes(Frustum& frustum, const Vec3* corners, bool first
     refitShadowFrustumExtents(frustum, true);
 }
 
-// sub_1016B660 / sub_1016B820 - the near plane (4) only, pulled back toward the light; width and
-// height stay, far is re-derived.
+// PE 0x10160E20: unreachable in 1.50: no code or data references. [INFERRED] name. The single-point
+// counterpart of fitShadowFrustumAllPlanes (ecx = the point, edx = the frustum): every plane is fitted
+// to the one point exactly as corner 0 of the all-plane fits, then width, height and far are re-derived.
+// The native build rounds every step to float, as the fits above.
+inline void fitShadowFrustumToPoint(Frustum& frustum, const Vec3& point)
+{
+    for (unsigned int index = 0; index < 6; ++index)
+    {
+        Plane3& plane = frustum.m_planes[index];
+        const Vec3 normal = plane.normal;
+        const float dot = normal.x * point.x + point.z * normal.z + normal.y * point.y;
+        if (dot > -FLT_MAX && dot + plane.d >= 0.0f)
+            plane.d = -(normal.y * point.y + normal.z * point.z + normal.x * point.x);
+    }
+    refitShadowFrustumExtents(frustum, true);
+}
+
+// PE 0x10168FD0: unreachable in 1.50 except through 0x10161C60 (itself unreachable). [INFERRED] name.
+// The point of the segment (segment[0], segment[1]) closest to `point` (ecx = the result, edx = the
+// segment, one stack argument, retn 4): the segment direction is normalised, the projection t of
+// point - start on it clamps to the start when negative and to the end when beyond the segment length;
+// otherwise start + direction * t, with the direction normalised a second time as shipped. The native
+// build rounds every step to float, as the fits above.
+inline Vec3 shadowSegmentClosestPoint(const Vec3* segment, const Vec3& point)
+{
+    const Vec3& start = segment[0];
+    const Vec3& end = segment[1];
+    const float dx = point.x - start.x;
+    const float dy = point.y - start.y;
+    const float dz = point.z - start.z;
+    Vec3 direction;
+    direction.x = end.x - start.x;
+    direction.y = end.y - start.y;
+    direction.z = end.z - start.z;
+    shadowNormalizeInPlace(direction);
+    const float t = direction.z * dz + direction.y * dy + direction.x * dx;
+    if (t < 0.0f)
+        return start;
+    if (shadowCornerDistance(start, end) < t)
+        return end;
+    shadowNormalizeInPlace(direction);
+    Vec3 result;
+    result.z = direction.z * t + start.z;
+    result.y = direction.y * t + start.y;
+    result.x = direction.x * t + start.x;
+    return result;
+}
+
+// PE 0x10161C60: unreachable in 1.50: no code or data references. [INFERRED] name. For each of the
+// terrain node's eight bounds corners (node +0x8C): a corner inside `source` extends `target` directly
+// (fitShadowFrustumToPoint); otherwise the corner is projected along the line to the source's centre
+// onto its far plane (plane 5; a line that misses the plane skips the corner), and a projected point that
+// is still outside is replaced by the nearest point of the far face's four edges (corners 5-7, 7-6, 6-4,
+// 4-5, the first of equal distances). [CHOSEN, not recovered] The segment-hit flag is zero-initialised:
+// the image reads it uninitialised when the line is parallel to the plane (memory-safety omission).
+// The native build rounds every step to float, as the fits above.
+inline void fitFrustumToNodeCorners(const TerrainCullerNode& node, Frustum& target, const Frustum& source)
+{
+    const Vec3* const nodeCorners = reinterpret_cast<const Vec3*>(node.corners);
+    Vec3 edges[8];
+    {
+        const Vec3* const c = source.m_corners;
+        edges[0] = c[5]; edges[1] = c[7];
+        edges[2] = c[7]; edges[3] = c[6];
+        edges[4] = c[6]; edges[5] = c[4];
+        edges[6] = c[4]; edges[7] = c[5];
+    }
+    for (unsigned int corner = 0; corner < 8; ++corner)
+    {
+        Vec3 point = nodeCorners[corner];
+        if (!source.inside(point))
+        {
+            Plane3 plane = source.m_planes[5];
+            Vec3 hitPoint;
+            hitPoint.x = 0.0f;
+            hitPoint.y = 0.0f;
+            hitPoint.z = 0.0f;
+            bool hit = false;
+            plane.intersectLine(point, source.m_center, hitPoint, hit);   // result unused, as shipped
+            if (!hit)
+                continue;
+            point = hitPoint;
+            if (!source.inside(point))
+            {
+                Vec3 candidate[4];
+                float distance[4];
+                for (unsigned int edge = 0; edge < 4; ++edge)
+                {
+                    candidate[edge] = shadowSegmentClosestPoint(&edges[edge * 2], hitPoint);
+                    distance[edge] = shadowCornerDistance(candidate[edge], point);
+                }
+                unsigned int nearest = 0;
+                for (unsigned int edge = 1; edge < 4; ++edge)
+                {
+                    if (distance[edge] < distance[nearest])
+                        nearest = edge;
+                }
+                point = candidate[nearest];
+            }
+        }
+        fitShadowFrustumToPoint(target, point);
+    }
+}
+
+// PE 0x1016B820
+// The near plane (4) only, pulled back toward the light; width and height stay, far is re-derived.
+// 0x1016B820 is this body with the corners in ecx and the frustum in edx (its listing: the corner of
+// largest dot, the re-seated d, then the shared extents tail). The native build rounds every step to float: the five shipped fits keep the dot
+// products, the running maximum plus d and the corner distances on the x87 stack, each copy
+// storing different intermediates (0x1016AB10 keeps corner 0's sum, 0x1016B3C0 / 0x1016B660
+// store maximum + d), so one shared helper cannot carry an exact x87 arm.
 void fitShadowFrustumNearPlane(Frustum& frustum, const Vec3* corners)
 {
     fitShadowPlaneToCorners(frustum.m_planes[4], corners, false);
@@ -1446,7 +1532,8 @@ void fitShadowFrustumToAabb(Frustum& frustum, const LocalBoundingBox& box)
     fitShadowFrustumAllPlanes(frustum, corners, false);
 }
 
-// sub_1016B660 - a frustum's near plane pulled back over an axis-aligned box.
+// sub_1016B660 - a frustum's near plane pulled back over an axis-aligned box: the box's corners
+// (shadowAabbCorners), then the corner fit 0x1016B820 inlined.
 void fitShadowFrustumNearPlaneToAabb(Frustum& frustum, const LocalBoundingBox& box)
 {
     Vec3 corners[8];
@@ -1454,95 +1541,7 @@ void fitShadowFrustumNearPlaneToAabb(Frustum& frustum, const LocalBoundingBox& b
     fitShadowFrustumNearPlane(frustum, corners);
 }
 
-// sub_100CE120 / sub_101C6750 / sub_101C67F0 / sub_101C6C70 / sub_101C6E10 - the pass's 96-byte
-// eight-corner object box. setBounds lays a box's min/max out in the fixed order (x bit 2, y bit 1,
-// z bit 0); transform pushes every corner through the full matrix with the shipped per-corner
-// operand order - corner 0's y and x rows associate differently from corners 1..7 (BundledMeshDraw
-// .cpp's worldHeight reads 0x101C67F0 the same way; StaticMesh.cpp's StaticMeshBoundsCorners keeps
-// corner 0's order for all eight); maximum()/minimum() replace a component only on a strict, ordered
-// compare, so a NaN corner never wins.
-struct ShadowBoxCorners
-{
-    Vec3 corner[8];
-
-    // The zeroing half of 0x100CE120; the directional record zeroes the same 24 floats inline
-    // (0x10165BD7..0x10165CBD) before it picks an arm.
-    ShadowBoxCorners()
-    {
-        for (unsigned int i = 0; i < 8; ++i)
-            corner[i].x = corner[i].y = corner[i].z = 0.0f;
-    }
-
-    // zero, then the two setters.
-    ShadowBoxCorners(const LocalBoundingBox& bounds, const Mat4& world)
-    {
-        for (unsigned int i = 0; i < 8; ++i)
-            corner[i].x = corner[i].y = corner[i].z = 0.0f;
-        setBounds(bounds);
-        transform(world);
-    }
-
-
-    void setBounds(const LocalBoundingBox& bounds)
-    {
-        for (unsigned int i = 0; i < 8; ++i)
-        {
-            corner[i].x = (i & 4u) ? bounds.m_max.x : bounds.m_min.x;
-            corner[i].y = (i & 2u) ? bounds.m_max.y : bounds.m_min.y;
-            corner[i].z = (i & 1u) ? bounds.m_max.z : bounds.m_min.z;
-        }
-    }
-
-    // all three rows are computed from the untouched corner before any is stored.
-    void transform(const Mat4& world)
-    {
-        const float* const m = world.m;
-        for (unsigned int i = 0; i < 8; ++i)
-        {
-            const float x = corner[i].x;
-            const float y = corner[i].y;
-            const float z = corner[i].z;
-            const float tz = z * m[10] + x * m[2] + y * m[6] + m[14];
-            const float ty = i == 0 ? x * m[1] + y * m[5] + z * m[9] + m[13]
-                                    : x * m[1] + z * m[9] + y * m[5] + m[13];
-            const float tx = i == 0 ? z * m[8] + x * m[0] + y * m[4] + m[12]
-                                    : y * m[4] + z * m[8] + x * m[0] + m[12];
-            corner[i].x = tx;
-            corner[i].y = ty;
-            corner[i].z = tz;
-        }
-    }
-
-    // 0x101C6C70 - `test ah, 5; jp`: a component moves only when it is strictly below the corner's.
-    Vec3 maximum() const
-    {
-        Vec3 result = corner[0];
-        for (unsigned int i = 1; i < 8; ++i)
-        {
-            if (result.x < corner[i].x) result.x = corner[i].x;
-            if (result.y < corner[i].y) result.y = corner[i].y;
-            if (result.z < corner[i].z) result.z = corner[i].z;
-        }
-        return result;
-    }
-
-    // 0x101C6E10 - `test ah, 41h; jne`: a component moves only when it is strictly above.
-    Vec3 minimum() const
-    {
-        Vec3 result = corner[0];
-        for (unsigned int i = 1; i < 8; ++i)
-        {
-            if (result.x > corner[i].x) result.x = corner[i].x;
-            if (result.y > corner[i].y) result.y = corner[i].y;
-            if (result.z > corner[i].z) result.z = corner[i].z;
-        }
-        return result;
-    }
-};
-
-#if defined(_M_IX86)
-static_assert(sizeof(ShadowBoxCorners) == 0x60, "the pass's object box is 96 bytes (0x100CE120)");
-#endif
+// The pass's 96-byte eight-corner object box is Geom/BoxCorners.h's BoxCorners.
 
 // sub_101C5EB0 on a LocalBoundingBox. MeshTemplate.cpp's meshBoundsFinalize IS that body, written
 // against MeshBounds - the same 60-byte record under its RendDX9 name; the layouts are asserted equal.
@@ -1551,13 +1550,12 @@ void finalizeShadowBounds(LocalBoundingBox& bounds)
     meshBoundsFinalize(*reinterpret_cast<MeshBounds*>(&bounds));
 }
 
-#if defined(_M_IX86)
+// Layout equivalence, not a retail offset: finalizeShadowBounds depends on it on every target.
 static_assert(sizeof(LocalBoundingBox) == sizeof(MeshBounds), "LocalBoundingBox is MeshBounds");
 static_assert(offsetof(LocalBoundingBox, m_max) == offsetof(MeshBounds, max), "max");
 static_assert(offsetof(LocalBoundingBox, m_derivedDataDirty) == offsetof(MeshBounds, dirty),
               "dirty");
 static_assert(offsetof(LocalBoundingBox, m_centre) == offsetof(MeshBounds, center), "centre");
-#endif
 
 // RendDX9 this image's Frustum view matrix (the ELF body is empty [PLATFORM]):
 // D3DXMatrixLookAtLH from the transformation's translation (+0x1A4), towards that point plus its
@@ -1574,6 +1572,7 @@ void shadowFrustumViewMatrix(const Frustum& frustum, Mat4& output)
 
 // RendDX9 this image's Frustum ortho projection (the ELF body is empty [PLATFORM]):
 // D3DXMatrixOrthoLH(width +0x1D4, height +0x1D8, near +0x1DC, far +0x1E0).
+// PE 0x10079760.
 void shadowFrustumOrthoProjection(const Frustum& frustum, Mat4& output)
 {
     ::D3DXMatrixOrthoLH(reinterpret_cast<D3DXMATRIX*>(&output), frustum.m_dword1D4,
@@ -1584,7 +1583,7 @@ void shadowFrustumOrthoProjection(const Frustum& frustum, Mat4& output)
 // 0x10166A66..0x10166AFD per record in the quality-three map): the translation moves by d along the
 // near plane's outward normal (planes[4] at +0x40, which setOrtho makes the negated z row, i.e.
 // toward the light) and the far distance grows by d, stored straight into +0x1E0 before
-// Frustum::transform (0x1007AAD0) re-runs the ortho set-up.
+// RendDX9's Frustum::transform copy (rendmath::frustumTransform) re-runs the ortho set-up.
 void shiftShadowFrustumTowardLight(Frustum& frustum, float distance)
 {
     Mat4 transformation = frustum.m_transformation;
@@ -1592,13 +1591,23 @@ void shiftShadowFrustumTowardLight(Frustum& frustum, float distance)
     const float x = normal.x * distance;
     const float y = normal.y * distance;                                   // [ebp-0x1C]
     const float z = normal.z * distance;                                   // [ebp-0x18]
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] the x product stays on the x87 stack for the m[12] add
+    // (0x10166419..0x101664B9); only y and z are stored first.
+    transformation.m[12] = bf2x87::store(bf2x87::add(
+        bf2x87::wide(transformation.m[12]),
+        bf2x87::mul(bf2x87::wide(normal.x), bf2x87::wide(distance))));
+    (void)x;
+#else
     transformation.m[12] = transformation.m[12] + x;
+#endif
     transformation.m[13] = y + transformation.m[13];
     transformation.m[14] = z + transformation.m[14];
     frustum.m_farDist = frustum.m_farDist + distance;
-    frustum.transform(transformation);
+    rendmath::frustumTransform(frustum, transformation);
 }
 
+// PE 0x10164DC0, candidate gather at 0x10164E33.
 // Gathers directional-shadow candidates using the camera frustum and light basis.
 // Caller-owned basis and sweep classifier remain valid through the entire shadow pass.
 void buildShadowCandidateSet(void* self, Mat4& lightBasis, ShadowSweepClassifier& classifier)
@@ -1607,74 +1616,70 @@ void buildShadowCandidateSet(void* self, Mat4& lightBasis, ShadowSweepClassifier
     const Mat4& viewMatrix = *view->getViewMatrixPtr();                     // view +0x64
     const Vec3 cameraCentre =
         { viewMatrix.m[12], viewMatrix.m[13], viewMatrix.m[14] };
-    world::LightSource* const sky = lmField<world::LightSource*>(self, 0x14);
+    world::LightSource* const sky = lm(self).skyLight;
     (void)sky->getAbsoluteDirection();                                      // +0x180, discarded
 
-    Frustum& cameraFrustum = lmField<Frustum>(self, 0x460);
-    cameraFrustum = *view->getFrustumPtr();                                 // +0x74,
-    cameraFrustum.setFarDist(lmField<float>(self, 0x214));
+    Frustum& cameraFrustum = lm(self).cameraFrustum;
+    rendmath::frustumAssign(cameraFrustum, *view->getFrustumPtr());                                 // +0x74,
+    rendmath::frustumSetFarDist(cameraFrustum, lm(self).shadowDistance);
 
     buildShadowLightBasis(sky, lightBasis);
-    lightBasis.m[12] = lightBasis.m[12] + lmField<float>(self, 0x604);
-    lightBasis.m[13] = lightBasis.m[13] + lmField<float>(self, 0x608);
-    lightBasis.m[14] = lightBasis.m[14] + lmField<float>(self, 0x60C);
+    lightBasis.m[12] = lightBasis.m[12] + lm(self).cameraFrustum.m_transformation.m[12];
+    lightBasis.m[13] = lightBasis.m[13] + lm(self).cameraFrustum.m_transformation.m[13];
+    lightBasis.m[14] = lightBasis.m[14] + lm(self).cameraFrustum.m_transformation.m[14];
 
-    Frustum& shadowFrustum = lmField<Frustum>(self, 0x278);
-    shadowFrustum.setOrtho(1.0f, 1.0f, 0.01f, 1.0f, lightBasis);
+    Frustum& shadowFrustum = lm(self).shadowFrustum;
+    rendmath::frustumSetOrtho(shadowFrustum, 1.0f, 1.0f, 0.01f, 1.0f, lightBasis);
     fitShadowFrustumAllPlanes(shadowFrustum, cameraFrustum.m_corners, false);
 
-    // with the debug byte +0x788 set (constructor 0; its only writer is the
-    // setter 0x1015C170 at vtable +0xCC, whose only caller is the retail console binding
-    // `shadowManager.shadowShowFrustums` - executor 0x100C1D4F, name 0x10215CD4 (g3v_arm)) the shadow
-    // frustum, then the camera frustum pulled back half a unit along its z row, are handed to the
-    // DebugRenderer's +0x28. DebugRenderer has no recovered interface. The rebuilt client registers
-    // no such binding and +0xCC is lm_unrecovered, so this and the two stops below cannot fire today.
-    if (lmField<unsigned char>(self, 0x788))
+    // PE 0x1016500F/0x101650A3: shadow frustum, then a white camera frustum shifted
+    // half a unit backward along its z row. Its far distance is unchanged.
+    if (lm(self).showFrustums)
     {
-        RD9_FRONTIER_AT("dice::hfe::geom::LightManager::renderDirectionalShadowMaps "
-                        "(DebugRenderer::drawFrustum - the +0x788 shadow/camera frustum draw)",
-                        g_DebugRenderer, 0x28);
-        std::abort();
+        static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(shadowFrustum, 0, 0);
+        Frustum debugCamera(cameraFrustum);
+        Mat4 shifted = debugCamera.m_transformation;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Preserve the explicit z-product single store on native Apple.
+        using namespace bf2x87;
+        const Real x = mul(wide(shifted.m[8]),wide(-0.5f));
+        const Real y = mul(wide(shifted.m[9]),wide(-0.5f));
+        const float z = store(mul(wide(shifted.m[10]),wide(-0.5f)));
+        shifted.m[12] = store(add(x,wide(shifted.m[12])));
+        shifted.m[13] = store(add(wide(shifted.m[13]),y));
+        shifted.m[14] = store(add(wide(shifted.m[14]),wide(z)));
+#else
+        const float x = shifted.m[8] * -0.5f;
+        const float y = shifted.m[9] * -0.5f;
+        const float z = shifted.m[10] * -0.5f;
+        shifted.m[12] = x + shifted.m[12];
+        shifted.m[13] = shifted.m[13] + y;
+        shifted.m[14] = shifted.m[14] + z;
+#endif
+        rendmath::frustumTransform(debugCamera, shifted);
+        static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(debugCamera, 0xFFFFFFu, 0);
     }
 
-    vc71::vector_layout& candidates = lmField<vc71::vector_layout>(self, 0x914);
+    std::vector<world::IObject*>& candidates = lm(self).shadowCandidates;
     LocalBoundingBox bounds;                                                // [ebp-0x2B8]
     constructShadowSweepClassifier(classifier, cameraFrustum,
                                    sky->getDirection());
     ShadowCasterPredicator predicateStorage;                                // PE: static 0x1023A120
     constructShadowCasterPredicator(predicateStorage);
 
-#if BF2_PLUGIN_ABI_NATIVE
     std::vector<world::IObject*> hostObjects;
     world::ObjectManager* const manager =
         reinterpret_cast<world::ObjectManager*>(objectManager);
-    if (lmField<unsigned char>(self, 0x170))
+    if (lm(self).shadowUseSweepTest)
         manager->getDynamicObjectsFromGridRend(
-            cameraCentre, lmField<float>(self, 0x214), hostObjects, &bounds,
+            cameraCentre, lm(self).shadowDistance, hostObjects, &bounds,
             &predicateStorage, 2, false);
     else
         manager->getDynamicObjectsFromGridRend(
             cameraFrustum, hostObjects, &bounds, &predicateStorage, 2, false);
     for (std::vector<world::IObject*>::const_iterator it = hostObjects.begin();
          it != hostObjects.end(); ++it)
-    {
-        vc71::vectorRef<world::IObject*> out(&candidates);
-        out.push_back(*it);
-    }
-#else
-    world::ObjectManager* const manager =
-        reinterpret_cast<world::ObjectManager*>(objectManager);
-    world::ObjectPredicator* const typedPredicate =
-        reinterpret_cast<world::ObjectPredicator*>(&predicateStorage);
-    if (lmField<unsigned char>(self, 0x170))
-        manager->getDynamicObjectsFromGridRend(
-            cameraCentre, lmField<float>(self, 0x214), hostObjectVector(candidates),
-            &bounds, typedPredicate, 2, false);
-    else
-        manager->getDynamicObjectsFromGridRend(
-            cameraFrustum, hostObjectVector(candidates), &bounds,
-            typedPredicate, 2, false);
-#endif
+        candidates.push_back(*it);
 
     {
         // [TEMP] One-shot diagnostic in the style of LightManager::update's recovery line: the
@@ -1685,17 +1690,16 @@ void buildShadowCandidateSet(void* self, Mat4& lightBasis, ShadowSweepClassifier
         {
             s_candidatesReported = true;
             ::renddx9abi::logf("LightManager: shadow-caster predicate live - the first candidate "
-                               "set holds %u object(s)", vectorSize<world::IObject*>(candidates));
+                               "set holds %u object(s)",
+                               static_cast<unsigned int>(candidates.size()));
         }
     }
 
     // only the sphere arm filters, with the classifier built above. The
     // [TEMP] report sits between the query and the filter, where the old body had it.
-    if (lmField<unsigned char>(self, 0x170))
+    if (lm(self).shadowUseSweepTest)
         filterShadowCandidates(classifier, candidates);
 }
-
-struct XpLight;
 
 struct XpCuller
 {
@@ -1710,45 +1714,28 @@ struct XpSpotCuller
     Frustum*     frustum;
 };
 
-// PE Terrain's heap query object (ctor 0x100E3AE0) and its 0x110-byte quadtree node.  Names are
-// [INFERRED]; every offset below and the two traversal contracts are instruction-proven from
-// 0x100E6C70/0x100E6CB0 and 0x100E4370/0x100E4460.
-struct TerrainPatchQueryNode
-{
-    void*                 payload;          // +0x00
-    unsigned char         pad04[0x18];
-    TerrainPatchQueryNode* children[4];      // +0x1C
-    unsigned char         pad2C[0x24];
-    LocalBoundingBox      bounds;            // +0x50
-    unsigned char         pad8C[0x64];
-    unsigned int          hasChildren;       // +0xF0
-    unsigned char         active;            // +0xF4
-    unsigned char         padF5[0x1B];
-};
+// The culler slots' +0x0C query object is the Terrain's TerrainCuller (QuadPatch.h): the slots run
+// its 0x100E6C70/0x100E6CB0 gathers and their 0x100E4370/0x100E4460 walks over its
+// TerrainCullerNode tree.
 
-struct TerrainPatchQueryLayout
-{
-    unsigned char          pad00[8];
-    TerrainPatchQueryNode* root;             // +0x08
-    unsigned char          pad0C[0x38];
-    vc71::vector_layout    results;          // +0x44
-    const Frustum*         frustum;           // +0x54
-    void*                  field58;
-    const Vec3*            centre;            // +0x5C
-    float                  radius;            // +0x60
-    float                  radiusSquared;     // +0x64
-    unsigned char          pad68[0x14];
-};
+} // anonymous namespace
 
-// Both vectors retain their VC7.1 four-pointer layout even in the
-// native plugin flavour because they are members of the renderer-owned XpLight object, not native
-// host objects. Only an ObjectManager call crossing the DLL boundary needs flavour conversion.
+// The renderer-owned light wrapper (0x38 bytes in the PE). The default constructor is the PE's
+// zero fill; constructXpLight then writes the source fields.
 struct XpLight
 {
-    /* +0x00 */ vc71::vector_layout records;       // elements are 0x498-byte render records
+    XpLight()
+        : records(), releaseWarning(0), candidates(), source(0), active(0), policy(0),
+          cameraDistance(0.0f), category(0), culler(0)
+    {
+        pad11[0] = pad11[1] = pad11[2] = 0;
+        pad2A[0] = pad2A[1] = 0;
+    }
+
+    /* +0x00 */ std::vector<LightShadowRecord> records;
     /* +0x10 */ unsigned char       releaseWarning;
     /* +0x11 */ unsigned char       pad11[3];
-    /* +0x14 */ vc71::vector_layout candidates;    // world::IObject*
+    /* +0x14 */ std::vector<world::IObject*> candidates;
     /* +0x24 */ world::LightSource* source;
     /* +0x28 */ unsigned char       active;
     /* +0x29 */ unsigned char       policy;
@@ -1756,96 +1743,87 @@ struct XpLight
     /* +0x2C */ float               cameraDistance;
     /* +0x30 */ int                 category;       // 0 dynamic, 1 static
     /* +0x34 */ XpCuller*           culler;
-};
 
-// This record crosses the VC7.1 vector boundary, so
-// its physical layout and its deep-copy ownership are both significant.  In
-// particular, the caster set at +0x488 cannot be copied as twelve POD bytes:
-// vector growth and the +0x7CC -> +0x7DC range append each clone its nodes.
-struct XpRenderRecordLayout
-{
-    /* +0x000 */ float            atlasScaleOffset[4];
-    /* +0x010 */ Frustum          frustum;
-    /* +0x1F8 */ Mat4             matrices[9];
-    /* +0x438 */ float            atlasBounds[4];
-    /* +0x448 */ unsigned char    flags448[8];
-    /* +0x450 */ void*            geometry;
-    /* +0x454 */ world::LightSource* source;
-    /* +0x458 */ unsigned char    pad458[0x30];
-    /* +0x488 */ vc71::set_layout embeddedTree;
-    /* +0x494 */ unsigned char    tail494[4];
-
-    XpRenderRecordLayout()
-        : frustum(), geometry(0), source(0)
+    // PE 0x10190090 (thiscall, `retn 4`): the record is kept only under a non-zero policy byte,
+    // then push_back (0x10169990, a tail jump). [INFERRED] name.
+    void addRecord(const LightShadowRecord& record)
     {
-        ::memset(atlasScaleOffset, 0, sizeof(atlasScaleOffset));
-        for (unsigned int i = 0; i < 9; ++i)
-            matrices[i] = Mat4::getIdentity();
-        ::memset(atlasBounds, 0, sizeof(atlasBounds));
-        ::memset(flags448, 0, sizeof(flags448));
-        ::memset(pad458, 0, sizeof(pad458));
-        embeddedTree.construct();
-        ::memset(tail494, 0, sizeof(tail494));
-    }
-
-    XpRenderRecordLayout(const XpRenderRecordLayout& other)
-        : frustum(other.frustum), geometry(0), source(0)
-    {
-        // Frustum has no owned allocation.  Copying the instruction-proven
-        // prefix byte-for-byte preserves all nine matrices and opaque flags.
-        ::memcpy(this, &other, offsetof(XpRenderRecordLayout, embeddedTree));
-        embeddedTree.construct();
-        for (vc71::set_node* node = other.embeddedTree.begin();
-             node != other.embeddedTree.end(); node = vc71::set_layout::next(node))
-            embeddedTree.insert(node->key);
-        ::memcpy(tail494, other.tail494, sizeof(tail494));
-    }
-
-    ~XpRenderRecordLayout()
-    {
-        embeddedTree.destroy();
+        if (policy)
+            records.push_back(record);
     }
 
 private:
-    XpRenderRecordLayout& operator=(const XpRenderRecordLayout&);
+    XpLight(const XpLight&);
+    XpLight& operator=(const XpLight&);
 };
 
+// The culler slot forwards (PE 0x1018FAC0 / 0x1018FAE0), defined beside xpLightGatherTerrain.
+bool xpLightCullerUnused(XpLight* light, void* argument);
+void xpLightCullerDebug(XpLight* light);
+
+namespace {
+
 #if defined(_M_IX86)
-static_assert(sizeof(XpLight) == 0x38, "retail XpLight layout drift");
 static_assert(sizeof(XpCuller) == 0x08, "retail Point culler layout drift");
 static_assert(sizeof(XpSpotCuller) == 0x0C, "retail Spot culler layout drift");
-static_assert(sizeof(XpRenderRecordLayout) == 0x498, "retail Xp render-record layout drift");
-static_assert(offsetof(XpRenderRecordLayout, frustum) == 0x10,
+// The record prefix the mesh and decal draws still read by offset.
+static_assert(offsetof(LightShadowRecord, frustum) == 0x10,
               "Xp render-record Frustum offset drift");
-static_assert(offsetof(XpRenderRecordLayout, matrices) == 0x1F8,
+static_assert(offsetof(LightShadowRecord, matrices) == 0x1F8,
               "Xp render-record matrix offset drift");
-static_assert(offsetof(XpRenderRecordLayout, atlasBounds) == 0x438,
+static_assert(offsetof(LightShadowRecord, atlasBounds) == 0x438,
               "Xp render-record atlas bounds offset drift");
-static_assert(offsetof(XpRenderRecordLayout, geometry) == 0x450,
+static_assert(offsetof(LightShadowRecord, geometry) == 0x450,
               "Xp render-record geometry offset drift");
-static_assert(offsetof(XpRenderRecordLayout, source) == 0x454,
+static_assert(offsetof(LightShadowRecord, source) == 0x454,
               "Xp render-record source offset drift");
-static_assert(offsetof(XpRenderRecordLayout, embeddedTree) == 0x488,
+static_assert(offsetof(LightShadowRecord, casters) == 0x488,
               "Xp render-record caster-set offset drift");
-static_assert(sizeof(TerrainPatchQueryNode) == 0x110, "terrain-query node layout drift");
-static_assert(offsetof(TerrainPatchQueryNode, children) == 0x1C, "terrain children offset drift");
-static_assert(offsetof(TerrainPatchQueryNode, bounds) == 0x50, "terrain bounds offset drift");
-static_assert(offsetof(TerrainPatchQueryNode, hasChildren) == 0xF0,
-              "terrain branch flag offset drift");
-static_assert(offsetof(TerrainPatchQueryNode, active) == 0xF4,
-              "terrain active flag offset drift");
-static_assert(sizeof(TerrainPatchQueryLayout) == 0x7C, "terrain-query layout drift");
-static_assert(offsetof(TerrainPatchQueryLayout, root) == 0x08, "terrain root offset drift");
-static_assert(offsetof(TerrainPatchQueryLayout, results) == 0x44, "terrain results offset drift");
-static_assert(offsetof(TerrainPatchQueryLayout, frustum) == 0x54,
-              "terrain frustum offset drift");
-static_assert(offsetof(TerrainPatchQueryLayout, centre) == 0x5C,
-              "terrain centre offset drift");
-static_assert(offsetof(TerrainPatchQueryLayout, radius) == 0x60, "terrain radius offset drift");
-static_assert(offsetof(TerrainPatchQueryLayout, radiusSquared) == 0x64,
-              "terrain radius-squared offset drift");
 #endif
 
+// PE 0x1018FAA0. Local accessor spellings are [INFERRED].
+void setXpLightActive(XpLight* light, bool active)
+{
+    light->active = active;
+}
+
+// PE 0x1018FA20.
+float xpLightCameraDistance(const XpLight* light)
+{
+    return light->cameraDistance;
+}
+
+// PE 0x1018FAB0.
+std::vector<world::IObject*>& xpLightCandidates(XpLight* light)
+{
+    return light->candidates;
+}
+
+// PE 0x1000ED40, the shared inline clamp: the high bound is tested first and an unordered value
+// lands on the low bound.
+float shadowClampValue(float value, float low, float high)
+{
+    float result = value;
+    if (result >= high)
+        result = high;
+    if (!(result >= low))
+        result = low;
+    return result;
+}
+
+// Sign selector shared by the angular-limit setters: 1 above zero, -1 below, 0 for zero/NaN.
+inline float shadowAngleSign(float value)
+{
+    if (value > 0.0f)
+        return 1.0f;
+    if (value < 0.0f)
+        return -1.0f;
+    return 0.0f;
+}
+
+// Angular shadow volume around a transform: four sine limits (left, right, bottom, top) and
+// squared near/far distances. `current` grows as casters are included, `saved` bounds that
+// growth and `fallback` replaces limits that never grew. Method spellings are [INFERRED].
 struct ShadowProjectionLayout
 {
     /* +0x000 */ Mat4    transform;
@@ -1860,61 +1838,81 @@ struct ShadowProjectionLayout
     /* +0x0BA */ unsigned char padBA[2];
     /* +0x0BC */ Frustum cachedFrustum;
 
+    // PE 0x101BAFE0.
     ShadowProjectionLayout(const Mat4& value, bool adjust)
-        : transform(Mat4::getIdentity()), perspectiveAdjust(adjust ? 1 : 0), dirty(1),
-          cachedFrustum()
+        : transform(Mat4::getIdentity())
     {
+        // [CHOSEN, not recovered] Memory safety: retail leaves current/saved and the three plane
+        // distances uninitialised here (setTransform then writes current); zero them instead.
         ::memset(current, 0, sizeof(current));
         ::memset(saved, 0, sizeof(saved));
-        ::memset(fallback, 0, sizeof(fallback));
         ::memset(&axisZ, 0, sizeof(axisZ));
         ::memset(&axisY, 0, sizeof(axisY));
         ::memset(&axisX, 0, sizeof(axisX));
         padBA[0] = padBA[1] = 0;
+        perspectiveAdjust = adjust ? 1 : 0;
         setAngularLimits(0.0f, 0.0f, 0.0f, 0.0f, 0.1f, 1.0f, fallback);
+        dirty = 1;
         setTransform(value);
     }
 
-    static float clampValue(float value, float minimum, float maximum)
+    // PE 0x101BA720.
+    const Mat4& getTransform() const
     {
-        return value < minimum ? minimum : (value > maximum ? maximum : value);
+        return transform;
     }
 
+    // PE 0x101BAA60: unreachable in 1.50: no code or data references. [INFERRED] name. Copies the
+    // translation row (+0x30..+0x38) of the transform out.
+    void getPosition(Vec3* out) const
+    {
+        out->x = transform.m[12];
+        out->y = transform.m[13];
+        out->z = transform.m[14];
+    }
+
+    // PE 0x101BAA80, on the six-float limit block at `destination`.
     static void setAngularLimits(float left, float right, float bottom, float top,
                                  float nearDistance, float farDistance, float* destination)
     {
-        destination[0] = std::sin(left);
-        destination[1] = std::sin(right);
-        destination[2] = std::sin(bottom);
-        destination[3] = std::sin(top);
+        const float angles[4] = { left, right, bottom, top };
+        for (unsigned int i = 0; i < 4; ++i)
+        {
+            const float sign = shadowAngleSign(angles[i]);
+            const float magnitude = std::fabs(angles[i]);
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] FSIN result multiplied before the single store.
+            destination[i] = bf2x87::store(bf2x87::sinValue(bf2x87::wide(magnitude)) * sign);
+#else
+            destination[i] = std::sin(magnitude) * sign;
+#endif
+        }
         destination[4] = nearDistance * nearDistance;
         destination[5] = farDistance * farDistance;
     }
 
-    static Vec3 normalized(const Vec3& value)
-    {
-        const float lengthSquared = value.x * value.x + value.y * value.y + value.z * value.z;
-        if (lengthSquared <= FLT_EPSILON)
-        {
-            const Vec3 zero = { 0.0f, 0.0f, 0.0f };
-            return zero;
-        }
-        const float inverse = 1.0f / std::sqrt(lengthSquared);
-        const Vec3 result = { value.x * inverse, value.y * inverse, value.z * inverse };
-        return result;
-    }
-
+    // PE 0x101BA7D0. Each unit axis is normalized, then transformed as a plane through the
+    // origin; the transformed normals are not renormalized.
     void setTransform(const Mat4& value)
     {
-        Plane3 z = { { 0.0f, 0.0f, 1.0f }, 0.0f };
-        Plane3 y = { { 0.0f, 1.0f, 0.0f }, 0.0f };
-        Plane3 x = { { 1.0f, 0.0f, 0.0f }, 0.0f };
-        axisZ = Plane3::transform(z, value);
-        axisY = Plane3::transform(y, value);
-        axisX = Plane3::transform(x, value);
-        axisZ.normal = normalized(axisZ.normal);
-        axisY.normal = normalized(axisY.normal);
-        axisX.normal = normalized(axisX.normal);
+        axisZ.normal.x = 0.0f;
+        axisZ.normal.y = 0.0f;
+        axisZ.normal.z = 1.0f;
+        shadowNormalizeInPlace(axisZ.normal);
+        axisZ.d = 0.0f;
+        rendmath::planeTransform(axisZ, axisZ, value);              // PE 0x1007C530
+        axisY.normal.x = 0.0f;
+        axisY.normal.y = 1.0f;
+        axisY.normal.z = 0.0f;
+        shadowNormalizeInPlace(axisY.normal);
+        axisY.d = 0.0f;
+        rendmath::planeTransform(axisY, axisY, value);              // PE 0x1007C530
+        axisX.normal.x = 1.0f;
+        axisX.normal.y = 0.0f;
+        axisX.normal.z = 0.0f;
+        shadowNormalizeInPlace(axisX.normal);
+        axisX.d = 0.0f;
+        rendmath::planeTransform(axisX, axisX, value);              // PE 0x1007C530
         transform = value;
         current[0] = 2.0f;
         current[1] = -2.0f;
@@ -1925,124 +1923,246 @@ struct ShadowProjectionLayout
         dirty = 1;
     }
 
+    // PE 0x101BABD0. Each angle becomes sign(a) * sqrt(2a^2) * 0.75 before the saved limits are
+    // written; the dirty byte is left unchanged.
     void setPerspectiveLimits(float left, float right, float bottom, float top,
                               float nearDistance, float farDistance)
     {
-        // PE 0x101BABD0 evaluates sqrt(2*a*a)*.75 separately for every signed angle.
-        const float scale = std::sqrt(2.0f) * 0.75f;
-        setAngularLimits(left * scale, right * scale, bottom * scale, top * scale,
+        const float angles[4] = { left, right, bottom, top };
+        float scaled[4];
+        for (unsigned int i = 0; i < 4; ++i)
+        {
+            const float sign = shadowAngleSign(angles[i]);
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] The doubled square, root and both products stay on the stack.
+            const bf2x87::Real square = bf2x87::wide(angles[i]) * angles[i];
+            scaled[i] = bf2x87::store(bf2x87::squareRoot(square + square) * 0.75f * sign);
+#else
+            const float square = angles[i] * angles[i];
+            scaled[i] = std::sqrt(square + square) * 0.75f * sign;
+#endif
+        }
+        setAngularLimits(scaled[0], scaled[1], scaled[2], scaled[3],
                          nearDistance, farDistance, saved);
     }
 
+    // PE 0x101BA640.
     void copyCurrentToSaved(const ShadowProjectionLayout& other)
     {
         ::memcpy(saved, other.current, sizeof(saved));
     }
 
+    // PE 0x101BA680.
     void restoreAll()
     {
         ::memcpy(current, saved, sizeof(current));
         dirty = 1;
     }
 
+    // PE 0x101BA6C0.
     void restoreSelected(bool left, bool right, bool bottom, bool top,
                          bool nearDistance, bool farDistance)
     {
-        const bool flags[6] = { left, right, bottom, top, nearDistance, farDistance };
-        for (unsigned int i = 0; i < 6; ++i)
-        {
-            if (flags[i])
-                current[i] = saved[i];
-        }
+        if (left)
+            current[0] = saved[0];
+        if (right)
+            current[1] = saved[1];
+        if (bottom)
+            current[2] = saved[2];
+        if (top)
+            current[3] = saved[3];
+        if (nearDistance)
+            current[4] = saved[4];
+        dirty = 1;
+        if (farDistance)
+            current[5] = saved[5];
+    }
+
+    // PE 0x101BAD30: unreachable in 1.50: no code or data references. [INFERRED] name. Rewrites the
+    // fallback limit block (+0x70) through setAngularLimits and marks the layout dirty.
+    void setFallbackLimits(float left, float right, float bottom, float top,
+                           float nearDistance, float farDistance)
+    {
+        setAngularLimits(left, right, bottom, top, nearDistance, farDistance, fallback);
         dirty = 1;
     }
 
+    // PE 0x101BAD60. Grows the current limits to include `point` and reports whether the point
+    // already lay within the saved limits. Unordered comparisons keep the shipped outcomes.
     bool includePoint(const Vec3& point)
     {
-        Vec3 delta = { point.x - transform.m[12], point.y - transform.m[13],
-                       point.z - transform.m[14] };
-        Vec3 horizontal = {
-            delta.x - axisY.normal.x * dot3(delta, axisY.normal),
-            delta.y - axisY.normal.y * dot3(delta, axisY.normal),
-            delta.z - axisY.normal.z * dot3(delta, axisY.normal)
-        };
-        Vec3 vertical = {
-            delta.x - axisX.normal.x * dot3(delta, axisX.normal),
-            delta.y - axisX.normal.y * dot3(delta, axisX.normal),
-            delta.z - axisX.normal.z * dot3(delta, axisX.normal)
-        };
+        const float originX = transform.m[12];
+        const float originY = transform.m[13];
+        const float originZ = transform.m[14];
+        bool inside = true;
+        Vec3 delta;
+        delta.x = point.x - originX;
+        delta.y = point.y - originY;
+        delta.z = point.z - originZ;
+        Vec3 horizontal = { 0.0f, 0.0f, 0.0f };
+        Vec3 vertical = { 0.0f, 0.0f, 0.0f };
+        rendmath::projectVector(axisY, delta, horizontal);            // PE 0x1007C620
+        rendmath::projectVector(axisX, delta, vertical);
 
-        const float distanceSquared = dot3(delta, delta);
-        bool inside = distanceSquared >= saved[4] && distanceSquared <= saved[5];
-        const float clampedDistance = clampValue(distanceSquared, saved[4], saved[5]);
         float nearScale = 1.0f;
         if (perspectiveAdjust)
         {
-            float maximum = saved[0];
-            maximum = (std::max)(maximum, saved[1]);
-            maximum = (std::max)(maximum, saved[2]);
-            maximum = (std::max)(maximum, saved[3]);
+            float maximum = saved[0] < saved[1] ? saved[1] : saved[0];
+            if (maximum < saved[2])
+                maximum = saved[2];
+            if (maximum < saved[3])
+                maximum = saved[3];
             nearScale = maximum * maximum;
         }
-        current[4] = (std::min)(current[4], clampedDistance * nearScale);
-        current[5] = (std::max)(current[5], clampedDistance);
 
-        horizontal = normalized(horizontal);
-        vertical = normalized(vertical);
-        float horizontalValue = dot3(horizontal, axisX.normal);
-        float verticalValue = dot3(vertical, axisY.normal);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The near test compares the unstored squared distance.
+        const bf2x87::Real distanceWide = bf2x87::wide(delta.z) * delta.z
+            + bf2x87::wide(delta.y) * delta.y + bf2x87::wide(delta.x) * delta.x;
+        const float distanceSquared = bf2x87::store(distanceWide);
+        if (bf2x87::less(distanceWide, bf2x87::wide(saved[4])))
+            inside = false;
+#else
+        const float distanceSquared = delta.z * delta.z + delta.y * delta.y + delta.x * delta.x;
+        if (distanceSquared < saved[4])
+            inside = false;
+#endif
+        else if (distanceSquared > saved[5])
+            inside = false;
+
+        const float clampedDistance = shadowClampValue(distanceSquared, saved[4], saved[5]);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The unstored product is compared; its stored value is kept.
+        const bf2x87::Real scaledWide = bf2x87::wide(clampedDistance) * nearScale;
+        const float scaledDistance = bf2x87::store(scaledWide);
+        if (bf2x87::less(scaledWide, bf2x87::wide(current[4])))
+            current[4] = scaledDistance;
+#else
+        const float scaledDistance = clampedDistance * nearScale;
+        if (scaledDistance < current[4])
+            current[4] = scaledDistance;
+#endif
+        if (!(clampedDistance < current[5]))
+            current[5] = clampedDistance;
+
+        shadowNormalizeInPlace(horizontal);
+        shadowNormalizeInPlace(vertical);
+#if defined(__APPLE__)
+        float horizontalValue = bf2x87::store(bf2x87::wide(horizontal.z) * axisX.normal.z
+            + bf2x87::wide(horizontal.y) * axisX.normal.y
+            + bf2x87::wide(horizontal.x) * axisX.normal.x);
+        float verticalValue = bf2x87::store(bf2x87::wide(vertical.z) * axisY.normal.z
+            + bf2x87::wide(vertical.y) * axisY.normal.y
+            + bf2x87::wide(vertical.x) * axisY.normal.x);
+#else
+        float horizontalValue = horizontal.z * axisX.normal.z + horizontal.y * axisX.normal.y
+                              + horizontal.x * axisX.normal.x;
+        float verticalValue = vertical.z * axisY.normal.z + vertical.y * axisY.normal.y
+                            + vertical.x * axisY.normal.x;
+#endif
         if (horizontalValue < saved[0] || horizontalValue > saved[1]
             || verticalValue < saved[2] || verticalValue > saved[3])
             inside = false;
-        horizontalValue = clampValue(horizontalValue, saved[0], saved[1]);
-        verticalValue = clampValue(verticalValue, saved[2], saved[3]);
-        current[0] = (std::min)(current[0], horizontalValue);
-        current[1] = (std::max)(current[1], horizontalValue);
-        current[2] = (std::min)(current[2], verticalValue);
-        current[3] = (std::max)(current[3], verticalValue);
+
+        horizontalValue = shadowClampValue(horizontalValue, saved[0], saved[1]);
+        verticalValue = shadowClampValue(verticalValue, saved[2], saved[3]);
+        if (horizontalValue < current[0])
+            current[0] = horizontalValue;
+        if (!(horizontalValue < current[1]))
+            current[1] = horizontalValue;
+        if (verticalValue < current[2])
+            current[2] = verticalValue;
+        if (!(verticalValue < current[3]))
+            current[3] = verticalValue;
         dirty = 1;
         return inside;
     }
 
-    void sanitizedBounds(float* output) const
+    // PE 0x101BA730, applied in place to a copied six-float limit block.
+    static void sanitizeLimits(float* bounds, const float* fallbackLimits)
     {
-        ::memcpy(output, current, sizeof(current));
-        if (output[0] > 1.0f)  output[0] = fallback[0];
-        if (output[1] < -1.0f) output[1] = fallback[1];
-        if (output[2] > 1.0f)  output[2] = fallback[2];
-        if (output[3] < -1.0f) output[3] = fallback[3];
-        if (output[4] >= FLT_MAX) output[4] = fallback[4];
-        if (output[5] < output[4])
+        if (bounds[0] > 1.0f)
+            bounds[0] = fallbackLimits[0];
+        if (bounds[1] < -1.0f)
+            bounds[1] = fallbackLimits[1];
+        if (bounds[2] > 1.0f)
+            bounds[2] = fallbackLimits[2];
+        if (bounds[3] < -1.0f)
+            bounds[3] = fallbackLimits[3];
+        if (bounds[4] >= FLT_MAX)
+            bounds[4] = fallbackLimits[4];
+        if (bounds[5] < bounds[4])
         {
-            const float adjustedFar = std::sqrt(fallback[5]) + std::sqrt(output[4]);
-            output[5] = adjustedFar * adjustedFar;
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] The root sum is squared before the single store.
+            const bf2x87::Real farRoot = bf2x87::squareRoot(bf2x87::wide(fallbackLimits[5]))
+                                   + bf2x87::squareRoot(bf2x87::wide(bounds[4]));
+            bounds[5] = bf2x87::store(farRoot * farRoot);
+#else
+            const float farRoot = std::sqrt(fallbackLimits[5]) + std::sqrt(bounds[4]);
+            bounds[5] = farRoot * farRoot;
+#endif
         }
     }
 
+    // PE 0x101BA8A0. Writes the four limit angles, then horizontal span, vertical span, near and
+    // far distances. The receiver is unused.
+    static void limitExtents(const float* bounds, float& left, float& right, float& bottom,
+                             float& top, float* extents, bool adjust)
+    {
+        left = std::acos(shadowClampValue(bounds[0], -1.0f, 1.0f));
+        right = std::acos(shadowClampValue(bounds[1], -1.0f, 1.0f));
+        bottom = std::acos(shadowClampValue(bounds[2], -1.0f, 1.0f));
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The vertical span subtracts from the unstored top angle.
+        const bf2x87::Real topWide =
+            bf2x87::wide(std::acos(static_cast<double>(shadowClampValue(bounds[3], -1.0f, 1.0f))));
+        top = bf2x87::store(topWide);
+        extents[1] = bf2x87::store(bf2x87::abs(topWide - bottom));
+#else
+        top = std::acos(shadowClampValue(bounds[3], -1.0f, 1.0f));
+        extents[1] = std::fabs(top - bottom);
+#endif
+        extents[0] = std::fabs(right - left);
+        extents[2] = std::sqrt(bounds[4]);
+        extents[3] = std::sqrt(bounds[5]);
+        if (!adjust)
+        {
+            const float widest = extents[1] < extents[0] ? extents[0] : extents[1];
+#if defined(__APPLE__)
+            extents[2] = bf2x87::store(
+                bf2x87::cosValue(bf2x87::wide(widest) * 0.5f) * extents[2]);
+#else
+            extents[2] = std::cos(widest * 0.5f) * extents[2];
+#endif
+        }
+        if (1.0f < extents[2])
+            extents[2] = 1.0f;
+        // PE byte 0x10267438 is loader-zero and has no writer; its arm forcing near 1 and far
+        // 100 is never taken.
+        extents[3] = extents[3] + 3.0f;
+    }
+
+    // PE 0x101BA9D0.
     void getExtents(float* output) const
     {
         float bounds[6];
-        sanitizedBounds(bounds);
-        const float a0 = std::acos(clampValue(bounds[0], -1.0f, 1.0f));
-        const float a1 = std::acos(clampValue(bounds[1], -1.0f, 1.0f));
-        const float a2 = std::acos(clampValue(bounds[2], -1.0f, 1.0f));
-        const float a3 = std::acos(clampValue(bounds[3], -1.0f, 1.0f));
-        output[0] = std::fabs(a1 - a0);
-        output[1] = std::fabs(a3 - a2);
-        output[2] = std::sqrt(bounds[4]);
-        output[3] = std::sqrt(bounds[5]);
-        if (!perspectiveAdjust)
-            output[2] *= std::cos((std::max)(output[0], output[1]) * 0.5f);
-        output[2] = (std::min)(output[2], 1.0f);
-        output[3] += 3.0f;
+        ::memcpy(bounds, current, sizeof(bounds));
+        sanitizeLimits(bounds, fallback);
+        float left, right, bottom, top;
+        float extents[4];
+        limitExtents(bounds, left, right, bottom, top, extents, perspectiveAdjust != 0);
+        ::memcpy(output, extents, sizeof(extents));
     }
 
     static Mat4 yawPitchRoll(float yaw, float pitch, float roll)
     {
+        Mat4 result = Mat4::getIdentity();
+#if defined(__APPLE__) || defined(RENDDX9ABI_D3DX9FALLBACK_H)
+        // [CHOSEN, not recovered] These D3DX subsets omit D3DXMatrixRotationYawPitchRoll.
         const float sy = std::sin(yaw),   cy = std::cos(yaw);
         const float sp = std::sin(pitch), cp = std::cos(pitch);
         const float sr = std::sin(roll),  cr = std::cos(roll);
-        Mat4 result = Mat4::getIdentity();
         result.m[0]  = sr * sp * sy + cr * cy;
         result.m[1]  = sr * cp;
         result.m[2]  = sr * sp * cy - cr * sy;
@@ -2052,44 +2172,100 @@ struct ShadowProjectionLayout
         result.m[8]  = cp * sy;
         result.m[9]  = -sp;
         result.m[10] = cp * cy;
+#else
+        ::D3DXMatrixRotationYawPitchRoll(reinterpret_cast<D3DXMATRIX*>(&result),
+                                         yaw, pitch, roll);
+#endif
         return result;
     }
 
-    const Frustum& getFrustum()
+    // PE 0x101BB0B0. Builds a perspective (or, for a flat vertical span, orthographic) frustum
+    // from one limit block, aimed by the centre of its angles.
+    Frustum buildFrustum(const float* limits, const float* fallbackLimits) const
     {
-        if (!dirty)
-            return cachedFrustum;
+        Frustum frustum;
         float bounds[6];
-        sanitizedBounds(bounds);
-        const float left = std::acos(clampValue(bounds[0], -1.0f, 1.0f));
-        const float right = std::acos(clampValue(bounds[1], -1.0f, 1.0f));
-        const float bottom = std::acos(clampValue(bounds[2], -1.0f, 1.0f));
-        const float top = std::acos(clampValue(bounds[3], -1.0f, 1.0f));
+        ::memcpy(bounds, limits, sizeof(bounds));
+        sanitizeLimits(bounds, fallbackLimits);
+        float left, right, bottom, top;
         float extents[4];
-        getExtents(extents);
-        const float yaw = 1.5707963267948966f - (left + right) * 0.5f;
-        const float pitch = (bottom + top) * 0.5f - 1.5707963267948966f;
-        const Mat4 rotation = yawPitchRoll(yaw, pitch, 0.0f);
-        const Mat4 composed = rotation * transform;
+        limitExtents(bounds, left, right, bottom, top, extents, perspectiveAdjust != 0);
         float aspect = 1.0f;
         if (extents[0] > FLT_EPSILON)
             aspect = extents[1] / extents[0];
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Both aim angles are stored once.
+        const float pitch = bf2x87::store((bf2x87::wide(bottom) + top) * 0.5f - 1.5707964f);
+        const float yaw = bf2x87::store((bf2x87::wide(left) + right) * -0.5f + 1.5707964f);
+#else
+        const float pitch = (bottom + top) * 0.5f - 1.5707964f;
+        const float yaw = (left + right) * -0.5f + 1.5707964f;
+#endif
+        const Mat4 rotation = yawPitchRoll(yaw, pitch, 0.0f);
+        Mat4 composed = Mat4::getIdentity();
+        composed.fullMult(rotation, transform);
         if (extents[1] > FLT_EPSILON)
-            cachedFrustum.setPerspective(extents[1], aspect, extents[2], extents[3], composed);
+            rendmath::frustumSetPerspective(frustum, extents[1], aspect, extents[2], extents[3],
+                                            composed);                // PE 0x1007A460
         else
-            cachedFrustum.setOrtho(1.0f, 1.0f, extents[2], extents[3], composed);
+            rendmath::frustumSetOrtho(frustum, 1.0f, 1.0f, extents[2], extents[3], composed);
+        return frustum;
+    }
+
+    // PE 0x101BB370: unreachable in 1.50: no code or data references. [INFERRED] name. Builds a
+    // frustum from the saved limit block (+0x58) with the fallback block (+0x70).
+    Frustum buildSavedFrustum() const
+    {
+        return buildFrustum(saved, fallback);
+    }
+
+    // PE 0x101BB3C0: unreachable in 1.50: no code or data references. [INFERRED] name. Whether the
+    // point lies inside the frustum built from the saved limits.
+    bool savedFrustumContains(const Vec3& point) const
+    {
+        const Frustum frustum = buildFrustum(saved, fallback);
+        return frustum.inside(point);
+    }
+
+    // PE 0x101BB310. Rebuilds the cached frustum from the current limits when dirty and returns
+    // a copy.
+    Frustum getFrustum()
+    {
+        if (dirty)
+            rendmath::frustumAssign(cachedFrustum, buildFrustum(current, fallback));
         dirty = 0;
         return cachedFrustum;
+    }
+
+    // PE 0x101BB390: unreachable in 1.50: no code or data references. [INFERRED] name. Whether the
+    // point lies inside the (rebuilt when dirty) current frustum.
+    bool currentFrustumContains(const Vec3* point)
+    {
+        const Frustum frustum = getFrustum();
+        return frustum.inside(*point);
+    }
+
+    // PE 0x101BB400: unreachable in 1.50: no code or data references. [INFERRED] name. Copies one
+    // corner (index * 12 + 0x60) of the current frustum to `out`; the index is not range-checked.
+    void getFrustumCorner(Vec3* out, int index)
+    {
+        const Frustum frustum = getFrustum();
+        *out = frustum.m_corners[index];
     }
 };
 
 struct XpTemporaryRecord
 {
-    XpRenderRecordLayout record;
+    LightShadowRecord record;
     ShadowProjectionLayout projection;
 
     XpTemporaryRecord(const Mat4& transform, bool adjust)
         : record(), projection(transform, adjust)
+    {
+    }
+
+    explicit XpTemporaryRecord(const ShadowProjectionLayout& value)
+        : record(), projection(value)
     {
     }
 };
@@ -2099,19 +2275,80 @@ static_assert(sizeof(ShadowProjectionLayout) == 0x2A4,
               "retail ShadowProjection layout drift");
 static_assert(offsetof(ShadowProjectionLayout, cachedFrustum) == 0xBC,
               "ShadowProjection Frustum offset drift");
-static_assert(sizeof(XpTemporaryRecord) == 0x73C,
-              "retail temporary shadow-record layout drift");
 #endif
 
+// The retail coordinator is the static object at PE 0x10259B20, built by a dynamic initializer
+// (PE 0x101CD240 -> 0x100EF100) and destroyed at exit by an atexit thunk (PE 0x101D9240 ->
+// 0x100EFBA0). The native object is the same static with the same constructor and destructor.
+// [CHOSEN, not recovered] The retail coordinator heap-allocates its LightMerger (+0xB0), its two
+// light collectors (+0xB4 static, 0x30 bytes; +0xB8 dynamic, 0x68 bytes) and its saved sun record
+// (+0xC0, a LightMergerRecord); this aggregate holds them by value, flattened (the collectors are
+// staticLights/staticFrame/staticFlags and dynamicLights/dynamicFrame). The members are declared so
+// that the implicit member destruction after ~XpCoordinator runs in the retail delete order:
+// dynamic collector, static collector, saved record, merger, then +0xA4, +0x98, +0x70, +0x48 and
+// the registration table. The collectors' own constructors run on these members from the
+// coordinator constructor (staticCollectorConstruct PE 0x101903F0, dynamicCollectorConstruct PE
+// 0x10191050). [UNRESOLVED] The two vectors at retail +0x28 and +0x38 (built and freed
+// by the constructor and destructor, no other user found) are not modelled. The owned-light set
+// (+0x98), its creation flag (+0xC4), the two record lookups (+0x48 / +0x70) and the saved sun
+// record exist only for the unreachable island helpers (PE 0x100EF380, 0x100EF700, 0x100EF960,
+// 0x100EF9F0 and the lookups 0x100EEDA0 .. 0x100EFAA0); no reachable path fills them.
 struct XpCoordinator
 {
-    std::map<world::LightSource*, XpLight*> bySource;
-    std::vector<XpLight*> iterationOrder;
+    XpCoordinator();
+    ~XpCoordinator();
+
+    std::map<world::LightSource*, XpLight*> bySource;   // retail +0x00, a stdext hash_map
+    std::vector<XpLight*> iterationOrder;               // native: the hash_map's insertion order
+
+    // [CHOSEN, not recovered] Unobservable-type exception. Retail +0x48 and +0x70 are two
+    // stdext hash_maps (pointer key, pointer value; PE 0x100EF7F0 / 0x100EF7A0 are their
+    // find-or-insert lookups, PE 0x100EF700 / 0x100EF960 their only writers, and none has a
+    // reachable caller), so both are always empty. The value type is the pooled record pointer
+    // that 0x100EF700 stores (from the LightMerger lookup 0x10194020) and 0x100EF9F0 hands to
+    // 0x10193990; the key type is a pointer. Neither choice can be observed.
+    typedef std::map<const void*, LightMergerRecord*> RecordLookup;
+    RecordLookup recordLookupB;                         // +0x48
+    RecordLookup recordLookupC;                         // +0x70
+    // The owned-light set (retail coordinator +0x98, a std::set of light sources). Only the
+    // unreachable PE 0x100EF380 fills it, so it stays empty in 1.50.
+    std::set<world::LightSource*> ownedLights;
+    std::multimap<void*, world::LightSource*> geometryPairs;   // +0xA4
+
+    LightMerger merger;                                 // retail +0xB0 (heap)
+    // Retail +0xC0 (heap) and the byte at +0xBC that says it holds the light manager's colours;
+    // PE 0x100EF9F0 is their only user.
+    LightMergerRecord savedSunRecord;
+    bool sunSaved;
+
+    // The static collector (retail +0xB4): light set +0x10, frame vector +0x1C.
     std::set<XpLight*> staticLights;
-    std::set<XpLight*> dynamicLights;
     std::vector<XpLight*> staticFrame;
-    std::vector<XpLight*> dynamicFrame;
-    std::multimap<void*, world::LightSource*> geometryPairs;
+    // The static collector's flags dword (retail collector +0x00): zero from construction (PE
+    // 0x101903F0); its only writer, PE 0x10190150, is unreachable, so it stays zero in 1.50.
+    unsigned int staticFlags;
+    // The static collector's frame time (retail collector +0x08): stored by its update (PE
+    // 0x1019046B) and handed to each light it prepares (PE 0x101901CE).
+    double staticTime;
+
+    // The dynamic collector (retail +0xB8). [CHOSEN, not recovered] Unobservable-type exception for
+    // the three containers that never receive an element: retail +0x00 (a tree whose node keeps its
+    // nil byte at +0x15, so an eight-byte value), +0x28 (a tree with a four-byte value) and +0x34 (a
+    // stdext hash set: list +0x38, nine bucket iterators +0x44, mask/maxidx +0x54/+0x58). Their only
+    // users are the constructor (PE 0x10191050), the clears (PE 0x10190D80, 0x10191120 and its
+    // inlined copy at 0x10191181..0x101911B2) and the destructor; no instruction inserts into them,
+    // so their key and value types cannot be observed (chosen: pointers).
+    std::map<const void*, const void*> dynamicUnusedMap;   // +0x00
+    std::set<XpLight*> dynamicLights;                      // +0x0C
+    std::vector<XpLight*> dynamicFrame;                    // +0x18
+    std::set<const void*> dynamicUnusedSet;                // +0x28
+    std::unordered_set<const void*> dynamicUnusedHash;     // +0x34
+    // The dynamic collector's frame time (retail +0x60): stored by its update (PE 0x101911BD) and
+    // handed to each light it prepares (PE 0x10190E35).
+    double dynamicTime;
+
+    // The byte at +0xC4 that PE 0x100EF380 raises while it registers an owned light.
+    unsigned char registeringOwnedLight;
 };
 
 XpCoordinator g_xpCoordinator;
@@ -2146,40 +2383,29 @@ inline float xpEffectiveRadius(const XpLight* light)
     return radius;
 }
 
-void appendCandidate(vc71::vector_layout& destination, world::IObject* object)
+void appendCandidate(std::vector<world::IObject*>& destination, world::IObject* object)
 {
-    vc71::vectorRef<world::IObject*> out(&destination);
-    out.push_back(object);
+    destination.push_back(object);
 }
 
-void pointQueryObjects(const Vec3& centre, float radius, vc71::vector_layout& destination)
+void pointQueryObjects(const Vec3& centre, float radius, std::vector<world::IObject*>& destination)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     std::vector<world::IObject*> hostObjects;
     reinterpret_cast<world::ObjectManager*>(objectManager)->getObjectsFromGrid(
         centre, radius, hostObjects, 0);
     for (std::vector<world::IObject*>::const_iterator it = hostObjects.begin();
          it != hostObjects.end(); ++it)
         appendCandidate(destination, *it);
-#else
-    reinterpret_cast<world::ObjectManager*>(objectManager)->getObjectsFromGrid(
-        centre, radius, hostObjectVector(destination), 0);
-#endif
 }
 
-void spotQueryObjects(const Frustum& frustum, vc71::vector_layout& destination)
+void spotQueryObjects(const Frustum& frustum, std::vector<world::IObject*>& destination)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     std::vector<world::IObject*> hostObjects;
     reinterpret_cast<world::ObjectManager*>(objectManager)->getObjectsFromGrid(
         frustum, hostObjects, 0, false, 0.0f, 0.0f);
     for (std::vector<world::IObject*>::const_iterator it = hostObjects.begin();
          it != hostObjects.end(); ++it)
         appendCandidate(destination, *it);
-#else
-    reinterpret_cast<world::ObjectManager*>(objectManager)->getObjectsFromGrid(
-        frustum, hostObjectVector(destination), 0, false, 0.0f, 0.0f);
-#endif
 }
 
 bool localControlledObject(world::IObject*& controlled)
@@ -2195,207 +2421,233 @@ bool localControlledObject(world::IObject*& controlled)
     return true;
 }
 
-void pointCollect(XpCuller* culler, double, vc71::vector_layout& destination, int)
+// PE 0x101BCDF0, reached through the Point culler's first slot PE 0x101BCEA0. The controlled
+// object is not null-checked, as in retail.
+void pointCollect(XpCuller* culler, double, std::vector<world::IObject*>& destination, int)
 {
     const Vec3& position = culler->light->source->getAbsolutePosition();
-    const float radius = xpEffectiveRadius(culler->light);
+    const float radius = xpLightRadius(culler->light);
     pointQueryObjects(position, radius, destination);
 
     world::IObject* controlled = 0;
     if (!localControlledObject(controlled))
         return;
 
-    const Vec3& controlledPosition = controlled->getAbsolutePosition();
     const Vec3& sourcePosition = culler->light->source->getAbsolutePosition();
-    if (std::sqrt(squaredDistance(controlledPosition, sourcePosition)) < radius)
+    const Vec3& controlledPosition = controlled->getAbsolutePosition();
+    const float dx = controlledPosition.x - sourcePosition.x;
+    const float dy = controlledPosition.y - sourcePosition.y;
+    const float dz = controlledPosition.z - sourcePosition.z;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The root of the unstored sum is compared.
+    const bf2x87::Real distance = bf2x87::squareRoot(bf2x87::wide(dx) * dx
+        + bf2x87::wide(dz) * dz + bf2x87::wide(dy) * dy);
+    if (bf2x87::less(distance, bf2x87::wide(radius)))
         appendCandidate(destination, controlled);
+#else
+    if (std::sqrt(dx * dx + dz * dz + dy * dy) < radius)
+        appendCandidate(destination, controlled);
+#endif
 }
 
-void spotCollect(XpSpotCuller* culler, double, vc71::vector_layout& destination, int)
+// PE 0x101BCF60.
+void spotCollect(XpSpotCuller* culler, double, std::vector<world::IObject*>& destination, int)
 {
     spotQueryObjects(*culler->frustum, destination);
 }
 
+// PE 0x101BCCA0. The position is fetched before the radius.
 bool pointVisible(XpCuller* culler, const Frustum& camera)
 {
-    return camera.inside(culler->light->source->getAbsolutePosition(),
-                         culler->light->source->getVisualBoundingRadius());
+    const Vec3& position = culler->light->source->getAbsolutePosition();
+    const float radius = culler->light->source->getVisualBoundingRadius();
+    return rendmath::frustumInside(camera, position, radius);          // PE 0x10079A60
 }
 
+// PE 0x101BD0C0. The spotlight Frustum's local box goes through its own transform (PE 0x100CE120)
+// and the light is visible unless one camera plane rejects all eight corners. This is
+// conservative intersection, not containment.
 bool spotVisible(XpSpotCuller* culler, const Frustum& camera)
 {
-    // PE 0x101BD0C0 builds a BoundingBox (eight Vec3 corners) from the spotlight Frustum's local
-    // box, transforms all eight by that Frustum's matrix, and accepts unless all corners lie
-    // outside one camera plane. This is conservative intersection, not containment.
-    Vec3 corners[8];
-    const LocalBoundingBox& local = culler->frustum->m_boundingBox;
-    const Mat4& transform = culler->frustum->m_transformation;
-    for (int i = 0; i < 8; ++i)
-    {
-        Vec3 point;
-        point.x = (i & 1) ? local.m_max.x : local.m_min.x;
-        point.y = (i & 2) ? local.m_max.y : local.m_min.y;
-        point.z = (i & 4) ? local.m_max.z : local.m_min.z;
-        corners[i].x = transform.m[0] * point.x + transform.m[4] * point.y
-                     + transform.m[8] * point.z + transform.m[12];
-        corners[i].y = transform.m[1] * point.x + transform.m[5] * point.y
-                     + transform.m[9] * point.z + transform.m[13];
-        corners[i].z = transform.m[2] * point.x + transform.m[6] * point.y
-                     + transform.m[10] * point.z + transform.m[14];
-    }
-
-    for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
-    {
-        const Plane3& plane = camera.m_planes[planeIndex];
-        bool allOutside = true;
-        for (int cornerIndex = 0; cornerIndex < 8; ++cornerIndex)
-        {
-            const Vec3& point = corners[cornerIndex];
-            const float distance = plane.normal.x * point.x
-                                 + plane.normal.y * point.y
-                                 + plane.normal.z * point.z + plane.d;
-            if (distance <= 0.0f)
-            {
-                allOutside = false;
-                break;
-            }
-        }
-        if (allOutside)
-            return false;
-    }
-    return true;
+    const BoxCorners corners(culler->frustum->m_boundingBox,
+                             culler->frustum->m_transformation);
+    return !corners.outside(camera);                                   // sub_101C6C50
 }
 
-void terrainQuerySphereWalk(TerrainPatchQueryLayout* query, TerrainPatchQueryNode* node)
+// PE 0x101BCD50: unreachable in 1.50: no code or data references. [INFERRED] name. Tests the Point
+// culler's light against the current render view's camera frustum: the frustum is fetched first,
+// then the light's range (LightSource slot +0x188) and absolute transformation (+0x80), and the
+// position is the transformation's translation row.
+bool pointInRenderViewFrustum(XpCuller* culler)
 {
-    if (node->hasChildren)
+    Frustum* const camera = dx9rend::rendererGetRenderView()->getFrustumPtr();   // renderer +0x48, view +0x74
+    world::LightSource* const source = culler->light->source;
+    const float range = source->getAttenuationRange1();
+    const Mat4& transform = source->getAbsoluteTransformation();
+    const Vec3 position = { transform.m[12], transform.m[13], transform.m[14] };
+    return rendmath::frustumInside(*camera, position, range);
+}
+
+// PE 0x101BCEE0: unreachable in 1.50: no code or data references. [INFERRED] name. Rebuilds the Spot
+// culler's frustum from the light's current transformation and cone angle, as its constructor
+// (PE 0x101BD000) does after allocating it.
+void refreshSpotCullerFrustum(XpSpotCuller* culler)
+{
+    world::LightSource* const source = culler->light->source;
+    const Mat4& transform = source->getAbsoluteTransformation();
+    const float coneAngle = lightSourceTemplatePointer(source)->getConeAngle1();
+    rendmath::frustumSetPerspective(*culler->frustum, coneAngle, 1.0f, 0.0f, 100.0f, transform);
+}
+
+// PE 0x101BD080: unreachable in 1.50: no code or data references. [INFERRED] name. The body of
+// spotVisible (PE 0x101BD0C0) taking the spotlight Frustum itself instead of its culler.
+bool spotFrustumVisible(const Frustum* spotFrustum, const Frustum& camera)
+{
+    const BoxCorners corners(spotFrustum->m_boundingBox, spotFrustum->m_transformation);
+    return !corners.outside(camera);                                   // sub_101C6C50
+}
+
+void terrainQuerySphereWalk(TerrainCuller* query, TerrainCullerNode* node)
+{
+    if (node->childrenWalked)
     {
         for (unsigned int i = 0; i < 4; ++i)
         {
-            TerrainPatchQueryNode* const child = node->children[i];
-            if (child->active)
+            TerrainCullerNode* const child = node->child[i];
+            if (child->visible)
                 terrainQuerySphereWalk(query, child);
         }
         return;
     }
 
-    // The shipped leaf body asks the dirty byte twice; calcRadius clears it on the first call.
-    if (node->bounds.m_derivedDataDirty)
-        node->bounds.calcRadius();
-    const float nodeRadius = node->bounds.m_radiusFromCentre;
-    if (node->bounds.m_derivedDataDirty)
-        node->bounds.calcRadius();
+    // The shipped leaf body asks the dirty byte twice; refresh clears it on the first call.
+    if (node->bounds.dirty)
+        node->bounds.refresh();
+    const float nodeRadius = node->bounds.radius;
+    if (node->bounds.dirty)
+        node->bounds.refresh();
 
-    const float totalRadius = nodeRadius + query->radius;
-    if (totalRadius > std::sqrt(squaredDistance(*query->centre, node->bounds.m_centre))
-        && node->payload)
+    const float totalRadius = nodeRadius + query->gatherRadius;
+    const float* const centre = query->gatherCentre;
+    const Vec3 gatherCentre = { centre[0], centre[1], centre[2] };
+    if (totalRadius > std::sqrt(squaredDistance(gatherCentre, node->bounds.centre))
+        && node->patch)
     {
-        vc71::vectorRef<TerrainPatchQueryNode*> output(&query->results);
-        output.push_back(node);
+        query->gathered.push_back(node);
     }
 }
 
-void terrainQueryFrustumWalk(TerrainPatchQueryLayout* query, TerrainPatchQueryNode* node)
+void terrainQueryFrustumWalk(TerrainCuller* query, TerrainCullerNode* node)
 {
-    if (node->hasChildren)
+    if (node->childrenWalked)
     {
         for (unsigned int i = 0; i < 4; ++i)
         {
-            TerrainPatchQueryNode* const child = node->children[i];
-            if (child->active)
+            TerrainCullerNode* const child = node->child[i];
+            if (child->visible)
                 terrainQueryFrustumWalk(query, child);
         }
         return;
     }
 
-    if (node->bounds.m_derivedDataDirty)
-        node->bounds.calcRadius();
-    const float nodeRadius = node->bounds.m_radiusFromCentre;
-    if (node->bounds.m_derivedDataDirty)
-        node->bounds.calcRadius();
-    if (query->frustum->inside(node->bounds.m_centre, nodeRadius) && node->payload)
+    if (node->bounds.dirty)
+        node->bounds.refresh();
+    const float nodeRadius = node->bounds.radius;
+    if (node->bounds.dirty)
+        node->bounds.refresh();
+    if (rendmath::frustumInside(*query->frustum, node->bounds.centre, nodeRadius) && node->patch)
     {
-        vc71::vectorRef<TerrainPatchQueryNode*> output(&query->results);
-        output.push_back(node);
+        query->gathered.push_back(node);
     }
 }
 
-void terrainQuerySphere(TerrainPatchQueryLayout* query, const Vec3* centre, float radius)
+void terrainQuerySphere(TerrainCuller* query, const Vec3* centre, float radius)
 {
-    clearPointerVector(query->results);
-    query->centre = centre;
-    query->radius = radius;
-    query->radiusSquared = radius * radius;
-    if (query->root->active)
-        terrainQuerySphereWalk(query, query->root);
+    query->gathered.clear();
+    query->gatherCentre = &centre->x;
+    query->gatherRadius = radius;
+    query->gatherRadiusSq = radius * radius;
+    if (query->nodes->visible)
+        terrainQuerySphereWalk(query, query->nodes);
 }
 
-void terrainQueryFrustum(TerrainPatchQueryLayout* query, const Frustum* frustum)
+void terrainQueryFrustum(TerrainCuller* query, Frustum* frustum)
 {
-    clearPointerVector(query->results);
+    query->gathered.clear();
     query->frustum = frustum;
-    if (query->root->active)
-        terrainQueryFrustumWalk(query, query->root);
+    if (query->nodes->visible)
+        terrainQueryFrustumWalk(query, query->nodes);
 }
 
-void __fastcall pointCollectSlot(void* self, void*, double time,
-                                 vc71::vector_layout* destination, int flag)
+// PE 0x101BCEA0: forwards the destination and flag to PE 0x101BCDF0.
+void RD9_THUNK pointCollectSlot(void* self RD9_THUNK_EDX, double time,
+                                 std::vector<world::IObject*>* destination, int flag)
 {
     pointCollect(static_cast<XpCuller*>(self), time, *destination, flag);
 }
-void __fastcall spotCollectSlot(void* self, void*, double time,
-                                vc71::vector_layout* destination, int flag)
+void RD9_THUNK spotCollectSlot(void* self RD9_THUNK_EDX, double time,
+                                std::vector<world::IObject*>* destination, int flag)
 {
     spotCollect(static_cast<XpSpotCuller*>(self), time, *destination, flag);
 }
-bool __fastcall pointVisibleSlot(void* self, void*, const Frustum* camera)
+bool RD9_THUNK pointVisibleSlot(void* self RD9_THUNK_EDX, const Frustum* camera)
 {
     return pointVisible(static_cast<XpCuller*>(self), *camera);
 }
-bool __fastcall spotVisibleSlot(void* self, void*, const Frustum* camera)
+bool RD9_THUNK spotVisibleSlot(void* self RD9_THUNK_EDX, const Frustum* camera)
 {
     return spotVisible(static_cast<XpSpotCuller*>(self), *camera);
 }
-// Both retail +0x08 bodies are `xor al,al; ret 4`: one opaque stack argument is consumed even
+// PE 0x101BCCE0 / 0x101BCF50. Both retail +0x08 bodies are `xor al,al; ret 4`: one opaque stack argument is consumed even
 // though the result is always false.  Keep that argument so an indirect call cannot unbalance esp.
-bool __fastcall cullerFalseSlot(void*, void*, void*) { return false; }
-void __fastcall pointSecondCullSlot(void* self, void*, TerrainPatchQueryLayout* query)
+bool RD9_THUNK cullerFalseSlot(void* RD9_THUNK_EDX, void*) { return false; }
+// PE 0x101BCCF0. The position is fetched before the radius.
+void RD9_THUNK pointSecondCullSlot(void* self RD9_THUNK_EDX, TerrainCuller* query)
 {
     XpCuller* const culler = static_cast<XpCuller*>(self);
     const Vec3& position = culler->light->source->getAbsolutePosition();
     terrainQuerySphere(query, &position,
                        culler->light->source->getVisualBoundingRadius());
 }
-void __fastcall spotSecondCullSlot(void* self, void*, TerrainPatchQueryLayout* query)
+// PE 0x101BCF30.
+void RD9_THUNK spotSecondCullSlot(void* self RD9_THUNK_EDX, TerrainCuller* query)
 {
     terrainQueryFrustum(query, static_cast<XpSpotCuller*>(self)->frustum);
 }
-void __fastcall pointFillRecordSlot(void*, void*, unsigned char* record)
+// PE 0x101BCD30.
+void RD9_THUNK pointFillRecordSlot(void* RD9_THUNK_EDX, unsigned char* record)
 {
     *reinterpret_cast<float*>(record + 0x3C) = 1.0f;
     *reinterpret_cast<float*>(record + 0x40) = 1.0f;
 }
-void __fastcall spotFillRecordSlot(void* self, void*, unsigned char* record)
+// PE 0x101BCFB0. Both cone angles are fetched before either cosine is taken.
+void RD9_THUNK spotFillRecordSlot(void* self RD9_THUNK_EDX, unsigned char* record)
 {
     XpSpotCuller* const culler = static_cast<XpSpotCuller*>(self);
     const float degreesToRadians = 0.01745329251994329577f;
+    const float inner = culler->light->source->getConeAngle1();
+    const float outer = culler->light->source->getConeAngle2();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Each degree product feeds FCOS unstored.
     *reinterpret_cast<float*>(record + 0x3C) =
-        std::cos(culler->light->source->getConeAngle1() * degreesToRadians);
+        bf2x87::store(bf2x87::cosValue(bf2x87::wide(inner) * degreesToRadians));
     *reinterpret_cast<float*>(record + 0x40) =
-        std::cos(culler->light->source->getConeAngle2() * degreesToRadians);
+        bf2x87::store(bf2x87::cosValue(bf2x87::wide(outer) * degreesToRadians));
+#else
+    *reinterpret_cast<float*>(record + 0x3C) = std::cos(inner * degreesToRadians);
+    *reinterpret_cast<float*>(record + 0x40) = std::cos(outer * degreesToRadians);
+#endif
 }
-void __fastcall pointDebugSlot(void*, void*) {}
-void __fastcall spotDebugSlot(void* self, void*)
+// PE 0x101BCDB0.
+void RD9_THUNK pointDebugSlot(void* RD9_THUNK_EDX) {}
+// PE 0x101BCF90. Draws the culler's +0x08 frustum with colour 0 and flag 0.
+void RD9_THUNK spotDebugSlot(void* self RD9_THUNK_EDX)
 {
     XpSpotCuller* const culler = static_cast<XpSpotCuller*>(self);
-    (void)culler;
-    // [FRONTIER] DebugRenderer has no recovered source interface.  The PE caller proves +0x28,
-    // but declaring unnamed prefix slots would merely disguise another positional dispatch.
-    RD9_FRONTIER_AT("dice::hfe::geom::LightManager::spotDebug "
-                    "(DebugRenderer::drawFrustum)", g_DebugRenderer, 0x28);
-    std::abort();
+    static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(*culler->frustum, 0, 0);
 }
 
+// PE 0x10222230.
 const void* const kPointCullerVtable[6] =
 {
     reinterpret_cast<void*>(&pointCollectSlot),
@@ -2406,6 +2658,7 @@ const void* const kPointCullerVtable[6] =
     reinterpret_cast<void*>(&pointDebugSlot)
 };
 
+// PE 0x10222268.
 const void* const kSpotCullerVtable[6] =
 {
     reinterpret_cast<void*>(&spotCollectSlot),
@@ -2416,107 +2669,201 @@ const void* const kSpotCullerVtable[6] =
     reinterpret_cast<void*>(&spotDebugSlot)
 };
 
+// PE 0x1018FB10. Only clears policy; the caller supplies its initial value.
 void computeXpPolicy(XpLight* light)
 {
-    light->policy = 1;
+    const world::LightSourceTemplate* const objectTemplate =
+        lightSourceTemplatePointer(light->source);
     if (!dx9rend::rendererIsExpansionPack())
     {
         light->policy = 0;
         return;
     }
 
-    const world::LightSourceTemplate* const objectTemplate =
-        lightSourceTemplatePointer(light->source);
-    const bool flag800 = (objectTemplate->getFlags() & 0x800u) != 0;
-    if (((!flag800 && objectTemplate->getIsDynamic())
-         || (flag800 && !objectTemplate->getIsDynamic()))
+    if (((!(objectTemplate->getFlags() & 0x800u) && objectTemplate->getIsDynamic())
+         || ((objectTemplate->getFlags() & 0x800u) && !objectTemplate->getIsDynamic()))
         && dx9rend::rendererGetVideoOptions()->getQuality(4) < 3)
         light->policy = 0;
 }
 
-void constructXpLight(XpLight* light, world::LightSource* source)
+// PE 0x101BCDC0.
+XpCuller* constructPointCuller(XpCuller* culler, XpLight* light)
 {
-    ::memset(light, 0, sizeof(*light));
-    light->source = source;
-    light->cameraDistance = 1000000.0f; // exact 0x49742400 constructor constant
-    const world::LightSourceTemplate* const sourceTemplate =
-        lightSourceTemplatePointer(source);
-    light->category = sourceTemplate->getIsDynamic() ? 0 : 1;
-    source->addRef();
+    culler->vtable = const_cast<const void**>(kPointCullerVtable);
+    culler->light = light;
+    return culler;
+}
 
-    const int type = sourceTemplate->getLightTypeEnum();
+// PE 0x101BD000. The absolute transformation is fetched before the template cone angle.
+XpSpotCuller* constructSpotCuller(XpSpotCuller* culler, XpLight* light)
+{
+    culler->vtable = const_cast<const void**>(kSpotCullerVtable);
+    culler->light = light;
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(Frustum));
+    culler->frustum = storage ? new (storage) Frustum : 0;
+    world::LightSource* const source = light->source;
+    const Mat4& transform = source->getAbsoluteTransformation();
+    const float coneAngle = lightSourceTemplatePointer(source)->getConeAngle1();
+    rendmath::frustumSetPerspective(*culler->frustum, coneAngle, 1.0f, 0.0f, 100.0f,
+                                    transform);                       // PE 0x1007A460
+    return culler;
+}
+
+// PE 0x1018FD80. Only Point (1) and Spot (2) templates receive a culler.
+void createXpCuller(XpLight* light)
+{
+    const int type = lightSourceTemplatePointer(light->source)->getLightTypeEnum();
     if (type == 1)
     {
-        XpCuller* const culler = static_cast<XpCuller*>(
-            ::renddx9abi::engineAlloc(sizeof(XpCuller)));
-        culler->vtable = const_cast<const void**>(kPointCullerVtable);
-        culler->light = light;
-        light->culler = culler;
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(XpCuller));
+        light->culler = storage
+            ? constructPointCuller(static_cast<XpCuller*>(storage), light) : 0;
     }
     else if (type == 2)
     {
-        XpSpotCuller* const culler = static_cast<XpSpotCuller*>(
-            ::renddx9abi::engineAlloc(sizeof(XpSpotCuller)));
-        culler->vtable = const_cast<const void**>(kSpotCullerVtable);
-        culler->light = light;
-        culler->frustum = static_cast<Frustum*>(::renddx9abi::engineAlloc(sizeof(Frustum)));
-        new (culler->frustum) Frustum;
-        culler->frustum->setPerspective(
-            sourceTemplate->getConeAngle1(), 1.0f, 0.0f, 100.0f,
-            source->getAbsoluteTransformation());
-        light->culler = reinterpret_cast<XpCuller*>(culler);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(XpSpotCuller));
+        light->culler = storage
+            ? reinterpret_cast<XpCuller*>(
+                  constructSpotCuller(static_cast<XpSpotCuller*>(storage), light))
+            : 0;
     }
+}
+
+// PE 0x1018FAF0: the category from the source template's dynamic flag (dynamic 0, static 1).
+// Unreachable in 1.50: no code or data references; [INFERRED] name. The constructor tail below
+// carries the same first step.
+void setXpLightCategory(XpLight* light)
+{
+    const world::LightSourceTemplate* const sourceTemplate =
+        lightSourceTemplatePointer(light->source);
+    light->category = sourceTemplate->getIsDynamic() ? 0 : 1;
+}
+
+// PE 0x1018FDE0 (also 0x1018FEA0): the tail the XpLight constructor (PE 0x1018FF40) shares with
+// two standalone copies - the category from the template's dynamic flag (dynamic 0, static 1), the
+// culler, then the policy. Unreachable in 1.50: no code or data references.
+void refreshXpLightCategory(XpLight* light)
+{
+    setXpLightCategory(light);
+
+    createXpCuller(light);
 
     computeXpPolicy(light);
 }
 
+// PE 0x1018FF40: the XpLight constructor. It publishes the initial category/policy before the
+// source's addRef callback.
+void constructXpLight(XpLight* light, world::LightSource* source)
+{
+    ::new (light) XpLight();
+    light->source = source;
+    light->policy = 1;
+    light->cameraDistance = 1000000.0f; // exact 0x49742400 constructor constant
+    light->category = 2;
+    source->addRef();
+    refreshXpLightCategory(light);
+}
+
+// PE 0x1018FFB0 (release source, raw-free culler, warning, candidate and record storage)
 void destroyXpLight(XpLight* light)
 {
     // Shipped order is significant. In particular, the Spot adapter is raw-freed without running
     // its destructor, leaking the heap Frustum at +8; reproduce that defect.
     light->source->release();
     ::renddx9abi::engineFree(light->culler);
-    if (light->releaseWarning)
+    if (light->releaseWarning)                    // byte +0x10: the shipped warning
         ::renddx9abi::logf("XpLight::~XpLight: Need someway of releasing the lightsource.");
-    destroyVectorStorage(light->candidates);
-
-    XpRenderRecordLayout* const records = vectorBegin<XpRenderRecordLayout>(light->records);
-    const unsigned int recordCount = vectorSize<XpRenderRecordLayout>(light->records);
-    for (unsigned int i = 0; i < recordCount; ++i)
-        records[i].~XpRenderRecordLayout();
-    destroyVectorStorage(light->records);
+    // The candidates, then the records - the members' reverse declaration order.
+    light->~XpLight();
 }
 
+// PE 0x10190EA0: the dynamic collector (coordinator +0xB8) inserts a light only when absent.
+void dynamicCollectorRegister(XpLight* light)
+{
+    g_xpCoordinator.dynamicLights.insert(light);
+}
+
+// PE 0x101901F0: the static collector (coordinator +0xB4) inserts a light that is not flagged
+// (source flag bit 0) or is enabled, then switches the source off (slot +0x1C4).
+void staticCollectorRegister(XpLight* light)
+{
+    if ((lightSourceFlags(light->source) & 1u) == 0
+        || light->source->getEnabled())
+    {
+        g_xpCoordinator.staticLights.insert(light);
+        light->source->setEnabled(false);
+    }
+}
+
+// PE 0x10190F00: the dynamic collector erases a light when present (equal_range, erase).
+void dynamicCollectorUnregister(XpLight* light)
+{
+    g_xpCoordinator.dynamicLights.erase(light);
+}
+
+// PE 0x10190240: the static collector erases a light when present (equal_range, erase).
+void staticCollectorUnregister(XpLight* light)
+{
+    g_xpCoordinator.staticLights.erase(light);
+}
+
+// PE 0x100EF050, collector dispatch; registration publication is in lmRegisterXpLight.
 void registerWithCollector(XpLight* light)
 {
     if (light->category == 0)
     {
-        g_xpCoordinator.dynamicLights.insert(light);
+        dynamicCollectorRegister(light);
         return;
     }
     if (light->category == 1)
     {
-        if ((lightSourceFlags(light->source) & 1u) == 0
-            || light->source->getEnabled())
-        {
-            g_xpCoordinator.staticLights.insert(light);
-            light->source->setEnabled(false);
-        }
+        staticCollectorRegister(light);
         return;
     }
 
-    ::renddx9abi::logf("XpLightManager::addLight: invalid XpLight category %d", light->category);
+    const std::string expression("");
+    const std::string file("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\XpLightManager.cpp");
+    ::renddx9abi::Debug(DebugTypeError, file, 0x227, expression);
 }
 
+// PE 0x100EEC00.
 void unregisterFromCollector(XpLight* light)
 {
     if (light->category == 0)
-        g_xpCoordinator.dynamicLights.erase(light);
+        dynamicCollectorUnregister(light);
     else if (light->category == 1)
-        g_xpCoordinator.staticLights.erase(light);
+        staticCollectorUnregister(light);
     else
-        ::renddx9abi::logf("XpLightManager::removeLight: invalid XpLight category %d",
-                           light->category);
+    {
+        const std::string expression("");
+        const std::string file("C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\XpLightManager.cpp");
+        ::renddx9abi::Debug(DebugTypeError, file, 0x253, expression);
+    }
+}
+
+// PE 0x100EED60: retail counts the registration table's equal range for the key (stdext hash_map
+// equal_range, PE 0x100F0400) and answers whether it is nonempty; the native source-key map
+// answers the same question.
+bool xpSourceIsRegistered(world::LightSource* source)
+{
+    return g_xpCoordinator.bySource.count(source) != 0;
+}
+
+// PE 0x100EEE20: retail erases the registration node whose mapped value is the wrapper (PE
+// 0x100F09D0 on the node found by a linear walk of the hash list), then removes the wrapper from its
+// category collector. The collector removal runs whether or not a node was found.
+void xpEraseRegistration(XpLight* light)
+{
+    for (std::map<world::LightSource*, XpLight*>::iterator it = g_xpCoordinator.bySource.begin();
+         it != g_xpCoordinator.bySource.end(); ++it)
+    {
+        if (it->second == light)
+        {
+            g_xpCoordinator.bySource.erase(it);
+            break;
+        }
+    }
+    unregisterFromCollector(light);
 }
 
 // PE 0x100EF2B0, reached by manager +0x94 for Point/Spot lights. Eligibility, duplicate handling,
@@ -2539,7 +2886,8 @@ void lmRegisterXpLight(world::LightSource* light)
     if (!dx9rend::rendererIsExpansionPack() && !objectTemplate->getIsDynamic())
         return;
 
-    if (g_xpCoordinator.bySource.find(light) != g_xpCoordinator.bySource.end())
+    // Reject a source whose registration count is nonzero.
+    if (xpSourceIsRegistered(light))
         return;
 
     XpLight* const xp = static_cast<XpLight*>(::renddx9abi::engineAlloc(sizeof(XpLight)));
@@ -2549,6 +2897,7 @@ void lmRegisterXpLight(world::LightSource* light)
     g_xpCoordinator.iterationOrder.push_back(xp);
 }
 
+// PE 0x100EF940 / 0x100EEE90: source lookup, then removal of the registered wrapper.
 void lmRemoveXpLight(world::LightSource* light)
 {
     std::map<world::LightSource*, XpLight*>::iterator found =
@@ -2557,8 +2906,8 @@ void lmRemoveXpLight(world::LightSource* light)
         return;
 
     XpLight* const xp = found->second;
-    g_xpCoordinator.bySource.erase(found);
-    unregisterFromCollector(xp);
+    // Erase the registration, then remove the wrapper from its category collector.
+    xpEraseRegistration(xp);
     std::vector<XpLight*>::iterator ordered =
         std::find(g_xpCoordinator.iterationOrder.begin(),
                   g_xpCoordinator.iterationOrder.end(), xp);
@@ -2568,6 +2917,23 @@ void lmRemoveXpLight(world::LightSource* light)
     ::renddx9abi::engineFree(xp);
 }
 
+// PE 0x1018FD00: the distance from the render view's camera to the source, stored at +0x2C.
+// Differences are source - camera, summed as (z*z + x*x) + y*y (fld z; fmul; fld x; fmul; faddp;
+// fld y; fmul; faddp) before the square root. updateXpLight carries the same body inline.
+void updateXpLightDistance(XpLight* light)
+{
+    dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();
+    const Vec3 camera = matrixTranslation(*view->getViewMatrixPtr());
+    const Vec3 source = matrixTranslation(
+        light->source->getAbsoluteTransformation());
+    const float dx = source.x - camera.x;
+    const float dy = source.y - camera.y;
+    const float dz = source.z - camera.z;
+    const float sum = (dz * dz + dx * dx) + dy * dy;
+    light->cameraDistance = std::sqrt(sum);
+}
+
+// PE 0x1018FE10
 void updateXpLight(XpLight* light)
 {
     // PE 0x1018FE10 deliberately exempts the shipped default class value (1) from the disabled
@@ -2577,7 +2943,7 @@ void updateXpLight(XpLight* light)
         && !light->source->getEnabled()
         && light->category != 1)
     {
-        light->active = 0;
+        setXpLightActive(light, false);
         return;
     }
 
@@ -2585,11 +2951,10 @@ void updateXpLight(XpLight* light)
     if (dx9rend::g_rendererBase)
     {
         dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();
-        const Vec3 camera = matrixTranslation(*view->getViewMatrixPtr());
-        const Vec3 source = matrixTranslation(
-            light->source->getAbsoluteTransformation());
-        light->cameraDistance = std::sqrt(squaredDistance(camera, source));
-        visible = light->cameraDistance <= 100.0f; // PE global 0x1023A6F8 default
+        updateXpLightDistance(light);
+        // PE 0x1018FE47: fcomp against 100 (global 0x1023A6F8); only an ordered "greater" clears the
+        // flag, so a NaN distance stays visible.
+        visible = !(light->cameraDistance > 100.0f);
         if (visible)
         {
             const Frustum& cameraFrustum = *view->getFrustumPtr();
@@ -2607,22 +2972,27 @@ void updateXpLight(XpLight* light)
     static const bool forceVisible = false;
     if (!visible && forceVisible)
         visible = true;
-    light->active = visible ? 1 : 0;
+    setXpLightActive(light, visible);
 }
 
 void clearXpRecords(XpLight* light)
 {
-    XpRenderRecordLayout* const records = vectorBegin<XpRenderRecordLayout>(light->records);
-    const unsigned int recordCount = vectorSize<XpRenderRecordLayout>(light->records);
-    for (unsigned int i = 0; i < recordCount; ++i)
-        records[i].~XpRenderRecordLayout();
-    light->records.last = light->records.first;
+    light->records.clear();
 }
 
+// PE 0x101900B0: empties the candidate list (the pointer-vector clear, PE 0x10032330 with
+// 0, 0) and resizes the records to zero with a default LightShadowRecord. prepareXpCandidates
+// carries the same two steps inline. Unreachable in 1.50: no code or data references.
+void clearXpCandidatesAndRecords(XpLight* light)
+{
+    light->candidates.clear();
+    clearXpRecords(light);
+}
+
+// PE 0x101900E0
 void prepareXpCandidates(XpLight* light, double time, int flag)
 {
-    clearPointerVector(light->candidates);
-    clearXpRecords(light);
+    clearXpCandidatesAndRecords(light);
     if (light->active)
     {
         const int type = lightSourceTemplatePointer(light->source)->getLightTypeEnum();
@@ -2632,36 +3002,127 @@ void prepareXpCandidates(XpLight* light, double time, int flag)
             spotCollect(reinterpret_cast<XpSpotCuller*>(light->culler),
                         time, light->candidates, flag);
     }
-    if (vectorSize<world::IObject*>(light->candidates) == 0)
-        light->active = 0;
+    if (light->candidates.size() == 0)
+        setXpLightActive(light, false);
 }
 
+// PE 0x100EEAA0 (fastcall lhs in ECX, rhs in EDX; lhs distance saved as a float first)
 bool nearerXpLight(const XpLight* lhs, const XpLight* rhs)
 {
-    return lhs->cameraDistance < rhs->cameraDistance;
+    return xpLightCameraDistance(lhs) < xpLightCameraDistance(rhs);
 }
 
-void updateStaticCollector(double time)
+// PE 0x101903F0: the static collector's constructor (0x30 bytes, built at PE 0x100EF248): frame
+// time 0.0, flags 0, then the empty light set and the zeroed frame vector, which the aggregate's
+// members already are.
+void staticCollectorConstruct(XpCoordinator& coordinator)
+{
+    coordinator.staticTime = 0.0;
+    coordinator.staticFlags = 0;
+}
+
+// PE 0x10191050: the dynamic collector's constructor (0x68 bytes, built at PE 0x100EF267): the
+// +0x00 tree, the light set, the zeroed frame vector, the +0x28 tree and the +0x34 hash set (one
+// bucket mask) start empty, as the aggregate's members already are; then the frame time 0.0.
+void dynamicCollectorConstruct(XpCoordinator& coordinator)
+{
+    coordinator.dynamicTime = 0.0;
+}
+
+// PE 0x10190D80: empties the dynamic collector's +0x00 tree, then its +0x28 tree (each erase the
+// nodes, relink the head, size 0). Unreachable in 1.50: no code or data reference; both are always
+// empty.
+void dynamicCollectorClearUnused()
+{
+    g_xpCoordinator.dynamicUnusedMap.clear();
+    g_xpCoordinator.dynamicUnusedSet.clear();
+}
+
+// PE 0x101902F0: empties the static collector's frame vector (resize(0), PE 0x10101170).
+void staticCollectorClearFrame()
 {
     g_xpCoordinator.staticFrame.clear();
+}
+
+// PE 0x10190300: the static collector walks its light set in key order; an active light joins the
+// frame (and, under flag bit 0x10, its culler's debug slot runs), and flag bit 0x1 runs the debug
+// slot for every light.
+void staticCollectorGather()
+{
+    const unsigned int flags = g_xpCoordinator.staticFlags;
     for (std::set<XpLight*>::const_iterator it = g_xpCoordinator.staticLights.begin();
          it != g_xpCoordinator.staticLights.end(); ++it)
     {
-        if ((*it)->active)
-            g_xpCoordinator.staticFrame.push_back(*it);
+        XpLight* const light = *it;
+        if (light->active)
+        {
+            g_xpCoordinator.staticFrame.push_back(light);
+            if (flags & 0x10u)
+                xpLightCullerDebug(light);
+        }
+        if (flags & 0x1u)
+            xpLightCullerDebug(light);
     }
-    std::sort(g_xpCoordinator.staticFrame.begin(), g_xpCoordinator.staticFrame.end(),
-              nearerXpLight);
-    while (g_xpCoordinator.staticFrame.size() > 3u) // PE 0x1023A750 default
+}
+
+// PE 0x10190170: pops the frame's tail down to the budget (default 3, PE 0x1023A750) without
+// deactivating the dropped lights, then prepares every remaining light with the collector's time
+// (+0x08; debug slot first under flag bit 0x10).
+void staticCollectorBudget()
+{
+    while (g_xpCoordinator.staticFrame.size() > 3u)
         g_xpCoordinator.staticFrame.pop_back();
     for (std::vector<XpLight*>::iterator it = g_xpCoordinator.staticFrame.begin();
          it != g_xpCoordinator.staticFrame.end(); ++it)
-        prepareXpCandidates(*it, time, 1);
+    {
+        if (g_xpCoordinator.staticFlags & 0x10u)
+            xpLightCullerDebug(*it);
+        prepareXpCandidates(*it, g_xpCoordinator.staticTime, 1);
+    }
 }
 
-void updateDynamicCollector(double time)
+// PE 0x10190460 (frame: store time, gather PE 0x10190300 of the active lights, sort by camera distance
+// with PE 0x100EEAA0, budget PE 0x10190170 which only pops the tail without deactivating, then prepare).
+void updateStaticCollector(double time)
+{
+    g_xpCoordinator.staticTime = time;
+    staticCollectorClearFrame();
+    staticCollectorGather();
+    std::sort(g_xpCoordinator.staticFrame.begin(), g_xpCoordinator.staticFrame.end(),
+              nearerXpLight);
+    staticCollectorBudget();
+}
+
+// PE 0x10191120: the dynamic collector empties its frame vector (resize(0), PE 0x10101170), then
+// the +0x28 tree and the +0x34 hash set (PE 0x10191900), both always empty (see the struct).
+void dynamicCollectorClearFrame()
 {
     g_xpCoordinator.dynamicFrame.clear();
+    g_xpCoordinator.dynamicUnusedSet.clear();
+    g_xpCoordinator.dynamicUnusedHash.clear();
+}
+
+// PE 0x10190DE0: trims the dynamic frame to the budget (default 3, PE 0x1023A7AC), deactivating
+// every dropped light (PE 0x1018FAA0), then prepares the remaining lights with the collector's
+// time (+0x60).
+void dynamicCollectorTrimAndPrepare()
+{
+    while (g_xpCoordinator.dynamicFrame.size() > 3u)
+    {
+        setXpLightActive(g_xpCoordinator.dynamicFrame.back(), false);
+        g_xpCoordinator.dynamicFrame.pop_back();
+    }
+    for (std::vector<XpLight*>::iterator it = g_xpCoordinator.dynamicFrame.begin();
+         it != g_xpCoordinator.dynamicFrame.end(); ++it)
+        prepareXpCandidates(*it, g_xpCoordinator.dynamicTime, 1);
+}
+
+// PE 0x10191170 (frame update: the inlined frame clear, then the time stored at +0x60; its
+// trim-and-prepare tail is dynamicCollectorTrimAndPrepare).
+void updateDynamicCollector(double time)
+{
+    dynamicCollectorClearFrame();
+    g_xpCoordinator.dynamicTime = time;
     for (std::set<XpLight*>::const_iterator it = g_xpCoordinator.dynamicLights.begin();
          it != g_xpCoordinator.dynamicLights.end(); ++it)
     {
@@ -2670,24 +3131,12 @@ void updateDynamicCollector(double time)
     }
     std::sort(g_xpCoordinator.dynamicFrame.begin(), g_xpCoordinator.dynamicFrame.end(),
               nearerXpLight);
-    while (g_xpCoordinator.dynamicFrame.size() > 3u) // PE 0x1023A7AC default
-    {
-        g_xpCoordinator.dynamicFrame.back()->active = 0;
-        g_xpCoordinator.dynamicFrame.pop_back();
-    }
-    for (std::vector<XpLight*>::iterator it = g_xpCoordinator.dynamicFrame.begin();
-         it != g_xpCoordinator.dynamicFrame.end(); ++it)
-        prepareXpCandidates(*it, time, 1);
+    dynamicCollectorTrimAndPrepare();
 }
 
 void* candidateGeometry(world::IObject* candidate)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return world::object_detail::LayoutAccess::geometry(candidate);
-#else
-    return *reinterpret_cast<void**>(
-        reinterpret_cast<unsigned char*>(candidate) + 0x38);
-#endif
 }
 
 static const unsigned int kBundledMeshReflectionType = 0x870CA651u;
@@ -2700,14 +3149,14 @@ static const unsigned int kStaticMeshReflectionType  = 0x870CA653u;
 
 inline void* geometrySlot(void* geometry, unsigned int offset)
 {
-    return (*reinterpret_cast<void***>(geometry))[offset / sizeof(void*)];
+    return (*reinterpret_cast<void***>(geometry))[offset / 4];
 }
 
 inline IGeometryTemplate* geometryTemplate(void* geometry)
 {
-    typedef void* (__fastcall* GetTemplateFn)(void*, void*);
+    typedef void* (__thiscall* GetTemplateFn)(void*);
     return static_cast<IGeometryTemplate*>(
-        reinterpret_cast<GetTemplateFn>(geometrySlot(geometry, 0x38))(geometry, 0));
+        reinterpret_cast<GetTemplateFn>(geometrySlot(geometry, 0x38))(geometry));
 }
 
 // The PE never caches this pair: every caller asks +0x38 and then the template's +0x10 again.
@@ -2718,15 +3167,15 @@ inline unsigned int geometryReflectionType(void* geometry)
 
 inline const LocalBoundingBox& geometryLocalBounds(void* geometry)
 {
-    typedef const void* (__fastcall* GetLocalBoundsFn)(void*, void*);
+    typedef const void* (__thiscall* GetLocalBoundsFn)(void*);
     return *static_cast<const LocalBoundingBox*>(
-        reinterpret_cast<GetLocalBoundsFn>(geometrySlot(geometry, 0x40))(geometry, 0));
+        reinterpret_cast<GetLocalBoundsFn>(geometrySlot(geometry, 0x40))(geometry));
 }
 
 inline bool geometryAcceptsXpShadow(void* geometry)
 {
-    typedef bool (__fastcall* AcceptsFn)(void*, void*);
-    return reinterpret_cast<AcceptsFn>(geometrySlot(geometry, 0xA8))(geometry, 0);
+    typedef bool (__thiscall* AcceptsFn)(void*);
+    return reinterpret_cast<AcceptsFn>(geometrySlot(geometry, 0xA8))(geometry);
 }
 
 inline const Mat4& candidateAbsoluteTransformation(world::IObject* candidate)
@@ -2736,32 +3185,7 @@ inline const Mat4& candidateAbsoluteTransformation(world::IObject* candidate)
 
 inline unsigned int candidateFlags(world::IObject* candidate)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return candidate->getFlags();
-#else
-    return *reinterpret_cast<const unsigned int*>(
-        reinterpret_cast<const unsigned char*>(candidate) + 0x04);
-#endif
-}
-
-ShadowTreeNode* shadowTreeFind(ShadowTree& tree, unsigned int key)
-{
-    ShadowTreeNode* const head = tree.head;
-    ShadowTreeNode* candidate = head;
-    ShadowTreeNode* node = head->parent;
-    while (!node->isNil)
-    {
-        if (node->key < key)
-            node = node->right;
-        else
-        {
-            candidate = node;
-            node = node->left;
-        }
-    }
-    if (candidate == head || key < candidate->key)
-        return head;
-    return candidate;
 }
 
 bool supportedShadowGeometry(unsigned int type)
@@ -2771,29 +3195,37 @@ bool supportedShadowGeometry(unsigned int type)
         || type == kBundledMeshReflectionType;
 }
 
+// PE 0x10161FA0, 0x101620A0
+// The point arm is 0x10161FA0 and the spot arm 0x101620A0.
 bool xpShadowPredicate(void* manager, world::LightSource* source,
                        world::IObject* candidate, bool point)
 {
+    void* geometry = point ? 0 : candidateGeometry(candidate);
+    if (!point && !geometry)
+        return false;
     const unsigned int flags = candidateFlags(candidate);
     if ((flags & 2u) == 0 || (flags & 0x0A000000u) != 0)
         return false;
-    void* const geometry = candidateGeometry(candidate);
+    if (point)
+        geometry = candidateGeometry(candidate);
     if (!geometry)
         return false;
     const unsigned int type = geometryReflectionType(geometry);
     if (!supportedShadowGeometry(type))
         return false;
-    ShadowTree& effects = lmField<ShadowTree>(manager, 0x964);
-    if (shadowTreeFind(effects, type) == effects.head)
+    const ShadowEffectMap& effects = lm(manager).shadowEffects;
+    if (effects.find(type) == effects.end())
         return false;
 
     // PE globals 0x1023A09C/0x1023A0A0 both ship as mode 2. Point adds the
     // manager +0xC8 feature test; Spot deliberately does not.
-    if (point && !lmField<unsigned char>(manager, 0x268))
-        return false;
     const bool dynamicSource = lightSourceTemplatePointer(source)->getIsDynamic();
+    if (type == kStaticMeshReflectionType && !dynamicSource)
+        return false;
+    if (point && !g_LightManager->getShadowStaticFeature())
+        return false;
     if (type == kStaticMeshReflectionType)
-        return dynamicSource;
+        return true;
     return geometryAcceptsXpShadow(geometry);
 }
 
@@ -2809,8 +3241,8 @@ Vec3 transformPoint(const Mat4& matrix, const Vec3& point)
     return result;
 }
 
-bool fitProjectionToCandidate(ShadowProjectionLayout& projection,
-                              world::IObject* candidate)
+// PE 0x101613A0.
+bool candidateShadowCorners(world::IObject* candidate, BoxCorners& corners)
 {
     void* const geometry = candidateGeometry(candidate);
     if (!geometry)
@@ -2824,25 +3256,88 @@ bool fitProjectionToCandidate(ShadowProjectionLayout& projection,
     box.m_max.y += 1.0f;
     box.m_derivedDataDirty = true;
 
+    corners = BoxCorners(box, transform);
+    return true;
+}
+
+// PE 0x10161240.
+bool includeShadowCorners(ShadowProjectionLayout& projection, const BoxCorners& corners)
+{
     bool inside = true;
     for (unsigned int i = 0; i < 8; ++i)
     {
-        const Vec3 local = {
-            (i & 1) ? box.m_max.x : box.m_min.x,
-            (i & 2) ? box.m_max.y : box.m_min.y,
-            (i & 4) ? box.m_max.z : box.m_min.z
-        };
-        const Vec3 world = transformPoint(transform, local);
         // Retail uses bitwise-and assignment and therefore visits all corners.
-        inside = projection.includePoint(world) & inside;
+        inside = projection.includePoint(corners.corner[i]) & inside;
     }
     return inside;
 }
 
+// PE 0x101614D0.
+bool fitProjectionToCandidates(const std::vector<world::IObject*>& candidates,
+                               ShadowProjectionLayout& projection)
+{
+    bool inside = true;
+    for (std::vector<world::IObject*>::const_iterator it = candidates.begin();
+         it != candidates.end(); ++it)
+    {
+        BoxCorners corners;
+        if (candidateShadowCorners(*it, corners))
+            inside = includeShadowCorners(projection, corners) & inside;
+    }
+    return inside;
+}
+
+bool fitProjectionToCandidate(ShadowProjectionLayout& projection,
+                              world::IObject* candidate)
+{
+    std::vector<world::IObject*> candidates(1, candidate);
+    return fitProjectionToCandidates(candidates, projection);
+}
+
+// PE 0x101611F0: unreachable in 1.50: no code or data references. [INFERRED] name. Whether any of the
+// eight corners lies inside the projection's saved frustum; all eight are tested (the results are
+// combined with a bitwise or), unlike includeShadowCorners, which keeps a running and.
+inline bool anyShadowCornerInsideSaved(const ShadowProjectionLayout& projection,
+                                       const BoxCorners& corners)
+{
+    bool inside = false;
+    for (unsigned int i = 0; i < 8; ++i)
+        inside = projection.savedFrustumContains(corners.corner[i]) | inside;
+    return inside;
+}
+
+// PE 0x10161440: unreachable in 1.50: no code or data references. [INFERRED] name. Gathers the terrain
+// nodes inside the projection's saved frustum, then extends the projection over each node's eight bounds
+// corners (node +0x8C). Answers false, without touching the projection, when no node was gathered.
+inline bool fitProjectionToTerrain(ShadowProjectionLayout& projection)
+{
+    Frustum frustum = projection.buildSavedFrustum();
+    terrain()->m_culler->gatherVisibleFrustum(&frustum);
+    const std::vector<TerrainCullerNode*>& nodes = *terrain()->m_culler->gatheredPatches();
+    if (nodes.empty())
+        return false;
+    for (std::vector<TerrainCullerNode*>::const_iterator it = nodes.begin(); it != nodes.end(); ++it)
+        (void)includeShadowCorners(projection,
+                                   *reinterpret_cast<const BoxCorners*>((*it)->corners));
+    return true;
+}
+
+// PE 0x101615D0: unreachable in 1.50: no code or data references. [INFERRED] name. Builds the
+// candidate's shadow corners (the shared 0x101613A0 box, grown one unit down) and answers whether any
+// lies inside the record projection's saved frustum (record +0x498); false without a geometry.
+inline bool candidateInsideRecordFrustum(const XpTemporaryRecord& record, world::IObject* candidate)
+{
+    BoxCorners corners;
+    if (!candidateShadowCorners(candidate, corners))
+        return false;
+    return anyShadowCornerInsideSaved(record.projection, corners);
+}
+
+// PE 0x101623E0.
 void attachShadowCandidate(XpTemporaryRecord& record, world::IObject* candidate)
 {
     (void)fitProjectionToCandidate(record.projection, candidate);
-    record.record.embeddedTree.insert(reinterpret_cast<unsigned int>(candidate));
+    record.record.casters.insert(candidate);
 }
 
 struct ShadowBuildContext
@@ -2857,23 +3352,33 @@ struct ShadowBuildContext
     }
 };
 
+// PE 0x101642F0.
+XpTemporaryRecord* appendTemporaryProjection(ShadowBuildContext& context,
+                                            const ShadowProjectionLayout& projection)
+{
+    const XpTemporaryRecord value(projection);
+    context.records.push_back(value);
+    return &context.records.back();
+}
+
 void appendPointProjection(ShadowBuildContext& context, const Mat4& transform,
                            float left, float right, float bottom, float top,
                            bool restoreSides)
 {
-    context.records.emplace_back(transform, false);
-    XpTemporaryRecord& record = context.records.back();
     ShadowProjectionLayout limits(transform, false);
+    ShadowProjectionLayout projection(transform, false);
     limits.setPerspectiveLimits(left, right, bottom, top, 0.1f, context.farDistance);
     limits.restoreAll();
-    record.projection.copyCurrentToSaved(limits);
-    record.projection.restoreSelected(false, false, false, false, true, false);
+    projection.copyCurrentToSaved(limits);
+    projection.restoreSelected(false, false, false, false, true, false);
     if (restoreSides)
-        record.projection.restoreSelected(true, true, true, false, true, false);
+        projection.restoreSelected(true, true, true, false, true, false);
+    appendTemporaryProjection(context, projection);
 }
 
+// PE 0x10164540.
 void buildPointFan(void* manager, ShadowBuildContext& context,
-                   const vc71::vector_layout& candidates)
+                   const std::vector<world::IObject*>& candidates)
 {
     static const float degreesToRadians = 0.017444445f;
     static const float azimuthDegrees = 90.0f;
@@ -2892,26 +3397,27 @@ void buildPointFan(void* manager, ShadowBuildContext& context,
     for (int i = 0; i < sideCount; ++i)
     {
         const Mat4 previous = base;
-        base.mult(previous, yaw);
+        rendmath::rotMult(base, previous, yaw);                       // PE 0x10078180, 3x3 only
         appendPointProjection(context, base,
                               -azimuth * 0.5f, azimuth * 0.5f,
                               -vertical * 0.5f, vertical * 0.5f, true);
     }
 
     base = Mat4::getIdentity();
-    base.m[12] += sourcePosition.x;
-    base.m[13] += sourcePosition.y;
-    base.m[14] += sourcePosition.z;
+    const Vec3& capPosition = context.source->getAbsolutePosition();
+    base.m[12] += capPosition.x;
+    base.m[13] += capPosition.y;
+    base.m[14] += capPosition.z;
     Mat4 pitch;
     setRotateXDeg(pitch, 90.0f);
     const Mat4 untranslated = base;
-    base.mult(untranslated, pitch);
+    rendmath::rotMult(base, untranslated, pitch);                     // PE 0x10078180, 3x3 only
     const float cap = 3.1400001f - vertical;
     appendPointProjection(context, base, -cap * 0.5f, cap * 0.5f,
                           -cap * 0.5f, cap * 0.5f, false);
 
-    world::IObject* const* const begin = vectorBegin<world::IObject*>(candidates);
-    const unsigned int count = vectorSize<world::IObject*>(candidates);
+    world::IObject* const* const begin = candidates.data();
+    const unsigned int count = static_cast<unsigned int>(candidates.size());
     for (unsigned int i = 0; i < count; ++i)
     {
         if (!xpShadowPredicate(manager, context.source, begin[i], true))
@@ -2922,6 +3428,7 @@ void buildPointFan(void* manager, ShadowBuildContext& context,
     }
 }
 
+// PE 0x10162180; selector 4 at 0x1023A0A4 has no writer in the shipped image.
 float scoreProjection(const XpTemporaryRecord* record, world::IObject* candidate,
                       float& growth)
 {
@@ -2940,6 +3447,16 @@ float scoreProjection(const XpTemporaryRecord* record, world::IObject* candidate
     return newExtents[0];
 }
 
+// PE 0x101623C0. scoreProjection with the growth output discarded (the callee's pointer argument
+// is an unused stack local, never read). Unreachable in 1.50: no code or data references. The name
+// is [CHOSEN, not recovered].
+float scoreProjectionIgnoringGrowth(const XpTemporaryRecord* record, world::IObject* candidate)
+{
+    float ignoredGrowth;
+    return scoreProjection(record, candidate, ignoredGrowth);
+}
+
+// PE 0x101640D0.
 XpTemporaryRecord* appendAdaptiveProjection(ShadowBuildContext& context,
                                             world::IObject* candidate)
 {
@@ -2947,33 +3464,66 @@ XpTemporaryRecord* appendAdaptiveProjection(ShadowBuildContext& context,
         context.source->getAbsoluteTransformation());
     const Vec3 target = matrixTranslation(candidateAbsoluteTransformation(candidate));
     const Vec3 delta = { target.x - source.x, target.y - source.y, target.z - source.z };
-    Vec3 up = { -delta.z, 0.0f, delta.x };
+    Vec3 up = { -1.0f * delta.z, delta.y * 0.0f, delta.x };
     if (dot3(delta, delta) <= FLT_EPSILON)
     {
-        up.x = 0.0f;
-        up.y = -delta.z;
+        up.x = delta.x * 0.0f;
+        up.y = -1.0f * delta.z;
         up.z = delta.y;
     }
-    up = ShadowProjectionLayout::normalized(up);
+    shadowNormalizeInPlace(up);
     Mat4 look;
-    calcLookAtMatrix(look, source, target, up);
+    rendmath::calcLookAtMatrix(look, source, target, up);             // PE 0x10078DE0
 
-    context.records.emplace_back(look, false);
-    XpTemporaryRecord& record = context.records.back();
     ShadowProjectionLayout limits(look, false);
+    ShadowProjectionLayout projection(look, false);
     limits.setPerspectiveLimits(-0.78500003f, 0.78500003f,
                                 -0.78500003f, 0.78500003f,
                                 0.1f, context.farDistance);
     limits.restoreAll();
-    record.projection.copyCurrentToSaved(limits);
-    return &record;
+    projection.copyCurrentToSaved(limits);
+    return appendTemporaryProjection(context, projection);
 }
 
-void buildAdaptivePoint(void* manager, ShadowBuildContext& context,
-                        const vc71::vector_layout& candidates)
+// The adaptive point pass's threshold selector, 0x10260A14: a zero-initialised dword that nothing writes.
+static int s_adaptiveSelector = 0;
+
+// PE 0x101612C0 (ecx = the build context, two stack floats, retn 8): whether the adaptive point pass
+// adds another projection. At most five records exist; the best candidate must have positive (or NaN)
+// growth; a best score of at least FLT_MAX always adds, otherwise the selector at 0x10260A14 picks the
+// threshold the score must exceed: 0 pi/4, 1 pi/2, 2 size * pi/2 * 0.75, 3 pi/2 (a once-initialised
+// static, 0x10260A0C), any other value never adds. The selector has no writer in the image (loader-zero),
+// so the stock mode 0 is the only one a run reaches; it is kept as a constant, not a recovered setting.
+// [CHOSEN, not recovered] type and storage of the selector (a zero-initialised int with no writer).
+bool shouldAddAdaptiveRecord(const ShadowBuildContext& context, float bestScore, float bestGrowth)
 {
-    world::IObject* const* const begin = vectorBegin<world::IObject*>(candidates);
-    const unsigned int count = vectorSize<world::IObject*>(candidates);
+    const int size = static_cast<int>(context.records.size());
+    if (size >= 5)
+        return false;
+    if (bestGrowth <= 0.0f)                                            // `test ah, 41h; jnp`
+        return false;
+    if (!(bestScore < FLT_MAX) && bestScore == bestScore)              // `test ah, 1; je`
+        return true;
+    switch (s_adaptiveSelector)
+    {
+    case 0:
+        return bestScore > 0.78539819f;                                // 0x3F490FDB
+    case 1:
+    case 3:
+        return bestScore > 1.5707964f;                                 // 0x3FC90FDB (mode 3: a static copy)
+    case 2:
+        return static_cast<double>(size) * 1.5707964f * 0.75 < bestScore;
+    default:
+        return false;
+    }
+}
+
+// PE 0x10164370; the stock policy is the call to PE 0x101612C0 above.
+void buildAdaptivePoint(void* manager, ShadowBuildContext& context,
+                        const std::vector<world::IObject*>& candidates)
+{
+    world::IObject* const* const begin = candidates.data();
+    const unsigned int count = static_cast<unsigned int>(candidates.size());
     for (unsigned int i = 0; i < count; ++i)
     {
         world::IObject* const candidate = begin[i];
@@ -2988,7 +3538,7 @@ void buildAdaptivePoint(void* manager, ShadowBuildContext& context,
         {
             float growth = 0.0f;
             const float score = scoreProjection(&*it, candidate, growth);
-            if (score < bestScore)
+            if (!(score >= bestScore))
             {
                 best = &*it;
                 bestScore = score;
@@ -2998,17 +3548,15 @@ void buildAdaptivePoint(void* manager, ShadowBuildContext& context,
 
         // PE selector byte 0x10260A14 is loader-zero.  With the stock scoring
         // mode this adds a record when horizontal growth exceeds pi/4.
-        const bool shouldAdd = context.records.size() < 5u && bestGrowth > 0.0f
-            && (bestScore >= FLT_MAX || bestScore > 0.7853981633974483f);
-        if (shouldAdd)
+        if (shouldAddAdaptiveRecord(context, bestScore, bestGrowth))
         {
             XpTemporaryRecord* const added = appendAdaptiveProjection(context, candidate);
             float ignoredGrowth = 0.0f;
             const float newScore = scoreProjection(added, candidate, ignoredGrowth);
-            if (newScore < bestGrowth || !best)
-                best = added;
-            else
+            if (newScore >= bestGrowth && best)
                 context.records.pop_back();
+            else
+                best = added;
         }
 
         if (!dx9rend::rendererPerformanceFlag(2) && best)
@@ -3016,11 +3564,28 @@ void buildAdaptivePoint(void* manager, ShadowBuildContext& context,
     }
 }
 
-void buildSpotProjection(void* manager, ShadowBuildContext& context,
-                         const vc71::vector_layout& candidates)
+// PE 0x10163FC0.
+XpTemporaryRecord* appendSpotProjection(ShadowBuildContext& context)
 {
-    world::IObject* const* const begin = vectorBegin<world::IObject*>(candidates);
-    const unsigned int count = vectorSize<world::IObject*>(candidates);
+    const Mat4 transform = context.source->getAbsoluteTransformation();
+    const float fullAngle = context.source->getConeAngleRads2() * 2.0f;
+    ShadowProjectionLayout limits(transform, false);
+    ShadowProjectionLayout projection(transform, false);
+    const float positive = fullAngle * 0.5f;
+    const float negative = fullAngle * -0.5f;
+    limits.setPerspectiveLimits(negative, positive, negative, positive,
+                                0.1f, context.farDistance);
+    limits.restoreAll();
+    projection.copyCurrentToSaved(limits);
+    return appendTemporaryProjection(context, projection);
+}
+
+// PE 0x101644C0.
+void buildSpotProjection(void* manager, ShadowBuildContext& context,
+                         const std::vector<world::IObject*>& candidates)
+{
+    world::IObject* const* const begin = candidates.data();
+    const unsigned int count = static_cast<unsigned int>(candidates.size());
     for (unsigned int i = 0; i < count; ++i)
     {
         world::IObject* const candidate = begin[i];
@@ -3028,106 +3593,97 @@ void buildSpotProjection(void* manager, ShadowBuildContext& context,
             continue;
         if (context.records.empty())
         {
-            const Mat4& transform = context.source->getAbsoluteTransformation();
-            context.records.emplace_back(transform, false);
-            XpTemporaryRecord& record = context.records.back();
-            ShadowProjectionLayout limits(transform, false);
-            const float angle = context.source->getConeAngleRads2();
-            limits.setPerspectiveLimits(-angle, angle, -angle, angle,
-                                        0.1f, context.farDistance);
-            limits.restoreAll();
-            record.projection.copyCurrentToSaved(limits);
+            XpTemporaryRecord* const record = appendSpotProjection(context);
+            float ignoredGrowth;
+            (void)scoreProjection(record, candidate, ignoredGrowth);
         }
         attachShadowCandidate(context.records.front(), candidate);
     }
 }
 
-void makeFrustumViewMatrix(const Frustum& frustum, Mat4& output)
-{
-    const Mat4& transform = frustum.m_transformation;
-    const Vec3 eye = { transform.m[12], transform.m[13], transform.m[14] };
-    Vec3 z = { transform.m[8], transform.m[9], transform.m[10] };
-    Vec3 up = { transform.m[4], transform.m[5], transform.m[6] };
-    z = ShadowProjectionLayout::normalized(z);
-    Vec3 x = { up.y * z.z - up.z * z.y,
-               up.z * z.x - up.x * z.z,
-               up.x * z.y - up.y * z.x };
-    x = ShadowProjectionLayout::normalized(x);
-    Vec3 y = { z.y * x.z - z.z * x.y,
-               z.z * x.x - z.x * x.z,
-               z.x * x.y - z.y * x.x };
-    output = Mat4::getIdentity();
-    output.m[0] = x.x; output.m[1] = y.x; output.m[2] = z.x;
-    output.m[4] = x.y; output.m[5] = y.y; output.m[6] = z.y;
-    output.m[8] = x.z; output.m[9] = y.z; output.m[10] = z.z;
-    output.m[12] = -dot3(x, eye);
-    output.m[13] = -dot3(y, eye);
-    output.m[14] = -dot3(z, eye);
-}
-
+// PE 0x10079720.
 void makeFrustumPerspectiveMatrix(const Frustum& frustum, Mat4& output)
 {
-    ::memset(&output, 0, sizeof(output));
-    const float yScale = 1.0f / std::tan(frustum.m_fov * 0.5f);
-    const float d3dAspect = 1.0f / frustum.m_aspect;
-    output.m[0] = yScale / d3dAspect;
-    output.m[5] = yScale;
+#if defined(__APPLE__) || defined(RENDDX9ABI_D3DX9FALLBACK_H)
+    // [CHOSEN, not recovered] These D3DX subsets omit the perspective helper.
+    const float aspect = 1.0f / frustum.m_aspect;
+    const float halfFov = frustum.m_fov * 0.5f;
+    const float scale = std::cos(halfFov) / std::sin(halfFov);
+    output = Mat4::getZero();
+    output.m[0] = scale / aspect;
+    output.m[5] = scale;
     output.m[10] = frustum.m_farDist / (frustum.m_farDist - frustum.m_nearDist);
     output.m[11] = 1.0f;
-    output.m[14] = -frustum.m_nearDist * frustum.m_farDist
-                 / (frustum.m_farDist - frustum.m_nearDist);
+    output.m[14] = -frustum.m_nearDist * output.m[10];
+#else
+    ::D3DXMatrixPerspectiveFovLH(reinterpret_cast<D3DXMATRIX*>(&output),
+        frustum.m_fov, 1.0f / frustum.m_aspect, frustum.m_nearDist, frustum.m_farDist);
+#endif
 }
 
-void materializeShadowRecords(XpLight* light, ShadowBuildContext& context)
+// PE 0x10162460, 0x10162660
+// 0x10162460 is the body for one temporary record; 0x10162660 is the range loop that walks the list
+// and passes the manager's +0x788 byte and +0x208 dword to it. This function is the loop with the
+// per-record body in line, and reads those two manager fields inside.
+void materializeShadowRecords(void* manager, XpLight* light, ShadowBuildContext& context)
 {
+    const auto degenerate = [](const float* extents) {
+        if (extents[0] <= FLT_EPSILON || extents[1] <= FLT_EPSILON)
+            return true;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] PE 0x1016252F / 0x1016259B compare the retained depth difference.
+        return bf2x87::wide(extents[3]) - extents[2] <= bf2x87::wide(FLT_EPSILON);
+#else
+        return extents[3] - extents[2] <= FLT_EPSILON;
+#endif
+    };
     for (std::list<XpTemporaryRecord>::iterator it = context.records.begin();
          it != context.records.end(); ++it)
     {
-        if (it->record.embeddedTree.size == 0)
+        const bool showFrustum = lm(manager).showFrustums != 0;
+        if (it->record.casters.size() == 0)
             continue;
-        ShadowProjectionLayout projection(it->projection.transform, false);
+        ShadowProjectionLayout projection(it->projection.getTransform(), false);
         projection.copyCurrentToSaved(it->projection);
         // PE data dword 0x1023A0AC ships as policy 1: restore all fitted bounds.
         projection.restoreAll();
         float extents[4];
         projection.getExtents(extents);
-        if (extents[0] <= FLT_EPSILON || extents[1] <= FLT_EPSILON
-            || extents[3] - extents[2] <= FLT_EPSILON)
+        if (degenerate(extents))
         {
             projection.restoreAll();
-            projection.getExtents(extents);
         }
-        if (extents[0] <= FLT_EPSILON || extents[1] <= FLT_EPSILON
-            || extents[3] - extents[2] <= FLT_EPSILON)
+        projection.getExtents(extents);
+        if (degenerate(extents))
             continue;
 
-        XpRenderRecordLayout record;
+        LightShadowRecord record;
         record.source = light->source;
-        for (vc71::set_node* node = it->record.embeddedTree.begin();
-             node != it->record.embeddedTree.end(); node = vc71::set_layout::next(node))
-            record.embeddedTree.insert(node->key);
-        record.frustum = projection.getFrustum();
-        makeFrustumViewMatrix(record.frustum, record.matrices[1]);
+        for (std::set<world::IObject*>::const_iterator node = it->record.casters.begin();
+             node != it->record.casters.end(); ++node)
+            record.casters.insert(*node);
+        rendmath::frustumAssign(record.frustum, projection.getFrustum());
+        shadowFrustumViewMatrix(record.frustum, record.matrices[1]);
         makeFrustumPerspectiveMatrix(record.frustum, record.matrices[2]);
         record.tail494[1] = 1;
-        if (light->policy)
-        {
-            vc71::vectorRef<XpRenderRecordLayout> destination(&light->records);
-            destination.push_back(record);
-        }
+        light->addRecord(record);
+        if (showFrustum)
+            static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(record.frustum, 0, 0);
     }
 }
 
+// PE 0x10164980, per light; its range loop and separate flag-0 test are in renderPointShadowMaps
+// (the static-light arm, PE 0x10164CC0, is cited there).
 void buildPointLightRecords(void* manager, XpLight* light, bool adaptive)
 {
     if (lightSourceTemplatePointer(light->source)->getLightTypeEnum() != 1)
         return;
     ShadowBuildContext context(light->source, xpEffectiveRadius(light) + 3.0f);
     if (adaptive)
-        buildAdaptivePoint(manager, context, light->candidates);
+        buildAdaptivePoint(manager, context, xpLightCandidates(light));
     else
-        buildPointFan(manager, context, light->candidates);
-    materializeShadowRecords(light, context);
+        buildPointFan(manager, context, xpLightCandidates(light));
+    materializeShadowRecords(manager, light, context);
 }
 
 void buildSpotLightRecords(void* manager, XpLight* light)
@@ -3138,10 +3694,47 @@ void buildSpotLightRecords(void* manager, XpLight* light)
     // the point builder it does not apply dynamicLightRangeScale.
     ShadowBuildContext context(light->source,
                                light->source->getVisualBoundingRadius() + 3.0f);
-    buildSpotProjection(manager, context, light->candidates);
-    materializeShadowRecords(light, context);
+    buildSpotProjection(manager, context, xpLightCandidates(light));
+    materializeShadowRecords(manager, light, context);
 }
 
+// PE 0x10164A80. The point-shadow arm of the light-source tree at manager +0x8CC: for at most the first
+// three entries it queries the objects around the light source, builds the point records (the five-face
+// fan for a dynamic template, otherwise the adaptive builder unless the skip byte or performance flag 1
+// is set) and materializes them. PE 0x10166E69 calls it from renderPointShadowMaps only while the
+// selector dword 0x1023A0CC is neither 2 nor 0; that dword ships as 2 and has no writer, and the tree
+// is never filled, so the call is not wired here. [CHOSEN, not recovered] the tree's mapped type is
+// world::LightSource* (node +0x10 is passed as the source, the key at +0x0C is never read): the tree
+// is empty on every path, so the choice cannot be observed. Unreachable in 1.50 by data: the selector
+// is never different. The name is [CHOSEN, not recovered].
+void buildTreePointRecords(void* manager)
+{
+    // PE data dword 0x1023A0BC ships as 3.0 and has no writer; the byte 0x10260A28 ships as 0 and has none.
+    static const float treeDynamicPointScale = 3.0f;
+    static const bool treeSkipBuild = false;
+    ShadowUnresolvedMap& tree = lm(manager).unresolvedTree8CC;
+    int remaining = 3;
+    for (ShadowUnresolvedMap::iterator it = tree.begin(); it != tree.end() && remaining > 0; ++it, --remaining)
+    {
+        world::LightSource* const source = static_cast<world::LightSource*>(it->second);
+        const world::LightSourceTemplate* const sourceTemplate = lightSourceTemplatePointer(source);
+        float radius = source->getVisualBoundingRadius();
+        if (sourceTemplate->getIsDynamic() && sourceTemplate->getLightTypeEnum() == 1)
+            radius *= treeDynamicPointScale;
+        std::vector<world::IObject*> candidates;
+        pointQueryObjects(matrixTranslation(source->getAbsoluteTransformation()), radius, candidates);
+        ShadowBuildContext context(source, 3.0f + radius);
+        if (sourceTemplate->getIsDynamic())
+            buildPointFan(manager, context, candidates);
+        else if (treeSkipBuild || dx9rend::rendererPerformanceFlag(1))
+            continue;
+        else
+            buildAdaptivePoint(manager, context, candidates);
+        materializeShadowRecords(manager, xpLightForSource(source), context);
+    }
+}
+
+// PE 0x100EED10.
 void updateXpCoordinator(double time)
 {
     for (std::vector<XpLight*>::iterator it = g_xpCoordinator.iterationOrder.begin();
@@ -3151,6 +3744,7 @@ void updateXpCoordinator(double time)
     updateDynamicCollector(time);
 }
 
+// PE 0x100EEFC0.
 void buildXpGeometryPairs()
 {
     for (std::vector<XpLight*>::const_iterator it = g_xpCoordinator.iterationOrder.begin();
@@ -3159,25 +3753,25 @@ void buildXpGeometryPairs()
         XpLight* const light = *it;
         if (!light->active)
             continue;
-        world::IObject* const* const begin =
-            vectorBegin<world::IObject*>(light->candidates);
-        const unsigned int count = vectorSize<world::IObject*>(light->candidates);
+        world::IObject* const* const begin = light->candidates.data();
+        const unsigned int count = static_cast<unsigned int>(light->candidates.size());
         for (unsigned int i = 0; i < count; ++i)
             g_xpCoordinator.geometryPairs.insert(
                 std::make_pair(candidateGeometry(begin[i]), light->source));
     }
 }
 
-void clearShadowRecordVector(vc71::vector_layout& vector)
+// resize(0, Record()): every record destroyed, the storage kept.
+void clearShadowRecordVector(std::vector<LightShadowRecord>& vector)
 {
-    XpRenderRecordLayout* const records = vectorBegin<XpRenderRecordLayout>(vector);
-    const unsigned int count = vectorSize<XpRenderRecordLayout>(vector);
-    for (unsigned int i = 0; i < count; ++i)
-        records[i].~XpRenderRecordLayout();
-    vector.last = vector.first;
+    vector.clear();
 }
 
-void destroyShadowRecordVector(vc71::vector_layout& vector);
+// clear, then the storage released.
+void destroyShadowRecordVector(std::vector<LightShadowRecord>& vector)
+{
+    std::vector<LightShadowRecord>().swap(vector);
+}
 
 inline world::IObject* objectParent(world::IObject* object)
 {
@@ -3234,32 +3828,22 @@ inline bool controlChildSoldierActive(void* control)
 inline world::IObject* const* controlFirstPersonObjectsEnd(void* control)
 {
     void* const weapons = static_cast<world::IPlayerControlObject*>(control)->getWeapons();
-#if BF2_PLUGIN_ABI_NATIVE
     std::vector<world::IObject*>& host = *static_cast<std::vector<world::IObject*>*>(weapons);
     return host.data() + host.size();
-#else
-    return reinterpret_cast<world::IObject* const*>(
-        static_cast<const vc71::vector_layout*>(weapons)->last);
-#endif
 }
 
 inline world::IObject* const* controlFirstPersonObjectsBegin(void* control)
 {
     void* const weapons = static_cast<world::IPlayerControlObject*>(control)->getWeapons();
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<std::vector<world::IObject*>*>(weapons)->data();
-#else
-    return reinterpret_cast<world::IObject* const*>(
-        static_cast<const vc71::vector_layout*>(weapons)->first);
-#endif
 }
 
 // +0xA0, no arguments: the geometry's owner object (StaticMesh answers the shared const-0 body).
 inline world::IObject* geometryObject(void* geometry)
 {
-    typedef void* (__fastcall* OwnerFn)(void*, void*);
+    typedef void* (__thiscall* OwnerFn)(void*);
     return static_cast<world::IObject*>(
-        reinterpret_cast<OwnerFn>(geometrySlot(geometry, 0xA0))(geometry, 0));
+        reinterpret_cast<OwnerFn>(geometrySlot(geometry, 0xA0))(geometry));
 }
 
 bool pointCasterPassesLocalView(void* localPlayer, world::IObject* candidate,
@@ -3314,17 +3898,18 @@ bool pointCasterPassesLocalView(void* localPlayer, world::IObject* candidate,
     return true;
 }
 
-void assignPointShadowAtlas(void* manager, XpRenderRecordLayout& record)
+// PE 0x10167AD0; includes the caller's following ordinal increment (0x10166F28).
+void assignPointShadowAtlas(void* manager, LightShadowRecord& record)
 {
     // Point/spot records use an equal-tile square atlas rather
     // than the directional 28-entry placement table.  There is intentionally
     // no zero/divisibility guard around the retail integer division.
-    const int atlasSize = lmField<int>(manager, 0x204);
-    const int tileSize = lmField<int>(manager, 0x208);
+    const int atlasSize = lm(manager).shadowMapSize;
+    const int tileSize = lm(manager).shadowTileSize;
     const int columns = atlasSize / tileSize;
-    const unsigned int ordinal = g_shadowRecordOrdinal++;
-    const int x = tileSize * static_cast<int>(ordinal % columns);
-    const int y = tileSize * static_cast<int>(ordinal / columns);
+    const int ordinal = static_cast<int>(g_shadowRecordOrdinal);
+    const int x = tileSize * (ordinal % columns);
+    const int y = tileSize * (ordinal / columns);
 
     D3DVIEWPORT9 viewport;
     viewport.X = static_cast<DWORD>(x + 3);
@@ -3334,15 +3919,22 @@ void assignPointShadowAtlas(void* manager, XpRenderRecordLayout& record)
     viewport.MinZ = 0.0f;
     viewport.MaxZ = 1.0f;
     IDirect3DDevice9* const device =
-        lmField<IDirect3DDevice9*>(manager, 0x908);
+        lm(manager).device;
     device->SetViewport(&viewport);
     RECT scissor = { x + 3, y + 3, x + tileSize - 3, y + tileSize - 3 };
     device->SetScissorRect(&scissor);
 
     const float inverseAtlas = 1.0f / static_cast<float>(atlasSize);
-    const float scale = static_cast<float>(tileSize) * inverseAtlas;
-    const float u = static_cast<float>(x) * inverseAtlas;
-    const float v = static_cast<float>(y) * inverseAtlas;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] FILD keeps signed sizes and unsigned coordinates exact until stores.
+    const float scale = bf2x87::store(bf2x87::wide(tileSize) / bf2x87::wide(atlasSize));
+    const float u = bf2x87::store(bf2x87::wide(static_cast<unsigned int>(x)) * inverseAtlas);
+    const float v = bf2x87::store(bf2x87::wide(static_cast<unsigned int>(y)) * inverseAtlas);
+#else
+    const float scale = static_cast<float>(tileSize) / static_cast<float>(atlasSize);
+    const float u = static_cast<float>(static_cast<unsigned int>(x)) * inverseAtlas;
+    const float v = static_cast<float>(static_cast<unsigned int>(y)) * inverseAtlas;
+#endif
     record.atlasScaleOffset[0] = u;
     record.atlasScaleOffset[1] = v;
     record.atlasScaleOffset[2] = scale;
@@ -3356,23 +3948,24 @@ void assignPointShadowAtlas(void* manager, XpRenderRecordLayout& record)
     record.atlasBounds[1] = v;
     record.atlasBounds[2] = u + scale;
     record.atlasBounds[3] = v + scale;
+    ++g_shadowRecordOrdinal;
 }
 
 // +0x20, the shadow-map draw, as the point/spot path calls it (0x10167462..0x10167479):
 // `push 0; push 0; push &rec+10h; push &rec+278h; push &rec+238h; push rec`. So the six stack
 // arguments are the record, its matrices[1] (+0x238) and matrices[2] (+0x278), its frustum (+0x10),
 // and the two zeros the directional arm fills with (secondPass, reflectionChanged) instead.
-inline void geometryDrawShadow(void* geometry, XpRenderRecordLayout* record,
+inline void geometryDrawShadow(void* geometry, LightShadowRecord* record,
                                int secondPass, int effectChanged)
 {
-    typedef void (__fastcall* DrawShadowMapFn)(void*, void*, void*, const void*, const void*,
+    typedef void (__thiscall* DrawShadowMapFn)(void*, void*, const void*, const void*,
                                                const void*, unsigned int, unsigned int);
     reinterpret_cast<DrawShadowMapFn>(geometrySlot(geometry, 0x20))(
-        geometry, 0, record, &record->matrices[1], &record->matrices[2], &record->frustum,
+        geometry, record, &record->matrices[1], &record->matrices[2], &record->frustum,
         static_cast<unsigned int>(secondPass), static_cast<unsigned int>(effectChanged));
 }
 
-void submitShadowCaster(void* manager, XpRenderRecordLayout& record,
+void submitShadowCaster(void* manager, LightShadowRecord& record,
                         world::IObject* candidate, void* localPlayer,
                         bool applyPointFilter)
 {
@@ -3387,9 +3980,9 @@ void submitShadowCaster(void* manager, XpRenderRecordLayout& record,
         && !pointCasterPassesLocalView(localPlayer, candidate, geometry, filterType))
         return;
 
-    ShadowTree& effects = lmField<ShadowTree>(manager, 0x964);
-    ShadowTreeNode* const effectNode = shadowTreeFind(effects, effectType);
-    if (effectNode == effects.head)
+    const ShadowEffectMap& effects = lm(manager).shadowEffects;
+    const ShadowEffectMap::const_iterator effectNode = effects.find(effectType);
+    if (effectNode == effects.end())
         return;
 
     if (applyPointFilter)
@@ -3397,61 +3990,64 @@ void submitShadowCaster(void* manager, XpRenderRecordLayout& record,
         // The loader-zero debug bytes bypassing this cull and filtering dynamic
         // sources are deliberately absent here; the stock arm performs the
         // Frustum test and only performance flag 4 suppresses the draw.
-        if (!record.frustum.inside(objectAbsolutePosition(candidate),
-                                   objectVisualRadius(candidate))
+        if (!rendmath::frustumInside(record.frustum, objectAbsolutePosition(candidate),
+                                      objectVisualRadius(candidate))
             || dx9rend::rendererPerformanceFlag(4))
             return;
     }
 
     dx9rend::stateManagerPush();
-    dx9rend::effectBegin(effectNode->value);
-    dx9rend::effectBeginPass(effectNode->value, 1);
+    dx9rend::effectBegin(effectNode->second);
+    dx9rend::effectBeginPass(effectNode->second, 1);
     geometryDrawShadow(geometry, &record, 0, 0);
-    dx9rend::effectEnd(effectNode->value);
+    dx9rend::effectEnd(effectNode->second);
     dx9rend::stateManagerPop();
 }
 
 void renderXpLightRecords(void* manager, XpLight* light, void* localPlayer,
                           bool applyPointFilter)
 {
-    XpRenderRecordLayout* const records =
-        vectorBegin<XpRenderRecordLayout>(light->records);
-    const unsigned int count = vectorSize<XpRenderRecordLayout>(light->records);
+    LightShadowRecord* const records = light->records.data();
+    const unsigned int count = static_cast<unsigned int>(light->records.size());
     for (unsigned int i = 0; i < count; ++i)
     {
-        XpRenderRecordLayout& record = records[i];
+        LightShadowRecord& record = records[i];
         record.flags448[0] = 0;
         assignPointShadowAtlas(manager, record);
-        for (vc71::set_node* node = record.embeddedTree.begin();
-             node != record.embeddedTree.end(); node = vc71::set_layout::next(node))
+        for (std::set<world::IObject*>::const_iterator node = record.casters.begin();
+             node != record.casters.end(); ++node)
         {
-            submitShadowCaster(manager, record,
-                reinterpret_cast<world::IObject*>(node->key), localPlayer,
-                applyPointFilter);
+            submitShadowCaster(manager, record, *node, localPlayer, applyPointFilter);
         }
     }
 }
 
+// PE 0x10166DB0, 0x10164CC0
+// 0x10164CC0 is the flag-0-guarded loop over one light vector (the static lights here) that builds the
+// adaptive point records per light and materializes them; it is in line below.
 void renderPointShadowMaps(void* manager)
 {
     // PE 0x10166DB0 stock selector 2: dynamic lights use the five-face fan,
     // static lights use the adaptive builder, and submission orders static
     // records before dynamic records.  +0x7DC remains empty in this mode.
-    clearShadowRecordVector(lmField<vc71::vector_layout>(manager, 0x7DC));
+    clearShadowRecordVector(lm(manager).pointRecords);
     if (!dx9rend::rendererPerformanceFlag(0))
     {
         for (std::vector<XpLight*>::iterator it = g_xpCoordinator.dynamicFrame.begin();
              it != g_xpCoordinator.dynamicFrame.end(); ++it)
             buildPointLightRecords(manager, *it, false);
     }
-    for (std::vector<XpLight*>::iterator it = g_xpCoordinator.staticFrame.begin();
-         it != g_xpCoordinator.staticFrame.end(); ++it)
-        buildPointLightRecords(manager, *it, true);
-
-    if (dx9rend::rendererPerformanceFlag(5))
-        destroyShadowRecordVector(lmField<vc71::vector_layout>(manager, 0x7DC));
+    if (!dx9rend::rendererPerformanceFlag(0))
+    {
+        for (std::vector<XpLight*>::iterator it = g_xpCoordinator.staticFrame.begin();
+             it != g_xpCoordinator.staticFrame.end(); ++it)
+            buildPointLightRecords(manager, *it, true);
+    }
 
     void* const localPlayer = localHumanPlayerRaw();
+    if (dx9rend::rendererPerformanceFlag(5))
+        destroyShadowRecordVector(lm(manager).pointRecords);
+
     for (std::vector<XpLight*>::iterator it = g_xpCoordinator.staticFrame.begin();
          it != g_xpCoordinator.staticFrame.end(); ++it)
         renderXpLightRecords(manager, *it, localPlayer, true);
@@ -3460,21 +4056,20 @@ void renderPointShadowMaps(void* manager)
         renderXpLightRecords(manager, *it, localPlayer, true);
 
     if (dx9rend::rendererPerformanceFlag(6))
-        destroyShadowRecordVector(lmField<vc71::vector_layout>(manager, 0x7DC));
-    clearShadowTree(lmField<ShadowTree>(manager, 0x8CC));
+        destroyShadowRecordVector(lm(manager).pointRecords);
+    lm(manager).unresolvedTree8CC.clear();
 }
 
-void appendShadowRecords(vc71::vector_layout& destination,
-                         const vc71::vector_layout& source)
+void appendShadowRecords(std::vector<LightShadowRecord>& destination,
+                         const std::vector<LightShadowRecord>& source)
 {
-    vc71::vectorRef<XpRenderRecordLayout> output(&destination);
-    const XpRenderRecordLayout* const records =
-        vectorBegin<XpRenderRecordLayout>(source);
-    const unsigned int count = vectorSize<XpRenderRecordLayout>(source);
+    const LightShadowRecord* const records = source.data();
+    const unsigned int count = static_cast<unsigned int>(source.size());
     for (unsigned int i = 0; i < count; ++i)
-        output.push_back(records[i]);
+        destination.push_back(records[i]);
 }
 
+// PE 0x10167580.
 void renderSpotShadowMaps(void* manager)
 {
     // PE 0x10167580 is gated by signed BSS dword 0x10260A74 <= 0; its
@@ -3483,8 +4078,7 @@ void renderSpotShadowMaps(void* manager)
     if (skipSpotPass > 0)
         return;
 
-    vc71::vector_layout& spotRecords =
-        lmField<vc71::vector_layout>(manager, 0x7CC);
+    std::vector<LightShadowRecord>& spotRecords = lm(manager).spotRecords;
     clearShadowRecordVector(spotRecords);
     if (!g_xpCoordinator.dynamicFrame.empty())
     {
@@ -3496,25 +4090,23 @@ void renderSpotShadowMaps(void* manager)
     }
 
     (void)localHumanPlayerRaw(); // shipped side-effect call; result is discarded
-    XpRenderRecordLayout* const records =
-        vectorBegin<XpRenderRecordLayout>(spotRecords);
-    const unsigned int count = vectorSize<XpRenderRecordLayout>(spotRecords);
+    LightShadowRecord* const records = spotRecords.data();
+    const unsigned int count = static_cast<unsigned int>(spotRecords.size());
     for (unsigned int i = 0; i < count; ++i)
     {
         records[i].flags448[0] = 0;
         assignPointShadowAtlas(manager, records[i]);
-        for (vc71::set_node* node = records[i].embeddedTree.begin();
-             node != records[i].embeddedTree.end(); node = vc71::set_layout::next(node))
+        for (std::set<world::IObject*>::const_iterator node = records[i].casters.begin();
+             node != records[i].casters.end(); ++node)
         {
-            submitShadowCaster(manager, records[i],
-                reinterpret_cast<world::IObject*>(node->key), 0, false);
+            submitShadowCaster(manager, records[i], *node, 0, false);
         }
     }
 
     // In the observed stock path +0x7CC has no producer, so this appends an
     // empty range.  Keep the range operation rather than synthesising spot
     // records into the manager vector.
-    appendShadowRecords(lmField<vc71::vector_layout>(manager, 0x7DC), spotRecords);
+    appendShadowRecords(lm(manager).pointRecords, spotRecords);
 }
 
 // The directional path below is PE 0x10164DC0 and its TSM fitter at 0x101626B0.  Keep the
@@ -3523,25 +4115,17 @@ void renderSpotShadowMaps(void* manager)
 Mat4 multiplyShadowMatrices(const Mat4& lhs, const Mat4& rhs)
 {
     Mat4 result;
-    for (unsigned int row = 0; row < 4; ++row)
-    {
-        for (unsigned int column = 0; column < 4; ++column)
-        {
-            result.m[row * 4 + column] =
-                lhs.m[row * 4 + 0] * rhs.m[0 * 4 + column]
-              + lhs.m[row * 4 + 1] * rhs.m[1 * 4 + column]
-              + lhs.m[row * 4 + 2] * rhs.m[2 * 4 + column]
-              + lhs.m[row * 4 + 3] * rhs.m[3 * 4 + column];
-        }
-    }
+    ::D3DXMatrixMultiply(reinterpret_cast<D3DXMATRIX*>(&result),
+        reinterpret_cast<const D3DXMATRIX*>(&lhs), reinterpret_cast<const D3DXMATRIX*>(&rhs));
     return result;
 }
 
 Vec3 transformShadowCoord(const Vec3& point, const Mat4& matrix)
 {
-    const float w = point.x * matrix.m[3] + point.y * matrix.m[7]
-                  + point.z * matrix.m[11] + matrix.m[15];
-    const float inverseW = 1.0f / w;
+#if defined(__APPLE__) || defined(RENDDX9ABI_D3DX9FALLBACK_H)
+    // [CHOSEN, not recovered] The native/no-SDK subsets omit this D3DX entry point.
+    const float inverseW = 1.0f / (point.x * matrix.m[3] + point.y * matrix.m[7]
+        + point.z * matrix.m[11] + matrix.m[15]);
     const Vec3 result = {
         (point.x * matrix.m[0] + point.y * matrix.m[4]
           + point.z * matrix.m[8] + matrix.m[12]) * inverseW,
@@ -3550,16 +4134,28 @@ Vec3 transformShadowCoord(const Vec3& point, const Mat4& matrix)
         (point.x * matrix.m[2] + point.y * matrix.m[6]
           + point.z * matrix.m[10] + matrix.m[14]) * inverseW
     };
+#else
+    Vec3 result;
+    ::D3DXVec3TransformCoord(reinterpret_cast<D3DXVECTOR3*>(&result),
+        reinterpret_cast<const D3DXVECTOR3*>(&point), reinterpret_cast<const D3DXMATRIX*>(&matrix));
+#endif
     return result;
 }
 
 Vec3 transformShadowNormal(const Vec3& value, const Mat4& matrix)
 {
+#if defined(__APPLE__) || defined(RENDDX9ABI_D3DX9FALLBACK_H)
+    // [CHOSEN, not recovered] The native/no-SDK subsets omit this D3DX entry point.
     const Vec3 result = {
         value.x * matrix.m[0] + value.y * matrix.m[4] + value.z * matrix.m[8],
         value.x * matrix.m[1] + value.y * matrix.m[5] + value.z * matrix.m[9],
         value.x * matrix.m[2] + value.y * matrix.m[6] + value.z * matrix.m[10]
     };
+#else
+    Vec3 result;
+    ::D3DXVec3TransformNormal(reinterpret_cast<D3DXVECTOR3*>(&result),
+        reinterpret_cast<const D3DXVECTOR3*>(&value), reinterpret_cast<const D3DXMATRIX*>(&matrix));
+#endif
     return result;
 }
 
@@ -3577,11 +4173,12 @@ ShadowAabb emptyShadowAabb(float extent)
     return result;
 }
 
+// PE 0x1016BFB0.
 void expandShadowAabb(ShadowAabb& bounds, const Vec3& point)
 {
-    bounds.minimum.x = (std::min)(bounds.minimum.x, point.x);
-    bounds.minimum.y = (std::min)(bounds.minimum.y, point.y);
-    bounds.minimum.z = (std::min)(bounds.minimum.z, point.z);
+    bounds.minimum.x = bounds.minimum.x < point.x ? bounds.minimum.x : point.x;
+    bounds.minimum.y = bounds.minimum.y < point.y ? bounds.minimum.y : point.y;
+    bounds.minimum.z = bounds.minimum.z < point.z ? bounds.minimum.z : point.z;
     bounds.maximum.x = (std::max)(bounds.maximum.x, point.x);
     bounds.maximum.y = (std::max)(bounds.maximum.y, point.y);
     bounds.maximum.z = (std::max)(bounds.maximum.z, point.z);
@@ -3619,11 +4216,7 @@ inline bool objectHasCollisionLod(world::IObject* object, int lod)
 
 inline void* objectCollisionMesh(world::IObject* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return world::object_detail::LayoutAccess::collisionMesh(object);
-#else
-    return *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(object) + 0x40);
-#endif
 }
 
 inline const LocalBoundingBox* collisionBoundingBox(void* collision, int lod)
@@ -3646,24 +4239,24 @@ bool geometryUsesShadowSphere(void* geometry)
 // site discards them, so the dispatch is declared void.
 inline void geometryPrepareShadow(void* geometry, unsigned int rendererToken)
 {
-    typedef void (__fastcall* StampFn)(void*, void*, unsigned int);
-    reinterpret_cast<StampFn>(geometrySlot(geometry, 0xAC))(geometry, 0, rendererToken);
+    typedef void (__thiscall* StampFn)(void*, unsigned int);
+    reinterpret_cast<StampFn>(geometrySlot(geometry, 0xAC))(geometry, rendererToken);
 }
 
 // +0x24, one argument: the shadow record this geometry draws into (StaticMesh +0x34C, SkinnedMesh
 // +0x33C, BundledMesh +0x2B4 - the "caster" the shadow draws read when no light is passed).
-inline void geometryAttachShadowRecord(void* geometry, XpRenderRecordLayout* record)
+inline void geometryAttachShadowRecord(void* geometry, LightShadowRecord* record)
 {
-    typedef void (__fastcall* AttachFn)(void*, void*, void*);
-    reinterpret_cast<AttachFn>(geometrySlot(geometry, 0x24))(geometry, 0, record);
+    typedef void (__thiscall* AttachFn)(void*, void*);
+    reinterpret_cast<AttachFn>(geometrySlot(geometry, 0x24))(geometry, record);
 }
 
 // +0xA4, no arguments: the geometry's root object (memoised by +0xF8 / refreshed in the call).
 inline world::IObject* geometryFinalizerObject(void* geometry)
 {
-    typedef void* (__fastcall* RootFn)(void*, void*);
+    typedef void* (__thiscall* RootFn)(void*);
     return static_cast<world::IObject*>(
-        reinterpret_cast<RootFn>(geometrySlot(geometry, 0xA4))(geometry, 0));
+        reinterpret_cast<RootFn>(geometrySlot(geometry, 0xA4))(geometry));
 }
 
 inline unsigned int rendererShadowToken()
@@ -3720,20 +4313,12 @@ ShadowAabb shadowBoundsForPoints(const Vec3* points, unsigned int count, float e
 void collectDirectionalCasterBounds(void* manager, const Mat4& inverseView,
                                     std::vector<ShadowAabb>& output)
 {
-    world::IObject* const* const first =
-        vectorBegin<world::IObject*>(lmField<vc71::vector_layout>(manager, 0x914));
-    const unsigned int count =
-        vectorSize<world::IObject*>(lmField<vc71::vector_layout>(manager, 0x914));
-    std::vector<world::IObject*> ordered(first, first + count);
-    std::sort(ordered.begin(), ordered.end(),
-        [](world::IObject* lhs, world::IObject* rhs) {
-            return reinterpret_cast<unsigned int>(lhs)
-                 < reinterpret_cast<unsigned int>(rhs);
-        });
-    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+    world::IObject* const* const first = lm(manager).shadowCandidates.data();
+    const unsigned int count = static_cast<unsigned int>(lm(manager).shadowCandidates.size());
+    std::set<world::IObject*> ordered(first, first + count);
 
     static float sphereScale = std::sqrt(2.0f);
-    for (std::vector<world::IObject*>::const_iterator it = ordered.begin();
+    for (std::set<world::IObject*>::const_iterator it = ordered.begin();
          it != ordered.end(); ++it)
     {
         world::IObject* const object = *it;
@@ -3745,9 +4330,20 @@ void collectDirectionalCasterBounds(void* manager, const Mat4& inverseView,
         if (sphereArm)
         {
             const Vec3& centre = objectAbsolutePosition(object);
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] The scaled radius is retained through all six stores.
+            const bf2x87::Real radius = bf2x87::wide(objectVisualRadius(object)) * sphereScale;
+            Vec3 low = { bf2x87::store(bf2x87::wide(centre.x) - radius),
+                         bf2x87::store(bf2x87::wide(centre.y) - radius),
+                         bf2x87::store(bf2x87::wide(centre.z) - radius) };
+            Vec3 high = { bf2x87::store(radius + centre.x),
+                          bf2x87::store(radius + centre.y),
+                          bf2x87::store(radius + centre.z) };
+#else
             const float radius = objectVisualRadius(object) * sphereScale;
             Vec3 low = { centre.x - radius, centre.y - radius, centre.z - radius };
             Vec3 high = { centre.x + radius, centre.y + radius, centre.z + radius };
+#endif
             ShadowAabb box = emptyShadowAabb(3.3e33f);
             expandShadowAabb(box, transformShadowCoord(low, inverseView));
             expandShadowAabb(box, transformShadowCoord(high, inverseView));
@@ -3757,51 +4353,293 @@ void collectDirectionalCasterBounds(void* manager, const Mat4& inverseView,
 
         if (!objectHasCollisionLod(object, 0))
             continue;
-        void* const collision = objectCollisionMesh(object);
-        const LocalBoundingBox* const local = collisionBoundingBox(collision, 0);
         const Mat4 objectToView = multiplyShadowMatrices(
             objectAbsoluteTransformation(object), inverseView);
+        void* const collision = objectCollisionMesh(object);
         ShadowAabb box = emptyShadowAabb(3.3e33f);
         for (unsigned int corner = 0; corner < 8; ++corner)
             expandShadowAabb(box, transformShadowCoord(
-                localBoxCorner(*local, corner), objectToView));
+                localBoxCorner(*collisionBoundingBox(collision, 0), 7u - corner), objectToView));
         output.push_back(box);
     }
 }
 
+float shadowProductDifference(float a, float b, float c, float d)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Both x87 products survive until the single difference store.
+    return bf2x87::store(bf2x87::wide(a) * b - bf2x87::wide(c) * d);
+#else
+    return a * b - c * d;
+#endif
+}
+
+// PE 0x10169A90. Leaves the destination untouched for a degenerate intersection.
+bool intersectShadowPlanes(const Plane3& a, const Plane3& b, const Plane3& c, Vec3& output)
+{
+    const Vec3 ab = { shadowProductDifference(a.normal.z, b.normal.y, a.normal.y, b.normal.z),
+                      shadowProductDifference(a.normal.x, b.normal.z, a.normal.z, b.normal.x),
+                      shadowProductDifference(a.normal.y, b.normal.x, b.normal.y, a.normal.x) };
+    const Vec3 ac = { shadowProductDifference(a.normal.y, c.normal.z, a.normal.z, c.normal.y),
+                      shadowProductDifference(a.normal.z, c.normal.x, c.normal.z, a.normal.x),
+                      shadowProductDifference(c.normal.y, a.normal.x, a.normal.y, c.normal.x) };
+    const Vec3 cb = { shadowProductDifference(b.normal.z, c.normal.y, b.normal.y, c.normal.z),
+                      shadowProductDifference(b.normal.x, c.normal.z, b.normal.z, c.normal.x),
+                      shadowProductDifference(b.normal.y, c.normal.x, c.normal.y, b.normal.x) };
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The determinant has one final single-precision store.
+    const float determinant = bf2x87::store(bf2x87::wide(ab.z) * c.normal.z
+        + bf2x87::wide(ab.y) * c.normal.y + bf2x87::wide(ab.x) * c.normal.x);
+#else
+    const float determinant = ab.z * c.normal.z + ab.y * c.normal.y + ab.x * c.normal.x;
+#endif
+    unsigned int bits;
+    ::memcpy(&bits, &determinant, sizeof(bits));
+    bits &= 0x7F800000u;
+    if (bits == 0 || bits == 0x7F800000u)
+        return false;
+
+    const Vec3 dAB = { ab.x * c.d, ab.y * c.d, ab.z * c.d };
+    const Vec3 dAC = { ac.x * b.d, ac.y * b.d, ac.z * b.d };
+    const Vec3 dCB = { cb.x * a.d, cb.y * a.d, cb.z * a.d };
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep the reciprocal in x87 precision until the output stores.
+    const bf2x87::Real inverse = bf2x87::div(bf2x87::wide(1.0f), bf2x87::wide(determinant));
+    const float sumX = bf2x87::store((bf2x87::wide(dAC.x) + dAB.x) + dCB.x);
+    const float sumY = bf2x87::store(-((bf2x87::wide(dAC.y) + dAB.y) + dCB.y));
+    output.x = bf2x87::store(bf2x87::wide(-sumX) * inverse);
+    output.y = bf2x87::store(bf2x87::wide(sumY) * inverse);
+    const float sumZ = dAC.z + dAB.z;
+    output.z = bf2x87::store(-(bf2x87::wide(sumZ) + dCB.z) * inverse);
+#else
+    const float inverse = 1.0f / determinant;
+    output.x = -((dAC.x + dAB.x) + dCB.x) * inverse;
+    output.y = -((dAC.y + dAB.y) + dCB.y) * inverse;
+    const float sumZ = dAC.z + dAB.z;
+    output.z = -(sumZ + dCB.z) * inverse;
+#endif
+    return true;
+}
+
+// Shadow-fit math helpers that nothing calls or references in 1.50: unreachable in 1.50: no code or
+// data references. Each body is the listing's own, in float (RendDX9 runs its x87 at 24-bit
+// precision, so every step rounds to float). The names, and the owner types of the pointer
+// arguments, are [CHOSEN, not recovered]: no caller exposes them.
+
+// PE 0x10169D40: the adjugate (transposed cofactors) of a row-major 3x3 matrix, ecx = input and
+// edx = output.
+void shadowAdjugate3(const float* m, float* out)
+{
+    out[0] = m[4] * m[8] - m[7] * m[5];
+    out[3] = m[6] * m[5] - m[3] * m[8];
+    out[6] = m[7] * m[3] - m[6] * m[4];
+    out[1] = m[7] * m[2] - m[1] * m[8];
+    out[4] = m[0] * m[8] - m[2] * m[6];
+    out[7] = m[1] * m[6] - m[7] * m[0];
+    out[2] = m[1] * m[5] - m[2] * m[4];
+    out[5] = m[2] * m[3] - m[0] * m[5];
+    out[8] = m[4] * m[0] - m[1] * m[3];
+}
+
+// PE 0x10169DE0: the row-major 3x3 projective matrix of the unit square onto the quad of 2D points
+// a, b, c, d (ecx, edx and two stack arguments; the output is the third stack argument, retn 0xC).
+// Row 2 is (a.x, a.y, 1).
+void shadowSquareToQuad(const float* a, const float* b, const float* c, const float* d, float* out)
+{
+    const float sumX = (c[0] - d[0]) + (a[0] - b[0]);
+    const float sumY = (a[1] - b[1]) + (c[1] - d[1]);
+    const float u1 = b[0] - c[0];
+    const float u2 = d[0] - c[0];
+    const float v1 = b[1] - c[1];
+    const float v2 = d[1] - c[1];
+    const float inverse = 1.0f / (v2 * u1 - v1 * u2);
+    out[2] = (v2 * sumX - u2 * sumY) * inverse;
+    out[5] = (u1 * sumY - v1 * sumX) * inverse;
+    out[8] = 1.0f;
+    out[0] = (b[0] - a[0]) + b[0] * out[2];
+    out[3] = (d[0] - a[0]) + out[5] * d[0];
+    out[6] = a[0];
+    out[1] = b[1] * out[2] + (b[1] - a[1]);
+    out[4] = out[5] * d[1] + (d[1] - a[1]);
+    out[7] = a[1];
+}
+
+// PE 0x10169EB0: the intersection of two 2D lines, each four floats (point x, y, direction x, y): the
+// parameter along the first line is computed against the second line's reciprocal y direction, and
+// the point is written to out (two floats). Always answers true (eax = 1); a parallel pair divides
+// by zero, as shipped.
+bool shadowIntersectLines2(float* out, const float* first, const float* second)
+{
+    const float reciprocal = 1.0f / second[3];
+    const float numerator = (first[0] - second[0]) - reciprocal * second[2] * (first[1] - second[1]);
+    const float denominator = reciprocal * first[3] * second[2] - first[2];
+    const float parameter = numerator / denominator;
+    out[0] = parameter * first[2] + first[0];
+    out[1] = parameter * first[3] + first[1];
+    return true;
+}
+
+// PE 0x10169F50: zero-fills the six planes at the start of an object and answers the object (the
+// constructor of a six-plane set).
+Plane3* shadowPlaneSetConstruct(Plane3* planes)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        planes[i].normal.x = 0.0f;
+        planes[i].normal.y = 0.0f;
+        planes[i].normal.z = 0.0f;
+        planes[i].d = 0.0f;
+    }
+    return planes;
+}
+
+// PE 0x1016A7A0: classifies an axis-aligned box (min x, y, z, max x, y, z) against six planes
+// ({nx, ny, nz, d}, stride four floats) whose octant masks follow at +0x60 of the owning object: 0 when
+// the mask-selected corner is behind a plane, 2 when only the opposite corner is behind a plane, 1
+// when neither is behind any. A NaN distance counts as not behind.
+unsigned int shadowClassifyBox(const float* planes, const unsigned int* masks, const float* box)
+{
+    bool straddles = false;
+    for (int i = 0; i < 6; ++i)
+    {
+        const float* const plane = planes + 4 * i;
+        const unsigned int mask = masks[i];
+        const float nearX = (mask & 1u) ? box[0] : box[3];
+        const float nearY = (mask & 2u) ? box[1] : box[4];
+        const float nearZ = (mask & 4u) ? box[2] : box[5];
+        const float farX = (mask & 1u) ? box[3] : box[0];
+        const float farY = (mask & 2u) ? box[4] : box[1];
+        const float farZ = (mask & 4u) ? box[5] : box[2];
+        if (((nearX * plane[0] + nearZ * plane[2]) + nearY * plane[1]) + plane[3] < 0.0f)
+            return 0;
+        if (((farX * plane[0] + farZ * plane[2]) + farY * plane[1]) + plane[3] < 0.0f)
+            straddles = true;
+    }
+    return straddles ? 2u : 1u;
+}
+
+// PE 0x1016BEB0: the square-to-quad matrix of a, b, c, d (shadowSquareToQuad) with its first two rows
+// halved and the third row shifted by the sums of the halved columns, then adjugated into out.
+void shadowQuadToClipMatrix(const float* a, const float* b, const float* c, const float* d, float* out)
+{
+    float m[9] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+    shadowSquareToQuad(a, b, c, d, m);
+    m[0] = m[0] * 0.5f;
+    m[3] = m[3] * 0.5f;
+    m[6] = m[6] - (m[3] + m[0]) * -1.0f;
+    m[1] = m[1] * 0.5f;
+    m[4] = m[4] * 0.5f;
+    m[7] = m[7] - (m[1] + m[4]) * -1.0f;
+    m[2] = m[2] * 0.5f;
+    m[5] = m[5] * 0.5f;
+    m[8] = m[8] - (m[2] + m[5]) * -1.0f;
+    shadowAdjugate3(m, out);
+}
+
+// [INFERRED] Local name for the projection-derived six-plane record (+0x78 corners).
+struct ShadowReceiverFrustum
+{
+    Plane3 planes[6];
+    unsigned int outcodes[6];
+    Vec3 corners[8];
+
+    // PE 0x1016A0C0. Uses column 3 +/- columns 0, 1, 2, including the shipped near-plane rule.
+    explicit ShadowReceiverFrustum(const Mat4& projection)
+    {
+        for (unsigned int column = 0; column < 3; ++column)
+        {
+            Plane3& minus = planes[column * 2];
+            Plane3& plus = planes[column * 2 + 1];
+            minus.normal = { projection.m[3] - projection.m[column],
+                             projection.m[7] - projection.m[column + 4],
+                             projection.m[11] - projection.m[column + 8] };
+            minus.d = projection.m[15] - projection.m[column + 12];
+            plus.normal = { projection.m[column] + projection.m[3],
+                            projection.m[column + 4] + projection.m[7],
+                            projection.m[column + 8] + projection.m[11] };
+            plus.d = projection.m[column + 12] + projection.m[15];
+        }
+        for (unsigned int i = 0; i < 6; ++i)
+        {
+            Plane3& p = planes[i];
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Preserve the x87 reciprocal through the four stores.
+            const bf2x87::Real length = bf2x87::squareRoot(
+                bf2x87::wide(p.normal.x) * p.normal.x
+                + bf2x87::wide(p.normal.y) * p.normal.y
+                + bf2x87::wide(p.normal.z) * p.normal.z);
+            const bf2x87::Real inverse = bf2x87::wide(1.0f) / length;
+            p.normal.x = bf2x87::store(inverse * p.normal.x);
+            p.normal.y = bf2x87::store(inverse * p.normal.y);
+            p.normal.z = bf2x87::store(inverse * p.normal.z);
+            p.d = bf2x87::store(inverse * p.d);
+#else
+            const float inverse = 1.0f / std::sqrt(p.normal.x * p.normal.x
+                + p.normal.y * p.normal.y + p.normal.z * p.normal.z);
+            p.normal.x *= inverse;
+            p.normal.y *= inverse;
+            p.normal.z *= inverse;
+            p.d *= inverse;
+#endif
+            outcodes[i] = (p.normal.x < 0.0f ? 1u : 0u)
+                        | (p.normal.y < 0.0f ? 2u : 0u)
+                        | (p.normal.z < 0.0f ? 4u : 0u);
+        }
+        for (unsigned int i = 0; i < 8; ++i)
+            intersectShadowPlanes(planes[(i & 4u) ? 0 : 1],
+                planes[(i & 2u) ? 3 : 2], planes[(i & 1u) ? 4 : 5], corners[i]);
+    }
+};
+
 // Fits the directional shadow matrix using the sun direction; requires a live sun.
-// [UNVERIFIED] Receiver fitting currently transforms camera corners rather than deriving
-// the receiver frustum from the camera projection; this difference needs validation.
+// PE 0x101626B0.
 Mat4 calculateDirectionalShadowMatrix(void* manager)
 {
     const Vec3 sunWorld =
-        lmField<world::LightSource*>(manager, 0x840)->getDirection();       // 0x101653C7, sun +0x17C
-    dx9rend::IRenderView* const view = lmField<dx9rend::IRenderView*>(manager, 0x90C);
+        lm(manager).sunLight->getDirection();       // 0x101653C7, sun +0x17C
+    dx9rend::IRenderView* const view = lm(manager).renderView;
     const Mat4 inverseView = *view->getInverseViewMatrixPtr();
 
     std::vector<ShadowAabb> casterBoxes;
     collectDirectionalCasterBounds(manager, inverseView, casterBoxes);
 
+    const Frustum& camera = lm(manager).cameraFrustum;
+    Mat4 projection;
+    makeFrustumPerspectiveMatrix(camera, projection);
+    const ShadowReceiverFrustum receiverFrustum(projection);
     Vec3 receiver[8];
-    const Frustum& camera = lmField<Frustum>(manager, 0x460);
     for (unsigned int i = 0; i < 8; ++i)
-        receiver[i] = transformShadowCoord(camera.m_corners[i], inverseView);
+        receiver[i] = receiverFrustum.corners[(i % 4) * 2 + i / 4];
 
     const Vec3 light = transformShadowNormal(sunWorld, inverseView);
-    Vec3 axis = { -light.y, light.x, 0.0f };
-    const float axisLength = std::sqrt(axis.x * axis.x + axis.y * axis.y);
-    axis.x /= axisLength;
-    axis.y /= axisLength;
+    Vec3 axis = { shadowProductDifference(light.y, -1.0f, light.z, 0.0f),
+                  shadowProductDifference(light.z, 0.0f, light.x, -1.0f),
+                  shadowProductDifference(light.x, 0.0f, light.y, 0.0f) };
+#if defined(__APPLE__) || defined(RENDDX9ABI_D3DX9FALLBACK_H)
+    // [CHOSEN, not recovered] The native/no-SDK subsets omit D3DXVec3Normalize.
+    const float axisLength = std::sqrt(dot3(axis, axis));
+    if (axisLength != 0.0f)
+    {
+        axis.x /= axisLength;
+        axis.y /= axisLength;
+        axis.z /= axisLength;
+    }
+    else
+        axis.x = axis.y = axis.z = 0.0f;
+#else
+    ::D3DXVec3Normalize(reinterpret_cast<D3DXVECTOR3*>(&axis),
+        reinterpret_cast<const D3DXVECTOR3*>(&axis));
+#endif
 
     Mat4 lightBasis = Mat4::getZero();
     lightBasis.m[0] = axis.x;
-    lightBasis.m[1] = axis.z * light.y - light.z * axis.y;
+    lightBasis.m[1] = shadowProductDifference(axis.z, light.y, light.z, axis.y);
     lightBasis.m[2] = -light.x;
     lightBasis.m[4] = axis.y;
-    lightBasis.m[5] = light.z * axis.x - axis.z * light.x;
+    lightBasis.m[5] = shadowProductDifference(light.z, axis.x, axis.z, light.x);
     lightBasis.m[6] = -light.y;
     lightBasis.m[8] = axis.z;
-    lightBasis.m[9] = axis.y * light.x - light.y * axis.x;
+    lightBasis.m[9] = shadowProductDifference(axis.y, light.x, light.y, axis.x);
     lightBasis.m[10] = -light.z;
     lightBasis.m[15] = 1.0f;
 
@@ -3813,17 +4651,23 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     {
         for (unsigned int corner = 0; corner < 8; ++corner)
             expandShadowAabb(casterBounds, transformShadowCoord(
-                shadowAabbCorner(*it, corner), lightBasis));
+                shadowAabbCorner(*it, 7u - corner), lightBasis));
     }
 
-    float nearDistance = (std::min)(casterBounds.minimum.z, receiverBounds.minimum.z);
+    float nearDistance = casterBounds.minimum.z < receiverBounds.minimum.z
+        ? casterBounds.minimum.z : receiverBounds.minimum.z;
     float farDistance = (std::max)(casterBounds.maximum.z, receiverBounds.maximum.z);
     if (nearDistance <= 0.0f)
     {
         Mat4 translate = Mat4::getIdentity();
         translate.m[14] = 1.0f - nearDistance;
         lightBasis = multiplyShadowMatrices(lightBasis, translate);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The subtract/add pair has one final x87 store.
+        farDistance = bf2x87::store(bf2x87::wide(farDistance) - nearDistance + 1.0f);
+#else
         farDistance = farDistance - nearDistance + 1.0f;
+#endif
         nearDistance = 1.0f;
         transformShadowPoints(receiver, 8, translate);
         receiverBounds = shadowBoundsForPoints(receiver, 8, 1.0e33f);
@@ -3835,17 +4679,42 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
         nearDistance, farDistance);
     transformShadowPoints(receiver, 8, ortho);
 
-    Vec3 nearCentre = { 0.0f, 0.0f, 0.0f };
-    Vec3 farCentre = { 0.0f, 0.0f, 0.0f };
-    for (unsigned int i = 0; i < 4; ++i)
-    {
-        nearCentre.x += receiver[i].x * 0.25f;
-        nearCentre.y += receiver[i].y * 0.25f;
-        nearCentre.z += receiver[i].z * 0.25f;
-        farCentre.x += receiver[i + 4].x * 0.25f;
-        farCentre.y += receiver[i + 4].y * 0.25f;
-        farCentre.z += receiver[i + 4].z * 0.25f;
-    }
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The far averages and x delta remain on the x87 stack.
+    const float nearX = bf2x87::store(((bf2x87::wide(receiver[3].x) + receiver[2].x)
+        + receiver[1].x + receiver[0].x) * 0.25f);
+    const float nearY = bf2x87::store(((bf2x87::wide(receiver[3].y) + receiver[2].y)
+        + receiver[1].y + receiver[0].y) * 0.25f);
+    const bf2x87::Real farX = ((bf2x87::wide(receiver[7].x) + receiver[6].x)
+        + receiver[5].x + receiver[4].x) * 0.25f;
+    const bf2x87::Real farY = ((bf2x87::wide(receiver[7].y) + receiver[6].y)
+        + receiver[5].y + receiver[4].y) * 0.25f;
+    const float sumX = bf2x87::store(bf2x87::wide(nearX) + farX);
+    const bf2x87::Real middleX = bf2x87::wide(sumX) * 0.5f;
+    const float middleY = bf2x87::store((bf2x87::wide(nearY) + farY) * 0.5f);
+    const bf2x87::Real deltaX = bf2x87::wide(nearX) - middleX;
+    const bf2x87::Real deltaY = bf2x87::wide(nearY) - middleY;
+    const float storedDeltaY = bf2x87::store(deltaY);
+    const float inverseLength = bf2x87::store(bf2x87::wide(1.0f)
+        / bf2x87::squareRoot(deltaX * deltaX + deltaY * deltaY));
+    Mat4 centre = Mat4::getIdentity();
+    centre.m[12] = bf2x87::store(-middleX);
+    centre.m[13] = -middleY;
+    Mat4 rotate = Mat4::getIdentity();
+    rotate.m[0] = bf2x87::store(deltaX * inverseLength);
+    const bf2x87::Real rotationY = bf2x87::wide(inverseLength) * storedDeltaY;
+    rotate.m[1] = bf2x87::store(-rotationY);
+    rotate.m[4] = bf2x87::store(rotationY);
+    rotate.m[5] = rotate.m[0];
+#else
+    const Vec3 nearCentre = {
+        ((receiver[3].x + receiver[2].x) + receiver[1].x + receiver[0].x) * 0.25f,
+        ((receiver[3].y + receiver[2].y) + receiver[1].y + receiver[0].y) * 0.25f, 0.0f
+    };
+    const Vec3 farCentre = {
+        ((receiver[7].x + receiver[6].x) + receiver[5].x + receiver[4].x) * 0.25f,
+        ((receiver[7].y + receiver[6].y) + receiver[5].y + receiver[4].y) * 0.25f, 0.0f
+    };
     const Vec3 middle = {
         (nearCentre.x + farCentre.x) * 0.5f,
         (nearCentre.y + farCentre.y) * 0.5f,
@@ -3863,14 +4732,17 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     rotate.m[1] = -(delta.y * inverseLength);
     rotate.m[4] = delta.y * inverseLength;
     rotate.m[5] = rotate.m[0];
+#endif
     Mat4 fitted = multiplyShadowMatrices(centre, rotate);
     transformShadowPoints(receiver, 8, fitted);
     ShadowAabb fittedBounds = shadowBoundsForPoints(receiver, 8, 1.0e33f);
 
-    const float scaleX = 1.0f / (std::max)(
-        std::fabs(fittedBounds.minimum.x), std::fabs(fittedBounds.maximum.x));
-    const float scaleY = 1.0f / (std::max)(
-        std::fabs(fittedBounds.minimum.y), std::fabs(fittedBounds.maximum.y));
+    const float absMinX = std::fabs(fittedBounds.minimum.x);
+    const float absMaxX = std::fabs(fittedBounds.maximum.x);
+    const float absMinY = std::fabs(fittedBounds.minimum.y);
+    const float absMaxY = std::fabs(fittedBounds.maximum.y);
+    const float scaleX = 1.0f / (absMaxX < absMinX ? absMinX : absMaxX);
+    const float scaleY = 1.0f / (absMaxY < absMinY ? absMinY : absMaxY);
     Mat4 scale = Mat4::getIdentity();
     scale.m[0] = scaleX;
     scale.m[5] = scaleY;
@@ -3881,22 +4753,47 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     fittedBounds.maximum.y *= scaleY;
 
     const float width = fittedBounds.maximum.x - fittedBounds.minimum.x;
-    const float focusWidth = lmField<float>(manager, 0x814) * width;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] q is spilled, but its unrounded value feeds all eight slopes.
+    const bf2x87::Real focusWidth = bf2x87::wide(g_LightManager->getShadowTSMFocus()) * width;
+    const bf2x87::Real wideQ = (bf2x87::wide(width) * focusWidth * 0.39999998f)
+        / (bf2x87::wide(width) * 1.6f - (focusWidth + focusWidth));
+    const float q = bf2x87::store(wideQ);
+    const bf2x87::Real wideProjectionX = wideQ + fittedBounds.maximum.x;
+    const float projectionX = bf2x87::store(wideProjectionX);
+#else
+    const float focusWidth = g_LightManager->getShadowTSMFocus() * width;
     const float q = width * focusWidth * 0.39999998f
                   / (width * 1.6f - (focusWidth + focusWidth));
     const float projectionX = fittedBounds.maximum.x + q;
+#endif
     float maximumSlope = -1.0e32f;
     float minimumSlope = 1.0e32f;
     for (unsigned int i = 0; i < 8; ++i)
     {
         const float numerator = scaleY * receiver[i].y;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Each denominator has exactly one single-precision store.
+        const float denominator = bf2x87::store(bf2x87::wide(scaleX) * receiver[i].x - wideProjectionX);
+#else
         const float denominator = scaleX * receiver[i].x - projectionX;
+#endif
         if (!shadowFloatHasExponent(numerator) || !shadowFloatHasExponent(denominator))
             continue;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Compare the retained quotient before narrowing either limit.
+        const bf2x87::Real slope = bf2x87::wide(numerator) / denominator;
+        if (bf2x87::wide(maximumSlope) < slope)
+            maximumSlope = bf2x87::store(slope);
+        if (!(bf2x87::wide(minimumSlope) < slope))
+            minimumSlope = bf2x87::store(slope);
+#else
         const float slope = numerator / denominator;
-        maximumSlope = (std::max)(maximumSlope, slope);
-        if (slope <= minimumSlope)
+        if (maximumSlope < slope)
+            maximumSlope = slope;
+        if (!(minimumSlope < slope))
             minimumSlope = slope;
+#endif
     }
 
     Mat4 flip = Mat4::getIdentity();
@@ -3904,23 +4801,46 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     flip.m[12] = projectionX;
     fitted = multiplyShadowMatrices(fitted, flip);
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The shear is stored only after updating the slope limit.
+    const bf2x87::Real wideShear = (bf2x87::wide(std::fabs(minimumSlope))
+        + maximumSlope) * 0.5f - maximumSlope;
+    const float adjustedSlope = bf2x87::store(bf2x87::wide(maximumSlope) + wideShear);
+    const float shearValue = bf2x87::store(wideShear);
+    maximumSlope = adjustedSlope;
+#else
     const float shearValue = (std::fabs(minimumSlope) + maximumSlope) * 0.5f
                            - maximumSlope;
     maximumSlope += shearValue;
+#endif
     Mat4 shear = Mat4::getIdentity();
     shear.m[1] = shearValue;
     fitted = multiplyShadowMatrices(fitted, shear);
 
     const float p = q + width;
-    const float denominator = p - q;
+    // The trapezoid-to-square step: x' = (p x - p q) / ((p - q) x), so the -pq/(p-q) term is the
+    // x translation +0x30 (m[12]); PE 0x101639A3..0x101639AD stores it to [ebp-0x180], the base
+    // [ebp-0x1B0] plus 0x30. Every other element is zero apart from m[0], m[3], m[5] and m[10]
+    // (0x101638F6..0x1016399D).
     Mat4 projective = Mat4::getZero();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the shared denominator and depth ratio until stores.
+    const bf2x87::Real denominator = bf2x87::wide(p) - q;
+    projective.m[0] = bf2x87::store(bf2x87::wide(p) / denominator);
+    projective.m[10] = bf2x87::store(bf2x87::wide(1.0f)
+        / (((bf2x87::wide(receiverBounds.maximum.z) - receiverBounds.minimum.z)
+        / (bf2x87::wide(fittedBounds.maximum.y) - fittedBounds.minimum.y)) * maximumSlope));
+    projective.m[12] = bf2x87::store(-((bf2x87::wide(p) * q) / denominator));
+#else
+    const float denominator = p - q;
     projective.m[0] = p / denominator;
-    projective.m[3] = 1.0f;
-    projective.m[5] = 1.0f / maximumSlope;
     projective.m[10] = 1.0f
         / (((receiverBounds.maximum.z - receiverBounds.minimum.z)
            / (fittedBounds.maximum.y - fittedBounds.minimum.y)) * maximumSlope);
-    projective.m[14] = -(p * q / denominator);
+    projective.m[12] = -(p * q / denominator);
+#endif
+    projective.m[3] = 1.0f;
+    projective.m[5] = 1.0f / maximumSlope;
     fitted = multiplyShadowMatrices(fitted, projective);
     Mat4 remap = Mat4::getIdentity();
     remap.m[0] = 2.0f;
@@ -3937,7 +4857,7 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     {
         for (unsigned int corner = 0; corner < 8; ++corner)
             expandShadowAabb(crop, transformShadowCoord(
-                shadowAabbCorner(*it, corner), shadow));
+                shadowAabbCorner(*it, 7u - corner), shadow));
     }
     if (crop.maximum.x > 1.0f) crop.maximum.x = 1.0f;
     if (crop.minimum.x <= -1.0f) crop.minimum.x = -1.0f;
@@ -3948,10 +4868,24 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
     if (shadowFloatHasExponent(cropWidth) && shadowFloatHasExponent(cropHeight))
     {
         Mat4 cropMatrix = Mat4::getIdentity();
-        cropMatrix.m[0] = 2.0f / cropWidth;
-        cropMatrix.m[5] = 2.0f / cropHeight;
-        cropMatrix.m[12] = -(crop.minimum.x + crop.maximum.x) / cropWidth;
-        cropMatrix.m[13] = -(crop.minimum.y + crop.maximum.y) / cropHeight;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Both crop reciprocals survive until the matrix stores.
+        const bf2x87::Real inverseWidth = bf2x87::wide(1.0f) / cropWidth;
+        const bf2x87::Real inverseHeight = bf2x87::wide(1.0f) / cropHeight;
+        cropMatrix.m[0] = bf2x87::store(inverseWidth + inverseWidth);
+        cropMatrix.m[5] = bf2x87::store(inverseHeight + inverseHeight);
+        cropMatrix.m[12] = bf2x87::store((bf2x87::wide(crop.minimum.x)
+            + crop.maximum.x) * 0.5f * inverseWidth * -2.0f);
+        cropMatrix.m[13] = bf2x87::store((bf2x87::wide(crop.minimum.y)
+            + crop.maximum.y) * 0.5f * inverseHeight * -2.0f);
+#else
+        const float inverseWidth = 1.0f / cropWidth;
+        const float inverseHeight = 1.0f / cropHeight;
+        cropMatrix.m[0] = inverseWidth + inverseWidth;
+        cropMatrix.m[5] = inverseHeight + inverseHeight;
+        cropMatrix.m[12] = (crop.minimum.x + crop.maximum.x) * 0.5f * inverseWidth * -2.0f;
+        cropMatrix.m[13] = (crop.minimum.y + crop.maximum.y) * 0.5f * inverseHeight * -2.0f;
+#endif
         shadow = multiplyShadowMatrices(shadow, cropMatrix);
     }
     return multiplyShadowMatrices(inverseView, shadow);
@@ -3962,21 +4896,14 @@ Mat4 calculateDirectionalShadowMatrix(void* manager)
 // bounds the near-plane fit then reads (0x10165F75).
 void collectDirectionalChildren(void* manager, world::IObject* root, LocalBoundingBox& bounds)
 {
-    vc71::vector_layout& destination = lmField<vc71::vector_layout>(manager, 0x954);
-    clearPointerVector(destination);
-#if BF2_PLUGIN_ABI_NATIVE
+    std::vector<world::IObject*>& destination = lm(manager).directionalChildren;
+    destination.clear();
     std::vector<world::IObject*> hostObjects;
     reinterpret_cast<world::ObjectManager*>(objectManager)->addChildrenRend(
         root, hostObjects, &bounds, 0);
-    vc71::vectorRef<world::IObject*> output(&destination);
     for (std::vector<world::IObject*>::const_iterator it = hostObjects.begin();
          it != hostObjects.end(); ++it)
-        output.push_back(*it);
-#else
-    // MSVC prepends the later object overload inside the addChildrenRend overload group.
-    reinterpret_cast<world::ObjectManager*>(objectManager)->addChildrenRend(
-        root, hostObjectVector(destination), &bounds, 0);
-#endif
+        destination.push_back(*it);
 }
 
 // IGeometry +0x20 - StaticMesh::drawShadowMap (PE 0x100FD580, ).  The shipped
@@ -3988,38 +4915,76 @@ void collectDirectionalChildren(void* manager, world::IObject* root, LocalBoundi
 inline void geometryDrawDirectionalBatch(void* geometry, int secondPass,
                                          int reflectionChanged)
 {
-    typedef void (__fastcall* DrawShadowMapFn)(void*, void*, void*, unsigned int, unsigned int,
+    typedef void (__thiscall* DrawShadowMapFn)(void*, void*, unsigned int, unsigned int,
                                                unsigned int, unsigned int, unsigned int);
     void** const vtbl = *reinterpret_cast<void***>(geometry);
-    reinterpret_cast<DrawShadowMapFn>(vtbl[0x20 / sizeof(void*)])(
-        geometry, 0, 0, 0u, 0u, 0u,
+    reinterpret_cast<DrawShadowMapFn>(vtbl[0x20 / 4])(
+        geometry, 0, 0u, 0u, 0u,
         static_cast<unsigned int>(secondPass != 0),
         static_cast<unsigned int>(reflectionChanged != 0));
 }
 
-// Submits directional geometry, switching effects on class changes.
-// [DEVIATION] Class-ID sorting replaces the original non-ordering inequality predicate;
-// draw order and effect transition counts can differ, although depth output agrees.
+#if defined(_MSC_VER) && !defined(_WIN64)
+// PE 0x10160C60. Shipped defect: distinct keys compare true in both directions.
+bool __fastcall directionalGeometrySortKey(void* const& lhs, void* const& rhs)
+{
+    IGeometryTemplate* const left = geometryTemplate(lhs);
+    IGeometryTemplate* const right = geometryTemplate(rhs);
+    const unsigned int leftType = left->getClassId();
+    const unsigned int rightType = right->getClassId();
+    if (leftType != rightType)
+        return true;
+
+    const bool leftUsesMeshTemplate = leftType == kSkinnedMeshReflectionType
+                                  || leftType == kBundledMeshReflectionType;
+    const bool rightUsesMeshTemplate = rightType == kSkinnedMeshReflectionType
+                                   || rightType == kBundledMeshReflectionType;
+    void* const leftDeclaration = leftUsesMeshTemplate
+        ? static_cast<MeshTemplate*>(left)->m_vertexDeclaration
+        : reinterpret_cast<StaticMeshRenderer*>(g_StaticMeshRenderer)->m_decl2C;
+    void* const rightDeclaration = rightUsesMeshTemplate
+        ? static_cast<MeshTemplate*>(right)->m_vertexDeclaration
+        : reinterpret_cast<StaticMeshRenderer*>(g_StaticMeshRenderer)->m_decl2C;
+    if (leftDeclaration != rightDeclaration)
+        return true;
+
+    void* const leftBuffer = leftUsesMeshTemplate
+        ? static_cast<MeshTemplate*>(left)->m_vertexBuffer
+        : static_cast<StaticMeshTemplate*>(left)->m_vertexStream;
+    void* const rightBuffer = rightUsesMeshTemplate
+        ? static_cast<MeshTemplate*>(right)->m_vertexBuffer
+        : static_cast<StaticMeshTemplate*>(right)->m_vertexStream;
+    return leftBuffer != rightBuffer;
+}
+#endif
+
+// PE 0x10164DC0, submission at 0x10166297. Switches effects on class changes.
 void submitDirectionalGeometry(void* manager)
 {
-    vc71::vector_layout& geometryVector = lmField<vc71::vector_layout>(manager, 0x924);
-    void** const first = vectorBegin<void*>(geometryVector);
-    void** const last = reinterpret_cast<void**>(geometryVector.last);
+    std::vector<void*>& geometryVector = lm(manager).directionalGeometry;
+    void** const first = geometryVector.data();
+    void** const last = geometryVector.data() + geometryVector.size();
+#if defined(_MSC_VER) && !defined(_WIN64)
+    std::sort(first, last, directionalGeometrySortKey);
+#else
+    // [CHOSEN, not recovered] Retain the native ports' class ordering and empty-range guard:
+    // their library sort requires a strict weak ordering, which the shipped predicate violates.
     if (first != last)
     {
         std::sort(first, last, [](void* lhs, void* rhs) {
             return geometryReflectionType(lhs) < geometryReflectionType(rhs);
         });
     }
+#endif
 
     dx9rend::stateManagerPush();
     unsigned int currentType = 0;
-    unsigned int currentKey = 0;
     unsigned int begunPass = 0;
-    void* currentEffect = 0;
+    ShadowEffectMap& effects = lm(manager).shadowEffects;
     for (unsigned int pass = 0; pass < 2; ++pass)
     {
-        for (void** cursor = first; cursor != last; ++cursor)
+        for (std::vector<void*>::iterator cursor = geometryVector.begin();
+             cursor != geometryVector.end(); ++cursor)
         {
             void* const geometry = *cursor;
             const unsigned int reflectionType = geometryReflectionType(geometry);
@@ -4027,58 +4992,33 @@ void submitDirectionalGeometry(void* manager)
             if (changed)
             {
                 if (currentType != 0)
-                    dx9rend::effectEnd(currentEffect);
-                currentKey = reflectionType;
-                ShadowTree& effects = lmField<ShadowTree>(manager, 0x964);
-                ShadowTreeNode* const node = shadowTreeFind(effects, currentKey);
-                if (node == effects.head || !node->value)
-                {
-                    RD9_FRONTIER_AT("dice::hfe::geom::LightManager::renderDirectionalShadowMaps "
-                                    "(mesh renderer shadow-effect registration)",
-                                    manager, 0x19C);
-                    std::abort();
-                }
-                currentEffect = node->value;
-                dx9rend::effectBegin(currentEffect);
-                dx9rend::effectBeginPass(currentEffect, pass);
+                    dx9rend::effectEnd(effects[currentType]);
+                // PE 0x1015D3A0 is map::operator[]: a missing key inserts a null pointer.
+                // Shipped defect: the effect calls dereference it without a guard.
+                dx9rend::effectBegin(effects[reflectionType]);
+                dx9rend::effectBeginPass(effects[reflectionType], pass);
             }
             if (begunPass != pass)
             {
-                ShadowTree& effects = lmField<ShadowTree>(manager, 0x964);
-                ShadowTreeNode* const node = shadowTreeFind(effects, reflectionType);
-                if (node == effects.head || !node->value)
-                {
-                    RD9_FRONTIER_AT("dice::hfe::geom::LightManager::renderDirectionalShadowMaps "
-                                    "(mesh renderer shadow-effect registration)",
-                                    manager, 0x19C);
-                    std::abort();
-                }
-                dx9rend::effectBeginPass(node->value, pass);
                 begunPass = pass;
+                dx9rend::effectBeginPass(effects[reflectionType], pass);
             }
             geometryDrawDirectionalBatch(geometry, pass != 0, changed ? 1 : 0);
             currentType = reflectionType;
         }
     }
     if (currentType != 0)
-        dx9rend::effectEnd(currentEffect);
+        dx9rend::effectEnd(effects[currentType]);
     dx9rend::stateManagerPop();
 }
 
 bool destroyableShadowPredicateBody(world::IObject* object)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     world::IObjectTemplate* const objectTemplate = const_cast<world::IObjectTemplate*>(
         object->getTemplate());
     return objectTemplate->queryImplementation(50384u) != 0;
-#else
-    world::IObjectTemplate* const objectTemplate = const_cast<world::IObjectTemplate*>(
-        objectTemplatePointer(object));
-    return objectTemplate->queryImplementation(50384u) != 0;
-#endif
 }
 
-#if BF2_PLUGIN_ABI_NATIVE
 class DestroyableShadowPredicator : public world::ObjectPredicator
 {
 public:
@@ -4090,33 +5030,10 @@ public:
     virtual bool performCulling(world::IObject*) { return true; }
     virtual bool predicateSurface(int) { return true; }
 };
-#else
-struct DestroyableShadowPredicator
-{
-    const void** table;
-};
-bool __fastcall destroyableShadowPredicate(void*, void*, world::IObject* object)
-{
-    return destroyableShadowPredicateBody(object);
-}
-unsigned int __fastcall destroyableShadowFlags(void*, void*) { return 0; }
-bool __fastcall destroyableShadowCull(void*, void*, world::IObject*) { return true; }
-bool __fastcall destroyableShadowSurface(void*, void*, int) { return true; }
-const void* const kDestroyableShadowVtable[4] = {
-    reinterpret_cast<void*>(&destroyableShadowPredicate),
-    reinterpret_cast<void*>(&destroyableShadowFlags),
-    reinterpret_cast<void*>(&destroyableShadowCull),
-    reinterpret_cast<void*>(&destroyableShadowSurface)
-};
-#endif
 
 void constructDestroyableShadowPredicator(DestroyableShadowPredicator& predicate)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     (void)predicate;
-#else
-    predicate.table = const_cast<const void**>(kDestroyableShadowVtable);
-#endif
 }
 
 // 0x101664BE..0x10166500 (the followers) and 0x10166B02..0x10166B47 (per record in the
@@ -4127,29 +5044,18 @@ void constructDestroyableShadowPredicator(DestroyableShadowPredicator& predicate
 // quality-three map queries without it.
 void queryStaticShadowCasters(void* manager, const Frustum& frustum)
 {
-    vc71::vector_layout& destination = lmField<vc71::vector_layout>(manager, 0x934);
-    clearPointerVector(destination);
+    std::vector<world::IObject*>& destination = lm(manager).staticShadowCasters;
+    destination.clear();
     DestroyableShadowPredicator predicate;
     constructDestroyableShadowPredicator(predicate);
-#if BF2_PLUGIN_ABI_NATIVE
     std::vector<world::IObject*> hostObjects;
     world::ObjectManager* const objects =
         reinterpret_cast<world::ObjectManager*>(objectManager);
     objects->getStaticObjectsFromGridRend(frustum, hostObjects, 0, 0, 2, true);
     objects->getDynamicObjectsFromGridRend(frustum, hostObjects, 0, &predicate, 2, true);
-    vc71::vectorRef<world::IObject*> output(&destination);
     for (std::vector<world::IObject*>::const_iterator it = hostObjects.begin();
          it != hostObjects.end(); ++it)
-        output.push_back(*it);
-#else
-    world::ObjectManager* const objects =
-        reinterpret_cast<world::ObjectManager*>(objectManager);
-    objects->getStaticObjectsFromGridRend(
-        frustum, hostObjectVector(destination), 0, 0, 2, true);
-    objects->getDynamicObjectsFromGridRend(
-        frustum, hostObjectVector(destination), 0,
-        reinterpret_cast<world::ObjectPredicator*>(&predicate), 2, true);
-#endif
+        destination.push_back(*it);
 }
 
 // 0x101652CF..0x10165310 (after the TSM target is bound) and 0x101669A2..0x10166A60 (per record in
@@ -4157,10 +5063,10 @@ void queryStaticShadowCasters(void* manager, const Frustum& frustum)
 // InflateRect, then device +0x12C. No viewport.
 void setShadowInsetScissor(void* manager)
 {
-    const int size = lmField<int>(manager, 0x204);
+    const int size = lm(manager).shadowMapSize;
     RECT rectangle = { 0, 0, size, size };
     ::InflateRect(&rectangle, -3, -3);
-    lmField<IDirect3DDevice9*>(manager, 0x908)->SetScissorRect(&rectangle);
+    lm(manager).device->SetScissorRect(&rectangle);
 }
 
 // the full-size viewport (0, 0, size, size, 0, 1) and the full-size scissor,
@@ -4168,7 +5074,7 @@ void setShadowInsetScissor(void* manager)
 // is gone - its one `true` caller was the TSM bind, which the PE scissors without a viewport.)
 void setShadowViewportAndScissor(void* manager)
 {
-    const int size = lmField<int>(manager, 0x204);
+    const int size = lm(manager).shadowMapSize;
     D3DVIEWPORT9 viewport;
     viewport.X = 0;
     viewport.Y = 0;
@@ -4176,7 +5082,7 @@ void setShadowViewportAndScissor(void* manager)
     viewport.Height = static_cast<DWORD>(size);
     viewport.MinZ = 0.0f;
     viewport.MaxZ = 1.0f;
-    IDirect3DDevice9* const device = lmField<IDirect3DDevice9*>(manager, 0x908);
+    IDirect3DDevice9* const device = lm(manager).device;
     device->SetViewport(&viewport);
     RECT rectangle = { 0, 0, size, size };
     device->SetScissorRect(&rectangle);
@@ -4186,31 +5092,30 @@ void setShadowViewportAndScissor(void* manager)
 // scissor; the old body also set a full-size viewport.
 void bindDirectionalShadowTarget(void* manager)
 {
-    setLightManagerDepthStencil(lmField<IDirect3DSurface9*>(manager, 0x228));
-    if (lmField<unsigned int>(manager, 0x910) != 0)
+    setLightManagerDepthStencil(lm(manager).shadowDepthSurface);
+    if (lm(manager).shadowMapMode != 0)
     {
-        setRenderTargetTexture(0,
-            lmField<dx9rend::EngineTexture*>(manager, 0x21C));
+        lightManagerSetRenderTargetTexture(0,
+            lm(manager).shadowMap);
         dx9rend::stateManagerClear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
                                    0xFFFFFFFFu, 1.0f, 0);
     }
     else
     {
-        setRenderTargetTexture(0,
-            lmField<dx9rend::EngineTexture*>(manager, 0x224));
+        lightManagerSetRenderTargetTexture(0,
+            lm(manager).shadowDepthTexture);
         dx9rend::stateManagerClear(D3DCLEAR_ZBUFFER, 0xFFFFFFFFu, 1.0f, 0);
         dx9rend::stateManagerSetRenderState(195,
-            lmField<unsigned int>(manager, 0x82C));
+            floatBits(lm(manager).shadowDepthBias));
         dx9rend::stateManagerSetRenderState(175,
-            lmField<unsigned int>(manager, 0x830));
+            floatBits(lm(manager).shadowSlopeScaleDepthBias));
     }
     setShadowInsetScissor(manager);
 }
 
 void appendDirectionalGeometry(void* manager, void* geometry)
 {
-    vc71::vectorRef<void*> output(&lmField<vc71::vector_layout>(manager, 0x924));
-    output.push_back(geometry);
+    lm(manager).directionalGeometry.push_back(geometry);
 }
 
 // Fits the caster frustum to candidate geometry from a unit light-space orthographic box.
@@ -4218,17 +5123,17 @@ void appendDirectionalGeometry(void* manager, void* geometry)
 void buildDirectionalCasterFrustum(void* manager, Frustum& casterFrustum)
 {
     Mat4 basis;                                                            // [ebp-0xA8]
-    buildShadowLightBasis(lmField<world::LightSource*>(manager, 0x14), basis);
-    vc71::vector_layout& candidates = lmField<vc71::vector_layout>(manager, 0x914);
+    buildShadowLightBasis(lm(manager).skyLight, basis);
+    std::vector<world::IObject*>& candidates = lm(manager).shadowCandidates;
     const Vec3& first =
-        objectAbsolutePosition(*vectorBegin<world::IObject*>(candidates)); // [0x918][0] +0x68
+        objectAbsolutePosition(*candidates.data());                        // [0x918][0] +0x68
     basis.m[12] = basis.m[12] + first.x;
     basis.m[13] = basis.m[13] + first.y;
     basis.m[14] = basis.m[14] + first.z;
-    casterFrustum.setOrtho(1.0f, 1.0f, 0.01f, 1.0f, basis);
+    rendmath::frustumSetOrtho(casterFrustum, 1.0f, 1.0f, 0.01f, 1.0f, basis);
 
-    for (world::IObject** it = vectorBegin<world::IObject*>(candidates);
-         it != reinterpret_cast<world::IObject**>(candidates.last); ++it)
+    for (world::IObject** it = candidates.data();
+         it != candidates.data() + candidates.size(); ++it)
     {
         world::IObject* const object = *it;
         void* const geometry = objectGeometry(object);                     // [object+0x38]
@@ -4242,7 +5147,7 @@ void buildDirectionalCasterFrustum(void* manager, Frustum& casterFrustum)
             void* const collision = objectCollisionMesh(object);           // +0x40, read first
             const Mat4& transform = objectAbsoluteTransformation(object);  // +0x80
             const LocalBoundingBox* const local = collisionBoundingBox(collision, 0);   // +0x54(0)
-            const ShadowBoxCorners box(*local, transform);
+            const BoxCorners box(*local, transform);
             fitShadowFrustumAllPlanes(casterFrustum, box.corner, true);
             continue;
         }
@@ -4278,7 +5183,7 @@ void applyDirectionalCasterFrustumMode(void* manager, Frustum& casterFrustum)
         return;
 
     Mat4 transformation = casterFrustum.m_transformation;                  // [ebp-0x64], 0x10030DD0
-    const float distance = lmField<float>(manager, 0x16C);
+    const float distance = lm(manager).shadowPullbackDistance;
     const Vec3 normal = casterFrustum.m_planes[4].normal;                  // +0x40
     const float x = normal.x * distance;
     const float y = normal.y * distance;                                   // [ebp-0x1C]
@@ -4310,7 +5215,7 @@ void applyDirectionalCasterFrustumMode(void* manager, Frustum& casterFrustum)
         else
             casterFrustum.m_farDist = casterFrustum.m_farDist + distance;
     }
-    casterFrustum.transform(transformation);
+    rendmath::frustumTransform(casterFrustum, transformation);
 }
 
 // 0x10165951..0x10165AC9, and again after the collection (0x10166798..0x10166910): the caster
@@ -4335,26 +5240,22 @@ void buildDirectionalRecord(void* manager, world::IObject* object, Mat4& lightBa
     if (!rootGeometry)
         return;
 
-    vc71::vector_layout& records = lmField<vc71::vector_layout>(manager, 0x79C);
-    {
-        vc71::vectorRef<XpRenderRecordLayout> output(&records);
-        output.push_back(XpRenderRecordLayout());
-    }
-    XpRenderRecordLayout* const record =
-        reinterpret_cast<XpRenderRecordLayout*>(records.last) - 1;
+    std::vector<LightShadowRecord>& records = lm(manager).directionalRecords;
+    records.push_back(LightShadowRecord());
+    LightShadowRecord* const record = &records.back();
     record->geometry = rootGeometry;
-    record->source = lmField<world::LightSource*>(manager, 0x14);
+    record->source = lm(manager).skyLight;
     record->flags448[0] = 0;
     void* const player = localHumanPlayerRaw();                            // [ebp-8], per candidate
     if (player)
         record->flags448[0] = (playerHasFirstPersonViewRaw(player)
                                && playerVehicleRaw(player) == object) ? 1 : 0;
-    if (record->flags448[0] && !lmField<unsigned char>(manager, 0x7ED))
+    if (record->flags448[0] && !lm(manager).firstPersonShadows)
         return;
 
     geometryPrepareShadow(rootGeometry, rendererShadowToken());            // +0xAC
 
-    ShadowBoxCorners box;                                                  // [ebp-0x18C], zeroed
+    BoxCorners box;                                                        // [ebp-0x18C], zeroed
     void* const collision = objectCollisionMesh(object);                   // [ebp-0xC]
     if (collision && static_cast<world::ICollisionMesh*>(collision)->hasLod(0))   // +0x28(0) == 1
     {
@@ -4391,7 +5292,7 @@ void buildDirectionalRecord(void* manager, world::IObject* object, Mat4& lightBa
     lightBasis.m[12] = bounds.m_centre.x;
     lightBasis.m[13] = bounds.m_centre.y;
     lightBasis.m[14] = bounds.m_centre.z;
-    record->frustum.setOrtho(0.1f, 0.1f, 0.01f, 0.1f, lightBasis);
+    rendmath::frustumSetOrtho(record->frustum, 0.1f, 0.1f, 0.01f, 0.1f, lightBasis);
     fitShadowFrustumToAabb(record->frustum, bounds);
     finalizeShadowBounds(bounds);                                          // 0x101C5EB0, again
     collectDirectionalChildren(manager, object, bounds);
@@ -4399,9 +5300,9 @@ void buildDirectionalRecord(void* manager, world::IObject* object, Mat4& lightBa
     record->matrices[1] = casterViewProjection;                            // +0x238
     record->matrices[2] = shadowMatrix;                                    // +0x278
 
-    vc71::vector_layout& children = lmField<vc71::vector_layout>(manager, 0x954);
-    for (world::IObject** it = vectorBegin<world::IObject*>(children);
-         it != reinterpret_cast<world::IObject**>(children.last); ++it)
+    std::vector<world::IObject*>& children = lm(manager).directionalChildren;
+    for (world::IObject** it = children.data();
+         it != children.data() + children.size(); ++it)
     {
         void* const geometry = objectGeometry(*it);                        // [ebp-0x68]
         if (!geometry || !supportedShadowGeometry(geometryReflectionType(geometry)))
@@ -4435,17 +5336,16 @@ void buildDirectionalRecord(void* manager, world::IObject* object, Mat4& lightBa
 void attachDirectionalFollowers(void* manager, Frustum& shifted, Frustum& casterFrustum,
                                 const ShadowSweepClassifier& classifier)
 {
-    vc71::vector_layout& records = lmField<vc71::vector_layout>(manager, 0x79C);
-    XpRenderRecordLayout* const firstRecord =
-        vectorBegin<XpRenderRecordLayout>(records);                        // [ebp-0x24]
-    shiftShadowFrustumTowardLight(shifted, lmField<float>(manager, 0x16C));
+    std::vector<LightShadowRecord>& records = lm(manager).directionalRecords;
+    LightShadowRecord* const firstRecord = records.data();                // [ebp-0x24]
+    shiftShadowFrustumTowardLight(shifted, lm(manager).shadowPullbackDistance);
     queryStaticShadowCasters(manager, shifted);
-    vc71::vector_layout& followers = lmField<vc71::vector_layout>(manager, 0x934);
-    if (lmField<unsigned char>(manager, 0x170))
+    std::vector<world::IObject*>& followers = lm(manager).staticShadowCasters;
+    if (lm(manager).shadowUseSweepTest)
         filterShadowCandidates(classifier, followers);
 
-    for (world::IObject** it = vectorBegin<world::IObject*>(followers);
-         it != reinterpret_cast<world::IObject**>(followers.last); ++it)
+    for (world::IObject** it = followers.data();
+         it != followers.data() + followers.size(); ++it)
     {
         world::IObject* const object = *it;                                // [ebp-0xC]
         void* const geometry = objectGeometry(object);
@@ -4458,7 +5358,7 @@ void attachDirectionalFollowers(void* manager, Frustum& shifted, Frustum& caster
         {
             const Mat4& transform = objectAbsoluteTransformation(object);  // +0x80, first
             const LocalBoundingBox* const local = collisionBoundingBox(collision, 0);   // +0x54(0)
-            const ShadowBoxCorners followerBox(*local, transform);
+            const BoxCorners followerBox(*local, transform);
             fitShadowFrustumNearPlane(casterFrustum, followerBox.corner);
         }
     }
@@ -4468,12 +5368,13 @@ void attachDirectionalFollowers(void* manager, Frustum& shifted, Frustum& caster
 // empty in RendDX9 1.50 - 0x100D8530 is `retn 0Ch` (the records, the pulled-back light frustum, the
 // caster frustum) and 0x100D8540 is `retn 4` (the first record). Neither touches the terrain, so a
 // level without one is harmless here. Recovered empty bodies, not stubs; [INFERRED] names.
-void terrainCollectShadowGeometry(IBase* /*terrain*/, vc71::vector_layout* /*records*/,
+// PE 0x100D8530.
+void terrainCollectShadowGeometry(IBase* /*terrain*/, std::vector<LightShadowRecord>* /*records*/,
                                   const Frustum* /*shifted*/, Frustum* /*casterFrustum*/)
 {
 }
 
-void terrainDrawShadowMap(IBase* /*terrain*/, XpRenderRecordLayout* /*firstRecord*/)
+void terrainDrawShadowMap(IBase* /*terrain*/, LightShadowRecord* /*firstRecord*/)
 {
 }
 
@@ -4490,43 +5391,39 @@ inline dx9rend::Effect* staticMeshShadowEffect()
 // record's pulled-back frustum's view and ortho matrices, then three zeros. StaticMesh's body reads
 // only the record (+0x1F8 = matrices[0], just written; +0x278; +0x495); the six-argument arity is
 // the slot's everywhere (StaticMesh +0x20 is `retn 18h`).
-inline void geometryDrawOccluderShadow(void* geometry, XpRenderRecordLayout* record,
+inline void geometryDrawOccluderShadow(void* geometry, LightShadowRecord* record,
                                        const Mat4* view, const Mat4* projection)
 {
-    typedef void (__fastcall* DrawShadowMapFn)(void*, void*, void*, const void*, const void*,
+    typedef void (__thiscall* DrawShadowMapFn)(void*, void*, const void*, const void*,
                                                unsigned int, unsigned int, unsigned int);
     reinterpret_cast<DrawShadowMapFn>(geometrySlot(geometry, 0x20))(
-        geometry, 0, record, view, projection, 0u, 0u, 0u);
+        geometry, record, view, projection, 0u, 0u, 0u);
 }
 
 // +0x20 for the OverGrowth instances (0x10166D23..0x10166D32): the first record, then five zeros.
-inline void geometryDrawRecordShadow(void* geometry, XpRenderRecordLayout* record)
+inline void geometryDrawRecordShadow(void* geometry, LightShadowRecord* record)
 {
-    typedef void (__fastcall* DrawShadowMapFn)(void*, void*, void*, unsigned int, unsigned int,
+    typedef void (__thiscall* DrawShadowMapFn)(void*, void*, unsigned int, unsigned int,
                                                unsigned int, unsigned int, unsigned int);
     reinterpret_cast<DrawShadowMapFn>(geometrySlot(geometry, 0x20))(
-        geometry, 0, record, 0u, 0u, 0u, 0u, 0u);
+        geometry, record, 0u, 0u, 0u, 0u, 0u);
 }
 
 // the first half.
 void collectHighQualityShadowCasters(void* manager, Frustum& shifted, Frustum& casterFrustum,
                                      unsigned int shadowQuality)
 {
-    if (!lmField<unsigned char>(manager, 0x268))
+    if (!lm(manager).shadowStaticFeature)
         return;
     if (shadowQuality < 3u)                                                // `jb`
         return;
     if (rendererSuppressesHighQualityShadows())
         return;
-    vc71::vector_layout& records = lmField<vc71::vector_layout>(manager, 0x79C);
+    std::vector<LightShadowRecord>& records = lm(manager).directionalRecords;
     // dword_10258F38 is dereferenced with no null test (0x101665E0), as shipped: the ECCore
     // CEPreLoad arm creates it before any level renders and CEUnloadLevel nulls it.
     static_cast<OverGrowth*>(dx9rend::g_OverGrowth)->collectShadowGeometry(
-        reinterpret_cast<OverGrowthShadowVolumes*>(&records),
-        reinterpret_cast<OverGrowthShadowBounds*>(&shifted),
-        reinterpret_cast<OverGrowthShadowState*>(&casterFrustum),
-        reinterpret_cast<OverGrowthGeometryVector*>(
-            &lmField<vc71::vector_layout>(manager, 0x970)));
+        &records, &shifted, &casterFrustum, &lm(manager).overGrowthGeometry);
     terrainCollectShadowGeometry(g_Terrain, &records, &shifted, &casterFrustum);
 }
 
@@ -4534,27 +5431,27 @@ void collectHighQualityShadowCasters(void* manager, Frustum& shifted, Frustum& c
 void renderHighQualityShadowMap(void* manager, const Frustum& casterFrustum,
                                 Mat4& casterViewProjection, unsigned int shadowQuality)
 {
-    if (!lmField<unsigned char>(manager, 0x268))
+    if (!lm(manager).shadowStaticFeature)
         return;
 
     // the second target, bound and cleared.
     if (shadowQuality >= 3u && !rendererSuppressesHighQualityShadows())
     {
-        if (lmField<unsigned int>(manager, 0x910) == 0)
+        if (lm(manager).shadowMapMode == 0)
         {
-            setLightManagerDepthStencil(lmField<IDirect3DSurface9*>(manager, 0x22C));
+            setLightManagerDepthStencil(lm(manager).shadowDepthSurface2);
             dx9rend::stateManagerSetRenderState(195, 0);                   // D3DRS_DEPTHBIAS
             dx9rend::stateManagerSetRenderState(175, 0);                   // D3DRS_SLOPESCALEDEPTHBIAS
         }
         else
         {
-            setRenderTargetTexture(0, lmField<dx9rend::EngineTexture*>(manager, 0x220));
+            lightManagerSetRenderTargetTexture(0, lm(manager).shadowMap2);
         }
         dx9rend::stateManagerClear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFFu, 1.0f, 0);
     }
 
     // 0x10166752..0x10166792: +0x268 is read again and isExpansionPack is asked twice more.
-    if (!lmField<unsigned char>(manager, 0x268) || shadowQuality < 3u
+    if (!lm(manager).shadowStaticFeature || shadowQuality < 3u
         || rendererSuppressesHighQualityShadows() || rendererSuppressesHighQualityShadows())
         return;
 
@@ -4564,26 +5461,26 @@ void renderHighQualityShadowMap(void* manager, const Frustum& casterFrustum,
     // StaticMeshRenderer's constructor selects on nvidia - and never restored: after the first
     // quality-three frame the StaticMesh Effect keeps this technique for the TSM pass too. The
     // selection's result is not tested.
-    dx9rend::effectSetTechniqueByName(staticMeshShadowEffect(), vc71::string("DrawShadowMap"));
+    dx9rend::effectSetTechniqueByName(staticMeshShadowEffect(), std::string("DrawShadowMap"));
     dx9rend::effectBegin(staticMeshShadowEffect());
     dx9rend::effectBeginPass(staticMeshShadowEffect(), 1);
 
-    vc71::vector_layout& records = lmField<vc71::vector_layout>(manager, 0x79C);
-    vc71::vector_layout& occluders = lmField<vc71::vector_layout>(manager, 0x934);
-    for (XpRenderRecordLayout* record = vectorBegin<XpRenderRecordLayout>(records);
-         record != reinterpret_cast<XpRenderRecordLayout*>(records.last); ++record)
+    std::vector<LightShadowRecord>& records = lm(manager).directionalRecords;
+    std::vector<world::IObject*>& occluders = lm(manager).staticShadowCasters;
+    for (LightShadowRecord* record = records.data();
+         record != records.data() + records.size(); ++record)
     {
         record->matrices[0] = casterViewProjection;                        // +0x1F8
         setShadowInsetScissor(manager);
         Frustum shifted(record->frustum);                                  // [ebp-0x688], 0x100F58A0
-        shiftShadowFrustumTowardLight(shifted, lmField<float>(manager, 0x16C));
+        shiftShadowFrustumTowardLight(shifted, lm(manager).shadowPullbackDistance);
         queryStaticShadowCasters(manager, shifted);                        // no sweep filter here
         Mat4 view = Mat4::getIdentity();                                   // [ebp-0xA8]
         Mat4 projection = Mat4::getIdentity();                             // [ebp-0x64]
         shadowFrustumViewMatrix(shifted, view);
         shadowFrustumOrthoProjection(shifted, projection);
-        for (world::IObject** it = vectorBegin<world::IObject*>(occluders);
-             it != reinterpret_cast<world::IObject**>(occluders.last); ++it)
+        for (world::IObject** it = occluders.data();
+             it != occluders.data() + occluders.size(); ++it)
         {
             void* const geometry = objectGeometry(*it);                    // [ebp-0xC]
             if (!geometry)
@@ -4596,12 +5493,12 @@ void renderHighQualityShadowMap(void* manager, const Frustum& casterFrustum,
 
     // with records, the OverGrowth instances against the first record, then
     // the Terrain's (empty) draw hook.
-    if (records.first && vectorSize<XpRenderRecordLayout>(records) != 0)
+    if (records.size() != 0)
     {
-        XpRenderRecordLayout* const firstRecord = vectorBegin<XpRenderRecordLayout>(records);
-        vc71::vector_layout& overGrowthGeometry = lmField<vc71::vector_layout>(manager, 0x970);
-        for (void** it = vectorBegin<void*>(overGrowthGeometry);
-             it != reinterpret_cast<void**>(overGrowthGeometry.last); ++it)
+        LightShadowRecord* const firstRecord = records.data();
+        std::vector<void*>& overGrowthGeometry = lm(manager).overGrowthGeometry;
+        for (void** it = overGrowthGeometry.data();
+             it != overGrowthGeometry.data() + overGrowthGeometry.size(); ++it)
             geometryDrawRecordShadow(*it, firstRecord);
         terrainDrawShadowMap(g_Terrain, firstRecord);
     }
@@ -4622,11 +5519,11 @@ void renderDirectionalShadowMaps(void* manager)
 
     // five `resize(0, 0)`s - 0x10032330 on the object vectors +0x914 /
     // +0x934, 0x10168B50 on the geometry vectors +0x924 / +0x944 / +0x970.
-    clearPointerVector(lmField<vc71::vector_layout>(manager, 0x914));
-    clearPointerVector(lmField<vc71::vector_layout>(manager, 0x924));
-    clearPointerVector(lmField<vc71::vector_layout>(manager, 0x934));
-    clearPointerVector(lmField<vc71::vector_layout>(manager, 0x944));
-    clearPointerVector(lmField<vc71::vector_layout>(manager, 0x970));
+    lm(manager).shadowCandidates.clear();
+    lm(manager).directionalGeometry.clear();
+    lm(manager).staticShadowCasters.clear();
+    lm(manager).unresolvedGeometry944.clear();
+    lm(manager).overGrowthGeometry.clear();
 
     Mat4 lightBasis;                                                       // [ebp-0x228]
     ShadowSweepClassifier classifier;                                      // [ebp-0x27C]
@@ -4634,9 +5531,9 @@ void renderDirectionalShadowMaps(void* manager)
 
     // the records `resize(0, Record())`. no
     // candidate, no pass - the classifier's two vectors are released on the way out.
-    clearShadowRecordVector(lmField<vc71::vector_layout>(manager, 0x79C));
-    vc71::vector_layout& candidates = lmField<vc71::vector_layout>(manager, 0x914);
-    if (vectorSize<world::IObject*>(candidates) == 0)
+    clearShadowRecordVector(lm(manager).directionalRecords);
+    std::vector<world::IObject*>& candidates = lm(manager).shadowCandidates;
+    if (candidates.size() == 0)
         return;
 
     bindDirectionalShadowTarget(manager);
@@ -4647,21 +5544,17 @@ void renderDirectionalShadowMaps(void* manager)
     const Mat4 shadowMatrix = calculateDirectionalShadowMatrix(manager);
 
     buildDirectionalCasterFrustum(manager, casterFrustum);
-    // the caster frustum, with the debug byte +0x788 set, to DebugRenderer
-    // +0x28 (colour 0). Reached only through shadowManager.shadowShowFrustums (see the first stop).
-    if (lmField<unsigned char>(manager, 0x788))
+    // PE 0x1016574B: the caster frustum before follower growth.
+    if (lm(manager).showFrustums)
     {
-        RD9_FRONTIER_AT("dice::hfe::geom::LightManager::renderDirectionalShadowMaps "
-                        "(DebugRenderer::drawFrustum - the +0x788 caster frustum draw)",
-                        g_DebugRenderer, 0x28);
-        std::abort();
+        static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(casterFrustum, 0, 0);
     }
     applyDirectionalCasterFrustumMode(manager, casterFrustum);             // dead, see above
     directionalCasterViewProjection(casterFrustum, casterViewProjection);
 
     // a record per candidate with a geometry; the end is re-read.
-    for (world::IObject** it = vectorBegin<world::IObject*>(candidates);
-         it != reinterpret_cast<world::IObject**>(candidates.last); ++it)
+    for (world::IObject** it = candidates.data();
+         it != candidates.data() + candidates.size(); ++it)
         buildDirectionalRecord(manager, *it, lightBasis, casterViewProjection, shadowMatrix);
 
     submitDirectionalGeometry(manager);
@@ -4669,22 +5562,18 @@ void renderDirectionalShadowMaps(void* manager)
     // only with records - a null or empty vector resumes at 0x10166621.
     // So without records (every candidate lacked a geometry) the followers and the OverGrowth
     // query are skipped but the static map below still binds, clears and begins its Effect.
-    vc71::vector_layout& records = lmField<vc71::vector_layout>(manager, 0x79C);
-    if (records.first && vectorSize<XpRenderRecordLayout>(records) != 0)
+    std::vector<LightShadowRecord>& records = lm(manager).directionalRecords;
+    if (records.size() != 0)
     {
-        Frustum shifted(lmField<Frustum>(manager, 0x278));                 // [ebp-0x688], 0x100F58A0
+        Frustum shifted(lm(manager).shadowFrustum);                 // [ebp-0x688], 0x100F58A0
         attachDirectionalFollowers(manager, shifted, casterFrustum, classifier);
         collectHighQualityShadowCasters(manager, shifted, casterFrustum, shadowQuality);
     }
 
-    // the grown caster frustum, with +0x788 set, to DebugRenderer +0x28
-    // (colour 0xFF0000). Reached only through shadowManager.shadowShowFrustums (see the first stop).
-    if (lmField<unsigned char>(manager, 0x788))
+    // PE 0x1016662A: the grown caster frustum, in red.
+    if (lm(manager).showFrustums)
     {
-        RD9_FRONTIER_AT("dice::hfe::geom::LightManager::renderDirectionalShadowMaps "
-                        "(DebugRenderer::drawFrustum - the +0x788 grown caster frustum draw)",
-                        g_DebugRenderer, 0x28);
-        std::abort();
+        static_cast<IDebugRenderer*>(g_DebugRenderer)->queueFrustum(casterFrustum, 0xFF0000u, 0);
     }
 
     setShadowViewportAndScissor(manager);
@@ -4701,7 +5590,7 @@ Mat4 shadowClipBias()
     return result;
 }
 
-void rebuildRecordAtlasMatrix(XpRenderRecordLayout& record)
+void rebuildRecordAtlasMatrix(LightShadowRecord& record)
 {
     record.matrices[8] = Mat4::getIdentity();
     record.matrices[8].m[0] = record.atlasScaleOffset[2];
@@ -4712,15 +5601,16 @@ void rebuildRecordAtlasMatrix(XpRenderRecordLayout& record)
 
 // The two object-transform dispatches in the directional arm are deliberately
 // repeated; retail does not cache the first result.
+// PE 0x101617E0.
 void finalizeShadowRecords(void* manager)
 {
     const Mat4 bias = shadowClipBias();
-    vc71::vector_layout& directional = lmField<vc71::vector_layout>(manager, 0x79C);
-    XpRenderRecordLayout* records = vectorBegin<XpRenderRecordLayout>(directional);
-    unsigned int count = vectorSize<XpRenderRecordLayout>(directional);
+    std::vector<LightShadowRecord>& directional = lm(manager).directionalRecords;
+    LightShadowRecord* records = directional.data();
+    unsigned int count = static_cast<unsigned int>(directional.size());
     for (unsigned int i = 0; i < count; ++i)
     {
-        XpRenderRecordLayout& record = records[i];
+        LightShadowRecord& record = records[i];
         rebuildRecordAtlasMatrix(record);
         record.matrices[4] = multiplyShadowMatrices(record.matrices[1], bias);
         record.matrices[5] = multiplyShadowMatrices(record.matrices[0], bias);
@@ -4737,12 +5627,12 @@ void finalizeShadowRecords(void* manager)
         record.atlasBounds[3] = 1.0f;
     }
 
-    vc71::vector_layout& secondary = lmField<vc71::vector_layout>(manager, 0x7AC);
-    records = vectorBegin<XpRenderRecordLayout>(secondary);
-    count = vectorSize<XpRenderRecordLayout>(secondary);
+    std::vector<LightShadowRecord>& secondary = lm(manager).secondaryRecords;
+    records = secondary.data();
+    count = static_cast<unsigned int>(secondary.size());
     for (unsigned int i = 0; i < count; ++i)
     {
-        XpRenderRecordLayout& record = records[i];
+        LightShadowRecord& record = records[i];
         rebuildRecordAtlasMatrix(record);
         record.matrices[4] = multiplyShadowMatrices(
             record.matrices[1], record.matrices[2]);
@@ -4757,124 +5647,100 @@ void finalizeShadowRecords(void* manager)
     }
 }
 
-void destroyShadowRecordVector(vc71::vector_layout& vector)
-{
-    clearShadowRecordVector(vector);
-    destroyVectorStorage(vector);
-}
-
+// PE 0x100F3FB0.
 void destroyLightManager(void* self)
 {
+    LightManagerData& d = lm(self);
     // Restore all three most-derived tables before touching any owned state.
-    lmField<const void**>(self, 0x00) = const_cast<const void**>(kPrimaryVtable);
-    lmField<const void**>(self, 0x04) = const_cast<const void**>(kDeviceLostVtable);
-    lmField<const void**>(self, 0x08) = const_cast<const void**>(kRenderPathVtable);
+    d.primaryVtable = kPrimaryVtable;
+    d.deviceLostVtable = kDeviceLostVtable;
+    d.renderPathVtable = kRenderPathVtable;
 
-    if (lmField<void*>(self, 0x190))
-        ::renddx9abi::engineFree(lmField<void*>(self, 0x190));
+    if (d.simpleShadowMap)
+        ::renddx9abi::engineFree(d.simpleShadowMap);
 
-    ShadowTree& effects = lmField<ShadowTree>(self, 0x964);
-    releaseShadowTreeValues(effects.head->parent);
+    releaseShadowEffects(d.shadowEffects);
 
-    static const unsigned int textureOffsets[] =
+    dx9rend::textureReleaseRef(d.normalCubeTexture);
+    dx9rend::textureReleaseRef(d.whiteTexture);
+    dx9rend::textureReleaseRef(d.blackTexture);
+    dx9rend::textureReleaseRef(d.framedTexture);
+    dx9rend::textureReleaseRef(d.blackCubeTexture);
+    dx9rend::textureReleaseRef(d.conicalAttenuation);
+    dx9rend::textureReleaseRef(d.radialAttenuation);
+
+    // The PE's release order over the parameter handles (+0x8B4 down, then the shuffled tail).
+    static const LightShaderParameter parameterOrder[] =
     {
-        0x24C, 0x23C, 0x240, 0x244, 0x248, 0x8BC, 0x8B8
+        kParamTexLayer6, kParamTexLayer5, kParamTexLayer4, kParamTexLayer3, kParamTexLayer2,
+        kParamTexLayer1, kParamTexLayer0, kParamLightMapIntensityBias, kParamShadowIntensityBias,
+        kParamEyePos, kParamEyeDof, kParamViewportMap, kParamViewportMap2, kParamProjectorMask,
+        kParamLightOccluderViewProj, kParamLightViewProj, kParamWorldViewProj, kParamViewProj,
+        kParamLightAttenuationRangeInv, kParamLightAttenuationRange, kParamLightCol,
+        kParamLightWorldPos, kParamLightPos, kParamLightDir, kParamParaboloidZValues,
+        kParamStencilRef, kParamStencilFunc, kParamStencilPass
     };
-    for (unsigned int i = 0; i < sizeof(textureOffsets) / sizeof(textureOffsets[0]); ++i)
-        dx9rend::textureReleaseRef(
-            lmField<dx9rend::EngineTexture*>(self, textureOffsets[i]));
-
-    static const unsigned int parameterOffsets[] =
+    for (unsigned int i = 0; i < sizeof(parameterOrder) / sizeof(parameterOrder[0]); ++i)
     {
-        0x8B4, 0x8B0, 0x8AC, 0x8A8, 0x8A4, 0x8A0, 0x89C,
-        0x898, 0x894, 0x874, 0x878, 0x88C, 0x890, 0x870,
-        0x888, 0x884, 0x880, 0x87C, 0x86C, 0x868, 0x864,
-        0x858, 0x860, 0x85C, 0x854, 0x84C, 0x848, 0x850
-    };
-    for (unsigned int i = 0; i < sizeof(parameterOffsets) / sizeof(parameterOffsets[0]); ++i)
-    {
-        dx9rend::ShaderParameter*& parameter =
-            lmField<dx9rend::ShaderParameter*>(self, parameterOffsets[i]);
+        dx9rend::ShaderParameter*& parameter = d.shaderParameters[parameterOrder[i]];
         if (parameter)
             parameter->release();
         parameter = 0;
     }
-    dx9rend::Effect*& effect = lmField<dx9rend::Effect*>(self, 0x844);
+    dx9rend::Effect*& effect = d.shadowEffect;
     if (effect)
         dx9rend::effectRelease(effect);
     effect = 0;
 
-    for (unsigned int offset = 0x254; offset <= 0x260; offset += 4)
-        dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, offset));
-    lmField<void*>(self, 0x250) = 0;
+    for (unsigned int i = 0; i < 4; ++i)
+        dx9rend::textureReleaseRef(d.specularLuts[i]);
+    d.currentSpecularLut = 0;
 
     releaseShadowResources(self, true);
-    if (lmField<world::LightSource*>(self, 0x14))
-        lmField<world::LightSource*>(self, 0x14)->release();
+    if (d.skyLight)
+        d.skyLight->release();
 
-    static const unsigned int objectOffsets[] = { 0x8F8, 0x8FC, 0x8D8, 0x8DC, 0x8E8, 0x8EC };
-    for (unsigned int i = 0; i < sizeof(objectOffsets) / sizeof(objectOffsets[0]); ++i)
+    IUnknown** const objects[] =
     {
-        IUnknown*& object = lmField<IUnknown*>(self, objectOffsets[i]);
+        reinterpret_cast<IUnknown**>(&d.boxVertices), reinterpret_cast<IUnknown**>(&d.boxIndices),
+        reinterpret_cast<IUnknown**>(&d.sphereVertices), reinterpret_cast<IUnknown**>(&d.sphereIndices),
+        reinterpret_cast<IUnknown**>(&d.cylinderVertices),
+        reinterpret_cast<IUnknown**>(&d.cylinderIndices)
+    };
+    for (unsigned int i = 0; i < sizeof(objects) / sizeof(objects[0]); ++i)
+    {
+        IUnknown*& object = *objects[i];
         if (object)
             object->Release();
         object = 0;
     }
 
-    lmField<IDirect3DDevice9*>(self, 0x908)->Release();
+    d.device->Release();
     dx9rend::unregisterDeviceLostResetListener(
-        reinterpret_cast<dx9rend::DeviceLostResetListener*>(
-            static_cast<unsigned char*>(self) + 4));
+        reinterpret_cast<dx9rend::DeviceLostResetListener*>(&d.deviceLostVtable));
     dx9rend::unregisterRenderPathListener(
-        reinterpret_cast<dx9rend::RenderPathListener*>(
-            static_cast<unsigned char*>(self) + 8));
+        reinterpret_cast<dx9rend::RenderPathListener*>(&d.renderPathVtable));
 
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x970));
-    destroyShadowTree(effects, false);
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x954));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x944));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x934));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x924));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x914));
-    destroyShadowTree(lmField<ShadowTree>(self, 0x8CC), false);
-    destroyShadowTree(lmField<ShadowTree>(self, 0x8C0), false);
-    destroyShadowRecordVector(lmField<vc71::vector_layout>(self, 0x7DC));
-    destroyShadowRecordVector(lmField<vc71::vector_layout>(self, 0x7CC));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x7BC));
-    destroyShadowRecordVector(lmField<vc71::vector_layout>(self, 0x7AC));
-    destroyShadowRecordVector(lmField<vc71::vector_layout>(self, 0x79C));
-    destroyShadowTree(lmField<ShadowTree>(self, 0x1F0), false);
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x1E0));
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x1D0));
-    lmActiveLights(self).destroy();
-    lmOwnedLights(self).destroy();
-    lmField<void*>(self, 0x17C) = 0;
-    destroyVectorStorage(lmField<vc71::vector_layout>(self, 0x180));
+    // The containers, in the PE's order - +0x970 down to +0x180, the members' reverse
+    // declaration order.
+    d.simpleShadowIOBitCount = 0;
+    d.~LightManagerData();
 }
 
-// Every unrecovered primary slot has its own instantiated stopping body.  Its arguments are not
-// declared: with the frontier trap armed it never returns, which is the only stack-safe behavior
-// for an as-yet unknown __thiscall signature.  The byte offset is still carried into the diagnostic.
-template <unsigned int Slot>
-void __fastcall lm_unrecovered(void* self, void*)
+int RD9_THUNK lm_addRef(void* self RD9_THUNK_EDX)
 {
-    RD9_FRONTIER_AT("dice::hfe::geom::LightManager::unrecoveredVirtual", self, Slot);
-    std::abort();
+    return ++lm(self).refCount;
 }
 
-int __fastcall lm_addRef(void* self, void*)
+int RD9_THUNK lm_getRef(void* self RD9_THUNK_EDX)
 {
-    return ++lmField<int>(self, 0x10);
+    return lm(self).refCount;
 }
 
-int __fastcall lm_getRef(void* self, void*)
+// PE 0x100F7A50
+int RD9_THUNK lm_release(void* self RD9_THUNK_EDX)
 {
-    return lmField<int>(self, 0x10);
-}
-
-int __fastcall lm_release(void* self, void*)
-{
-    const int remaining = --lmField<int>(self, 0x10);
+    const int remaining = --lm(self).refCount;
     if (remaining == 0)
     {
         destroyLightManager(self);
@@ -4883,7 +5749,8 @@ int __fastcall lm_release(void* self, void*)
     return remaining;
 }
 
-void* __fastcall lm_queryInterface(void* self, void*, unsigned int iid)
+// PE 0x100F78E0
+void* RD9_THUNK lm_queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
 {
     if (iid == RD9_IID_IBASE || iid == IID_ILightManager)
         return self;
@@ -4893,51 +5760,52 @@ void* __fastcall lm_queryInterface(void* self, void*, unsigned int iid)
 // LightManager::init calls this on every invocation, even after the sunlight at
 // +0x840 has already been created.  D3DX return values are deliberately ignored: retail proceeds
 // directly through every returned mesh pointer and therefore has no failure recovery arm here.
+// PE 0x100F17A0.
 void buildLightDebugGeometry(void* self)
 {
-    IDirect3DDevice9* const device = lmField<IDirect3DDevice9*>(self, 0x908);
+    IDirect3DDevice9* const device = lm(self).device;
 
-    RendD3dxMesh* sphereSource = 0;
-    RendD3dxMesh* sphere = 0;
+    ID3DXMesh* sphereSource = 0;
+    ID3DXMesh* sphere = 0;
     D3DXCreateSphere(device, 1.0f, 20, 20, &sphereSource, 0);
     sphereSource->CloneMeshFVF(0x660u, D3DFVF_XYZ, device, &sphere);
 
-    RendD3dxMesh* cylinderSource = 0;
-    RendD3dxMesh* cylinder = 0;
+    ID3DXMesh* cylinderSource = 0;
+    ID3DXMesh* cylinder = 0;
     D3DXCreateCylinder(device, 0.0f, 1.0f, 1.0f, 20, 20, &cylinderSource, 0);
     cylinderSource->CloneMeshFVF(0x660u, D3DFVF_XYZ, device, &cylinder);
 
-    RendD3dxMesh* boxSource = 0;
-    RendD3dxMesh* box = 0;
+    ID3DXMesh* boxSource = 0;
+    ID3DXMesh* box = 0;
     D3DXCreateBox(device, 1.0f, 1.0f, 1.0f, &boxSource, 0);
     boxSource->CloneMeshFVF(0x660u, D3DFVF_XYZ, device, &box);
 
-    if (lmField<IDirect3DVertexBuffer9*>(self, 0x8F8))
-        lmField<IDirect3DVertexBuffer9*>(self, 0x8F8)->Release();
-    if (lmField<IDirect3DIndexBuffer9*>(self, 0x8FC))
-        lmField<IDirect3DIndexBuffer9*>(self, 0x8FC)->Release();
-    if (lmField<IDirect3DVertexBuffer9*>(self, 0x8D8))
-        lmField<IDirect3DVertexBuffer9*>(self, 0x8D8)->Release();
-    if (lmField<IDirect3DIndexBuffer9*>(self, 0x8DC))
-        lmField<IDirect3DIndexBuffer9*>(self, 0x8DC)->Release();
-    if (lmField<IDirect3DVertexBuffer9*>(self, 0x8E8))
-        lmField<IDirect3DVertexBuffer9*>(self, 0x8E8)->Release();
-    if (lmField<IDirect3DIndexBuffer9*>(self, 0x8EC))
-        lmField<IDirect3DIndexBuffer9*>(self, 0x8EC)->Release();
+    if (lm(self).boxVertices)
+        lm(self).boxVertices->Release();
+    if (lm(self).boxIndices)
+        lm(self).boxIndices->Release();
+    if (lm(self).sphereVertices)
+        lm(self).sphereVertices->Release();
+    if (lm(self).sphereIndices)
+        lm(self).sphereIndices->Release();
+    if (lm(self).cylinderVertices)
+        lm(self).cylinderVertices->Release();
+    if (lm(self).cylinderIndices)
+        lm(self).cylinderIndices->Release();
 
-    box->GetVertexBuffer(&lmField<IDirect3DVertexBuffer9*>(self, 0x8F8));
-    box->GetIndexBuffer(&lmField<IDirect3DIndexBuffer9*>(self, 0x8FC));
-    cylinder->GetVertexBuffer(&lmField<IDirect3DVertexBuffer9*>(self, 0x8E8));
-    cylinder->GetIndexBuffer(&lmField<IDirect3DIndexBuffer9*>(self, 0x8EC));
-    sphere->GetVertexBuffer(&lmField<IDirect3DVertexBuffer9*>(self, 0x8D8));
-    sphere->GetIndexBuffer(&lmField<IDirect3DIndexBuffer9*>(self, 0x8DC));
+    box->GetVertexBuffer(&lm(self).boxVertices);
+    box->GetIndexBuffer(&lm(self).boxIndices);
+    cylinder->GetVertexBuffer(&lm(self).cylinderVertices);
+    cylinder->GetIndexBuffer(&lm(self).cylinderIndices);
+    sphere->GetVertexBuffer(&lm(self).sphereVertices);
+    sphere->GetIndexBuffer(&lm(self).sphereIndices);
 
-    lmField<unsigned int>(self, 0x900) = box->GetNumVertices();
-    lmField<unsigned int>(self, 0x904) = box->GetNumFaces();
-    lmField<unsigned int>(self, 0x8F0) = cylinder->GetNumVertices();
-    lmField<unsigned int>(self, 0x8F4) = cylinder->GetNumFaces();
-    lmField<unsigned int>(self, 0x8E0) = sphere->GetNumVertices();
-    lmField<unsigned int>(self, 0x8E4) = sphere->GetNumFaces();
+    lm(self).boxVertexCount = box->GetNumVertices();
+    lm(self).boxFaceCount = box->GetNumFaces();
+    lm(self).cylinderVertexCount = cylinder->GetNumVertices();
+    lm(self).cylinderFaceCount = cylinder->GetNumFaces();
+    lm(self).sphereVertexCount = sphere->GetNumVertices();
+    lm(self).sphereFaceCount = sphere->GetNumFaces();
 
     boxSource->Release();
     box->Release();
@@ -4947,19 +5815,18 @@ void buildLightDebugGeometry(void* self)
     sphere->Release();
 }
 
-// [PLATFORM] Adapts the renderer's internal VC7.1 vector<bool> storage at +0x17C.
-// Growth uses 1.5x capacity or the requested size; shrinking retains capacity and clears spare bits.
-// No external STL object is reinterpreted as this layout.
+// The vector<bool> at +0x17C (bit count) / +0x180 (words). New words are zeroed; shrinking keeps the
+// storage and clears the spare bits of the last word.
 class SimpleShadowMapIOStorage
 {
 public:
     explicit SimpleShadowMapIOStorage(void* manager)
-        : count(lmField<unsigned int>(manager, 0x17C)),
-          words(lmField<vc71::vector_layout>(manager, 0x180)) {}
+        : count(lm(manager).simpleShadowIOBitCount),
+          words(lm(manager).simpleShadowIOWords) {}
 
     void set(unsigned int index, bool value)
     {
-        unsigned int& word = reinterpret_cast<unsigned int*>(words.first)[index >> 5];
+        unsigned int& word = words.data()[index >> 5];
         const unsigned int mask = 1u << (index & 31u);
         if (value) word |= mask;
         else word &= ~mask;
@@ -4971,26 +5838,7 @@ public:
         if (size == oldSize)
             return;
         const unsigned int wordCount = (size + 31u) >> 5;
-        const unsigned int oldWords = vc71::vectorSizeIn(words, sizeof(unsigned int));
-        const unsigned int capacity = words.first
-            ? static_cast<unsigned int>(words.end - words.first) / sizeof(unsigned int) : 0u;
-        if (wordCount > capacity)
-        {
-            if (wordCount > 0x3FFFFFFFu)
-                throw std::length_error("vector<T> too long");
-            unsigned int grown = capacity <= 0x3FFFFFFFu - (capacity >> 1)
-                ? capacity + (capacity >> 1) : 0u;
-            if (grown < wordCount) grown = wordCount;
-            char* const block = static_cast<char*>(::operator new(grown * 4u));
-            if (oldWords) memcpy(block, words.first, oldWords * 4u);
-            if (words.first) ::operator delete(words.first);
-            words.first = block;
-            words.end = block + grown * 4u;
-        }
-        if (wordCount > oldWords)
-            std::fill(reinterpret_cast<unsigned int*>(words.first) + oldWords,
-                      reinterpret_cast<unsigned int*>(words.first) + wordCount, 0u);
-        words.last = words.first ? words.first + wordCount * 4u : 0;
+        words.resize(wordCount, 0u);
         count = size;
         if (size > oldSize)
         {
@@ -4998,8 +5846,7 @@ public:
         }
         else if (size & 31u)
         {
-            reinterpret_cast<unsigned int*>(words.first)[wordCount - 1u] &=
-                (1u << (size & 31u)) - 1u;
+            words.data()[wordCount - 1u] &= (1u << (size & 31u)) - 1u;
         }
     }
 
@@ -5010,23 +5857,17 @@ public:
     }
 
 private:
+    SimpleShadowMapIOStorage(const SimpleShadowMapIOStorage&);
+    SimpleShadowMapIOStorage& operator=(const SimpleShadowMapIOStorage&);
+
     unsigned int& count;
-    vc71::vector_layout& words;
+    std::vector<unsigned int>& words;
 };
 
 const renddx9abi::HostString& simpleShadowStringSetting(
     const renddx9abi::HostString& key, const renddx9abi::HostString& fallback)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return settings->stringGet(key, fallback);
-#else
-    // [PLATFORM] PE settings +0x40 returns a reference to a VC7.1 string. The native branch uses
-    // the recovered SettingsRepostitory signature; only this legacy carrier needs an adapter.
-    typedef const renddx9abi::HostString& (__thiscall* GetString)(
-        void*, const renddx9abi::HostString&, const renddx9abi::HostString&);
-    return reinterpret_cast<GetString>((*reinterpret_cast<void***>(settings))[0x40 / 4])(
-        settings, key, fallback);
-#endif
 }
 
 renddx9abi::HostString simpleShadowLevelPath()
@@ -5044,26 +5885,26 @@ renddx9abi::HostString simpleShadowLevelPath()
 
 void loadSimpleShadowMapsBody(void* self)
 {
-    if (lmField<unsigned char*>(self, 0x190))
-        ::renddx9abi::engineFree(lmField<unsigned char*>(self, 0x190));
+    if (lm(self).simpleShadowMap)
+        ::renddx9abi::engineFree(lm(self).simpleShadowMap);
 
     world::IHeightmapCluster* const cluster = static_cast<world::IHeightmapCluster*>(
         static_cast<void*>(classManager->getSingleton(renddx9abi::HostString("HeightmapCluster"))));
     // IHeightmapCluster PE +0x2C / ELF +0x30 is getHeightmapSize, not getWorldSize.
     const int size = cluster->getHeightmapSize() / 2;
-    lmField<int>(self, 0x19C) = (size + 8) / 2;
+    lm(self).simpleShadowIOColumnOrigin = (size + 8) / 2;
     const int rowOrigin = (size + 2) / 2;
-    lmField<int>(self, 0x1A4) = rowOrigin;
-    lmField<int>(self, 0x198) = size + 8;
-    lmField<int>(self, 0x1A8) = (size + 8) / 4;
-    lmField<int>(self, 0x1A0) = size + 2;
-    lmField<float>(self, 0x194) = static_cast<float>(size);
-    lmField<int>(self, 0x1AC) = ((size + 8) / 4) / 2;
-    lmField<int>(self, 0x1B0) = rowOrigin;
-    const unsigned int packedBytes = lmField<int>(self, 0x1A0) * lmField<int>(self, 0x1A8);
-    lmField<unsigned char*>(self, 0x190) =
+    lm(self).simpleShadowIORowOrigin = rowOrigin;
+    lm(self).simpleShadowIOStride = size + 8;
+    lm(self).simpleShadowStride = (size + 8) / 4;
+    lm(self).simpleShadowRowCount = size + 2;
+    lm(self).simpleShadowLimit = static_cast<float>(size);
+    lm(self).simpleShadowColumnOrigin = ((size + 8) / 4) / 2;
+    lm(self).simpleShadowRowOrigin = rowOrigin;
+    const unsigned int packedBytes = lm(self).simpleShadowRowCount * lm(self).simpleShadowStride;
+    lm(self).simpleShadowMap =
         static_cast<unsigned char*>(::renddx9abi::engineAlloc(packedBytes));
-    memset(lmField<unsigned char*>(self, 0x190), 0xFF, packedBytes);
+    memset(lm(self).simpleShadowMap, 0xFF, packedBytes);
 
     const renddx9abi::HostString levelPath = simpleShadowLevelPath();
     renddx9abi::HostStream* stream;
@@ -5092,8 +5933,8 @@ void loadSimpleShadowMapsBody(void* self)
                 static_cast<double>(row[x]) * static_cast<double>(3.0f / 255.0f) + 0.5));
             const int packedX = x + 4;
             const unsigned int shift = 2u * (packedX & 3);
-            unsigned char& destination = lmField<unsigned char*>(self, 0x190)[
-                (y + 1) * lmField<int>(self, 0x1A8) + (packedX >> 2)];
+            unsigned char& destination = lm(self).simpleShadowMap[
+                (y + 1) * lm(self).simpleShadowStride + (packedX >> 2)];
             destination = static_cast<unsigned char>(
                 (destination & ~(3u << shift)) | ((value & 3u) << shift));
         }
@@ -5101,7 +5942,7 @@ void loadSimpleShadowMapsBody(void* self)
     ::renddx9abi::engineFree(source);
 
     SimpleShadowMapIOStorage io(self);
-    io.resize(lmField<int>(self, 0x198) * lmField<int>(self, 0x1A0), false);
+    io.resize(lm(self).simpleShadowIOStride * lm(self).simpleShadowRowCount, false);
     io.fill(true);
     {
         renddx9abi::HostString path(levelPath);
@@ -5118,7 +5959,7 @@ void loadSimpleShadowMapsBody(void* self)
     {
         const unsigned char* row = source + (size - 1 - y) * size;
         for (int x = 0; x < size; ++x)
-            io.set((y + 1) * lmField<int>(self, 0x198) + x + 4, row[x] > 127);
+            io.set((y + 1) * lm(self).simpleShadowIOStride + x + 4, row[x] > 127);
     }
     ::renddx9abi::engineFree(source);
 }
@@ -5128,7 +5969,7 @@ void loadSimpleShadowMapsBody(void* self)
 void initializeLightManagerBody(void* self)
 {
     buildLightDebugGeometry(self);
-    if (lmField<world::LightSource*>(self, 0x840))
+    if (lm(self).sunLight)
         return;
 
     world::ObjectTemplateManager* const templateManager =
@@ -5165,7 +6006,7 @@ void initializeLightManagerBody(void* self)
 
     world::LightSource* const light =
         static_cast<world::LightSource*>(objectTemplate->createObject());
-    lmField<world::LightSource*>(self, 0x840) = light;
+    lm(self).sunLight = light;
     light->init();
     {
         const renddx9abi::HostString name("sun");
@@ -5183,6 +6024,7 @@ void initializeLightManagerBody(void* self)
 // Requires a light with a template. Typed calls account for the two-slot PE/ELF
 // difference in the light-template interface.
 
+// PE 0x100F14B0.
 bool lightMatchesMask(world::LightSource* light, unsigned int required, unsigned int forbidden)
 {
     const world::LightSourceTemplate* const t = lightSourceTemplatePointer(light);
@@ -5239,17 +6081,16 @@ bool lightMatchesMask(world::LightSource* light, unsigned int required, unsigned
 // It walks the owned set at +0x1B8 (the head read is `[ecx+1BCh]`), not the active one:
 // enabled-ness is a mask bit, not a set membership.
 
-void __fastcall lm_getLightsByMask(void* self, void*, vc71::vector_layout* out,
+void RD9_THUNK lm_getLightsByMask(void* self RD9_THUNK_EDX, std::vector<world::LightSource*>* out,
                                    unsigned int required, unsigned int forbidden)
 {
-    vc71::set_layout& owned = lmOwnedLights(self);
-    vc71::vectorRef<world::LightSource*> lights(out);
-    for (vc71::set_node* node = owned.begin(); node != owned.end();
-         node = vc71::set_layout::next(node))
+    const std::set<world::LightSource*>& owned = lm(self).ownedLights;
+    for (std::set<world::LightSource*>::const_iterator node = owned.begin(); node != owned.end();
+         ++node)
     {
-        world::LightSource* const light = reinterpret_cast<world::LightSource*>(node->key);
+        world::LightSource* const light = *node;
         if (lightMatchesMask(light, required, forbidden))
-            lights.push_back(light);
+            out->push_back(light);
     }
 }
 
@@ -5257,15 +6098,15 @@ void __fastcall lm_getLightsByMask(void* self, void*, vc71::vector_layout* out,
 // Appends this frame's visible lights matching required/forbidden masks.
 // Required 0x7FFFFFFF instead selects enabled non-directional emitter lights and ignores forbidden.
 
-void __fastcall lm_getVisibleLightsByMask(void* self, void*, vc71::vector_layout* out,
+// PE 0x100F2F40.
+void RD9_THUNK lm_getVisibleLightsByMask(void* self RD9_THUNK_EDX, std::vector<world::LightSource*>* out,
                                           unsigned int required, unsigned int forbidden)
 {
-    vc71::vector_layout& scratch = lmField<vc71::vector_layout>(self, 0x1D0);
-    vc71::vectorRef<world::LightSource*> lights(out);
+    std::vector<world::LightSource*>& scratch = lm(self).visibleLights;
+    std::vector<world::LightSource*>& lights = *out;
     if (required == 0x7FFFFFFFu)
     {
-        for (world::LightSource** it = reinterpret_cast<world::LightSource**>(scratch.first);
-             it != reinterpret_cast<world::LightSource**>(scratch.last); ++it)
+        for (world::LightSource** it = scratch.data(); it != scratch.data() + scratch.size(); ++it)
         {
             world::LightSource* const light = *it;
             const world::LightSourceTemplate* const t = lightSourceTemplatePointer(light);
@@ -5276,8 +6117,7 @@ void __fastcall lm_getVisibleLightsByMask(void* self, void*, vc71::vector_layout
         }
         return;
     }
-    for (world::LightSource** it = reinterpret_cast<world::LightSource**>(scratch.first);
-         it != reinterpret_cast<world::LightSource**>(scratch.last); ++it)
+    for (world::LightSource** it = scratch.data(); it != scratch.data() + scratch.size(); ++it)
     {
         world::LightSource* const light = *it;
         if (lightMatchesMask(light, required, forbidden))
@@ -5290,10 +6130,17 @@ void __fastcall lm_getVisibleLightsByMask(void* self, void*, vc71::vector_layout
 // originals with the coordinator. A repeated initialization restores settings from those clones.
 
 LightManager*        g_snapshotManager = 0;                       // dword_10264114
-vc71::vector_layout  g_snapshotOriginals = { 0, 0, 0, 0 };        // unk_10264118
-vc71::vector_layout  g_snapshotClones    = { 0, 0, 0, 0 };        // unk_10264128
+std::vector<world::LightSource*> g_snapshotOriginals;              // unk_10264118
+std::vector<world::LightSource*> g_snapshotClones;                 // unk_10264128
 bool                 g_snapshotRegistering = false;               // byte_10259BE4
 bool                 g_gatherFirstCall = true;                    // byte_102395B4, .data 1
+
+// PE 0x10194A10 (`retn 4`; the shipped body also leaves the unused this pointer in eax): binds the
+// light manager the snapshot helper uses. [INFERRED] name.
+void setSnapshotManager(LightManager* manager)
+{
+    g_snapshotManager = manager;
+}
 
 // sub_101949A0 - clone a light: its template's createObject, then copySettings from the original.
 world::LightSource* cloneLightSettings(world::LightSource* light)
@@ -5305,69 +6152,62 @@ world::LightSource* cloneLightSettings(world::LightSource* light)
 }
 
 
-void collectSnapshotLights(vc71::vector_layout& lights)
+// PE 0x101954B0.
+void collectSnapshotLights(std::vector<world::LightSource*>& lights)
 {
-    if (g_snapshotOriginals.first
-        && vc71::vectorSizeIn(g_snapshotOriginals, sizeof(void*)) != 0)
+    if (g_snapshotOriginals.size() != 0)
     {
         // The restore branch.
-        const unsigned int count = vc71::vectorSizeIn(g_snapshotOriginals, sizeof(void*));
-        vc71::vectorReserveIn(lights, sizeof(void*), count);
-        world::LightSource** const originals =
-            reinterpret_cast<world::LightSource**>(g_snapshotOriginals.first);
+        const unsigned int count = static_cast<unsigned int>(g_snapshotOriginals.size());
+        lights.reserve(count);
+        world::LightSource** const originals = g_snapshotOriginals.data();
         for (unsigned int i = 0; i < count; ++i)
-            vc71::vectorPushBackIn(lights, sizeof(void*), &originals[i]);
+            lights.push_back(originals[i]);
 
-        world::LightSource** const clones =
-            reinterpret_cast<world::LightSource**>(g_snapshotClones.first);
-        const unsigned int cloneCount = vc71::vectorSizeIn(g_snapshotClones, sizeof(void*));
-        world::LightSource** const first = reinterpret_cast<world::LightSource**>(lights.first);
-        world::LightSource** const last  = reinterpret_cast<world::LightSource**>(lights.last);
+        world::LightSource** const clones = g_snapshotClones.data();
+        const unsigned int cloneCount = static_cast<unsigned int>(g_snapshotClones.size());
+        world::LightSource** const first = lights.data();
+        world::LightSource** const last  = lights.data() + lights.size();
         unsigned int c = 0;
         for (world::LightSource** it = first; it != last && c != cloneCount; ++it, ++c)
             (*it)->copySettings(*clones[c]);
         return;
     }
 
-    const unsigned int before = lights.first ? vc71::vectorSizeIn(lights, sizeof(void*)) : 0u;
+    const unsigned int before = static_cast<unsigned int>(lights.size());
     g_snapshotManager->getLightsByMask(lights, 0x805u, 0u);                    // +0x14
 
-    world::LightSource** const first =
-        reinterpret_cast<world::LightSource**>(lights.first) + before;
-    world::LightSource** const last = reinterpret_cast<world::LightSource**>(lights.last);
+    world::LightSource** const first = lights.data() + before;
+    world::LightSource** const last = lights.data() + lights.size();
     const unsigned int added = static_cast<unsigned int>(last - first);
 
-    vc71::vectorReserveIn(g_snapshotOriginals, sizeof(void*), added);
-    vc71::vectorReserveIn(g_snapshotClones, sizeof(void*), added);
+    g_snapshotOriginals.reserve(added);
+    g_snapshotClones.reserve(added);
     for (world::LightSource** it = first; it != last; ++it)
-        vc71::vectorPushBackIn(g_snapshotOriginals, sizeof(void*), it);
+        g_snapshotOriginals.push_back(*it);
     for (world::LightSource** it = first; it != last; ++it)
     {
         world::LightSource* const clone = cloneLightSettings(*it);
-        vc71::vectorPushBackIn(g_snapshotClones, sizeof(void*), &clone);
+        g_snapshotClones.push_back(clone);
     }
 }
 
 
+// PE 0x10195A30.
 void snapshotAndRegisterStaticPointLights()
 {
-    vc71::vector_layout lights = { 0, 0, 0, 0 };
+    std::vector<world::LightSource*> lights;
     collectSnapshotLights(lights);
 
     g_snapshotRegistering = true;
-    for (world::LightSource** it = reinterpret_cast<world::LightSource**>(lights.first);
-         it != reinterpret_cast<world::LightSource**>(lights.last); ++it)
+    for (world::LightSource** it = lights.data(); it != lights.data() + lights.size(); ++it)
         lmRegisterXpLight(*it);
     g_snapshotRegistering = false;
-
-    if (lights.first)
-        ::renddx9abi::engineFree(lights.first);
 }
 
 // The ray-test predicator the gather builds on its stack: sub_101C7E90 with mask 0x102, i.e.
 // OFIsVisible | OFHasCollision, and 0x101C7EB0's rule that every bit of the mask must be present.
 // Same two-flavour shape as ShadowCasterPredicator above, for the same reason.
-#if BF2_PLUGIN_ABI_NATIVE
 class LightOcclusionPredicator : public world::ObjectPredicator
 {
 public:
@@ -5388,51 +6228,21 @@ inline world::ObjectPredicator* lightOcclusionPredicatorPointer(LightOcclusionPr
 {
     return &p;
 }
-#else
-struct LightOcclusionPredicator
-{
-    const void** table;
-    unsigned int mask;
-};
-
-bool __fastcall lightOcclusionPredicate(void* self, void*, world::IObject* object)
-{
-    const unsigned int mask = static_cast<LightOcclusionPredicator*>(self)->mask;
-    return (mask & object->getFlags()) == mask;
-}
-unsigned int __fastcall lightOcclusionPredicateFlags(void* self, void*)
-{ return static_cast<LightOcclusionPredicator*>(self)->mask; }
-bool __fastcall lightOcclusionPredicateCull(void*, void*, world::IObject*) { return true; }
-bool __fastcall lightOcclusionPredicateSurface(void*, void*, int) { return true; }
-const void* const kLightOcclusionPredicatorVtable[4] =
-{
-    reinterpret_cast<void*>(&lightOcclusionPredicate),
-    reinterpret_cast<void*>(&lightOcclusionPredicateFlags),
-    reinterpret_cast<void*>(&lightOcclusionPredicateCull),
-    reinterpret_cast<void*>(&lightOcclusionPredicateSurface)
-};
-
-inline world::ObjectPredicator* lightOcclusionPredicatorPointer(LightOcclusionPredicator& p)
-{
-    p.table = const_cast<const void**>(kLightOcclusionPredicatorVtable);
-    p.mask  = 0x102u;
-    return reinterpret_cast<world::ObjectPredicator*>(&p);
-}
-#endif
 
 
 // Appends nearest eligible lights until out reaches maxLights.
 // Candidates must strictly overlap the query sphere and pass both masks. Optional
 // occlusion casts from the light toward position; hits inside radius remain accepted.
 
-void __fastcall lm_gatherLights(void* self, void*, const Vec3* position, float radius,
-                                vc71::vector_layout* out, unsigned int maxLights,
+void RD9_THUNK lm_gatherLights(void* self RD9_THUNK_EDX, const Vec3* position, float radius,
+                                std::vector<world::LightSource*>* out, unsigned int maxLights,
                                 unsigned int required, unsigned int forbidden,
                                 unsigned char occlusionTest)
 {
     if (g_gatherFirstCall)
     {
-        g_snapshotManager = static_cast<LightManager*>(self);
+        // Bind the light manager used by the snapshot helper (setSnapshotManager, PE 0x10194A10).
+        setSnapshotManager(static_cast<LightManager*>(self));
         snapshotAndRegisterStaticPointLights();
         g_gatherFirstCall = false;
     }
@@ -5440,9 +6250,9 @@ void __fastcall lm_gatherLights(void* self, void*, const Vec3* position, float r
     (void)dx9rend::rendererGetRenderView()->getViewMatrixPtr();
 
     std::vector<std::pair<float, world::LightSource*> > candidates;
-    vc71::vector_layout& scratch = lmField<vc71::vector_layout>(self, 0x1D0);
-    world::LightSource** const first = reinterpret_cast<world::LightSource**>(scratch.first);
-    world::LightSource** const last  = reinterpret_cast<world::LightSource**>(scratch.last);
+    std::vector<world::LightSource*>& scratch = lm(self).visibleLights;
+    world::LightSource** const first = scratch.data();
+    world::LightSource** const last  = scratch.data() + scratch.size();
     for (world::LightSource** it = first; it != last; ++it)
     {
         world::LightSource* const light = *it;
@@ -5463,7 +6273,7 @@ void __fastcall lm_gatherLights(void* self, void*, const Vec3* position, float r
     for (std::vector<std::pair<float, world::LightSource*> >::iterator c = candidates.begin();
          c != candidates.end(); ++c)
     {
-        if (vc71::vectorSizeIn(*out, sizeof(void*)) >= maxLights)
+        if (out->size() >= maxLights)
             break;
 
         if (occlusionTest)
@@ -5488,7 +6298,7 @@ void __fastcall lm_gatherLights(void* self, void*, const Vec3* position, float r
             }
         }
 
-        vc71::vectorPushBackIn(*out, sizeof(void*), &c->second);
+        out->push_back(c->second);
     }
 }
 
@@ -5499,19 +6309,20 @@ void __fastcall lm_gatherLights(void* self, void*, const Vec3* position, float r
 // geometry instance interface is not modelled as a type in this tree (see ObjectDrawer.cpp); the
 // call order - transform first, radius second - is the shipped one.
 
-void __fastcall lm_gatherLightsForGeometry(void* self, void*, void* geometry,
-                                           vc71::vector_layout* out, unsigned int maxLights,
+void RD9_THUNK lm_gatherLightsForGeometry(void* self RD9_THUNK_EDX, void* geometry,
+                                           std::vector<world::LightSource*>* out,
+                                           unsigned int maxLights,
                                            unsigned int required, unsigned int forbidden,
                                            int occlusionTest)
 {
-    typedef const Mat4* (__fastcall* TransformationFn)(void*, void*);
-    typedef float (__fastcall* BoundingRadiusFn)(void*, void*);
+    typedef const Mat4* (__thiscall* TransformationFn)(void*);
+    typedef float (__thiscall* BoundingRadiusFn)(void*);
 
     void** const vtbl = *reinterpret_cast<void***>(geometry);
     const Mat4* const transform =
-        reinterpret_cast<TransformationFn>(vtbl[0x48 / sizeof(void*)])(geometry, 0);
+        reinterpret_cast<TransformationFn>(vtbl[0x48 / 4])(geometry);
     const float radius =
-        reinterpret_cast<BoundingRadiusFn>(vtbl[0x44 / sizeof(void*)])(geometry, 0);
+        reinterpret_cast<BoundingRadiusFn>(vtbl[0x44 / 4])(geometry);
     const Vec3* const position = reinterpret_cast<const Vec3*>(&transform->m[12]);
 
     static_cast<LightManager*>(self)->gatherLights(*position, radius, *out, maxLights,
@@ -5520,26 +6331,26 @@ void __fastcall lm_gatherLightsForGeometry(void* self, void*, void* geometry,
 
 // +0x280, PE 0x1015BF40 and +0x2D8, the two one-instruction getters the StaticMesh
 // shadow draw dispatches.  ; the fields are the ones the constructor seeds.
-int __fastcall lm_getStaticMeshShadowLod(void* self, void*)
+int RD9_THUNK lm_getStaticMeshShadowLod(void* self RD9_THUNK_EDX)
 {
-    return static_cast<int>(lmField<unsigned int>(self, 0x154));
+    return static_cast<int>(lm(self).staticMeshShadowLod);
 }
 
-int __fastcall lm_getShadowMergeLodLimit(void* self, void*)
+int RD9_THUNK lm_getShadowMergeLodLimit(void* self RD9_THUNK_EDX)
 {
-    return static_cast<int>(lmField<unsigned int>(self, 0x820));
+    return static_cast<int>(lm(self).shadowMergeLodLimit);
 }
 
 // +0x10, PE 0x10160D30 -> 0x100F2D00. Retail clears the scratch vector, refreshes/copies the active
 // RenderView's Frustum, applies the configured cull distance, and walks the active set in pointer
 // order. Each accepted light is appended to the VC7.1 scratch vector at +0x1D0.
-void __fastcall lm_update(void* self, void*, double time)
+void RD9_THUNK lm_update(void* self RD9_THUNK_EDX, double time)
 {
     (void)time;
 
-    vc71::vector_layout& scratch = lmField<vc71::vector_layout>(self, 0x1D0);
+    std::vector<world::LightSource*>& scratch = lm(self).visibleLights;
     // std::vector<LightSource*>::clear retains capacity; only the destructor frees the buffer.
-    scratch.last = scratch.first;
+    scratch.clear();
 
     LightManager* const lights = static_cast<LightManager*>(self);
     if (lights->getLightCullDistance() == 0.0f)
@@ -5547,18 +6358,17 @@ void __fastcall lm_update(void* self, void*, double time)
 
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();
     Frustum localFrustum(*view->getFrustumPtr());
-    localFrustum.setFarDist(lights->getLightCullDistance());
+    rendmath::frustumSetFarDist(localFrustum, lights->getLightCullDistance());
 
-    vc71::set_layout& active = lmActiveLights(self);
-    vc71::vectorRef<world::LightSource*> visible(&scratch);
-    for (vc71::set_node* node = active.begin(); node != active.end();
-         node = vc71::set_layout::next(node))
+    const std::set<world::LightSource*>& active = lm(self).activeLights;
+    std::vector<world::LightSource*>& visible = scratch;
+    for (std::set<world::LightSource*>::const_iterator node = active.begin(); node != active.end();
+         ++node)
     {
-        world::LightSource* const light =
-            reinterpret_cast<world::LightSource*>(node->key);
+        world::LightSource* const light = *node;
         const float radius = light->getVisualBoundingRadius();
         const Vec3& position = light->getAbsolutePosition();
-        if (localFrustum.inside(position, radius))
+        if (rendmath::frustumInside(localFrustum, position, radius))
             visible.push_back(light);
     }
 
@@ -5573,33 +6383,33 @@ void __fastcall lm_update(void* self, void*, double time)
 
 // +0x24/+0x28, PE 0x1015BB90/0x1015BBC0.  Assignment owns one reference.  The same-pointer case
 // deliberately adds another reference without releasing the old one; that retail leak is visible.
-void __fastcall lm_setSkyLight(void* self, void*, world::LightSource* light)
+void RD9_THUNK lm_setSkyLight(void* self RD9_THUNK_EDX, world::LightSource* light)
 {
-    world::LightSource*& current = lmField<world::LightSource*>(self, 0x14);
+    world::LightSource*& current = lm(self).skyLight;
     if (current && current != light)
         current->release();
     current = light;
     light->addRef();
 }
 
-world::LightSource* __fastcall lm_getSkyLight(void* self, void*)
+world::LightSource* RD9_THUNK lm_getSkyLight(void* self RD9_THUNK_EDX)
 {
-    return lmField<world::LightSource*>(self, 0x14);
+    return lm(self).skyLight;
 }
 
 // +0x8C, PE 0x100F2C70.  addRef is unconditional after std::set::insert, including when a
 // duplicate key is rejected (the shipped duplicate-registration leak).
-void __fastcall lm_addLight(void* self, void*, world::LightSource* light)
+void RD9_THUNK lm_addLight(void* self RD9_THUNK_EDX, world::LightSource* light)
 {
-    lmOwnedLights(self).insert(lmLightKey(light));
+    lm(self).ownedLights.insert(light);
     light->addRef();
 }
 
 // +0x90, PE 0x100F2B40.  The special pointer is non-owning. Sky ownership and owning-set
 // ownership are independent, so a sky light found in the set is released twice in this call.
-void __fastcall lm_removeLight(void* self, void*, world::LightSource* light)
+void RD9_THUNK lm_removeLight(void* self RD9_THUNK_EDX, world::LightSource* light)
 {
-    world::LightSource*& special = lmField<world::LightSource*>(self, 0x840);
+    world::LightSource*& special = lm(self).sunLight;
     if (special == light)
         special = 0;
 
@@ -5607,23 +6417,23 @@ void __fastcall lm_removeLight(void* self, void*, world::LightSource* light)
     if (manager->getSkyLight() == light)
     {
         light->release();
-        lmField<world::LightSource*>(self, 0x14) = 0;
+        lm(self).skyLight = 0;
     }
 
-    vc71::set_layout& owned = lmOwnedLights(self);
-    vc71::set_node* const node = owned.find(lmLightKey(light));
+    std::set<world::LightSource*>& owned = lm(self).ownedLights;
+    const std::set<world::LightSource*>::iterator node = owned.find(light);
     if (node != owned.end())
     {
-        reinterpret_cast<world::LightSource*>(node->key)->release();
+        (*node)->release();
         owned.erase(node);
     }
 }
 
 // +0x94, PE 0x100F2CA0.  Point/Spot lights visit the XpLight coordinator before every light is
 // inserted into the non-owning active set.  The pointer at +0x840 is explicitly excluded.
-void __fastcall lm_enableLight(void* self, void*, world::LightSource* light)
+void RD9_THUNK lm_enableLight(void* self RD9_THUNK_EDX, world::LightSource* light)
 {
-    if (lmField<world::LightSource*>(self, 0x840) == light)
+    if (lm(self).sunLight == light)
         return;
 
     const world::LightSourceTemplate* const objectTemplate =
@@ -5632,18 +6442,18 @@ void __fastcall lm_enableLight(void* self, void*, world::LightSource* light)
     if (lightType == 1 || lightType == 2)
         lmRegisterXpLight(light);
 
-    lmActiveLights(self).insert(lmLightKey(light));
+    lm(self).activeLights.insert(light);
 }
 
 // +0x98, PE 0x100F2BB0.  Coordinator removal precedes erasing the active-set node and happens only
 // when that node was present.
-void __fastcall lm_disableLight(void* self, void*, world::LightSource* light)
+void RD9_THUNK lm_disableLight(void* self RD9_THUNK_EDX, world::LightSource* light)
 {
-    if (lmField<world::LightSource*>(self, 0x840) == light)
+    if (lm(self).sunLight == light)
         return;
 
-    vc71::set_layout& active = lmActiveLights(self);
-    vc71::set_node* const node = active.find(lmLightKey(light));
+    std::set<world::LightSource*>& active = lm(self).activeLights;
+    const std::set<world::LightSource*>::iterator node = active.find(light);
     if (node != active.end())
     {
         lmRemoveXpLight(light);
@@ -5652,161 +6462,167 @@ void __fastcall lm_disableLight(void* self, void*, world::LightSource* light)
 }
 
 // +0x54..+0x70 are exact setter/getter pairs over +0x13C..+0x148.
-void __fastcall lm_setLightCullDistance(void* self, void*, float value)
+// PE 0x1015BD90.
+void RD9_THUNK lm_setLightCullDistance(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x13C) = value;
+    lm(self).lightCullDistance = value;
 }
-float __fastcall lm_getLightCullDistance(void* self, void*)
+float RD9_THUNK lm_getLightCullDistance(void* self RD9_THUNK_EDX)
 {
-    const float value = lmField<float>(self, 0x13C);
+    const float value = lm(self).lightCullDistance;
     return value > 0.0f ? value : 0.0f;
 }
-void __fastcall lm_setMaxLightsPerBundledMesh(void* self, void*, int value)
+// PE 0x1015BDA0.
+void RD9_THUNK lm_setMaxLightsPerBundledMesh(void* self RD9_THUNK_EDX, int value)
 {
-    lmField<int>(self, 0x140) = value;
+    lm(self).maxLightsPerBundledMesh = value;
 }
-int __fastcall lm_getMaxLightsPerBundledMesh(void* self, void*)
+int RD9_THUNK lm_getMaxLightsPerBundledMesh(void* self RD9_THUNK_EDX)
 {
-    const int value = lmField<int>(self, 0x140);
+    const int value = lm(self).maxLightsPerBundledMesh;
     return value > 0 ? value : 0;
 }
-void __fastcall lm_setMaxLightsPerStaticMesh(void* self, void*, int value)
+// PE 0x1015BDB0.
+void RD9_THUNK lm_setMaxLightsPerStaticMesh(void* self RD9_THUNK_EDX, int value)
 {
-    lmField<int>(self, 0x144) = value;
+    lm(self).maxLightsPerStaticMesh = value;
 }
-int __fastcall lm_getMaxLightsPerStaticMesh(void* self, void*)
+int RD9_THUNK lm_getMaxLightsPerStaticMesh(void* self RD9_THUNK_EDX)
 {
-    const int value = lmField<int>(self, 0x144);
+    const int value = lm(self).maxLightsPerStaticMesh;
     return value > 0 ? value : 0;
 }
-void __fastcall lm_setMaxLightsPerSkinnedMesh(void* self, void*, int value)
+// PE 0x1015BDC0.
+void RD9_THUNK lm_setMaxLightsPerSkinnedMesh(void* self RD9_THUNK_EDX, int value)
 {
-    lmField<int>(self, 0x148) = value;
+    lm(self).maxLightsPerSkinnedMesh = value;
 }
-int __fastcall lm_getMaxLightsPerSkinnedMesh(void* self, void*)
+int RD9_THUNK lm_getMaxLightsPerSkinnedMesh(void* self RD9_THUNK_EDX)
 {
-    const int value = lmField<int>(self, 0x148);
+    const int value = lm(self).maxLightsPerSkinnedMesh;
     return value > 0 ? value : 0;
 }
-void __fastcall lm_setMaxLightsPerTerrainPatch(void* self, void*, int value)
+// PE 0x1015BDD0.
+void RD9_THUNK lm_setMaxLightsPerTerrainPatch(void* self RD9_THUNK_EDX, int value)
 {
-    lmField<int>(self, 0x14C) = value;
+    lm(self).maxLightsPerTerrainPatch = value;
 }
-int __fastcall lm_getMaxLightsPerTerrainPatch(void* self, void*)
+int RD9_THUNK lm_getMaxLightsPerTerrainPatch(void* self RD9_THUNK_EDX)
 {
-    const int value = lmField<int>(self, 0x14C);
+    const int value = lm(self).maxLightsPerTerrainPatch;
     return value > 0 ? value : 0;
 }
 
 // Primary +0x7C/+0x80, PE 0x1015BF00/0x1015BF10. Unlike the neighbouring quality
 // accessors, these preserve the stored float without clamping. The getter returns it in ST(0).
-void __fastcall lm_setSkinnedMeshShaderLodDistance(void* self, void*, float value)
+void RD9_THUNK lm_setSkinnedMeshShaderLodDistance(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x1B4) = value;
+    lm(self).skinnedMeshShaderLodDistance = value;
 }
-float __fastcall lm_getSkinnedMeshShaderLodDistance(void* self, void*)
+float RD9_THUNK lm_getSkinnedMeshShaderLodDistance(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x1B4);
+    return lm(self).skinnedMeshShaderLodDistance;
 }
 // Primary +0x84/+0x88: the getter returns the field's address; the setter reads and stores the
 // second component before the first.
-const Vec2& __fastcall lm_getLightMapAmbientAlphaCutoffRange(void* self, void*)
+const Vec2& RD9_THUNK lm_getLightMapAmbientAlphaCutoffRange(void* self RD9_THUNK_EDX)
 {
-    return lmField<Vec2>(self, 0x1FC);
+    return lm(self).lightMapAmbientAlphaCutoffRange;
 }
-void __fastcall lm_setLightMapAmbientAlphaCutoffRange(void* self, void*, const Vec2& range)
+// PE 0x1015CB60.
+void RD9_THUNK lm_setLightMapAmbientAlphaCutoffRange(void* self RD9_THUNK_EDX, const Vec2& range)
 {
     const float second = range.y;
     const float first = range.x;
-    lmField<float>(self, 0x200) = second;
-    lmField<float>(self, 0x1FC) = first;
+    lm(self).lightMapAmbientAlphaCutoffRange.y = second;
+    lm(self).lightMapAmbientAlphaCutoffRange.x = first;
 }
 
 // Simple-shadow settings and CPU map sampling. The packed map and bit-vector are populated by
 // loadSimpleShadowMaps; retail has no null/bounds fallback in these texel readers.
 // PE 0x1015BE10/20, table 0x1021AAF0 +0x284/+0x288; ordinary unclamped integer field.
-void __fastcall lm_setBundledMeshShadowLod(void* self, void*, int lod)
+void RD9_THUNK lm_setBundledMeshShadowLod(void* self RD9_THUNK_EDX, int lod)
 {
-    lmField<int>(self, 0x158) = lod;
+    lm(self).bundledMeshShadowLod = lod;
 }
-int __fastcall lm_getBundledMeshShadowLod(void* self, void*)
+int RD9_THUNK lm_getBundledMeshShadowLod(void* self RD9_THUNK_EDX)
 {
-    return lmField<int>(self, 0x158);
+    return lm(self).bundledMeshShadowLod;
 }
 // PE 0x1015BE70/80, +0x29C/+0x2A0. The upward ray length, default150 in the constructor.
-void __fastcall lm_setShadowRoofRayLength(void* self, void*, float length)
+void RD9_THUNK lm_setShadowRoofRayLength(void* self RD9_THUNK_EDX, float length)
 {
-    lmField<float>(self, 0x164) = length;
+    lm(self).shadowRoofRayLength = length;
 }
-float __fastcall lm_getShadowRoofRayLength(void* self, void*)
+float RD9_THUNK lm_getShadowRoofRayLength(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x164);
+    return lm(self).shadowRoofRayLength;
 }
 // PE 0x1015BE30/40, +0x28C/+0x290: the skinned-mesh shadow LOD is an unclamped integer.
-void __fastcall lm_setSkinnedMeshShadowLod(void* self, void*, int lod)
+void RD9_THUNK lm_setSkinnedMeshShadowLod(void* self RD9_THUNK_EDX, int lod)
 {
-    lmField<int>(self, 0x15C) = lod;
+    lm(self).skinnedMeshShadowLod = lod;
 }
-int __fastcall lm_getSkinnedMeshShadowLod(void* self, void*)
+int RD9_THUNK lm_getSkinnedMeshShadowLod(void* self RD9_THUNK_EDX)
 {
-    return lmField<int>(self, 0x15C);
+    return lm(self).skinnedMeshShadowLod;
 }
 // PE 0x1015BE90/A0, +0x2A4/+0x2A8: unclamped exponent.
-void __fastcall lm_setShadowSunScalePower(void* self, void*, float power)
+void RD9_THUNK lm_setShadowSunScalePower(void* self RD9_THUNK_EDX, float power)
 {
-    lmField<float>(self, 0x168) = power;
+    lm(self).shadowSunScalePower = power;
 }
-float __fastcall lm_getShadowSunScalePower(void* self, void*)
+float RD9_THUNK lm_getShadowSunScalePower(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x168);
+    return lm(self).shadowSunScalePower;
 }
 // PE 0x1015CB40 writes the second component first; 0x1015BEE0 returns the field's address.
-void __fastcall lm_setShadowSunHeightOverFade(void* self, void*, const Vec2& range)
+void RD9_THUNK lm_setShadowSunHeightOverFade(void* self RD9_THUNK_EDX, const Vec2& range)
 {
     const float first = range.x;
-    lmField<float>(self, 0x178) = range.y;
-    lmField<float>(self, 0x174) = first;
+    lm(self).shadowSunHeightOverFade.y = range.y;
+    lm(self).shadowSunHeightOverFade.x = first;
 }
-const Vec2& __fastcall lm_getShadowSunHeightOverFade(void* self, void*)
+const Vec2& RD9_THUNK lm_getShadowSunHeightOverFade(void* self RD9_THUNK_EDX)
 {
-    return lmField<Vec2>(self, 0x174);
+    return lm(self).shadowSunHeightOverFade;
 }
 
 // PE 0x100F1F10, +0x2D0. Four two-bit cells per byte, low bits first. The arithmetic
 // right shift of negative x is significant: the map origin is added before that byte offset.
-float __fastcall lm_sampleSimpleShadowMapTexel(void* self, void*, int x, int z)
+float RD9_THUNK lm_sampleSimpleShadowMapTexel(void* self RD9_THUNK_EDX, int x, int z)
 {
-    const unsigned int row = (static_cast<unsigned int>(z) + lmField<unsigned int>(self, 0x1B0))
-                          * lmField<unsigned int>(self, 0x1A8)
-                          + lmField<unsigned int>(self, 0x1AC);
+    const unsigned int row = (static_cast<unsigned int>(z) + lm(self).simpleShadowRowOrigin)
+                          * lm(self).simpleShadowStride
+                          + lm(self).simpleShadowColumnOrigin;
     const int byteIndex = static_cast<int>(row + static_cast<unsigned int>(x >> 2));
-    const unsigned char packed = lmField<unsigned char*>(self, 0x190)[byteIndex];
+    const unsigned char packed = lm(self).simpleShadowMap[byteIndex];
     return static_cast<float>((packed >> (2 * (x & 3))) & 3) * 0.3333333432674408f;
 }
 
 // PE 0x100F2C10, +0x2CC. The IO map is a bit vector: compute the wrapped 32-bit bit index,
 // then use a logical shift for its word address. The only results are the shipped 0 and 1.
-float __fastcall lm_sampleSimpleShadowMapIOTexel(void* self, void*, int x, int z)
+float RD9_THUNK lm_sampleSimpleShadowMapIOTexel(void* self RD9_THUNK_EDX, int x, int z)
 {
     const unsigned int bit =
-        (static_cast<unsigned int>(z) + lmField<unsigned int>(self, 0x1A4))
-        * lmField<unsigned int>(self, 0x198) + lmField<unsigned int>(self, 0x19C)
+        (static_cast<unsigned int>(z) + lm(self).simpleShadowIORowOrigin)
+        * lm(self).simpleShadowIOStride + lm(self).simpleShadowIOColumnOrigin
         + static_cast<unsigned int>(x);
-    const unsigned int word = lmField<unsigned int*>(self, 0x184)[bit >> 5];
+    const unsigned int word = lm(self).simpleShadowIOWords.data()[bit >> 5];
     return (word & (1u << (bit & 31u))) != 0 ? 1.0f : 0.0f;
 }
 
-// PE 0x100F1C70 / 0x100F19D0 differ only in the virtual texel slot (+0x2D0 / +0x2CC).
+// PE 0x100F1C70 (also 0x100F19D0): the two copies differ only in the virtual texel slot (+0x2D0 / +0x2CC).
 // Keep their cell-centre offset, floor (not truncation), four-query order and float spills.
 template <bool IoMap>
 float sampleSimpleShadowMapFiltered(void* self, float x, float z)
 {
-    const float limit = lmField<float>(self, 0x194);
-    if (x < -limit)
+    const float limit = lm(self).simpleShadowLimit;
+    if (!(x >= -limit))
         x = -limit;
     else if (x > limit)
         x = limit;
-    if (z < -limit)
+    if (!(z >= -limit))
         z = -limit;
     else if (z > limit)
         z = limit;
@@ -5833,18 +6649,27 @@ float sampleSimpleShadowMapFiltered(void* self, float x, float z)
     const float d = query(static_cast<int>(upperXAgain),
                          static_cast<int>(std::floor(static_cast<double>(nextZ))));
     x = static_cast<float>(static_cast<double>(x) - std::floor(static_cast<double>(x)));
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retail keeps the bilinear expression in x87 until the caller stores it.
+    typedef bf2x87::Real Real;
+    const Real fractionZ = Real(z) - Real(std::floor(static_cast<double>(z)));
+    const Real inverseX = Real(1.0f) - Real(x);
+    return bf2x87::store((Real(a) * inverseX + Real(x) * Real(b)) * (Real(1.0f) - fractionZ)
+        + (inverseX * Real(c) + Real(x) * Real(d)) * fractionZ);
+#else
     const double fractionZ = static_cast<double>(z) - std::floor(static_cast<double>(z));
     const double inverseX = 1.0 - x;
     return static_cast<float>((a * inverseX + static_cast<double>(x) * b) * (1.0 - fractionZ)
                              + (inverseX * c + static_cast<double>(x) * d) * fractionZ);
+#endif
 }
 
 // +0xEC, PE 0x1015CEC0. Enabling publishes the byte before resource creation, then replaces it with
 // the creation result. Disabling clears the three render-record vectors before invoking the device-
 // lost listener on the secondary this pointer.
-void __fastcall lm_setDynamicShadowsEnabled(void* self, void*, bool enabled)
+void RD9_THUNK lm_setDynamicShadowsEnabled(void* self RD9_THUNK_EDX, bool enabled)
 {
-    unsigned char& current = lmField<unsigned char>(self, 0x7EC);
+    unsigned char& current = lm(self).dynamicShadowsEnabled;
     if (enabled)
     {
         if (!current)
@@ -5857,89 +6682,92 @@ void __fastcall lm_setDynamicShadowsEnabled(void* self, void*, bool enabled)
 
     if (current)
     {
-        clearShadowRecordVector(lmField<vc71::vector_layout>(self, 0x79C));
-        clearShadowRecordVector(lmField<vc71::vector_layout>(self, 0x7CC));
-        clearShadowRecordVector(lmField<vc71::vector_layout>(self, 0x7DC));
+        clearShadowRecordVector(lm(self).directionalRecords);
+        clearShadowRecordVector(lm(self).spotRecords);
+        clearShadowRecordVector(lm(self).pointRecords);
         current = 0;
         releaseShadowResources(self, true);
     }
 }
-bool __fastcall lm_getDynamicShadowsEnabled(void* self, void*)
+bool RD9_THUNK lm_getDynamicShadowsEnabled(void* self RD9_THUNK_EDX)
 {
-    return lmField<unsigned char>(self, 0x7EC) != 0;
+    return lm(self).dynamicShadowsEnabled != 0;
 }
 
-void __fastcall lm_setShadowIntensityBias(void* self, void*, float value)
+// PE 0x1015C190.
+void RD9_THUNK lm_setShadowIntensityBias(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x26C) = value;
-    lmField<dx9rend::ShaderParameter*>(self, 0x894)->setFloat(value);
+    lm(self).shadowIntensityBias = value;
+    lm(self).shaderParameters[kParamShadowIntensityBias]->setFloat(value);
 }
-float __fastcall lm_getShadowIntensityBias(void* self, void*)
+float RD9_THUNK lm_getShadowIntensityBias(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x26C);
+    return lm(self).shadowIntensityBias;
 }
-void __fastcall lm_setLightMapIntensityBias(void* self, void*, float value)
+// PE 0x1015C1C0.
+void RD9_THUNK lm_setLightMapIntensityBias(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x270) = value;
-    lmField<dx9rend::ShaderParameter*>(self, 0x898)->setFloat(value);
+    lm(self).lightMapIntensityBias = value;
+    lm(self).shaderParameters[kParamLightMapIntensityBias]->setFloat(value);
 }
-float __fastcall lm_getLightMapIntensityBias(void* self, void*)
+float RD9_THUNK lm_getLightMapIntensityBias(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x270);
-}
-
-void __fastcall lm_setShadowUpdatesEnabled(void* self, void*, bool enabled)
-{
-    lmField<unsigned char>(self, 0x7F9) = enabled ? 1 : 0;
-}
-bool __fastcall lm_getShadowUpdatesEnabled(void* self, void*)
-{
-    return lmField<unsigned char>(self, 0x7F9) != 0;
-}
-void __fastcall lm_setShadowUseSweepTest(void* self, void*, bool enabled)
-{
-    lmField<unsigned char>(self, 0x170) = enabled ? 1 : 0;
-}
-bool __fastcall lm_getShadowUseSweepTest(void* self, void*)
-{
-    return lmField<unsigned char>(self, 0x170) != 0;
+    return lm(self).lightMapIntensityBias;
 }
 
-// Console property shadowTSMFocus, primary +0x180/+0x184, PE
-// The directional TSM fitter reads this through the
-// getter rather than loading +0x814 itself.
-void __fastcall lm_setShadowTSMFocus(void* self, void*, float value)
+// PE 0x1015C350.
+void RD9_THUNK lm_setShadowUpdatesEnabled(void* self RD9_THUNK_EDX, bool enabled)
 {
-    lmField<float>(self, 0x814) = value;
+    lm(self).shadowUpdatesEnabled = enabled ? 1 : 0;
 }
-float __fastcall lm_getShadowTSMFocus(void* self, void*)
+bool RD9_THUNK lm_getShadowUpdatesEnabled(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x814);
+    return lm(self).shadowUpdatesEnabled != 0;
+}
+// PE 0x1015BEC0.
+void RD9_THUNK lm_setShadowUseSweepTest(void* self RD9_THUNK_EDX, bool enabled)
+{
+    lm(self).shadowUseSweepTest = enabled ? 1 : 0;
+}
+bool RD9_THUNK lm_getShadowUseSweepTest(void* self RD9_THUNK_EDX)
+{
+    return lm(self).shadowUseSweepTest != 0;
+}
+
+// PE 0x1015C500, primary +0x188. The getter precedes the setter in the shipped table.
+void RD9_THUNK lm_setShadowTSMFocus(void* self RD9_THUNK_EDX, float value)
+{
+    lm(self).shadowTSMFocus = value;
+}
+// PE 0x1015C4F0, primary +0x184.
+float RD9_THUNK lm_getShadowTSMFocus(void* self RD9_THUNK_EDX)
+{
+    return lm(self).shadowTSMFocus;
 }
 
 // +0xC4/+0xC8, PE 0x1015C150/0x1015C160.  The public spelling has not yet
 // been attested, but the bodies and their use by the stock point-shadow
 // predicate are exact: they write/read the feature byte at +0x268.
-void __fastcall lm_setShadowStaticFeature(void* self, void*, bool enabled)
+void RD9_THUNK lm_setShadowStaticFeature(void* self RD9_THUNK_EDX, bool enabled)
 {
-    lmField<unsigned char>(self, 0x268) = enabled ? 1 : 0;
+    lm(self).shadowStaticFeature = enabled ? 1 : 0;
 }
-bool __fastcall lm_getShadowStaticFeature(void* self, void*)
+bool RD9_THUNK lm_getShadowStaticFeature(void* self RD9_THUNK_EDX)
 {
-    return lmField<unsigned char>(self, 0x268) != 0;
+    return lm(self).shadowStaticFeature != 0;
 }
 
 // +0x19C, PE 0x101679A0.  Profiler counters and the loader-zero diagnostic flush are nonfunctional
 // instrumentation; the renderer state, target, directional/point/spot and finalizer ordering is
 // otherwise the shipped transaction.
-void __fastcall lm_renderShadowMaps(void* self, void*)
+void RD9_THUNK lm_renderShadowMaps(void* self RD9_THUNK_EDX)
 {
-    if (!lmField<void*>(self, 0x14)
-        || !lmField<unsigned char>(self, 0x7EC)
-        || !lmField<unsigned char>(self, 0x7F9))
+    if (!lm(self).skyLight
+        || !lm(self).dynamicShadowsEnabled
+        || !lm(self).shadowUpdatesEnabled)
         return;
 
-    lmField<void*>(self, 0x90C) = dx9rend::rendererGetRenderView();
+    lm(self).renderView = dx9rend::rendererGetRenderView();
     dx9rend::stateManagerPush();
     dx9rend::stateManagerSetRenderState(161, 0);
     // ONE call, the candidate half now runs inside it (G3).
@@ -5962,16 +6790,23 @@ void __fastcall lm_renderShadowMaps(void* self, void*)
 // instruction-proven in the tiny PE bodies at 0x1015C5F0..0x1015C770 and
 // Keeping the implementation templated does not merge ABI entries: MSVC
 // still emits one __fastcall thunk per instantiated field offset.
-template <unsigned int Offset>
-void __fastcall lm_setVec3(void* self, void*, const Vec3* value)
+// PE 0x1015C610 / 0x1015C630 / 0x1015C650 / 0x1015C670 / 0x1015C690 / 0x1015C6B0.
+// PE 0x1015C6D0 / 0x1015C6F0 / 0x1015C720 / 0x1015C750 / 0x1015C770.
+template <Vec3 LightManagerData::*Member>
+void RD9_THUNK lm_setVec3(void* self RD9_THUNK_EDX, const Vec3* value)
 {
-    lmField<Vec3>(self, Offset) = *value;
+    const float third = value->z;
+    const float second = value->y;
+    const float first = value->x;
+    (lm(self).*Member).y = second;
+    (lm(self).*Member).x = first;
+    (lm(self).*Member).z = third;
 }
 
-template <unsigned int Offset>
-const Vec3* __fastcall lm_getVec3(void* self, void*)
+template <Vec3 LightManagerData::*Member>
+const Vec3* RD9_THUNK lm_getVec3(void* self RD9_THUNK_EDX)
 {
-    return &lmField<Vec3>(self, Offset);
+    return &(lm(self).*Member);
 }
 
 inline bool vec3EpsilonEqual(const Vec3& a, const Vec3& b)
@@ -5984,41 +6819,45 @@ inline bool vec3EpsilonEqual(const Vec3& a, const Vec3& b)
 
 // PE 0x1015CB80/0x1015CC40, primary +0x1A0/+0x1A4. The manager interface takes and returns Vec3
 // by value; the explicit output pointer below is the physical MSVC x86 sret parameter.
-void __fastcall lm_setSunDirection(void* self, void*, Vec3 value)
+void RD9_THUNK lm_setSunDirection(void* self RD9_THUNK_EDX, Vec3 value)
 {
-    world::LightSource* const sun = lmField<world::LightSource*>(self, 0x840);
+    world::LightSource* const sun = lm(self).sunLight;
     sun->setDirection(value);
-    dx9rend::textureReleaseRef(lmField<dx9rend::EngineTexture*>(self, 0x24C));
-    dx9rend::EngineTexture* const normalCube = createNormalCubeTexture();
-    lmField<dx9rend::EngineTexture*>(self, 0x24C) = normalCube;
+    dx9rend::textureReleaseRef(lm(self).normalCubeTexture);
+    Vec3 zeroLight = { 0.0f, 0.0f, 0.0f };                    // [ebp-0xC], PE 0x1015CBC3
+    dx9rend::EngineTexture* const normalCube = createNormalCubeTexture(256, zeroLight, false);
+    lm(self).normalCubeTexture = normalCube;
     dx9rend::raShaderConstantsSetEngineTexture(0x2B8, normalCube);
 }
 
-Vec3* __fastcall lm_getSunDirection(void* self, void*, Vec3* out)
+// PE 0x1015CC40.
+Vec3* RD9_THUNK lm_getSunDirection(void* self RD9_THUNK_EDX, Vec3* out)
 {
-    *out = lmField<world::LightSource*>(self, 0x840)->getDirection();
+    *out = lm(self).sunLight->getDirection();
     return out;
 }
 
 // +0x1A8 / +0x1AC
-void __fastcall lm_setSunColor(void* self, void*, Vec3 value)
+// PE 0x1015BF60.
+void RD9_THUNK lm_setSunColor(void* self RD9_THUNK_EDX, Vec3 value)
 {
-    lmField<world::LightSource*>(self, 0x840)->setColor(value);
+    lm(self).sunLight->setColor(value);
 }
 
-Vec3* __fastcall lm_getSunColor(void* self, void*, Vec3* out)
+// PE 0x1015CC70.
+Vec3* RD9_THUNK lm_getSunColor(void* self RD9_THUNK_EDX, Vec3* out)
 {
-    *out = lmField<world::LightSource*>(self, 0x840)->getColor();
+    *out = lm(self).sunLight->getColor();
     return out;
 }
 
 // PE 0x1015CCA0/0x1015CDD0, primary +0x1B0/+0x1B4. Exact epsilon equality skips every effect.
 // Otherwise a squared delta >= 0.0025 (and unordered/NaN) regenerates one member of the four-LUT
 // ring before the live LightSource receives the new specular colour.
-void __fastcall lm_setSunSpecColor(void* self, void*, Vec3 value)
+void RD9_THUNK lm_setSunSpecColor(void* self RD9_THUNK_EDX, Vec3 value)
 {
-    world::LightSource* const sun = lmField<world::LightSource*>(self, 0x840);
-    bool regenerate = lmField<dx9rend::EngineTexture*>(self, 0x250) == 0;
+    world::LightSource* const sun = lm(self).sunLight;
+    bool regenerate = lm(self).currentSpecularLut == 0;
     if (!regenerate)
     {
         if (vec3EpsilonEqual(sun->getSpecColor(), value))
@@ -6034,93 +6873,210 @@ void __fastcall lm_setSunSpecColor(void* self, void*, Vec3 value)
 
     if (regenerate)
     {
-        const unsigned int index = lmField<unsigned int>(self, 0x264);
-        dx9rend::EngineTexture* const lut =
-            lmField<dx9rend::EngineTexture*>(self, 0x254 + index * 4);
-        lmField<dx9rend::EngineTexture*>(self, 0x250) = lut;
+        const unsigned int index = lm(self).specularLutIndex;
+        dx9rend::EngineTexture* const lut = lm(self).specularLuts[index];
+        lm(self).currentSpecularLut = lut;
         fillPowerLut(lut, 256, value, 64.0f, false);
-        lmField<unsigned int>(self, 0x264) = (index + 1) & 3;
+        lm(self).specularLutIndex = (index + 1) & 3;
         dx9rend::raShaderConstantsSetEngineTexture(0x2C0, lut);
     }
 
     sun->setSpecColor(value);
 }
 
-Vec3* __fastcall lm_getSunSpecColor(void* self, void*, Vec3* out)
+// PE 0x1015CDD0.
+Vec3* RD9_THUNK lm_getSunSpecColor(void* self RD9_THUNK_EDX, Vec3* out)
 {
-    *out = lmField<world::LightSource*>(self, 0x840)->getSpecColor();
+    *out = lm(self).sunLight->getSpecColor();
     return out;
 }
 
 // PE 0x1015BF80/0x1015BFB0, primary +0x1B8/+0x1BC. This is Object flag bit zero, not
 // LightSource::setEnabled: true clears the disabled bit and false sets it.
-void __fastcall lm_setSunEnabled(void* self, void*, bool enabled)
+void RD9_THUNK lm_setSunEnabled(void* self RD9_THUNK_EDX, bool enabled)
 {
-    world::LightSource* const sun = lmField<world::LightSource*>(self, 0x840);
+    world::LightSource* const sun = lm(self).sunLight;
     if (enabled)
         sun->updateFlags(0, 1);
     else
         sun->updateFlags(1, 0);
 }
 
-bool __fastcall lm_getSunEnabled(void* self, void*)
+bool RD9_THUNK lm_getSunEnabled(void* self RD9_THUNK_EDX)
 {
-    return (lightSourceFlags(lmField<world::LightSource*>(self, 0x840)) & 1u) == 0;
+    return (lightSourceFlags(lm(self).sunLight) & 1u) == 0;
 }
 
 // Console property defaultEffectLightAffectionFactor: +0x26C setter, +0x270 getter.
-void __fastcall lm_setDefaultEffectFactor(void* self, void*, float value)
+// PE 0x1015BC70.
+void RD9_THUNK lm_setDefaultEffectFactor(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x138) = value;
+    lm(self).defaultEffectLightAffectionFactor = value;
 }
-float __fastcall lm_getDefaultEffectFactor(void* self, void*)
+float RD9_THUNK lm_getDefaultEffectFactor(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x138);
+    return lm(self).defaultEffectLightAffectionFactor;
 }
 
 // Console property dynamicLightRangeScale: +0x2DC setter, +0x2E0 getter. PE 0x1015C5A0 and
 // 0x1015C5B0 are direct stores/loads at +0x824; the constructor writes 1.0f.
-void __fastcall lm_setDynamicLightRangeScale(void* self, void*, float value)
+void RD9_THUNK lm_setDynamicLightRangeScale(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x824) = value;
+    lm(self).dynamicLightRangeScale = value;
 }
-float __fastcall lm_getDynamicLightRangeScale(void* self, void*)
+float RD9_THUNK lm_getDynamicLightRangeScale(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x824);
+    return lm(self).dynamicLightRangeScale;
 }
 
 // Console property occludedSkyNightIntensity: +0x2E4 setter, +0x2E8 getter. PE 0x1015C5C0 is
 // exactly an x87 load from +0x828; zero-fill supplies the shipped constructor default 0.0f.
-void __fastcall lm_setOccludedSkyNightIntensity(void* self, void*, float value)
+// PE 0x1015C5D0.
+void RD9_THUNK lm_setOccludedSkyNightIntensity(void* self RD9_THUNK_EDX, float value)
 {
-    lmField<float>(self, 0x828) = value;
+    lm(self).occludedSkyNightIntensity = value;
 }
-float __fastcall lm_getOccludedSkyNightIntensity(void* self, void*)
+float RD9_THUNK lm_getOccludedSkyNightIntensity(void* self RD9_THUNK_EDX)
 {
-    return lmField<float>(self, 0x828);
+    return lm(self).occludedSkyNightIntensity;
 }
 
 // PE 0x1015CE30, primary vtable +0x2F0. Mesh renderers publish the shadow Effect associated
 // with their GeometryTemplate reflection type. Replacement releases the previous map value,
 // stores the new pointer, then unconditionally retains it; retail has no null guard here.
-void __fastcall lm_registerShadowEffect(void* self, void*, int reflectionTypeId,
+void RD9_THUNK lm_registerShadowEffect(void* self RD9_THUNK_EDX, int reflectionTypeId,
                                         dx9rend::Effect* effect)
 {
-    ShadowTreeNode* const node = shadowTreeFindOrInsert(
-        lmField<ShadowTree>(self, 0x964), static_cast<unsigned int>(reflectionTypeId));
-    if (node->value)
-        dx9rend::effectRelease(static_cast<dx9rend::Effect*>(node->value));
-    node->value = effect;
+    // find-or-insert (0x1015D000): a new key starts with a null value.
+    dx9rend::Effect*& value =
+        lm(self).shadowEffects[static_cast<unsigned int>(reflectionTypeId)];
+    if (value)
+        dx9rend::effectRelease(value);
+    value = effect;
     dx9rend::effectAddRef(effect);
+}
+
+// PE 0x1015CE80 (also 0x1015CEA0, a second identical body): hands back an empty vector through the
+// hidden result (first, last and end at +0x04/+0x08/+0x0C zeroed, the allocator byte untouched)
+// and answers it; ECX and the second stack argument are never read (retn 8). [CHOSEN, not
+// recovered] Unobservable-type exception: neither body has a code or data reference in the PE
+// (no call, no vtable or table word) and the 2006 RendDX9_r match lists neither, so the result is
+// always an empty vector that nothing receives; the name, the receiver, the argument's type and the
+// element type cannot be observed (chosen: a free function over pointer elements, named for the
+// LightManager methods the bodies sit between).
+std::vector<const void*> lightManagerEmptyList(const void* receiver, int argument)
+{
+    (void)receiver;
+    (void)argument;
+    return std::vector<const void*>();
 }
 
 } // anonymous namespace
 
-// The two renderer-target helpers above, published for the terrain draws (Geom/TerrainDraw.cpp):
-// sub_10005920 with a texture argument, and sub_10028070.
+// The typed LightManager reads XpLightManager.h publishes (issue #7).
+// PE 0x1015C550: answers the address of the +0x79C vector.
+std::vector<LightShadowRecord>& lightManagerShadowRecords(LightManager* manager)
+{
+    return lm(manager).directionalRecords;
+}
+
+// PE 0x1015C570: answers the address of the +0x7DC vector (the point records). [INFERRED] name; callers
+// 0x100DB610 and 0x100FBFA0 are themselves unreachable in 1.50. Terrain::findOwnedShadowRecord walks them.
+std::vector<LightShadowRecord>& lightManagerPointShadowRecords(LightManager* manager)
+{
+    return lm(manager).pointRecords;
+}
+
+// The terrain culler's shadow gather (TerrainCuller::gatherShadowFrustumNode) hands a node's
+// bounds to the near-plane fit; only the box's minimum and maximum take part in the fit.
+void fitShadowFrustumNearPlaneToBounds(Frustum& frustum, const Vec3& boxMin, const Vec3& boxMax)
+{
+    LocalBoundingBox box;
+    box.m_min = boxMin;
+    box.m_max = boxMax;
+    fitShadowFrustumNearPlaneToAabb(frustum, box);
+}
+
+const Frustum& lightManagerShadowFrustum(const LightManager* manager)
+{
+    return lm(manager).shadowFrustum;
+}
+
+float lightManagerShadowPullbackDistance(const LightManager* manager)
+{
+    return lm(manager).shadowPullbackDistance;
+}
+
+dx9rend::EngineTexture* lightManagerShadowMapTexture(const LightManager* manager)
+{
+    return lm(manager).shadowMap;
+}
+
+dx9rend::EngineTexture* lightManagerPointShadowMapTexture(const LightManager* manager)
+{
+    return lm(manager).pointShadowMap;
+}
+
+dx9rend::EngineTexture* lightManagerBlackCubeTexture(const LightManager* manager)
+{
+    return lm(manager).blackCubeTexture;
+}
+
+double lightManagerShadowFadeDuration(const LightManager* manager)
+{
+    return lm(manager).shadowFadeDuration;
+}
+
+// PE 0x1015CE00. Equality, smaller inputs and NaN all select the minimum duration.
+void LightManager::setStaticLightBlendingTime(double duration)
+{
+    if (0.001 < duration)
+        lm(this).shadowFadeDuration = duration;
+    else
+        lm(this).shadowFadeDuration = 0.001;
+}
+
+// PE 0x1015C5E0, shared with the mesh draws' duration read above.
+double LightManager::getStaticLightBlendingTime() const
+{
+    return lightManagerShadowFadeDuration(this);
+}
+
+// PE 0x10005920. The base renderer's render-target selector: __thiscall on `base`, four stack
+// arguments (retn 0x10), always returns true (al = 1). With a texture, render target `index`
+// becomes the texture's (level, face) surface (sub_10014950, returned referenced). Without one,
+// target 0 takes the base's temporary back buffer (+0xF4) or else the Renderer's back buffer
+// (dword_1023D098 +0x76C), each AddRef'd; any other index is cleared. StateManager +0x60 binds the
+// surface and the temporary reference is then dropped. Retail reads +0xF4 and +0x76C without a
+// null test of the objects that hold them.
+bool lightManagerSelectRenderTarget(dx9rend::RendDX9Base* base, unsigned int index,
+                                    dx9rend::EngineTexture* texture, unsigned int level,
+                                    unsigned int face)
+{
+    IDirect3DSurface9* surface = 0;
+    if (texture)
+        surface = dx9rend::textureGetLevelSurface(texture, level, face);
+    else if (index == 0)
+    {
+        surface = base->tempBackBuffer;                                     // +0x0F4
+        if (!surface)
+            surface = dx9rend::rendererBackBufferSurface();                 // +0x76C
+        if (surface)
+            surface->AddRef();
+    }
+    dx9rend::stateManagerSetRenderTarget(index, surface);                   // StateManager +0x60
+    if (surface)
+        surface->Release();
+    return true;
+}
+
+// The same retail function as lightManagerSelectRenderTarget above, not a separate one: the base
+// renderer and the level 0 / face 0x7FFFFFFF arguments every geometry and post-production caller
+// pushes. Published for those callers (XpLightManager.h).
 void lightManagerSetRenderTargetTexture(unsigned int index, dx9rend::EngineTexture* texture)
 {
-    setRenderTargetTexture(index, texture);
+    lightManagerSelectRenderTarget(static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase),
+                                   index, texture, 0, 0x7FFFFFFFu);
 }
 
 void lightManagerRestoreRendererTarget0()
@@ -6140,99 +7096,100 @@ void lightManagerSetDepthStencil(IDirect3DSurface9* surface)
 // boundary; no source caller indexes that table.
 void LightManager::addRef()
 {
-    (void)lm_addRef(this, 0);
+    (void)lm_addRef(this RD9_THUNK_ARG);
 }
 
 int LightManager::getRef()
 {
-    return lm_getRef(this, 0);
+    return lm_getRef(this RD9_THUNK_ARG);
 }
 
 int LightManager::release()
 {
-    return lm_release(this, 0);
+    return lm_release(this RD9_THUNK_ARG);
 }
 
 void* LightManager::queryInterface(unsigned int iid) const
 {
-    return lm_queryInterface(const_cast<LightManager*>(this), 0, iid);
+    return lm_queryInterface(const_cast<LightManager*>(this) RD9_THUNK_ARG, iid);
 }
 
 void LightManager::update(double time)
 {
-    lm_update(this, 0, time);
+    lm_update(this RD9_THUNK_ARG, time);
 }
 
-void LightManager::getLightsByMask(vc71::vector_layout& out, unsigned int required,
+void LightManager::getLightsByMask(std::vector<world::LightSource*>& out, unsigned int required,
                                    unsigned int forbidden)
 {
-    lm_getLightsByMask(this, 0, &out, required, forbidden);
+    lm_getLightsByMask(this RD9_THUNK_ARG, &out, required, forbidden);
 }
 
-void LightManager::getVisibleLightsByMask(vc71::vector_layout& out, unsigned int required,
-                                          unsigned int forbidden)
+void LightManager::getVisibleLightsByMask(std::vector<world::LightSource*>& out,
+                                          unsigned int required, unsigned int forbidden)
 {
-    lm_getVisibleLightsByMask(this, 0, &out, required, forbidden);
+    lm_getVisibleLightsByMask(this RD9_THUNK_ARG, &out, required, forbidden);
 }
 
-void LightManager::gatherLights(const Vec3& position, float radius, vc71::vector_layout& out,
+void LightManager::gatherLights(const Vec3& position, float radius,
+                                std::vector<world::LightSource*>& out,
                                 unsigned int maxLights, unsigned int required,
                                 unsigned int forbidden, bool occlusionTest)
 {
-    lm_gatherLights(this, 0, &position, radius, &out, maxLights, required, forbidden,
+    lm_gatherLights(this RD9_THUNK_ARG, &position, radius, &out, maxLights, required, forbidden,
                     occlusionTest ? 1u : 0u);
 }
 
-void LightManager::gatherLightsForGeometry(void* geometry, vc71::vector_layout& out,
+void LightManager::gatherLightsForGeometry(void* geometry, std::vector<world::LightSource*>& out,
                                            unsigned int maxLights, unsigned int required,
                                            unsigned int forbidden, bool occlusionTest)
 {
-    lm_gatherLightsForGeometry(this, 0, geometry, &out, maxLights, required, forbidden,
+    lm_gatherLightsForGeometry(this RD9_THUNK_ARG, geometry, &out, maxLights, required, forbidden,
                                occlusionTest ? 1 : 0);
 }
 
 int LightManager::getStaticMeshShadowLod() const
 {
-    return lm_getStaticMeshShadowLod(const_cast<LightManager*>(this), 0);
+    return lm_getStaticMeshShadowLod(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 int LightManager::getShadowMergeLodLimit() const
 {
-    return lm_getShadowMergeLodLimit(const_cast<LightManager*>(this), 0);
+    return lm_getShadowMergeLodLimit(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setSkyLight(world::LightSource* light)
 {
-    lm_setSkyLight(this, 0, light);
+    lm_setSkyLight(this RD9_THUNK_ARG, light);
 }
 
 world::LightSource* LightManager::getSkyLight() const
 {
-    return lm_getSkyLight(const_cast<LightManager*>(this), 0);
+    return lm_getSkyLight(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
-#define BF2_LIGHT_DEFINE_COLOR_PROPERTY(Name, Offset)                              \
+#define BF2_LIGHT_DEFINE_COLOR_PROPERTY(Name, Member)                              \
     void LightManager::set##Name(const Vec3& color)                                \
     {                                                                               \
-        lm_setVec3<Offset>(this, 0, &color);                                        \
+        lm_setVec3<&LightManagerData::Member>(this RD9_THUNK_ARG, &color);          \
     }                                                                               \
     const Vec3& LightManager::get##Name() const                                     \
     {                                                                               \
-        return *lm_getVec3<Offset>(const_cast<LightManager*>(this), 0);             \
+        return *lm_getVec3<&LightManagerData::Member>(const_cast<LightManager*>(this) RD9_THUNK_ARG); \
     }
 
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(SkyColor, 0x018u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(AmbientColor, 0x03Cu)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeAmbientColor, 0x048u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeSunColor, 0x024u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeSkyColor, 0x030u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSunColor, 0x054u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSpecularColor, 0x06Cu)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSkyColor, 0x060u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(SinglePointColor, 0x078u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(DynamicPointColor, 0x084u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(EffectSunColor, 0x120u)
-BF2_LIGHT_DEFINE_COLOR_PROPERTY(EffectShadowColor, 0x12Cu)
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(SkyColor, skyColor)                       // +0x018
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(AmbientColor, ambientColor)               // +0x03C
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeAmbientColor, treeAmbientColor)       // +0x048
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeSunColor, treeSunColor)               // +0x024
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(TreeSkyColor, treeSkyColor)               // +0x030
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSunColor, staticSunColor)           // +0x054
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSpecularColor, staticSpecularColor) // +0x06C
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(StaticSkyColor, staticSkyColor)           // +0x060
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(SinglePointColor, singlePointColor)       // +0x078
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(DynamicPointColor, dynamicPointColor)     // +0x084
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(EffectSunColor, effectSunColor)           // +0x120
+BF2_LIGHT_DEFINE_COLOR_PROPERTY(EffectShadowColor, effectShadowColor)     // +0x12C
 
 #undef BF2_LIGHT_DEFINE_COLOR_PROPERTY
 
@@ -6258,13 +7215,7 @@ namespace {
 // the VC7.1 HostString key.
 const int& groundHemiIntSetting(const renddx9abi::HostString& key, const int& fallback)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return settings->intGet(key, fallback);
-#else
-    typedef const int& (__thiscall* GetInt)(void*, const renddx9abi::HostString&, const int&);
-    return reinterpret_cast<GetInt>((*reinterpret_cast<void***>(settings))[0x10 / 4])(
-        settings, key, fallback);
-#endif
 }
 
 } // anonymous namespace
@@ -6292,9 +7243,9 @@ void LightManager::setGroundHemi(const LightManagerHostString& name)
 // empty string (dword_102605D8 bit 0, atexit 0x101D9990) is constructed on the first call, before the
 // HemiMapManager's +0x18 getBaseHemiMap is asked; a base map answers its name (+0x18), none the
 // static. `this` is never read.
-const vc71::string& LightManager::getGroundHemi() const
+const std::string& LightManager::getGroundHemi() const
 {
-    static const vc71::string s_noGroundHemi;
+    static const std::string s_noGroundHemi;
     const HemiMap* const baseMap = g_HemiMapManager->getBaseHemiMap();
     if (baseMap)
         return baseMap->name;
@@ -6303,113 +7254,113 @@ const vc71::string& LightManager::getGroundHemi() const
 
 void LightManager::setLightCullDistance(float distance)
 {
-    lm_setLightCullDistance(this, 0, distance);
+    lm_setLightCullDistance(this RD9_THUNK_ARG, distance);
 }
 
 float LightManager::getLightCullDistance() const
 {
-    return lm_getLightCullDistance(const_cast<LightManager*>(this), 0);
+    return lm_getLightCullDistance(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setMaxLightsPerBundledMesh(int quality)
 {
-    lm_setMaxLightsPerBundledMesh(this, 0, quality);
+    lm_setMaxLightsPerBundledMesh(this RD9_THUNK_ARG, quality);
 }
 
 int LightManager::getMaxLightsPerBundledMesh() const
 {
-    return lm_getMaxLightsPerBundledMesh(const_cast<LightManager*>(this), 0);
+    return lm_getMaxLightsPerBundledMesh(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setMaxLightsPerStaticMesh(int quality)
 {
-    lm_setMaxLightsPerStaticMesh(this, 0, quality);
+    lm_setMaxLightsPerStaticMesh(this RD9_THUNK_ARG, quality);
 }
 
 int LightManager::getMaxLightsPerStaticMesh() const
 {
-    return lm_getMaxLightsPerStaticMesh(const_cast<LightManager*>(this), 0);
+    return lm_getMaxLightsPerStaticMesh(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setMaxLightsPerSkinnedMesh(int quality)
 {
-    lm_setMaxLightsPerSkinnedMesh(this, 0, quality);
+    lm_setMaxLightsPerSkinnedMesh(this RD9_THUNK_ARG, quality);
 }
 
 int LightManager::getMaxLightsPerSkinnedMesh() const
 {
-    return lm_getMaxLightsPerSkinnedMesh(const_cast<LightManager*>(this), 0);
+    return lm_getMaxLightsPerSkinnedMesh(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setMaxLightsPerTerrainPatch(int quality)
 {
-    lm_setMaxLightsPerTerrainPatch(this, 0, quality);
+    lm_setMaxLightsPerTerrainPatch(this RD9_THUNK_ARG, quality);
 }
 
 int LightManager::getMaxLightsPerTerrainPatch() const
 {
-    return lm_getMaxLightsPerTerrainPatch(const_cast<LightManager*>(this), 0);
+    return lm_getMaxLightsPerTerrainPatch(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setSkinnedMeshShaderLodDistance(float distance)
 {
-    lm_setSkinnedMeshShaderLodDistance(this, 0, distance);
+    lm_setSkinnedMeshShaderLodDistance(this RD9_THUNK_ARG, distance);
 }
 
 float LightManager::getSkinnedMeshShaderLodDistance() const
 {
-    return lm_getSkinnedMeshShaderLodDistance(const_cast<LightManager*>(this), 0);
+    return lm_getSkinnedMeshShaderLodDistance(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 const Vec2& LightManager::getLightMapAmbientAlphaCutoffRange() const
 {
-    return lm_getLightMapAmbientAlphaCutoffRange(const_cast<LightManager*>(this), 0);
+    return lm_getLightMapAmbientAlphaCutoffRange(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setLightMapAmbientAlphaCutoffRange(const Vec2& range)
 {
-    lm_setLightMapAmbientAlphaCutoffRange(this, 0, range);
+    lm_setLightMapAmbientAlphaCutoffRange(this RD9_THUNK_ARG, range);
 }
 
 void LightManager::setBundledMeshShadowLod(int lod)
 {
-    lm_setBundledMeshShadowLod(this, 0, lod);
+    lm_setBundledMeshShadowLod(this RD9_THUNK_ARG, lod);
 }
 int LightManager::getBundledMeshShadowLod() const
 {
-    return lm_getBundledMeshShadowLod(const_cast<LightManager*>(this), 0);
+    return lm_getBundledMeshShadowLod(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 void LightManager::setShadowRoofRayLength(float length)
 {
-    lm_setShadowRoofRayLength(this, 0, length);
+    lm_setShadowRoofRayLength(this RD9_THUNK_ARG, length);
 }
 float LightManager::getShadowRoofRayLength() const
 {
-    return lm_getShadowRoofRayLength(const_cast<LightManager*>(this), 0);
+    return lm_getShadowRoofRayLength(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 void LightManager::setSkinnedMeshShadowLod(int lod)
 {
-    lm_setSkinnedMeshShadowLod(this, 0, lod);
+    lm_setSkinnedMeshShadowLod(this RD9_THUNK_ARG, lod);
 }
 int LightManager::getSkinnedMeshShadowLod() const
 {
-    return lm_getSkinnedMeshShadowLod(const_cast<LightManager*>(this), 0);
+    return lm_getSkinnedMeshShadowLod(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 void LightManager::setShadowSunScalePower(float power)
 {
-    lm_setShadowSunScalePower(this, 0, power);
+    lm_setShadowSunScalePower(this RD9_THUNK_ARG, power);
 }
 float LightManager::getShadowSunScalePower() const
 {
-    return lm_getShadowSunScalePower(const_cast<LightManager*>(this), 0);
+    return lm_getShadowSunScalePower(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 void LightManager::setShadowSunHeightOverFade(const Vec2& range)
 {
-    lm_setShadowSunHeightOverFade(this, 0, range);
+    lm_setShadowSunHeightOverFade(this RD9_THUNK_ARG, range);
 }
 const Vec2& LightManager::getShadowSunHeightOverFade() const
 {
-    return lm_getShadowSunHeightOverFade(const_cast<LightManager*>(this), 0);
+    return lm_getShadowSunHeightOverFade(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 float LightManager::sampleSimpleShadowMap(float x, float z) const
 {
@@ -6421,187 +7372,777 @@ float LightManager::sampleSimpleShadowMapIO(float x, float z) const
 }
 float LightManager::sampleSimpleShadowMapIOTexel(int x, int z) const
 {
-    return lm_sampleSimpleShadowMapIOTexel(const_cast<LightManager*>(this), 0, x, z);
+    return lm_sampleSimpleShadowMapIOTexel(const_cast<LightManager*>(this) RD9_THUNK_ARG, x, z);
 }
 float LightManager::sampleSimpleShadowMapTexel(int x, int z) const
 {
-    return lm_sampleSimpleShadowMapTexel(const_cast<LightManager*>(this), 0, x, z);
+    return lm_sampleSimpleShadowMapTexel(const_cast<LightManager*>(this) RD9_THUNK_ARG, x, z);
 }
 
 void LightManager::addLight(world::LightSource* light)
 {
-    lm_addLight(this, 0, light);
+    lm_addLight(this RD9_THUNK_ARG, light);
 }
 
 void LightManager::removeLight(world::LightSource* light)
 {
-    lm_removeLight(this, 0, light);
+    lm_removeLight(this RD9_THUNK_ARG, light);
 }
 
 void LightManager::enableLight(world::LightSource* light)
 {
-    lm_enableLight(this, 0, light);
+    lm_enableLight(this RD9_THUNK_ARG, light);
 }
 
 void LightManager::disableLight(world::LightSource* light)
 {
-    lm_disableLight(this, 0, light);
+    lm_disableLight(this RD9_THUNK_ARG, light);
+}
+
+// PE 0x1015C7A0.
+void LightManager::setSinglePointColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[0] = color;
+}
+
+// PE 0x1015BCB0.
+const Vec3& LightManager::getSinglePointColorHigh() const
+{
+    return lm(this).blendedColors[0];
+}
+
+// PE 0x1015C7D0.
+void LightManager::setSinglePointColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[1] = color;
+}
+
+// PE 0x1015BCC0.
+const Vec3& LightManager::getSinglePointColorLow() const
+{
+    return lm(this).blendedColors[1];
+}
+
+// PE 0x1015C800.
+void LightManager::setDynamicPointColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[2] = color;
+}
+
+// PE 0x1015BCD0.
+const Vec3& LightManager::getDynamicPointColorHigh() const
+{
+    return lm(this).blendedColors[2];
+}
+
+// PE 0x1015C830.
+void LightManager::setDynamicPointColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[3] = color;
+}
+
+// PE 0x1015BCE0.
+const Vec3& LightManager::getDynamicPointColorLow() const
+{
+    return lm(this).blendedColors[3];
+}
+
+// PE 0x1015C860.
+void LightManager::setSkyColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[4] = color;
+}
+
+// PE 0x1015BCF0.
+const Vec3& LightManager::getSkyColorHigh() const
+{
+    return lm(this).blendedColors[4];
+}
+
+// PE 0x1015C890.
+void LightManager::setSkyColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[5] = color;
+}
+
+// PE 0x1015BD00.
+const Vec3& LightManager::getSkyColorLow() const
+{
+    return lm(this).blendedColors[5];
+}
+
+// PE 0x1015C8C0.
+void LightManager::setStaticSkyColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[6] = color;
+}
+
+// PE 0x1015BD10.
+const Vec3& LightManager::getStaticSkyColorHigh() const
+{
+    return lm(this).blendedColors[6];
+}
+
+// PE 0x1015C8F0.
+void LightManager::setStaticSkyColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[7] = color;
+}
+
+// PE 0x1015BD20.
+const Vec3& LightManager::getStaticSkyColorLow() const
+{
+    return lm(this).blendedColors[7];
+}
+
+// PE 0x1015C920.
+void LightManager::setSunColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[8] = color;
+}
+
+// PE 0x1015BD30.
+const Vec3& LightManager::getSunColorHigh() const
+{
+    return lm(this).blendedColors[8];
+}
+
+// PE 0x1015C950.
+void LightManager::setSunColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[9] = color;
+}
+
+// PE 0x1015BD40.
+const Vec3& LightManager::getSunColorLow() const
+{
+    return lm(this).blendedColors[9];
+}
+
+// PE 0x1015C980.
+void LightManager::setSunSpecColorHigh(const Vec3& color)
+{
+    lm(this).blendedColors[10] = color;
+}
+
+// PE 0x1015BD50.
+const Vec3& LightManager::getSunSpecColorHigh() const
+{
+    return lm(this).blendedColors[10];
+}
+
+// PE 0x1015C9B0.
+void LightManager::setSunSpecColorLow(const Vec3& color)
+{
+    lm(this).blendedColors[11] = color;
+}
+
+// PE 0x1015BD60.
+const Vec3& LightManager::getSunSpecColorLow() const
+{
+    return lm(this).blendedColors[11];
+}
+
+// PE 0x100F3050; 0x100F6A60 inserts without rejecting equal float keys.
+LightDistanceMap* LightManager::getVisibleLightsByDistance(unsigned int required,
+                                                         unsigned int forbidden)
+{
+    const Mat4* const camera = dx9rend::rendererGetRenderView()->getViewMatrixPtr();
+    LightDistanceMap& output = lm(this).lightsByDistance;
+    output.clear();
+    std::vector<world::LightSource*>& lights = lm(this).distanceLights;
+    lights.clear();
+    getVisibleLightsByMask(lights, required, forbidden);
+    for (std::vector<world::LightSource*>::iterator it = lights.begin(); it != lights.end(); ++it)
+    {
+        world::LightSource* const light = *it;
+        const Vec3& position = light->getAbsolutePosition();
+#if defined(__APPLE__) || defined(BF2_TEST_SOFT_EXTENDED)
+        // [CHOSEN, not recovered] Preserve the PE's explicit x store and the retained y/z
+        // intermediates through the native extended-arithmetic policy.
+        const float x = bf2x87::store(bf2x87::sub(bf2x87::wide(camera->m[12]),
+                                               bf2x87::wide(position.x)));
+        const bf2x87::Real y = bf2x87::sub(bf2x87::wide(camera->m[13]), bf2x87::wide(position.y));
+        const bf2x87::Real z = bf2x87::sub(bf2x87::wide(camera->m[14]), bf2x87::wide(position.z));
+        const float distanceSquared = bf2x87::store(bf2x87::add(
+            bf2x87::add(bf2x87::mul(z, z), bf2x87::mul(bf2x87::wide(x), bf2x87::wide(x))),
+            bf2x87::mul(y, y)));
+#else
+        const float x = camera->m[12] - position.x;
+        const float y = camera->m[13] - position.y;
+        const float z = camera->m[14] - position.z;
+        const float distanceSquared = (z * z + x * x) + y * y;
+#endif
+        output.insert(std::make_pair(distanceSquared, light));
+    }
+    return &output;
+}
+
+// PE 0x1015C280. Both effects must be initialized; the parameter lookup borrows its reference.
+void LightManager::setAlphaShadowThreshold(float threshold)
+{
+    lm(this).alphaShadowThreshold = threshold;
+    // Each parameter's table is captured before the virtual getter, while the bundled
+    // receiver is read again afterward. ParameterOwner has nine slots before setFloat and
+    // no destructor slots on either ABI; pointer-sized fields also describe its native table.
+    struct FloatDispatch
+    {
+        void* precedingSlots[9];
+        void (__thiscall* setFloat)(dx9rend::ParameterOwner*, float);
+    };
+    {
+        const std::string semantic("SHADOWALPHATHRESHOLD");
+        dx9rend::ShaderParameter* const parameter =
+            dx9rend::effectGetShaderParameterBorrowedTyped(skinnedMeshShadowEffect(), semantic);
+        const FloatDispatch* const dispatch = *reinterpret_cast<const FloatDispatch* const*>(parameter);
+        const float skinnedThreshold = getAlphaShadowThreshold();
+        dispatch->setFloat(parameter, skinnedThreshold);
+    }
+    // The semantic's lifetime ends before the second, fresh virtual threshold query.
+    const FloatDispatch* const dispatch =
+        *reinterpret_cast<const FloatDispatch* const*>(g_bundledShadowAlphaThreshold);
+    const float bundledThreshold = getAlphaShadowThreshold();
+    dispatch->setFloat(g_bundledShadowAlphaThreshold, bundledThreshold);
+}
+
+// PE 0x1015C300.
+float LightManager::getAlphaShadowThreshold() const
+{
+    return lm(this).alphaShadowThreshold;
+}
+
+// PE 0x1015BFC0. Resource failure restores the size but does not recreate the old resources.
+void LightManager::setShadowMapSize(int size)
+{
+    const int previous = lm(this).shadowMapSize;
+    lm(this).shadowMapSize = size;
+    if (!createShadowResourcesBody(this))
+        lm(this).shadowMapSize = previous;
+    else
+        rebuildShadowAtlas(this);
+}
+
+// PE 0x1015C000.
+int LightManager::getShadowMapSize() const
+{
+    return lm(this).shadowMapSize;
+}
+
+// PE 0x1015C010. The comparison is signed and there is no lower bound.
+void LightManager::setShadowMapObjectSize(int size)
+{
+    if (size <= lm(this).shadowMapSize)
+    {
+        lm(this).shadowTileSize = size;
+        rebuildShadowAtlas(this);
+    }
+}
+
+// PE 0x1015C030.
+int LightManager::getShadowMapObjectSize() const
+{
+    return lm(this).shadowTileSize;
+}
+
+// PE 0x1015C040. Unrecognized depths still attempt resource creation with the previous format.
+void LightManager::setShadowMapBitDepth(int depth)
+{
+    const unsigned int previous = lm(this).shadowMapFormat;
+    switch (depth)
+    {
+    case 16: lm(this).shadowMapFormat = 0x50; break;
+    case 24: lm(this).shadowMapFormat = 0x4D; break;
+    case 32: lm(this).shadowMapFormat = 0x72; break;
+    }
+    if (!createShadowResourcesBody(this))
+        lm(this).shadowMapFormat = previous;
+}
+
+// PE 0x1015C0A0.
+int LightManager::getShadowMapBitDepth() const
+{
+    switch (lm(this).shadowMapFormat)
+    {
+    case 0x4B:
+    case 0x4D: return 24;
+    case 0x50: return 16;
+    case 0x72: return 32;
+    default: return 0;
+    }
+}
+
+// PE 0x1015C1F0.
+void LightManager::setDropShadowClipHeightOffset(float value)
+{
+    lm(this).dropShadowClipHeightOffset = value;
+}
+
+// PE 0x1015C200.
+float LightManager::getDropShadowClipHeightOffset() const
+{
+    return lm(this).dropShadowClipHeightOffset;
+}
+
+// PE 0x1015C220.
+void LightManager::setDynamicStaticMeshShadowsEnabled(bool value)
+{
+    lm(this).dynamicStaticMeshShadowsEnabled = value;
+}
+
+// PE 0x1015C230.
+bool LightManager::getDynamicStaticMeshShadowsEnabled() const
+{
+    return lm(this).dynamicStaticMeshShadowsEnabled != 0;
+}
+
+// PE 0x1015C240.
+void LightManager::setDynamic1pShadowsEnabled(bool value)
+{
+    lm(this).firstPersonShadows = value;
+}
+
+// PE 0x1015C250.
+bool LightManager::getDynamic1pShadowsEnabled() const
+{
+    return lm(this).firstPersonShadows != 0;
+}
+
+// PE 0x1015C260.
+void LightManager::setAllowAlphaShadows(bool value)
+{
+    lm(this).allowAlphaShadows = value;
+}
+
+// PE 0x1015C270.
+bool LightManager::getAllowAlphaShadows() const
+{
+    return lm(this).allowAlphaShadows != 0;
+}
+
+// PE 0x1015C310.
+void LightManager::setShadowUpdateFactor(float value)
+{
+    lm(this).shadowUpdateFactor = value;
+}
+
+// PE 0x1015C320.
+float LightManager::getShadowUpdateFactor() const
+{
+    return lm(this).shadowUpdateFactor;
+}
+
+// PE 0x1015C330.
+void LightManager::setStencilCullerResetEnabled(bool enabled)
+{
+    lm(this).stencilCullerResetEnabled = enabled;
+}
+
+// PE 0x1015C340.
+bool LightManager::getStencilCullerResetEnabled() const
+{
+    return lm(this).stencilCullerResetEnabled != 0;
+}
+
+// PE 0x1015C3C0.
+void LightManager::setShadowOccluderOversizeFactor(float value)
+{
+    lm(this).shadowOccluderOversizeFactor = value;
+}
+
+// PE 0x1015C3B0.
+float LightManager::getShadowOccluderOversizeFactor() const
+{
+    return lm(this).shadowOccluderOversizeFactor;
+}
+
+// PE 0x1015C3E0.
+void LightManager::setUseLSSMOptimizations(bool value)
+{
+    lm(this).shadowProjectionFlags[0] = value;
+    if (value)
+        setUsePSMOptimizations(false);
+}
+
+// PE 0x1015C3D0.
+bool LightManager::getUseLSSMOptimizations() const
+{
+    return lm(this).shadowProjectionFlags[0] != 0;
+}
+
+// PE 0x1015C410.
+void LightManager::setUsePSMOptimizations(bool value)
+{
+    lm(this).shadowProjectionFlags[1] = value;
+    if (value)
+        setUseLSSMOptimizations(false);
+}
+
+// PE 0x1015C400.
+bool LightManager::getUsePSMOptimizations() const
+{
+    return lm(this).shadowProjectionFlags[1] != 0;
+}
+
+// PE 0x1015C4A0.
+void LightManager::setShadowPSMUseSlideback(bool value)
+{
+    lm(this).shadowProjectionFlags[2] = value;
+}
+
+// PE 0x1015C490.
+bool LightManager::getShadowPSMUseSlideback() const
+{
+    return lm(this).shadowProjectionFlags[2] != 0;
+}
+
+// PE 0x1015C4C0.
+void LightManager::setShadowPSMUseUnitCubeClipping(bool value)
+{
+    lm(this).shadowProjectionFlags[3] = value;
+}
+
+// PE 0x1015C4B0.
+bool LightManager::getShadowPSMUseUnitCubeClipping() const
+{
+    return lm(this).shadowProjectionFlags[3] != 0;
+}
+
+// PE 0x1015C440.
+void LightManager::setShadowPSMZNearOffset(float value)
+{
+    lm(this).shadowPSMZNearOffset = value;
+}
+
+// PE 0x1015C430.
+float LightManager::getShadowPSMZNearOffset() const
+{
+    return lm(this).shadowPSMZNearOffset;
+}
+
+// PE 0x1015C460.
+void LightManager::setShadowPSMZFarOffset(float value)
+{
+    lm(this).shadowPSMZFarOffset = value;
+}
+
+// PE 0x1015C450.
+float LightManager::getShadowPSMZFarOffset() const
+{
+    return lm(this).shadowPSMZFarOffset;
+}
+
+// PE 0x1015C480.
+void LightManager::setShadowPSMZMinInfinityZ(float value)
+{
+    lm(this).shadowPSMZMinInfinityZ = value;
+}
+
+// PE 0x1015C470.
+float LightManager::getShadowPSMZMinInfinityZ() const
+{
+    return lm(this).shadowPSMZMinInfinityZ;
+}
+
+// PE 0x1015C4E0.
+void LightManager::setShadowPSMFovY(float value)
+{
+    lm(this).shadowPSMFovY = value;
+}
+
+// PE 0x1015C4D0.
+float LightManager::getShadowPSMFovY() const
+{
+    return lm(this).shadowPSMFovY;
+}
+
+// PE 0x1015C520.
+void LightManager::setShadow80Line(float value)
+{
+    lm(this).shadow80Line = value;
+}
+
+// PE 0x1015C510.
+float LightManager::getShadow80Line() const
+{
+    return lm(this).shadow80Line;
+}
+
+// PE 0x1015C530.
+void LightManager::setShadowMergeDynamicShadowFrustums(bool value)
+{
+    lm(this).shadowMergeDynamicShadowFrustums = value;
+}
+
+// PE 0x1015C540.
+bool LightManager::getShadowMergeDynamicShadowFrustums() const
+{
+    return lm(this).shadowMergeDynamicShadowFrustums != 0;
+}
+
+// PE 0x1015BE50.
+void LightManager::setShadowOverrideQuality(int value)
+{
+    lm(this).shadowOverrideQuality = value;
+}
+
+// PE 0x1015BE60.
+int LightManager::getShadowOverrideQuality() const
+{
+    return lm(this).shadowOverrideQuality;
+}
+
+// PE 0x1015C110.
+void LightManager::setShadowDistance(float distance)
+{
+    lm(this).shadowDistance = distance;
+}
+
+// PE 0x1015C120.
+float LightManager::getShadowDistance() const
+{
+    return lm(this).shadowDistance;
+}
+
+// PE 0x1015C130. [CHOSEN, not recovered] name; see the declaration (unobservable-type exception).
+void LightManager::setUnusedFloat218(float value)
+{
+    lm(this).unresolved218 = value;
+}
+
+// PE 0x1015C140. [CHOSEN, not recovered] name; see the declaration.
+float LightManager::getUnusedFloat218() const
+{
+    return lm(this).unresolved218;
+}
+
+// PE 0x1015C170.
+void LightManager::setShadowShowFrustums(bool enabled)
+{
+    lm(this).showFrustums = enabled;
+}
+
+// PE 0x1015C180.
+bool LightManager::getShadowShowFrustums() const
+{
+    return lm(this).showFrustums != 0;
+}
+
+// PE 0x1015C370.
+void LightManager::setShadowDepthBias(float bias)
+{
+    lm(this).shadowDepthBias = bias;
+}
+
+// PE 0x1015C380.
+float LightManager::getShadowDepthBias() const
+{
+    return lm(this).shadowDepthBias;
+}
+
+// PE 0x1015C390.
+void LightManager::setShadowSlopeScaleDepthBias(float bias)
+{
+    lm(this).shadowSlopeScaleDepthBias = bias;
+}
+
+// PE 0x1015C3A0.
+float LightManager::getShadowSlopeScaleDepthBias() const
+{
+    return lm(this).shadowSlopeScaleDepthBias;
+}
+
+// PE 0x1015BDE0. Values outside the signed interval [0, 3) leave the previous LOD intact.
+void LightManager::setTerrainShadowLod(int lod)
+{
+    if (lod >= 0 && lod < 3)
+        lm(this).terrainShadowLod = static_cast<unsigned int>(lod);
+}
+
+// PE 0x1015BE00.
+int LightManager::getTerrainShadowLod() const
+{
+    return static_cast<int>(lm(this).terrainShadowLod);
+}
+
+// PE 0x1015BF20. Negative values are refused; there is no upper limit.
+void LightManager::setStaticMeshShadowLod(int lod)
+{
+    if (lod >= 0)
+        lm(this).staticMeshShadowLod = static_cast<unsigned int>(lod);
+}
+
+// PE 0x1015BEB0.
+void LightManager::setShadowPullbackDistance(float distance)
+{
+    lm(this).shadowPullbackDistance = distance;
+}
+
+// PE 0x1015BEF0.
+float LightManager::getShadowPullbackDistance() const
+{
+    return lm(this).shadowPullbackDistance;
+}
+
+// PE 0x1015C580. The shipped setter stores the complete word without clamping.
+void LightManager::setShadowMergeLodLimit(int lod)
+{
+    lm(this).shadowMergeLodLimit = static_cast<unsigned int>(lod);
 }
 
 void LightManager::setShadowStaticFeature(bool enabled)
 {
-    lm_setShadowStaticFeature(this, 0, enabled);
+    lm_setShadowStaticFeature(this RD9_THUNK_ARG, enabled);
 }
 
 bool LightManager::getShadowStaticFeature() const
 {
-    return lm_getShadowStaticFeature(const_cast<LightManager*>(this), 0);
+    return lm_getShadowStaticFeature(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setShadowIntensityBias(float value)
 {
-    lm_setShadowIntensityBias(this, 0, value);
+    lm_setShadowIntensityBias(this RD9_THUNK_ARG, value);
 }
 
 float LightManager::getShadowIntensityBias() const
 {
-    return lm_getShadowIntensityBias(const_cast<LightManager*>(this), 0);
+    return lm_getShadowIntensityBias(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setLightMapIntensityBias(float value)
 {
-    lm_setLightMapIntensityBias(this, 0, value);
+    lm_setLightMapIntensityBias(this RD9_THUNK_ARG, value);
 }
 
 float LightManager::getLightMapIntensityBias() const
 {
-    return lm_getLightMapIntensityBias(const_cast<LightManager*>(this), 0);
+    return lm_getLightMapIntensityBias(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setDynamicShadowsEnabled(bool enabled)
 {
-    lm_setDynamicShadowsEnabled(this, 0, enabled);
+    lm_setDynamicShadowsEnabled(this RD9_THUNK_ARG, enabled);
 }
 
 bool LightManager::getDynamicShadowsEnabled() const
 {
-    return lm_getDynamicShadowsEnabled(const_cast<LightManager*>(this), 0);
+    return lm_getDynamicShadowsEnabled(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setShadowUpdatesEnabled(bool enabled)
 {
-    lm_setShadowUpdatesEnabled(this, 0, enabled);
+    lm_setShadowUpdatesEnabled(this RD9_THUNK_ARG, enabled);
 }
 
 bool LightManager::getShadowUpdatesEnabled() const
 {
-    return lm_getShadowUpdatesEnabled(const_cast<LightManager*>(this), 0);
+    return lm_getShadowUpdatesEnabled(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setShadowTSMFocus(float value)
 {
-    lm_setShadowTSMFocus(this, 0, value);
+    lm_setShadowTSMFocus(this RD9_THUNK_ARG, value);
 }
 
 float LightManager::getShadowTSMFocus() const
 {
-    return lm_getShadowTSMFocus(const_cast<LightManager*>(this), 0);
+    return lm_getShadowTSMFocus(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::renderShadowMaps()
 {
-    lm_renderShadowMaps(this, 0);
+    lm_renderShadowMaps(this RD9_THUNK_ARG);
 }
 
 void LightManager::setSunDirection(Vec3 direction)
 {
-    lm_setSunDirection(this, 0, direction);
+    lm_setSunDirection(this RD9_THUNK_ARG, direction);
 }
 
 Vec3 LightManager::getSunDirection() const
 {
     Vec3 result;
-    lm_getSunDirection(const_cast<LightManager*>(this), 0, &result);
+    lm_getSunDirection(const_cast<LightManager*>(this) RD9_THUNK_ARG, &result);
     return result;
 }
 
 void LightManager::setSunColor(Vec3 color)
 {
-    lm_setSunColor(this, 0, color);
+    lm_setSunColor(this RD9_THUNK_ARG, color);
 }
 
 Vec3 LightManager::getSunColor() const
 {
     Vec3 result;
-    lm_getSunColor(const_cast<LightManager*>(this), 0, &result);
+    lm_getSunColor(const_cast<LightManager*>(this) RD9_THUNK_ARG, &result);
     return result;
 }
 
 void LightManager::setSunSpecColor(Vec3 color)
 {
-    lm_setSunSpecColor(this, 0, color);
+    lm_setSunSpecColor(this RD9_THUNK_ARG, color);
 }
 
 Vec3 LightManager::getSunSpecColor() const
 {
     Vec3 result;
-    lm_getSunSpecColor(const_cast<LightManager*>(this), 0, &result);
+    lm_getSunSpecColor(const_cast<LightManager*>(this) RD9_THUNK_ARG, &result);
     return result;
 }
 
 void LightManager::setSunEnabled(bool enabled)
 {
-    lm_setSunEnabled(this, 0, enabled);
+    lm_setSunEnabled(this RD9_THUNK_ARG, enabled);
 }
 
 bool LightManager::getSunEnabled() const
 {
-    return lm_getSunEnabled(const_cast<LightManager*>(this), 0);
+    return lm_getSunEnabled(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setDefaultEffectLightAffectionFactor(float factor)
 {
-    lm_setDefaultEffectFactor(this, 0, factor);
+    lm_setDefaultEffectFactor(this RD9_THUNK_ARG, factor);
 }
 
 float LightManager::getDefaultEffectLightAffectionFactor() const
 {
-    return lm_getDefaultEffectFactor(const_cast<LightManager*>(this), 0);
+    return lm_getDefaultEffectFactor(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setShadowUseSweepTest(bool enabled)
 {
-    lm_setShadowUseSweepTest(this, 0, enabled);
+    lm_setShadowUseSweepTest(this RD9_THUNK_ARG, enabled);
 }
 
 bool LightManager::getShadowUseSweepTest() const
 {
-    return lm_getShadowUseSweepTest(const_cast<LightManager*>(this), 0);
+    return lm_getShadowUseSweepTest(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setDynamicLightRangeScale(float scale)
 {
-    lm_setDynamicLightRangeScale(this, 0, scale);
+    lm_setDynamicLightRangeScale(this RD9_THUNK_ARG, scale);
 }
 
 float LightManager::getDynamicLightRangeScale() const
 {
-    return lm_getDynamicLightRangeScale(const_cast<LightManager*>(this), 0);
+    return lm_getDynamicLightRangeScale(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::setOccludedSkyNightIntensity(float intensity)
 {
-    lm_setOccludedSkyNightIntensity(this, 0, intensity);
+    lm_setOccludedSkyNightIntensity(this RD9_THUNK_ARG, intensity);
 }
 
 float LightManager::getOccludedSkyNightIntensity() const
 {
-    return lm_getOccludedSkyNightIntensity(const_cast<LightManager*>(this), 0);
+    return lm_getOccludedSkyNightIntensity(const_cast<LightManager*>(this) RD9_THUNK_ARG);
 }
 
 void LightManager::registerShadowEffect(int reflectionTypeId, dx9rend::Effect* effect)
 {
-    lm_registerShadowEffect(this, 0, reflectionTypeId, effect);
+    lm_registerShadowEffect(this RD9_THUNK_ARG, reflectionTypeId, effect);
 }
 
 // The explicit host table requires plain x86 entry points. Keeping these adapters nested under
@@ -6611,48 +8152,60 @@ struct LightManager::HostAbi
 {
     static LightManager& object(void* self) { return *static_cast<LightManager*>(self); }
 
-    static void __fastcall addRef(void* self, void*) { object(self).LightManager::addRef(); }
-    static int __fastcall getRef(void* self, void*) { return object(self).LightManager::getRef(); }
-    static int __fastcall release(void* self, void*) { return object(self).LightManager::release(); }
-    static void* __fastcall queryInterface(void* self, void*, unsigned int iid)
+    static void RD9_THUNK addRef(void* self RD9_THUNK_EDX) { object(self).LightManager::addRef(); }
+    static int RD9_THUNK getRef(void* self RD9_THUNK_EDX) { return object(self).LightManager::getRef(); }
+    static int RD9_THUNK release(void* self RD9_THUNK_EDX) { return object(self).LightManager::release(); }
+    static void* RD9_THUNK queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
     { return object(self).LightManager::queryInterface(iid); }
-    static void __fastcall update(void* self, void*, double time)
+    static void RD9_THUNK update(void* self RD9_THUNK_EDX, double time)
     { object(self).LightManager::update(time); }
-    static void __fastcall getLightsByMask(void* self, void*, vc71::vector_layout* out,
+    static void RD9_THUNK getLightsByMask(void* self RD9_THUNK_EDX,
+                                           std::vector<world::LightSource*>* out,
                                            unsigned int required, unsigned int forbidden)
     { object(self).LightManager::getLightsByMask(*out, required, forbidden); }
-    static void __fastcall getVisibleLightsByMask(void* self, void*, vc71::vector_layout* out,
+    static void RD9_THUNK getVisibleLightsByMask(void* self RD9_THUNK_EDX,
+                                                  std::vector<world::LightSource*>* out,
                                                   unsigned int required, unsigned int forbidden)
     { object(self).LightManager::getVisibleLightsByMask(*out, required, forbidden); }
-    static int __fastcall getStaticMeshShadowLod(void* self, void*)
+    static int RD9_THUNK getStaticMeshShadowLod(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getStaticMeshShadowLod(); }
-    static void __fastcall setBundledMeshShadowLod(void* self, void*, int lod)
+    static void RD9_THUNK setBundledMeshShadowLod(void* self RD9_THUNK_EDX, int lod)
     { object(self).LightManager::setBundledMeshShadowLod(lod); }
-    static int __fastcall getBundledMeshShadowLod(void* self, void*)
+    static int RD9_THUNK getBundledMeshShadowLod(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getBundledMeshShadowLod(); }
-    static int __fastcall getShadowMergeLodLimit(void* self, void*)
+    static int RD9_THUNK getShadowMergeLodLimit(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getShadowMergeLodLimit(); }
-    static void __fastcall gatherLights(void* self, void*, const Vec3* position, float radius,
-                                        vc71::vector_layout* out, unsigned int maxLights,
+    static void RD9_THUNK gatherLights(void* self RD9_THUNK_EDX, const Vec3* position, float radius,
+                                        std::vector<world::LightSource*>* out,
+                                        unsigned int maxLights,
                                         unsigned int required, unsigned int forbidden,
                                         unsigned char occlusionTest)
     { object(self).LightManager::gatherLights(*position, radius, *out, maxLights, required,
                                               forbidden, occlusionTest != 0); }
-    static void __fastcall gatherLightsForGeometry(void* self, void*, void* geometry,
-                                                   vc71::vector_layout* out,
+    // The virtual's last argument is a bool. x86 reads the whole stack dword the retail
+    // `retn 18h` body pops; an x64 caller stores only the byte, so x64 reads only the bool.
+    // [CHOSEN, not recovered] x64 spelling (https://github.com/B2BF/OpenBF2/issues/7).
+#if defined(_M_IX86)
+    typedef int GatherOcclusionArg;
+#else
+    typedef bool GatherOcclusionArg;
+#endif
+    static void RD9_THUNK gatherLightsForGeometry(void* self RD9_THUNK_EDX, void* geometry,
+                                                   std::vector<world::LightSource*>* out,
                                                    unsigned int maxLights, unsigned int required,
-                                                   unsigned int forbidden, int occlusionTest)
+                                                   unsigned int forbidden,
+                                                   GatherOcclusionArg occlusionTest)
     { object(self).LightManager::gatherLightsForGeometry(geometry, *out, maxLights, required,
                                                          forbidden, occlusionTest != 0); }
-    static void __fastcall setSkyLight(void* self, void*, world::LightSource* light)
+    static void RD9_THUNK setSkyLight(void* self RD9_THUNK_EDX, world::LightSource* light)
     { object(self).LightManager::setSkyLight(light); }
-    static world::LightSource* __fastcall getSkyLight(void* self, void*)
+    static world::LightSource* RD9_THUNK getSkyLight(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getSkyLight(); }
 
 #define BF2_LIGHT_HOST_COLOR(Name)                                                \
-    static void __fastcall set##Name(void* self, void*, const Vec3* color)         \
+    static void RD9_THUNK set##Name(void* self RD9_THUNK_EDX, const Vec3* color)   \
     { object(self).LightManager::set##Name(*color); }                              \
-    static const Vec3* __fastcall get##Name(void* self, void*)                     \
+    static const Vec3* RD9_THUNK get##Name(void* self RD9_THUNK_EDX)               \
     { return &object(self).LightManager::get##Name(); }
 
     BF2_LIGHT_HOST_COLOR(SkyColor)
@@ -6667,26 +8220,38 @@ struct LightManager::HostAbi
     BF2_LIGHT_HOST_COLOR(DynamicPointColor)
     BF2_LIGHT_HOST_COLOR(EffectSunColor)
     BF2_LIGHT_HOST_COLOR(EffectShadowColor)
+    BF2_LIGHT_HOST_COLOR(SinglePointColorHigh)
+    BF2_LIGHT_HOST_COLOR(SinglePointColorLow)
+    BF2_LIGHT_HOST_COLOR(DynamicPointColorHigh)
+    BF2_LIGHT_HOST_COLOR(DynamicPointColorLow)
+    BF2_LIGHT_HOST_COLOR(SkyColorHigh)
+    BF2_LIGHT_HOST_COLOR(SkyColorLow)
+    BF2_LIGHT_HOST_COLOR(StaticSkyColorHigh)
+    BF2_LIGHT_HOST_COLOR(StaticSkyColorLow)
+    BF2_LIGHT_HOST_COLOR(SunColorHigh)
+    BF2_LIGHT_HOST_COLOR(SunColorLow)
+    BF2_LIGHT_HOST_COLOR(SunSpecColorHigh)
+    BF2_LIGHT_HOST_COLOR(SunSpecColorLow)
 
 #undef BF2_LIGHT_HOST_COLOR
 
-    static void __fastcall setGroundHemi(void* self, void*, const LightManagerHostString* name)
+    static void RD9_THUNK setGroundHemi(void* self RD9_THUNK_EDX, const LightManagerHostString* name)
     { object(self).LightManager::setGroundHemi(*name); }
-    static const vc71::string* __fastcall getGroundHemi(void* self, void*)
+    static const std::string* RD9_THUNK getGroundHemi(void* self RD9_THUNK_EDX)
     { return &object(self).LightManager::getGroundHemi(); }
-    static void __fastcall setHemiLerpBias(void* self, void*, float bias)
+    static void RD9_THUNK setHemiLerpBias(void* self RD9_THUNK_EDX, float bias)
     { object(self).LightManager::setHemiLerpBias(bias); }
-    static float __fastcall getHemiLerpBias(void* self, void*)
+    static float RD9_THUNK getHemiLerpBias(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getHemiLerpBias(); }
-    static void __fastcall setLightCullDistance(void* self, void*, float value)
+    static void RD9_THUNK setLightCullDistance(void* self RD9_THUNK_EDX, float value)
     { object(self).LightManager::setLightCullDistance(value); }
-    static float __fastcall getLightCullDistance(void* self, void*)
+    static float RD9_THUNK getLightCullDistance(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getLightCullDistance(); }
 
 #define BF2_LIGHT_HOST_INT_PROPERTY(Name)                                         \
-    static void __fastcall set##Name(void* self, void*, int value)                 \
+    static void RD9_THUNK set##Name(void* self RD9_THUNK_EDX, int value)           \
     { object(self).LightManager::set##Name(value); }                                \
-    static int __fastcall get##Name(void* self, void*)                              \
+    static int RD9_THUNK get##Name(void* self RD9_THUNK_EDX)                        \
     { return object(self).LightManager::get##Name(); }
 
     BF2_LIGHT_HOST_INT_PROPERTY(MaxLightsPerBundledMesh)
@@ -6694,35 +8259,59 @@ struct LightManager::HostAbi
     BF2_LIGHT_HOST_INT_PROPERTY(MaxLightsPerSkinnedMesh)
     BF2_LIGHT_HOST_INT_PROPERTY(MaxLightsPerTerrainPatch)
     BF2_LIGHT_HOST_INT_PROPERTY(SkinnedMeshShadowLod)
+    BF2_LIGHT_HOST_INT_PROPERTY(TerrainShadowLod)
+    BF2_LIGHT_HOST_INT_PROPERTY(ShadowMapSize)
+    BF2_LIGHT_HOST_INT_PROPERTY(ShadowMapObjectSize)
+    BF2_LIGHT_HOST_INT_PROPERTY(ShadowMapBitDepth)
+    BF2_LIGHT_HOST_INT_PROPERTY(ShadowOverrideQuality)
+
+    static LightDistanceMap* RD9_THUNK getVisibleLightsByDistance(
+        void* self RD9_THUNK_EDX, unsigned int required, unsigned int forbidden)
+    { return object(self).LightManager::getVisibleLightsByDistance(required, forbidden); }
+
+    static void RD9_THUNK setStaticMeshShadowLod(void* self RD9_THUNK_EDX, int value)
+    { object(self).LightManager::setStaticMeshShadowLod(value); }
+    static void RD9_THUNK setShadowMergeLodLimit(void* self RD9_THUNK_EDX, int value)
+    { object(self).LightManager::setShadowMergeLodLimit(value); }
 
 #undef BF2_LIGHT_HOST_INT_PROPERTY
 
-    static void __fastcall addLight(void* self, void*, world::LightSource* light)
+    static void RD9_THUNK addLight(void* self RD9_THUNK_EDX, world::LightSource* light)
     { object(self).LightManager::addLight(light); }
-    static void __fastcall removeLight(void* self, void*, world::LightSource* light)
+    static void RD9_THUNK removeLight(void* self RD9_THUNK_EDX, world::LightSource* light)
     { object(self).LightManager::removeLight(light); }
-    static void __fastcall enableLight(void* self, void*, world::LightSource* light)
+    static void RD9_THUNK enableLight(void* self RD9_THUNK_EDX, world::LightSource* light)
     { object(self).LightManager::enableLight(light); }
-    static void __fastcall disableLight(void* self, void*, world::LightSource* light)
+    static void RD9_THUNK disableLight(void* self RD9_THUNK_EDX, world::LightSource* light)
     { object(self).LightManager::disableLight(light); }
 
 #define BF2_LIGHT_HOST_BOOL_PROPERTY(Name)                                        \
-    static void __fastcall set##Name(void* self, void*, bool value)                \
+    static void RD9_THUNK set##Name(void* self RD9_THUNK_EDX, bool value)          \
     { object(self).LightManager::set##Name(value); }                                \
-    static bool __fastcall get##Name(void* self, void*)                             \
+    static bool RD9_THUNK get##Name(void* self RD9_THUNK_EDX)                       \
     { return object(self).LightManager::get##Name(); }
 
     BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowStaticFeature)
     BF2_LIGHT_HOST_BOOL_PROPERTY(DynamicShadowsEnabled)
     BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowUpdatesEnabled)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(StencilCullerResetEnabled)
     BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowUseSweepTest)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowShowFrustums)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(DynamicStaticMeshShadowsEnabled)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(Dynamic1pShadowsEnabled)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(AllowAlphaShadows)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(UseLSSMOptimizations)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(UsePSMOptimizations)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowPSMUseSlideback)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowPSMUseUnitCubeClipping)
+    BF2_LIGHT_HOST_BOOL_PROPERTY(ShadowMergeDynamicShadowFrustums)
 
 #undef BF2_LIGHT_HOST_BOOL_PROPERTY
 
 #define BF2_LIGHT_HOST_FLOAT_PROPERTY(Name)                                       \
-    static void __fastcall set##Name(void* self, void*, float value)               \
+    static void RD9_THUNK set##Name(void* self RD9_THUNK_EDX, float value)         \
     { object(self).LightManager::set##Name(value); }                                \
-    static float __fastcall get##Name(void* self, void*)                            \
+    static float RD9_THUNK get##Name(void* self RD9_THUNK_EDX)                      \
     { return object(self).LightManager::get##Name(); }
 
     BF2_LIGHT_HOST_FLOAT_PROPERTY(SkinnedMeshShaderLodDistance)
@@ -6734,110 +8323,138 @@ struct LightManager::HostAbi
     BF2_LIGHT_HOST_FLOAT_PROPERTY(DefaultEffectLightAffectionFactor)
     BF2_LIGHT_HOST_FLOAT_PROPERTY(DynamicLightRangeScale)
     BF2_LIGHT_HOST_FLOAT_PROPERTY(OccludedSkyNightIntensity)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowDistance)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(UnusedFloat218)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowDepthBias)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowSlopeScaleDepthBias)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowPullbackDistance)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(AlphaShadowThreshold)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(DropShadowClipHeightOffset)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowUpdateFactor)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowOccluderOversizeFactor)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowPSMZNearOffset)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowPSMZFarOffset)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowPSMZMinInfinityZ)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(ShadowPSMFovY)
+    BF2_LIGHT_HOST_FLOAT_PROPERTY(Shadow80Line)
 
 #undef BF2_LIGHT_HOST_FLOAT_PROPERTY
 
-    static const Vec2* __fastcall getLightMapAmbientAlphaCutoffRange(void* self, void*)
+    static const Vec2* RD9_THUNK getLightMapAmbientAlphaCutoffRange(void* self RD9_THUNK_EDX)
     { return &object(self).LightManager::getLightMapAmbientAlphaCutoffRange(); }
-    static void __fastcall setLightMapAmbientAlphaCutoffRange(void* self, void*, const Vec2* range)
+    static void RD9_THUNK setLightMapAmbientAlphaCutoffRange(void* self RD9_THUNK_EDX, const Vec2* range)
     { object(self).LightManager::setLightMapAmbientAlphaCutoffRange(*range); }
-    static void __fastcall setShadowSunHeightOverFade(void* self, void*, const Vec2* range)
+    static void RD9_THUNK setShadowSunHeightOverFade(void* self RD9_THUNK_EDX, const Vec2* range)
     { object(self).LightManager::setShadowSunHeightOverFade(*range); }
-    static const Vec2* __fastcall getShadowSunHeightOverFade(void* self, void*)
+    static const Vec2* RD9_THUNK getShadowSunHeightOverFade(void* self RD9_THUNK_EDX)
     { return &object(self).LightManager::getShadowSunHeightOverFade(); }
-    static float __fastcall sampleSimpleShadowMap(void* self, void*, float x, float z)
+    static float RD9_THUNK sampleSimpleShadowMap(void* self RD9_THUNK_EDX, float x, float z)
     { return object(self).LightManager::sampleSimpleShadowMap(x, z); }
-    static float __fastcall sampleSimpleShadowMapIO(void* self, void*, float x, float z)
+    static float RD9_THUNK sampleSimpleShadowMapIO(void* self RD9_THUNK_EDX, float x, float z)
     { return object(self).LightManager::sampleSimpleShadowMapIO(x, z); }
-    static float __fastcall sampleSimpleShadowMapIOTexel(void* self, void*, int x, int z)
+    static float RD9_THUNK sampleSimpleShadowMapIOTexel(void* self RD9_THUNK_EDX, int x, int z)
     { return object(self).LightManager::sampleSimpleShadowMapIOTexel(x, z); }
-    static float __fastcall sampleSimpleShadowMapTexel(void* self, void*, int x, int z)
+    static float RD9_THUNK sampleSimpleShadowMapTexel(void* self RD9_THUNK_EDX, int x, int z)
     { return object(self).LightManager::sampleSimpleShadowMapTexel(x, z); }
 
-    static void __fastcall renderShadowMaps(void* self, void*)
+    static void RD9_THUNK renderShadowMaps(void* self RD9_THUNK_EDX)
     { object(self).LightManager::renderShadowMaps(); }
-    static void __fastcall setSunDirection(void* self, void*, Vec3 value)
+    static void RD9_THUNK setSunDirection(void* self RD9_THUNK_EDX, Vec3 value)
     { object(self).LightManager::setSunDirection(value); }
-    static Vec3* __fastcall getSunDirection(void* self, void*, Vec3* out)
+    static Vec3* RD9_THUNK getSunDirection(void* self RD9_THUNK_EDX, Vec3* out)
     { *out = object(self).LightManager::getSunDirection(); return out; }
-    static void __fastcall setSunColor(void* self, void*, Vec3 value)
+    static void RD9_THUNK setSunColor(void* self RD9_THUNK_EDX, Vec3 value)
     { object(self).LightManager::setSunColor(value); }
-    static Vec3* __fastcall getSunColor(void* self, void*, Vec3* out)
+    static Vec3* RD9_THUNK getSunColor(void* self RD9_THUNK_EDX, Vec3* out)
     { *out = object(self).LightManager::getSunColor(); return out; }
-    static void __fastcall setSunSpecColor(void* self, void*, Vec3 value)
+    static void RD9_THUNK setSunSpecColor(void* self RD9_THUNK_EDX, Vec3 value)
     { object(self).LightManager::setSunSpecColor(value); }
-    static Vec3* __fastcall getSunSpecColor(void* self, void*, Vec3* out)
+    static Vec3* RD9_THUNK getSunSpecColor(void* self RD9_THUNK_EDX, Vec3* out)
     { *out = object(self).LightManager::getSunSpecColor(); return out; }
-    static void __fastcall setSunEnabled(void* self, void*, bool enabled)
+    static void RD9_THUNK setSunEnabled(void* self RD9_THUNK_EDX, bool enabled)
     { object(self).LightManager::setSunEnabled(enabled); }
-    static bool __fastcall getSunEnabled(void* self, void*)
+    static bool RD9_THUNK getSunEnabled(void* self RD9_THUNK_EDX)
     { return object(self).LightManager::getSunEnabled(); }
-    static void __fastcall registerShadowEffect(
-        void* self, void*, int reflectionTypeId, dx9rend::Effect* effect)
+    static void RD9_THUNK registerShadowEffect(void* self RD9_THUNK_EDX, int reflectionTypeId, dx9rend::Effect* effect)
     { object(self).LightManager::registerShadowEffect(reflectionTypeId, effect); }
-    static void __fastcall loadSimpleShadowMaps(void* self, void*)
+    static void RD9_THUNK loadSimpleShadowMaps(void* self RD9_THUNK_EDX)
     { object(self).LightManager::loadSimpleShadowMaps(); }
 };
 
 namespace {
 
-void __fastcall lm_deviceLost(void* self, void*)
+void RD9_THUNK lm_deviceLost(void* self RD9_THUNK_EDX)
 {
-    releaseShadowResources(static_cast<unsigned char*>(self) - 4, true);
+    releaseShadowResources(lmFromDeviceLostListener(self), true);
 }
-void __fastcall lm_deviceReset(void* self, void*)
+void RD9_THUNK lm_deviceReset(void* self RD9_THUNK_EDX)
 {
-    createShadowResourcesBody(static_cast<unsigned char*>(self) - 4);
+    createShadowResourcesBody(lmFromDeviceLostListener(self));
 }
-void __fastcall lm_deviceNull(void*, void*) {}
+void RD9_THUNK lm_deviceNull(void* RD9_THUNK_EDX) {}
 
-void __fastcall lm_renderPathActivated(void* self, void*, int path)
+// PE 0x100F3310.
+void RD9_THUNK lm_renderPathActivated(void* self RD9_THUNK_EDX, int path)
 {
-    void* const base = static_cast<unsigned char*>(self) - 8;
+    void* const base = lmFromRenderPathListener(self);
     rebuildShadowAtlas(base);
     if (path == 2)
     {
         void* const effect = dx9rend::shaderManagerGetEffect(
             dx9rend::g_shaderManager, "Shaders/LightManager_r3x0");
-        lmField<void*>(base, 0x844) = effect;
-        struct ParameterSpec { unsigned int offset; const char* semantic; };
+        lm(base).shadowEffect = static_cast<dx9rend::Effect*>(effect);
+        struct ParameterSpec { LightShaderParameter index; const char* semantic; };
         static const ParameterSpec parameters[] =
         {
-            {0x848, "STENCILFUNC"}, {0x84C, "STENCILREF"}, {0x850, "STENCILPASS"},
-            {0x854, "PARABOLOIDZVALUES"}, {0x85C, "LIGHTDIR"},
-            {0x858, "LIGHTWORLDPOS"}, {0x860, "LIGHTPOS"}, {0x864, "LIGHTCOL"},
-            {0x868, "LIGHTATTENUATIONRANGE"}, {0x86C, "LIGHTATTENUATIONRANGEINV"},
-            {0x870, "PROJECTORMASK"}, {0x874, "EYEPOS"}, {0x878, "EYEDOF"},
-            {0x87C, "VIEWPROJ"}, {0x880, "WORLDVIEWPROJ"},
-            {0x884, "LIGHTVIEWPROJ"}, {0x888, "LIGHTOCCLUDERVIEWPROJ"},
-            {0x88C, "VIEWPORTMAP"}, {0x890, "VIEWPORTMAP2"},
-            {0x894, "SHADOWINTENSITYBIAS"}, {0x898, "LIGHTMAPINTENSITYBIAS"},
-            {0x89C, "TEXLAYER0"}, {0x8A0, "TEXLAYER1"}, {0x8A4, "TEXLAYER2"},
-            {0x8A8, "TEXLAYER3"}, {0x8AC, "TEXLAYER4"}, {0x8B0, "TEXLAYER5"},
-            {0x8B4, "TEXLAYER6"}
+            {kParamStencilFunc, "STENCILFUNC"}, {kParamStencilRef, "STENCILREF"},
+            {kParamStencilPass, "STENCILPASS"},
+            {kParamParaboloidZValues, "PARABOLOIDZVALUES"}, {kParamLightDir, "LIGHTDIR"},
+            {kParamLightWorldPos, "LIGHTWORLDPOS"}, {kParamLightPos, "LIGHTPOS"},
+            {kParamLightCol, "LIGHTCOL"},
+            {kParamLightAttenuationRange, "LIGHTATTENUATIONRANGE"},
+            {kParamLightAttenuationRangeInv, "LIGHTATTENUATIONRANGEINV"},
+            {kParamProjectorMask, "PROJECTORMASK"}, {kParamEyePos, "EYEPOS"},
+            {kParamEyeDof, "EYEDOF"},
+            {kParamViewProj, "VIEWPROJ"}, {kParamWorldViewProj, "WORLDVIEWPROJ"},
+            {kParamLightViewProj, "LIGHTVIEWPROJ"},
+            {kParamLightOccluderViewProj, "LIGHTOCCLUDERVIEWPROJ"},
+            {kParamViewportMap, "VIEWPORTMAP"}, {kParamViewportMap2, "VIEWPORTMAP2"},
+            {kParamShadowIntensityBias, "SHADOWINTENSITYBIAS"},
+            {kParamLightMapIntensityBias, "LIGHTMAPINTENSITYBIAS"},
+            {kParamTexLayer0, "TEXLAYER0"}, {kParamTexLayer1, "TEXLAYER1"},
+            {kParamTexLayer2, "TEXLAYER2"}, {kParamTexLayer3, "TEXLAYER3"},
+            {kParamTexLayer4, "TEXLAYER4"}, {kParamTexLayer5, "TEXLAYER5"},
+            {kParamTexLayer6, "TEXLAYER6"}
         };
         for (unsigned int i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i)
-            lmField<void*>(base, parameters[i].offset) =
-                getEffectParameter(effect, parameters[i].semantic);
-        lm_setShadowIntensityBias(base, 0, 0.0f);
-        lm_setLightMapIntensityBias(base, 0, 0.0f);
+            lm(base).shaderParameters[parameters[i].index] = static_cast<dx9rend::ShaderParameter*>(
+                getEffectParameter(effect, parameters[i].semantic));
+        static_cast<LightManager*>(base)->setShadowIntensityBias(0.0f);
+        static_cast<LightManager*>(base)->setLightMapIntensityBias(0.0f);
     }
-    lmField<dx9rend::EngineTexture*>(base, 0x8B8) =
-        loadManagerTexture("Common/Textures/RadialAtt2");
-    lmField<dx9rend::EngineTexture*>(base, 0x8BC) =
-        loadManagerTexture("Common/Textures/ConicalAtt");
+    lm(base).radialAttenuation = loadManagerTexture("Common/Textures/RadialAtt2");
+    lm(base).conicalAttenuation = loadManagerTexture("Common/Textures/ConicalAtt");
 }
-void __fastcall lm_renderPathNull04(void*, void*) {}
-void __fastcall lm_renderPathNull08(void*, void*, int) {}
-void __fastcall lm_renderPathNull0C(void*, void*, void*) {}
-void* __fastcall lm_getRenderPath(void* self, void*)
+void RD9_THUNK lm_renderPathNull04(void* RD9_THUNK_EDX) {}
+void RD9_THUNK lm_renderPathNull08(void* RD9_THUNK_EDX, int) {}
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match RenderPathListener's notification and integer carrier.
+void lm_renderPathNull0C(void*, int) {}
+int lm_getRenderPath(void* self)
+{
+    return static_cast<int>(reinterpret_cast<std::size_t>(lm(lmFromRenderPathListener(self)).renderPathValue));
+}
+#else
+void RD9_THUNK lm_renderPathNull0C(void* RD9_THUNK_EDX, void*) {}
+void* RD9_THUNK lm_getRenderPath(void* self RD9_THUNK_EDX)
 {
     // PE 0x101A9A10 returns secondaryThis[1].  The render-path listener subobject starts at
     // base+0x08, so this is the pointer at base+0x0C (zero in the partial constructor).
-    return lmField<void*>(self, 0x04);
+    return lm(lmFromRenderPathListener(self)).renderPathValue;
 }
-renddx9abi::HostString* __fastcall lm_getRenderPathName(
-    void*, void*, renddx9abi::HostString* out)
+#endif
+// PE 0x100F7910.
+renddx9abi::HostString* RD9_THUNK lm_getRenderPathName(void* RD9_THUNK_EDX, renddx9abi::HostString* out)
 {
     // PE 0x100F7910 constructs this exact string into the caller's MSVC x86 sret storage and
     // returns it in EAX (`retn 4`). HostString selects the native or VC7.1 representation at the
@@ -6853,6 +8470,18 @@ const void* const kDeviceLostVtable[3] =
     reinterpret_cast<void*>(&lm_deviceNull)
 };
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+const void* const kRenderPathVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, onRenderPathActivated, lm_renderPathActivated),
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, onRenderPathDeactivated, lm_renderPathNull04),
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, onRenderPathChanged, lm_renderPathNull08),
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, onRenderPathNotification, lm_renderPathNull0C),
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, getCurrentRenderPath, lm_getRenderPath),
+    BF2_NATIVE_SLOT(::dice::hfe::dx9rend::RenderPathListener, getRenderPathListenerName, lm_getRenderPathName),
+};
+#else
 const void* const kRenderPathVtable[6] =
 {
     reinterpret_cast<void*>(&lm_renderPathActivated),
@@ -6862,8 +8491,204 @@ const void* const kRenderPathVtable[6] =
     reinterpret_cast<void*>(&lm_getRenderPath),
     reinterpret_cast<void*>(&lm_getRenderPathName)
 };
+#endif
 
 // PE vtable 0x1021AAF0: 189 entries, +0x000..+0x2F0.
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+const void* const kPrimaryVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, addRef, LightManager::HostAbi::addRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getRef, LightManager::HostAbi::getRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, release, LightManager::HostAbi::release),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, queryInterface, LightManager::HostAbi::queryInterface),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, update, LightManager::HostAbi::update),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getLightsByMask, LightManager::HostAbi::getLightsByMask),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getVisibleLightsByMask, LightManager::HostAbi::getVisibleLightsByMask),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, gatherLights, LightManager::HostAbi::gatherLights),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, gatherLightsForGeometry, LightManager::HostAbi::gatherLightsForGeometry),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkyLight, LightManager::HostAbi::setSkyLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkyLight, LightManager::HostAbi::getSkyLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkyColor, LightManager::HostAbi::setSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkyColor, LightManager::HostAbi::getSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setAmbientColor, LightManager::HostAbi::setAmbientColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getAmbientColor, LightManager::HostAbi::getAmbientColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setTreeAmbientColor, LightManager::HostAbi::setTreeAmbientColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getTreeAmbientColor, LightManager::HostAbi::getTreeAmbientColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setGroundHemi, LightManager::HostAbi::setGroundHemi),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getGroundHemi, LightManager::HostAbi::getGroundHemi),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setHemiLerpBias, LightManager::HostAbi::setHemiLerpBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getHemiLerpBias, LightManager::HostAbi::getHemiLerpBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setLightCullDistance, LightManager::HostAbi::setLightCullDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getLightCullDistance, LightManager::HostAbi::getLightCullDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setMaxLightsPerBundledMesh, LightManager::HostAbi::setMaxLightsPerBundledMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getMaxLightsPerBundledMesh, LightManager::HostAbi::getMaxLightsPerBundledMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setMaxLightsPerStaticMesh, LightManager::HostAbi::setMaxLightsPerStaticMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getMaxLightsPerStaticMesh, LightManager::HostAbi::getMaxLightsPerStaticMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setMaxLightsPerSkinnedMesh, LightManager::HostAbi::setMaxLightsPerSkinnedMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getMaxLightsPerSkinnedMesh, LightManager::HostAbi::getMaxLightsPerSkinnedMesh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setMaxLightsPerTerrainPatch, LightManager::HostAbi::setMaxLightsPerTerrainPatch),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getMaxLightsPerTerrainPatch, LightManager::HostAbi::getMaxLightsPerTerrainPatch),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkinnedMeshShaderLodDistance, LightManager::HostAbi::setSkinnedMeshShaderLodDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkinnedMeshShaderLodDistance, LightManager::HostAbi::getSkinnedMeshShaderLodDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getLightMapAmbientAlphaCutoffRange, LightManager::HostAbi::getLightMapAmbientAlphaCutoffRange),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setLightMapAmbientAlphaCutoffRange, LightManager::HostAbi::setLightMapAmbientAlphaCutoffRange),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, addLight, LightManager::HostAbi::addLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, removeLight, LightManager::HostAbi::removeLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, enableLight, LightManager::HostAbi::enableLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, disableLight, LightManager::HostAbi::disableLight),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowMapSize, LightManager::HostAbi::setShadowMapSize),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowMapSize, LightManager::HostAbi::getShadowMapSize),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowMapObjectSize, LightManager::HostAbi::setShadowMapObjectSize),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowMapObjectSize, LightManager::HostAbi::getShadowMapObjectSize),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowMapBitDepth, LightManager::HostAbi::setShadowMapBitDepth),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowMapBitDepth, LightManager::HostAbi::getShadowMapBitDepth),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowDistance, LightManager::HostAbi::setShadowDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowDistance, LightManager::HostAbi::getShadowDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setUnusedFloat218, LightManager::HostAbi::setUnusedFloat218),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getUnusedFloat218, LightManager::HostAbi::getUnusedFloat218),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowStaticFeature, LightManager::HostAbi::setShadowStaticFeature),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowStaticFeature, LightManager::HostAbi::getShadowStaticFeature),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowShowFrustums, LightManager::HostAbi::setShadowShowFrustums),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowShowFrustums, LightManager::HostAbi::getShadowShowFrustums),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowIntensityBias, LightManager::HostAbi::setShadowIntensityBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowIntensityBias, LightManager::HostAbi::getShadowIntensityBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setLightMapIntensityBias, LightManager::HostAbi::setLightMapIntensityBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getLightMapIntensityBias, LightManager::HostAbi::getLightMapIntensityBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDropShadowClipHeightOffset, LightManager::HostAbi::setDropShadowClipHeightOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDropShadowClipHeightOffset, LightManager::HostAbi::getDropShadowClipHeightOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicShadowsEnabled, LightManager::HostAbi::setDynamicShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicShadowsEnabled, LightManager::HostAbi::getDynamicShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicStaticMeshShadowsEnabled, LightManager::HostAbi::setDynamicStaticMeshShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicStaticMeshShadowsEnabled, LightManager::HostAbi::getDynamicStaticMeshShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamic1pShadowsEnabled, LightManager::HostAbi::setDynamic1pShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamic1pShadowsEnabled, LightManager::HostAbi::getDynamic1pShadowsEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setAllowAlphaShadows, LightManager::HostAbi::setAllowAlphaShadows),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getAllowAlphaShadows, LightManager::HostAbi::getAllowAlphaShadows),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setAlphaShadowThreshold, LightManager::HostAbi::setAlphaShadowThreshold),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getAlphaShadowThreshold, LightManager::HostAbi::getAlphaShadowThreshold),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowUpdateFactor, LightManager::HostAbi::setShadowUpdateFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowUpdateFactor, LightManager::HostAbi::getShadowUpdateFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStencilCullerResetEnabled, LightManager::HostAbi::setStencilCullerResetEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStencilCullerResetEnabled, LightManager::HostAbi::getStencilCullerResetEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowUpdatesEnabled, LightManager::HostAbi::setShadowUpdatesEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowUpdatesEnabled, LightManager::HostAbi::getShadowUpdatesEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowDepthBias, LightManager::HostAbi::setShadowDepthBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowDepthBias, LightManager::HostAbi::getShadowDepthBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowSlopeScaleDepthBias, LightManager::HostAbi::setShadowSlopeScaleDepthBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowSlopeScaleDepthBias, LightManager::HostAbi::getShadowSlopeScaleDepthBias),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowOccluderOversizeFactor, LightManager::HostAbi::getShadowOccluderOversizeFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowOccluderOversizeFactor, LightManager::HostAbi::setShadowOccluderOversizeFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getUseLSSMOptimizations, LightManager::HostAbi::getUseLSSMOptimizations),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setUseLSSMOptimizations, LightManager::HostAbi::setUseLSSMOptimizations),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getUsePSMOptimizations, LightManager::HostAbi::getUsePSMOptimizations),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setUsePSMOptimizations, LightManager::HostAbi::setUsePSMOptimizations),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMUseSlideback, LightManager::HostAbi::getShadowPSMUseSlideback),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMUseSlideback, LightManager::HostAbi::setShadowPSMUseSlideback),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMUseUnitCubeClipping, LightManager::HostAbi::getShadowPSMUseUnitCubeClipping),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMUseUnitCubeClipping, LightManager::HostAbi::setShadowPSMUseUnitCubeClipping),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMZNearOffset, LightManager::HostAbi::getShadowPSMZNearOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMZNearOffset, LightManager::HostAbi::setShadowPSMZNearOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMZFarOffset, LightManager::HostAbi::getShadowPSMZFarOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMZFarOffset, LightManager::HostAbi::setShadowPSMZFarOffset),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMZMinInfinityZ, LightManager::HostAbi::getShadowPSMZMinInfinityZ),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMZMinInfinityZ, LightManager::HostAbi::setShadowPSMZMinInfinityZ),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPSMFovY, LightManager::HostAbi::getShadowPSMFovY),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPSMFovY, LightManager::HostAbi::setShadowPSMFovY),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowTSMFocus, LightManager::HostAbi::getShadowTSMFocus),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowTSMFocus, LightManager::HostAbi::setShadowTSMFocus),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadow80Line, LightManager::HostAbi::getShadow80Line),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadow80Line, LightManager::HostAbi::setShadow80Line),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowMergeDynamicShadowFrustums, LightManager::HostAbi::setShadowMergeDynamicShadowFrustums),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowMergeDynamicShadowFrustums, LightManager::HostAbi::getShadowMergeDynamicShadowFrustums),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, renderShadowMaps, LightManager::HostAbi::renderShadowMaps),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunDirection, LightManager::HostAbi::setSunDirection),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunDirection, LightManager::HostAbi::getSunDirection),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunColor, LightManager::HostAbi::setSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunColor, LightManager::HostAbi::getSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunSpecColor, LightManager::HostAbi::setSunSpecColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunSpecColor, LightManager::HostAbi::getSunSpecColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunEnabled, LightManager::HostAbi::setSunEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunEnabled, LightManager::HostAbi::getSunEnabled),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getVisibleLightsByDistance, LightManager::HostAbi::getVisibleLightsByDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setTreeSunColor, LightManager::HostAbi::setTreeSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getTreeSunColor, LightManager::HostAbi::getTreeSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setTreeSkyColor, LightManager::HostAbi::setTreeSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getTreeSkyColor, LightManager::HostAbi::getTreeSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticSunColor, LightManager::HostAbi::setStaticSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticSunColor, LightManager::HostAbi::getStaticSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticSpecularColor, LightManager::HostAbi::setStaticSpecularColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticSpecularColor, LightManager::HostAbi::getStaticSpecularColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticSkyColor, LightManager::HostAbi::setStaticSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticSkyColor, LightManager::HostAbi::getStaticSkyColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSinglePointColor, LightManager::HostAbi::setSinglePointColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSinglePointColor, LightManager::HostAbi::getSinglePointColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicPointColor, LightManager::HostAbi::setDynamicPointColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicPointColor, LightManager::HostAbi::getDynamicPointColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSinglePointColorHigh, LightManager::HostAbi::setSinglePointColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSinglePointColorHigh, LightManager::HostAbi::getSinglePointColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSinglePointColorLow, LightManager::HostAbi::setSinglePointColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSinglePointColorLow, LightManager::HostAbi::getSinglePointColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicPointColorHigh, LightManager::HostAbi::setDynamicPointColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicPointColorHigh, LightManager::HostAbi::getDynamicPointColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicPointColorLow, LightManager::HostAbi::setDynamicPointColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicPointColorLow, LightManager::HostAbi::getDynamicPointColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkyColorHigh, LightManager::HostAbi::setSkyColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkyColorHigh, LightManager::HostAbi::getSkyColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkyColorLow, LightManager::HostAbi::setSkyColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkyColorLow, LightManager::HostAbi::getSkyColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticSkyColorHigh, LightManager::HostAbi::setStaticSkyColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticSkyColorHigh, LightManager::HostAbi::getStaticSkyColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticSkyColorLow, LightManager::HostAbi::setStaticSkyColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticSkyColorLow, LightManager::HostAbi::getStaticSkyColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunColorHigh, LightManager::HostAbi::setSunColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunColorHigh, LightManager::HostAbi::getSunColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunColorLow, LightManager::HostAbi::setSunColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunColorLow, LightManager::HostAbi::getSunColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunSpecColorHigh, LightManager::HostAbi::setSunSpecColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunSpecColorHigh, LightManager::HostAbi::getSunSpecColorHigh),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSunSpecColorLow, LightManager::HostAbi::setSunSpecColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSunSpecColorLow, LightManager::HostAbi::getSunSpecColorLow),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setEffectSunColor, LightManager::HostAbi::setEffectSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getEffectSunColor, LightManager::HostAbi::getEffectSunColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setEffectShadowColor, LightManager::HostAbi::setEffectShadowColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getEffectShadowColor, LightManager::HostAbi::getEffectShadowColor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDefaultEffectLightAffectionFactor, LightManager::HostAbi::setDefaultEffectLightAffectionFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDefaultEffectLightAffectionFactor, LightManager::HostAbi::getDefaultEffectLightAffectionFactor),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setTerrainShadowLod, LightManager::HostAbi::setTerrainShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getTerrainShadowLod, LightManager::HostAbi::getTerrainShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setStaticMeshShadowLod, LightManager::HostAbi::setStaticMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getStaticMeshShadowLod, LightManager::HostAbi::getStaticMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setBundledMeshShadowLod, LightManager::HostAbi::setBundledMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getBundledMeshShadowLod, LightManager::HostAbi::getBundledMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setSkinnedMeshShadowLod, LightManager::HostAbi::setSkinnedMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getSkinnedMeshShadowLod, LightManager::HostAbi::getSkinnedMeshShadowLod),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowOverrideQuality, LightManager::HostAbi::setShadowOverrideQuality),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowOverrideQuality, LightManager::HostAbi::getShadowOverrideQuality),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowRoofRayLength, LightManager::HostAbi::setShadowRoofRayLength),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowRoofRayLength, LightManager::HostAbi::getShadowRoofRayLength),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowSunScalePower, LightManager::HostAbi::setShadowSunScalePower),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowSunScalePower, LightManager::HostAbi::getShadowSunScalePower),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowPullbackDistance, LightManager::HostAbi::setShadowPullbackDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowPullbackDistance, LightManager::HostAbi::getShadowPullbackDistance),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowUseSweepTest, LightManager::HostAbi::setShadowUseSweepTest),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowUseSweepTest, LightManager::HostAbi::getShadowUseSweepTest),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowSunHeightOverFade, LightManager::HostAbi::setShadowSunHeightOverFade),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowSunHeightOverFade, LightManager::HostAbi::getShadowSunHeightOverFade),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, sampleSimpleShadowMap, LightManager::HostAbi::sampleSimpleShadowMap),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, sampleSimpleShadowMapIO, LightManager::HostAbi::sampleSimpleShadowMapIO),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, sampleSimpleShadowMapIOTexel, LightManager::HostAbi::sampleSimpleShadowMapIOTexel),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, sampleSimpleShadowMapTexel, LightManager::HostAbi::sampleSimpleShadowMapTexel),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setShadowMergeLodLimit, LightManager::HostAbi::setShadowMergeLodLimit),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getShadowMergeLodLimit, LightManager::HostAbi::getShadowMergeLodLimit),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setDynamicLightRangeScale, LightManager::HostAbi::setDynamicLightRangeScale),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getDynamicLightRangeScale, LightManager::HostAbi::getDynamicLightRangeScale),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, setOccludedSkyNightIntensity, LightManager::HostAbi::setOccludedSkyNightIntensity),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, getOccludedSkyNightIntensity, LightManager::HostAbi::getOccludedSkyNightIntensity),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, loadSimpleShadowMaps, LightManager::HostAbi::loadSimpleShadowMaps),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::LightManager, registerShadowEffect, LightManager::HostAbi::registerShadowEffect),
+};
+#else
 const void* const kPrimaryVtable[189] =
 {
     reinterpret_cast<void*>(&LightManager::HostAbi::addRef), // +0x000
@@ -6905,70 +8730,70 @@ const void* const kPrimaryVtable[189] =
     reinterpret_cast<void*>(&LightManager::HostAbi::removeLight), // +0x090
     reinterpret_cast<void*>(&LightManager::HostAbi::enableLight), // +0x094
     reinterpret_cast<void*>(&LightManager::HostAbi::disableLight), // +0x098
-    reinterpret_cast<void*>(&lm_unrecovered<0x09Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0A0u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0A4u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0A8u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0ACu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0B0u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0B4u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0B8u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0BCu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0C0u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowMapSize),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowMapSize),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowMapObjectSize),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowMapObjectSize),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowMapBitDepth),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowMapBitDepth),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowDistance),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowDistance),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setUnusedFloat218), // +0x0BC
+    reinterpret_cast<void*>(&LightManager::HostAbi::getUnusedFloat218), // +0x0C0
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowStaticFeature), // +0x0C4
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowStaticFeature), // +0x0C8
-    reinterpret_cast<void*>(&lm_unrecovered<0x0CCu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0D0u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowShowFrustums),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowShowFrustums),
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowIntensityBias), // +0x0D4
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowIntensityBias), // +0x0D8
     reinterpret_cast<void*>(&LightManager::HostAbi::setLightMapIntensityBias), // +0x0DC
     reinterpret_cast<void*>(&LightManager::HostAbi::getLightMapIntensityBias), // +0x0E0
-    reinterpret_cast<void*>(&lm_unrecovered<0x0E4u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0E8u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setDropShadowClipHeightOffset),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getDropShadowClipHeightOffset),
     reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicShadowsEnabled), // +0x0EC
     reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicShadowsEnabled), // +0x0F0
-    reinterpret_cast<void*>(&lm_unrecovered<0x0F4u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0F8u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x0FCu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x100u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x104u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x108u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x10Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x110u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x114u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x118u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x11Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x120u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicStaticMeshShadowsEnabled),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicStaticMeshShadowsEnabled),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setDynamic1pShadowsEnabled),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getDynamic1pShadowsEnabled),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setAllowAlphaShadows),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getAllowAlphaShadows),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setAlphaShadowThreshold),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getAlphaShadowThreshold),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowUpdateFactor),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowUpdateFactor),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setStencilCullerResetEnabled),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getStencilCullerResetEnabled),
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowUpdatesEnabled), // +0x124
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowUpdatesEnabled), // +0x128
-    reinterpret_cast<void*>(&lm_unrecovered<0x12Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x130u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x134u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x138u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x13Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x140u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x144u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x148u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x14Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x150u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x154u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x158u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x15Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x160u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x164u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x168u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x16Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x170u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x174u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x178u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x17Cu>),
-    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowTSMFocus), // +0x180
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowDepthBias),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowDepthBias),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowSlopeScaleDepthBias),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowSlopeScaleDepthBias),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowOccluderOversizeFactor),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowOccluderOversizeFactor),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getUseLSSMOptimizations),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setUseLSSMOptimizations),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getUsePSMOptimizations),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setUsePSMOptimizations),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMUseSlideback),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMUseSlideback),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMUseUnitCubeClipping),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMUseUnitCubeClipping),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMZNearOffset),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMZNearOffset),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMZFarOffset),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMZFarOffset),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMZMinInfinityZ),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMZMinInfinityZ),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPSMFovY),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPSMFovY),
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowTSMFocus), // +0x184
-    reinterpret_cast<void*>(&lm_unrecovered<0x188u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x18Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x190u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x194u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x198u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowTSMFocus),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadow80Line),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadow80Line),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowMergeDynamicShadowFrustums),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowMergeDynamicShadowFrustums),
     reinterpret_cast<void*>(&LightManager::HostAbi::renderShadowMaps), // +0x19C
     reinterpret_cast<void*>(&LightManager::HostAbi::setSunDirection), // +0x1A0
     reinterpret_cast<void*>(&LightManager::HostAbi::getSunDirection), // +0x1A4
@@ -6978,7 +8803,7 @@ const void* const kPrimaryVtable[189] =
     reinterpret_cast<void*>(&LightManager::HostAbi::getSunSpecColor), // +0x1B4
     reinterpret_cast<void*>(&LightManager::HostAbi::setSunEnabled), // +0x1B8
     reinterpret_cast<void*>(&LightManager::HostAbi::getSunEnabled), // +0x1BC
-    reinterpret_cast<void*>(&lm_unrecovered<0x1C0u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getVisibleLightsByDistance),
     reinterpret_cast<void*>(&LightManager::HostAbi::setTreeSunColor), // +0x1C4
     reinterpret_cast<void*>(&LightManager::HostAbi::getTreeSunColor), // +0x1C8
     reinterpret_cast<void*>(&LightManager::HostAbi::setTreeSkyColor), // +0x1CC
@@ -6993,52 +8818,52 @@ const void* const kPrimaryVtable[189] =
     reinterpret_cast<void*>(&LightManager::HostAbi::getSinglePointColor), // +0x1F0
     reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicPointColor), // +0x1F4
     reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicPointColor), // +0x1F8
-    reinterpret_cast<void*>(&lm_unrecovered<0x1FCu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x200u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x204u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x208u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x20Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x210u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x214u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x218u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x21Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x220u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x224u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x228u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x22Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x230u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x234u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x238u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x23Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x240u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x244u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x248u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x24Cu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x250u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x254u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x258u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSinglePointColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSinglePointColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSinglePointColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSinglePointColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicPointColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicPointColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicPointColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicPointColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSkyColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSkyColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSkyColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSkyColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setStaticSkyColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getStaticSkyColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setStaticSkyColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getStaticSkyColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSunColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSunColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSunColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSunColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSunSpecColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSunSpecColorHigh),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setSunSpecColorLow),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getSunSpecColorLow),
     reinterpret_cast<void*>(&LightManager::HostAbi::setEffectSunColor), // +0x25C
     reinterpret_cast<void*>(&LightManager::HostAbi::getEffectSunColor), // +0x260
     reinterpret_cast<void*>(&LightManager::HostAbi::setEffectShadowColor), // +0x264
     reinterpret_cast<void*>(&LightManager::HostAbi::getEffectShadowColor), // +0x268
     reinterpret_cast<void*>(&LightManager::HostAbi::setDefaultEffectLightAffectionFactor), // +0x26C
     reinterpret_cast<void*>(&LightManager::HostAbi::getDefaultEffectLightAffectionFactor), // +0x270
-    reinterpret_cast<void*>(&lm_unrecovered<0x274u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x278u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x27Cu>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setTerrainShadowLod),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getTerrainShadowLod),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setStaticMeshShadowLod),
     reinterpret_cast<void*>(&LightManager::HostAbi::getStaticMeshShadowLod), // +0x280
     reinterpret_cast<void*>(&LightManager::HostAbi::setBundledMeshShadowLod), // +0x284
     reinterpret_cast<void*>(&LightManager::HostAbi::getBundledMeshShadowLod), // +0x288
     reinterpret_cast<void*>(&LightManager::HostAbi::setSkinnedMeshShadowLod), // +0x28C
     reinterpret_cast<void*>(&LightManager::HostAbi::getSkinnedMeshShadowLod), // +0x290
-    reinterpret_cast<void*>(&lm_unrecovered<0x294u>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x298u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowOverrideQuality),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowOverrideQuality),
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowRoofRayLength), // +0x29C
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowRoofRayLength), // +0x2A0
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowSunScalePower), // +0x2A4
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowSunScalePower), // +0x2A8
-    reinterpret_cast<void*>(&lm_unrecovered<0x2ACu>),
-    reinterpret_cast<void*>(&lm_unrecovered<0x2B0u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowPullbackDistance),
+    reinterpret_cast<void*>(&LightManager::HostAbi::getShadowPullbackDistance),
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowUseSweepTest), // +0x2B4
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowUseSweepTest), // +0x2B8
     reinterpret_cast<void*>(&LightManager::HostAbi::setShadowSunHeightOverFade), // +0x2BC
@@ -7047,7 +8872,7 @@ const void* const kPrimaryVtable[189] =
     reinterpret_cast<void*>(&LightManager::HostAbi::sampleSimpleShadowMapIO), // +0x2C8
     reinterpret_cast<void*>(&LightManager::HostAbi::sampleSimpleShadowMapIOTexel), // +0x2CC
     reinterpret_cast<void*>(&LightManager::HostAbi::sampleSimpleShadowMapTexel), // +0x2D0
-    reinterpret_cast<void*>(&lm_unrecovered<0x2D4u>),
+    reinterpret_cast<void*>(&LightManager::HostAbi::setShadowMergeLodLimit),
     reinterpret_cast<void*>(&LightManager::HostAbi::getShadowMergeLodLimit), // +0x2D8
     reinterpret_cast<void*>(&LightManager::HostAbi::setDynamicLightRangeScale), // +0x2DC
     reinterpret_cast<void*>(&LightManager::HostAbi::getDynamicLightRangeScale), // +0x2E0
@@ -7056,187 +8881,212 @@ const void* const kPrimaryVtable[189] =
     reinterpret_cast<void*>(&LightManager::HostAbi::loadSimpleShadowMaps), // +0x2EC
     reinterpret_cast<void*>(&LightManager::HostAbi::registerShadowEffect), // +0x2F0
 };
+#endif
 
+// PE 0x100F4770.
 void constructLightManager(void* self)
 {
     // PE 0x100F4770 performs explicit member construction; it does not blanket-zero the allocation.
-    lmField<const void**>(self, 0x00) = const_cast<const void**>(kPrimaryVtable);
-    lmField<const void**>(self, 0x04) = const_cast<const void**>(kDeviceLostVtable);
-    lmField<const void**>(self, 0x08) = const_cast<const void**>(kRenderPathVtable);
-    lmField<int>(self, 0x10) = 1;
-    lmField<void*>(self, 0x14) = 0;
+    // The containers are constructed first (LightManagerData's constructor); every other field is
+    // written here in the PE's order.
+    LightManagerData& d = *::new (self) LightManagerData;
+    d.primaryVtable = kPrimaryVtable;
+    d.deviceLostVtable = kDeviceLostVtable;
+    d.renderPathVtable = kRenderPathVtable;
+    d.refCount = 1;
+    d.skyLight = 0;
 
-    lmField<float>(self, 0x18) = 0.4f;
-    lmField<float>(self, 0x1C) = 0.4f;
-    lmField<float>(self, 0x20) = 0.7f;
-    for (unsigned int offset = 0x24; offset <= 0x38; offset += 4)
-        lmField<float>(self, offset) = 1.0f;
-    for (unsigned int offset = 0x3C; offset <= 0x44; offset += 4)
-        lmField<float>(self, offset) = 0.3f;
-    for (unsigned int offset = 0x48; offset <= 0x50; offset += 4)
-        lmField<unsigned int>(self, offset) = 0;
-    lmField<float>(self, 0x54) = 1.0f;
-    lmField<float>(self, 0x58) = 0.5f;
-    lmField<float>(self, 0x5C) = 0.2f;
-    lmField<float>(self, 0x60) = 0.3f;
-    lmField<float>(self, 0x64) = 1.0f;
-    lmField<float>(self, 0x68) = 0.5f;
-    for (unsigned int offset = 0x6C; offset <= 0x7C; offset += 4)
-        lmField<float>(self, offset) = 1.0f;
-    lmField<float>(self, 0x80) = 0.8f;
-    for (unsigned int offset = 0x84; offset <= 0x8C; offset += 4)
-        lmField<float>(self, offset) = 1.0f;
-    for (unsigned int offset = 0x90; offset <= 0x11C; offset += 4)
-        lmField<unsigned int>(self, offset) = 0;
-    for (unsigned int offset = 0x120; offset <= 0x134; offset += 4)
-        lmField<float>(self, offset) = 1.0f;
+    d.skyColor.x = 0.4f;
+    d.skyColor.y = 0.4f;
+    d.skyColor.z = 0.7f;
+    d.treeSunColor.x = 1.0f;                                    // +0x24..+0x38 1.0
+    d.treeSunColor.y = 1.0f;
+    d.treeSunColor.z = 1.0f;
+    d.treeSkyColor.x = 1.0f;
+    d.treeSkyColor.y = 1.0f;
+    d.treeSkyColor.z = 1.0f;
+    d.ambientColor.x = 0.3f;                                    // +0x3C..+0x44 0.3
+    d.ambientColor.y = 0.3f;
+    d.ambientColor.z = 0.3f;
+    d.treeAmbientColor.x = 0.0f;                                // +0x48..+0x50 0
+    d.treeAmbientColor.y = 0.0f;
+    d.treeAmbientColor.z = 0.0f;
+    d.staticSunColor.x = 1.0f;
+    d.staticSunColor.y = 0.5f;
+    d.staticSunColor.z = 0.2f;
+    d.staticSkyColor.x = 0.3f;
+    d.staticSkyColor.y = 1.0f;
+    d.staticSkyColor.z = 0.5f;
+    d.staticSpecularColor.x = 1.0f;                             // +0x6C..+0x7C 1.0
+    d.staticSpecularColor.y = 1.0f;
+    d.staticSpecularColor.z = 1.0f;
+    d.singlePointColor.x = 1.0f;
+    d.singlePointColor.y = 1.0f;
+    d.singlePointColor.z = 0.8f;
+    d.dynamicPointColor.x = 1.0f;                               // +0x84..+0x8C 1.0
+    d.dynamicPointColor.y = 1.0f;
+    d.dynamicPointColor.z = 1.0f;
+    for (unsigned int i = 0; i < 12; ++i)
+    {
+        d.blendedColors[i].x = 0.0f;
+        d.blendedColors[i].y = 0.0f;
+        d.blendedColors[i].z = 0.0f;
+    }
+    d.effectSunColor.x = 1.0f;                                  // +0x120..+0x134 1.0
+    d.effectSunColor.y = 1.0f;
+    d.effectSunColor.z = 1.0f;
+    d.effectShadowColor.x = 1.0f;
+    d.effectShadowColor.y = 1.0f;
+    d.effectShadowColor.z = 1.0f;
 
-    lmField<float>(self, 0x138) = 1.0f;
-    lmField<float>(self, 0x13C) = 300.0f;
-    lmField<int>(self, 0x140) = 3;
-    lmField<int>(self, 0x144) = 3;
-    lmField<int>(self, 0x148) = 3;
-    lmField<int>(self, 0x14C) = 7;
-    lmField<unsigned int>(self, 0x150) = 1;
-    lmField<unsigned int>(self, 0x154) = 1;
-    lmField<unsigned int>(self, 0x158) = 0;
-    lmField<unsigned int>(self, 0x15C) = 0;
-    lmField<int>(self, 0x160) = -1;
-    lmField<float>(self, 0x164) = 150.0f;
-    lmField<float>(self, 0x168) = 1.0f;
-    lmField<float>(self, 0x16C) = 200.0f;
-    lmField<unsigned char>(self, 0x170) = 1;
-    lmField<float>(self, 0x174) = 3.0f;
-    lmField<float>(self, 0x178) = 6.0f;
-    lmField<void*>(self, 0x17C) = 0;
-    constructEmptyVector(self, 0x180);
-    for (unsigned int offset = 0x190; offset <= 0x1B0; offset += 4)
-        lmField<unsigned int>(self, offset) = 0;
-    lmField<float>(self, 0x1B4) = 10.0f;
+    d.defaultEffectLightAffectionFactor = 1.0f;
+    d.lightCullDistance = 300.0f;
+    d.maxLightsPerBundledMesh = 3;
+    d.maxLightsPerStaticMesh = 3;
+    d.maxLightsPerSkinnedMesh = 3;
+    d.maxLightsPerTerrainPatch = 7;
+    d.terrainShadowLod = 1;
+    d.staticMeshShadowLod = 1;
+    d.bundledMeshShadowLod = 0;
+    d.skinnedMeshShadowLod = 0;
+    d.shadowOverrideQuality = -1;
+    d.shadowRoofRayLength = 150.0f;
+    d.shadowSunScalePower = 1.0f;
+    d.shadowPullbackDistance = 200.0f;
+    d.shadowUseSweepTest = 1;
+    d.shadowSunHeightOverFade.x = 3.0f;
+    d.shadowSunHeightOverFade.y = 6.0f;
+    d.simpleShadowIOBitCount = 0;
+    d.simpleShadowMap = 0;                                      // +0x190..+0x1B0 0
+    d.simpleShadowLimit = 0.0f;
+    d.simpleShadowIOStride = 0;
+    d.simpleShadowIOColumnOrigin = 0;
+    d.simpleShadowRowCount = 0;
+    d.simpleShadowIORowOrigin = 0;
+    d.simpleShadowStride = 0;
+    d.simpleShadowColumnOrigin = 0;
+    d.simpleShadowRowOrigin = 0;
+    d.skinnedMeshShaderLodDistance = 10.0f;
 
-    // The two VC7.1 std::set<LightSource*> facades own distinct sentinels. Retail dereferences the
-    // allocation results unconditionally; do not introduce an OOM recovery arm here.
-    constructLightSet(lmOwnedLights(self));
-    constructLightSet(lmActiveLights(self));
-    constructEmptyVector(self, 0x1D0);
-    constructEmptyVector(self, 0x1E0);
-    constructShadowTree(lmField<ShadowTree>(self, 0x1F0));
-    lmField<float>(self, 0x1FC) = 0.1f;
-    lmField<float>(self, 0x200) = 0.5f;
-    lmField<unsigned int>(self, 0x204) = 1024;
-    lmField<unsigned int>(self, 0x208) = 256;
-    lmField<float>(self, 0x214) = 40.0f;
-    lmField<float>(self, 0x218) = 40.0f;
-    for (unsigned int offset = 0x21C; offset <= 0x238; offset += 4)
-        lmField<void*>(self, offset) = 0;
-    lmField<void*>(self, 0x24C) = 0;
-    lmField<void*>(self, 0x250) = 0;
-    lmField<unsigned int>(self, 0x264) = 0;
-    lmField<unsigned char>(self, 0x268) = 1;
-    lmField<unsigned int>(self, 0x274) = 0;
+    // +0x1B8..+0x1F0 - the two light sets (PE 0x100F5BC0's inlined constructors), the frame list,
+    // +0x1E0 and the +0x1F0 tree - are constructed as members.
+    d.lightMapAmbientAlphaCutoffRange.x = 0.1f;
+    d.lightMapAmbientAlphaCutoffRange.y = 0.5f;
+    d.shadowMapSize = 1024;
+    d.shadowTileSize = 256;
+    d.shadowDistance = 40.0f;
+    d.unresolved218 = 40.0f;
+    d.shadowMap = 0;                                            // +0x21C..+0x238 0
+    d.shadowMap2 = 0;
+    d.shadowDepthTexture = 0;
+    d.shadowDepthSurface = 0;
+    d.shadowDepthSurface2 = 0;
+    d.pointShadowMap = 0;
+    d.pointShadowDepthTexture = 0;
+    d.pointShadowDepthSurface = 0;
+    d.normalCubeTexture = 0;
+    d.currentSpecularLut = 0;
+    d.specularLutIndex = 0;
+    d.shadowStaticFeature = 1;
+    d.dropShadowClipHeightOffset = 0.0f;
 
-    new (static_cast<unsigned char*>(self) + 0x278) Frustum();
-    new (static_cast<unsigned char*>(self) + 0x460) Frustum();
-    setIdentityMatrix(self, 0x648);
-    setIdentityMatrix(self, 0x688);
-    setIdentityMatrix(self, 0x6C8);
-    setIdentityMatrix(self, 0x708);
-    setIdentityMatrix(self, 0x748);
-    lmField<unsigned char>(self, 0x788) = 0;
-    constructEmptyVector(self, 0x79C);
-    constructEmptyVector(self, 0x7AC);
-    constructEmptyVector(self, 0x7BC);
-    constructEmptyVector(self, 0x7CC);
-    constructEmptyVector(self, 0x7DC);
+    d.unresolvedMatrices648[0] = Mat4::getIdentity();
+    d.unresolvedMatrices648[1] = Mat4::getIdentity();
+    d.unresolvedMatrices648[2] = Mat4::getIdentity();
+    d.unresolvedMatrices648[3] = Mat4::getIdentity();
+    d.unresolvedMatrices648[4] = Mat4::getIdentity();
+    d.showFrustums = 0;
 
-    lmField<unsigned char>(self, 0x7EC) = 1;
-    lmField<unsigned char>(self, 0x7ED) = 1;
-    lmField<unsigned char>(self, 0x7EE) = 1;
-    lmField<unsigned char>(self, 0x7EF) = 0;
-    lmField<float>(self, 0x7F0) = 0.2f;
-    lmField<float>(self, 0x7F4) = 1.0f;
-    lmField<unsigned char>(self, 0x7F8) = 1;
-    lmField<unsigned char>(self, 0x7F9) = 1;
-    lmField<float>(self, 0x7FC) = 1.0f;
-    lmField<unsigned char>(self, 0x800) = 0;
-    lmField<unsigned char>(self, 0x801) = 0;
-    lmField<unsigned char>(self, 0x802) = 1;
-    lmField<unsigned char>(self, 0x803) = 1;
-    lmField<unsigned int>(self, 0x804) = 0;
-    lmField<unsigned int>(self, 0x808) = 0;
-    lmField<float>(self, 0x80C) = 1.5f;
-    lmField<float>(self, 0x810) = 60.0f;
-    lmField<float>(self, 0x814) = 0.52f;
-    lmField<float>(self, 0x818) = -0.6f;
-    lmField<unsigned char>(self, 0x81C) = 1;
-    lmField<unsigned int>(self, 0x820) = 16;
-    lmField<float>(self, 0x824) = 1.0f;
-    lmField<float>(self, 0x828) = 0.0f;
-    lmField<float>(self, 0x82C) = 0.005f;
-    lmField<float>(self, 0x830) = 1.0f;
-    lmField<double>(self, 0x838) = 1.0;
-    for (unsigned int offset = 0x840; offset <= 0x8BC; offset += 4)
-        lmField<void*>(self, offset) = 0;
+    d.dynamicShadowsEnabled = 1;
+    d.firstPersonShadows = 1;
+    d.dynamicStaticMeshShadowsEnabled = 1;
+    d.allowAlphaShadows = 0;
+    d.alphaShadowThreshold = 0.2f;
+    d.shadowUpdateFactor = 1.0f;
+    d.stencilCullerResetEnabled = 1;
+    d.shadowUpdatesEnabled = 1;
+    d.shadowOccluderOversizeFactor = 1.0f;
+    d.shadowProjectionFlags[0] = 0;
+    d.shadowProjectionFlags[1] = 0;
+    d.shadowProjectionFlags[2] = 1;
+    d.shadowProjectionFlags[3] = 1;
+    d.shadowPSMZNearOffset = 0.0f;
+    d.shadowPSMZFarOffset = 0.0f;
+    d.shadowPSMZMinInfinityZ = 1.5f;
+    d.shadowPSMFovY = 60.0f;
+    d.shadowTSMFocus = 0.52f;
+    d.shadow80Line = -0.6f;
+    d.shadowMergeDynamicShadowFrustums = 1;
+    d.shadowMergeLodLimit = 16;
+    d.dynamicLightRangeScale = 1.0f;
+    d.occludedSkyNightIntensity = 0.0f;
+    d.shadowDepthBias = 0.005f;
+    d.shadowSlopeScaleDepthBias = 1.0f;
+    d.shadowFadeDuration = 1.0;
+    d.sunLight = 0;                                             // +0x840..+0x8BC 0
+    d.shadowEffect = 0;
+    for (unsigned int i = 0; i < kLightShaderParameterCount; ++i)
+        d.shaderParameters[i] = 0;
+    d.radialAttenuation = 0;
+    d.conicalAttenuation = 0;
 
-    constructShadowTree(lmField<ShadowTree>(self, 0x8C0));
-    constructShadowTree(lmField<ShadowTree>(self, 0x8CC));
-    for (unsigned int offset = 0x8D8; offset <= 0x904; offset += 4)
-        lmField<void*>(self, offset) = 0;
-    lmField<void*>(self, 0x90C) = 0;
-    lmField<unsigned int>(self, 0x910) = 2;
-    constructEmptyVector(self, 0x914);
-    constructEmptyVector(self, 0x924);
-    constructEmptyVector(self, 0x934);
-    constructEmptyVector(self, 0x944);
-    constructEmptyVector(self, 0x954);
-    constructShadowTree(lmField<ShadowTree>(self, 0x964));
-    constructEmptyVector(self, 0x970);
+    d.sphereVertices = 0;                                       // +0x8D8..+0x904 0
+    d.sphereIndices = 0;
+    d.sphereVertexCount = 0;
+    d.sphereFaceCount = 0;
+    d.cylinderVertices = 0;
+    d.cylinderIndices = 0;
+    d.cylinderVertexCount = 0;
+    d.cylinderFaceCount = 0;
+    d.boxVertices = 0;
+    d.boxIndices = 0;
+    d.boxVertexCount = 0;
+    d.boxFaceCount = 0;
+    d.renderView = 0;
+    d.shadowMapMode = 2;
 
-    IDirect3DDevice9* const device = *reinterpret_cast<IDirect3DDevice9**>(
-        static_cast<unsigned char*>(dx9rend::g_rendererBase) + 0x0C);
-    lmField<IDirect3DDevice9*>(self, 0x908) = device;
+    IDirect3DDevice9* const device =
+        static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->device;   // +0x0C
+    d.device = device;
     device->AddRef();
 
     const Mat4 identity = Mat4::getIdentity();
-    lmField<Frustum>(self, 0x278).setOrtho(1.0f, 1.0f, 0.0f, 1.0f, identity);
-    setIdentityMatrix(self, 0x708);
+    rendmath::frustumSetOrtho(d.shadowFrustum, 1.0f, 1.0f, 0.0f, 1.0f, identity);
+    d.unresolvedMatrices648[3] = Mat4::getIdentity();
 
     if (dx9rend::deviceCapsIsNvidia())
     {
-        lmField<unsigned int>(self, 0x910) = 0;
-        lmField<unsigned int>(self, 0x210) = D3DUSAGE_DEPTHSTENCIL;
-        lmField<unsigned int>(self, 0x20C) = D3DFMT_D24X8;
+        d.shadowMapMode = 0;
+        d.shadowMapUsage = D3DUSAGE_DEPTHSTENCIL;
+        d.shadowMapFormat = D3DFMT_D24X8;
     }
     else
     {
-        lmField<unsigned int>(self, 0x210) = D3DUSAGE_RENDERTARGET;
+        d.shadowMapUsage = D3DUSAGE_RENDERTARGET;
         const unsigned int formats[] = { 111u, 114u, 112u };
         for (unsigned int i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i)
         {
             if (!dx9rend::deviceCapsSupportsTextureFormat(formats[i]))
                 continue;
-            lmField<unsigned int>(self, 0x20C) = formats[i];
-            lmField<unsigned int>(self, 0x910) = 1;
+            d.shadowMapFormat = formats[i];
+            d.shadowMapMode = 1;
             break;
         }
     }
 
     const Vec3 white = { 1.0f, 1.0f, 1.0f };
-    lmField<dx9rend::EngineTexture*>(self, 0x254) = createPowerLut(256, white, 64.0f, false);
-    lmField<dx9rend::EngineTexture*>(self, 0x258) = createPowerLut(256, white, 64.0f, false);
-    lmField<dx9rend::EngineTexture*>(self, 0x25C) = createPowerLut(256, white, 64.0f, false);
-    lmField<dx9rend::EngineTexture*>(self, 0x260) = createPowerLut(256, white, 64.0f, false);
-    lmField<unsigned char>(self, 0x7EC) =
-        lmField<unsigned int>(self, 0x910) != 2 ? 1 : 0;
+    d.specularLuts[0] = createPowerLut(256, white, 64.0f, false);
+    d.specularLuts[1] = createPowerLut(256, white, 64.0f, false);
+    d.specularLuts[2] = createPowerLut(256, white, 64.0f, false);
+    d.specularLuts[3] = createPowerLut(256, white, 64.0f, false);
+    d.dynamicShadowsEnabled = d.shadowMapMode != 2 ? 1 : 0;
 
     dx9rend::registerDeviceLostResetListener(
-        reinterpret_cast<dx9rend::DeviceLostResetListener*>(
-            static_cast<unsigned char*>(self) + 4), 4);
+        reinterpret_cast<dx9rend::DeviceLostResetListener*>(&d.deviceLostVtable), 4);
     dx9rend::registerRenderPathListener(
-        reinterpret_cast<dx9rend::RenderPathListener*>(
-            static_cast<unsigned char*>(self) + 8));
+        reinterpret_cast<dx9rend::RenderPathListener*>(&d.renderPathVtable));
     createSmallLightTextures(self);
-    reserveEmptyVector(lmField<vc71::vector_layout>(self, 0x79C), 150, 0x498);
+    d.directionalRecords.reserve(150);                          // storage for 150 records
 
     ::renddx9abi::logf("LightManager: built at 0x%08X (retail size 0x980); lifecycle, shadow "
                        "resources and outer shadow transaction recovered",
@@ -7250,6 +9100,1070 @@ bool createShadowResources(LightManager* manager)
     return createShadowResourcesBody(manager);
 }
 
+namespace {
+// [INFERRED] Source spelling of the inlined expansion-color arithmetic.
+inline Vec3 blendExpansionColor(const Vec3& low, const Vec3& high, float blend,
+                               float inverse, bool roundHighY)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the x87 stores between vector operations.
+    typedef bf2x87::Real Real;
+    const float lowX = bf2x87::store(Real(low.x) * Real(blend));
+    const float lowY = bf2x87::store(Real(low.y) * Real(blend));
+    const float lowZ = bf2x87::store(Real(low.z) * Real(blend));
+    const float highX = bf2x87::store(Real(high.x) * Real(inverse));
+    Real highY = Real(high.y) * Real(inverse);
+    if (roundHighY)
+        highY = Real(bf2x87::store(highY));
+    const Vec3 result = {
+        bf2x87::store(Real(highX) + Real(lowX)),
+        bf2x87::store(highY + Real(lowY)),
+        bf2x87::store(Real(high.z) * Real(inverse) + Real(lowZ))
+    };
+    return result;
+#else
+    (void)roundHighY;
+    const Vec3 lowScaled = { low.x * blend, low.y * blend, low.z * blend };
+    const Vec3 highScaled = { high.x * inverse, high.y * inverse, high.z * inverse };
+    const Vec3 result = { highScaled.x + lowScaled.x,
+                          highScaled.y + lowScaled.y,
+                          highScaled.z + lowScaled.z };
+    return result;
+#endif
+}
+}
+
+// PE 0x100F2740. [INFERRED] Source name and placement beside the other LightManager bodies.
+// Low presets are fetched and copied before each high-preset dispatch.
+void LightManager::updateExpansionLighting()
+{
+    LightManager* const manager = this;
+    const float blend = dx9rend::rendererTailFloat(0x8BC);
+    Vec3 low = manager->getSinglePointColorLow();
+    const Vec3* high = &manager->getSinglePointColorHigh();
+    const float inverse = 1.0f - blend;
+    manager->setSinglePointColor(blendExpansionColor(low, *high, blend, inverse, false));
+
+    low = manager->getDynamicPointColorLow();
+    high = &manager->getDynamicPointColorHigh();
+    manager->setDynamicPointColor(blendExpansionColor(low, *high, blend, inverse, false));
+
+    low = manager->getSkyColorLow();
+    high = &manager->getSkyColorHigh();
+    manager->setSkyColor(blendExpansionColor(low, *high, blend, inverse, false));
+
+    low = manager->getStaticSkyColorLow();
+    high = &manager->getStaticSkyColorHigh();
+    manager->setStaticSkyColor(blendExpansionColor(low, *high, blend, inverse, false));
+
+    low = manager->getSunColorLow();
+    high = &manager->getSunColorHigh();
+    manager->setSunColor(blendExpansionColor(low, *high, blend, inverse, true));
+
+    low = manager->getSunSpecColorLow();
+    high = &manager->getSunSpecColorHigh();
+    manager->setSunSpecColor(blendExpansionColor(low, *high, blend, inverse, true));
+
+    Terrain* const terrain = static_cast<Terrain*>(g_Terrain);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Terrain's low z product remains in x87 until the sum.
+    typedef bf2x87::Real Real;
+    const float lowX = bf2x87::store(Real(terrain->m_giColorLow.x) * Real(blend));
+    const float lowY = bf2x87::store(Real(terrain->m_giColorLow.y) * Real(blend));
+    const Real lowZ = Real(terrain->m_giColorLow.z) * Real(blend);
+    const Vec3 highScaled = {
+        bf2x87::store(Real(terrain->m_giColorHigh.x) * Real(inverse)),
+        bf2x87::store(Real(terrain->m_giColorHigh.y) * Real(inverse)),
+        bf2x87::store(Real(terrain->m_giColorHigh.z) * Real(inverse))
+    };
+    const Vec3 color = {
+        bf2x87::store(Real(highScaled.x) + Real(lowX)),
+        bf2x87::store(Real(highScaled.y) + Real(lowY)),
+        bf2x87::store(Real(highScaled.z) + lowZ)
+    };
+#else
+    const Vec3 lowScaled = { terrain->m_giColorLow.x * blend,
+                            terrain->m_giColorLow.y * blend,
+                            terrain->m_giColorLow.z * blend };
+    const Vec3 highScaled = { terrain->m_giColorHigh.x * inverse,
+                             terrain->m_giColorHigh.y * inverse,
+                             terrain->m_giColorHigh.z * inverse };
+    const Vec3 color = {
+        highScaled.x + lowScaled.x,
+        highScaled.y + lowScaled.y,
+        highScaled.z + lowScaled.z
+    };
+#endif
+    static_cast<Terrain*>(g_Terrain)->setGIColor(color.x, color.y, color.z);
+}
+
+// [CHOSEN, not recovered] Named reads of the native coordinator's flattened collector members.
+// The historical accessor names are reversed: +0xB8 receives category 0 (dynamic) in
+// registerWithCollector, while +0xB4 receives category 1 (static). Keep the callers' PE getter identities.
+// PE 0x100EEAD0 (also 0x10190B70, the dynamic collector's frame-vector accessor, lea +0x18)
+const std::vector<XpLight*>& xpStaticFrameLights() { return g_xpCoordinator.dynamicFrame; }
+// PE 0x100EEAE0 (also 0x10190160, the static collector's frame-vector accessor, lea +0x1C)
+const std::vector<XpLight*>& xpDynamicFrameLights() { return g_xpCoordinator.staticFrame; }
+
+// [CHOSEN, not recovered] Named native read of the source field, PE +0x24.
+world::LightSource* xpLightSource(const XpLight* light) { return light->source; }
+
+// PE 0x1018FA30. The visual radius is explicitly stored before querying dynamic-light policy.
+float xpLightRadius(const XpLight* light)
+{
+    if (!light->source)
+        return 0.0f;
+    const world::LightSourceTemplate* const sourceTemplate = lightSourceTemplatePointer(light->source);
+    if (!sourceTemplate)
+        return 0.0f;
+    const float radius = light->source->getVisualBoundingRadius();
+    if (sourceTemplate->getIsDynamic())
+    {
+#if defined(__APPLE__)
+        return bf2x87::store(bf2x87::mul(bf2x87::wide(xpLightManager()->getDynamicLightRangeScale()),
+                                       bf2x87::wide(radius)));
+#else
+        return xpLightManager()->getDynamicLightRangeScale() * radius;
+#endif
+    }
+    return radius;
+}
+
+namespace {
+// The six slots of the point/spot culler tables at 0x10222230/0x10222268 (cullerFalseSlot,
+// pointFillRecordSlot / spotFillRecordSlot and the debug slots are the PE bodies behind slots 2, 4, 5).
+class CullerSlots
+{
+public:
+    virtual void collect(double, std::vector<world::IObject*>*, int) = 0;
+    virtual bool visible(const Frustum*) = 0;
+    virtual bool unused(void*) = 0;
+    virtual void gather(TerrainCuller*) = 0;
+    virtual void fillRecord(unsigned char*) = 0;
+    virtual void debug() = 0;
+};
+} // anonymous namespace
+
+// PE 0x1018FAD0. Four-slot prefix of the point/spot culler tables at 0x10222230/0x10222268.
+void xpLightGatherTerrain(const XpLight* light, TerrainCuller* query)
+{
+    reinterpret_cast<CullerSlots*>(light->culler)->gather(query);
+}
+
+// PE 0x1018FAC0: the light's culler through slot +0x08 (a tail jump; the argument stays on the
+// stack for the slot). Unreachable in 1.50: no code or data references.
+bool xpLightCullerUnused(XpLight* light, void* argument)
+{
+    return reinterpret_cast<CullerSlots*>(light->culler)->unused(argument);
+}
+
+// PE 0x1018FAE0: the light's culler through slot +0x14 (the debug draw; a tail jump with no
+// arguments). Unreachable in 1.50: no code or data references.
+void xpLightCullerDebug(XpLight* light)
+{
+    reinterpret_cast<CullerSlots*>(light->culler)->debug();
+}
+
+// PE 0x10190E60: whether the dynamic collector's light set (collector +0x0C) holds the light
+// (equal_range, then the range's length tested against zero). Unreachable in 1.50: no code or data
+// references; [INFERRED] name.
+bool dynamicCollectorContains(XpLight* light)
+{
+    return g_xpCoordinator.dynamicLights.count(light) != 0;
+}
+
+// PE 0x10190BC0 (arguments: the object, the light wrapper): calls the object's visual bounding radius
+// (slot +0x90) and absolute position (slot +0x68), discarding both; an object with a geometry
+// (+0x38) is tested through the light culler's slot +0x08 with its local bounds and absolute
+// transformation as a BoxCorners (PE 0x100CE120) and passes when the slot answers false; an
+// object without one passes. The byte at 0x1023A7A8 (initialised 1, no writer in 1.50) gates the answer.
+// Unreachable in 1.50: no code or data references; [INFERRED] name.
+bool lightAffectsObject(world::IObject* object, XpLight* light)
+{
+    (void)object->getVisualBoundingRadius();
+    (void)object->getAbsolutePosition();
+    bool passes = true;
+    void* const geometry = candidateGeometry(object);
+    if (geometry)
+    {
+        const LocalBoundingBox& bounds = geometryLocalBounds(geometry);
+        const Mat4& transform = candidateAbsoluteTransformation(object);
+        BoxCorners corners(bounds, transform);
+        passes = !xpLightCullerUnused(light, &corners);
+    }
+    static const bool gate = true;
+    return gate && passes;
+}
+
+// PE 0x101949D0: switches a light source on (slot +0x1C4 with true) and clears bit 0 of its object
+// flags with a direct store, not through updateFlags. Unreachable in 1.50: no code or data
+// references; [INFERRED] name.
+void lightSourceEnableAndClearFlag(world::LightSource* light)
+{
+    light->setEnabled(true);
+    world::object_detail::LayoutAccess::flags(light) &= ~1u;
+}
+
+// The 0x14-byte element of the light-cluster list PE 0x10195060 walks and PE 0x10195090 rewrites: the
+// cluster's member lights (a std::vector, the first four words in the retail image) and the light
+// source that stands for the cluster (+0x10). Read and written by the unreachable clustering
+// helpers below; the first member is the only layout the instructions fix.
+struct XpLightListEntry
+{
+    std::vector<world::LightSource*> lights;   // +0x00 (+0x04..+0x0C first/last/end in VC7.1)
+    world::LightSource*              light;    // +0x10
+};
+
+// The 0x18-byte element PE 0x101956D0 appends: a light and its neighbour cluster entry (the entry
+// starts at +0x04, its light stays null).
+struct XpLightNeighbours
+{
+    world::LightSource* key;       // +0x00
+    XpLightListEntry    entry;     // +0x04
+};
+
+// PE 0x10195060 (ecx = the list owner; its vector at +0x04..+0x08): switches every listed light
+// source on and clears bit 0 of its flags, as lightSourceEnableAndClearFlag does. Unreachable in
+// 1.50: no code or data references; [INFERRED] name.
+void enableListedLightSources(const std::vector<XpLightListEntry>& entries)
+{
+    for (std::vector<XpLightListEntry>::const_iterator it = entries.begin(); it != entries.end(); ++it)
+        lightSourceEnableAndClearFlag(it->light);
+}
+
+// Statistics of a light cluster (PE 0x10194CA0 result, 0x1C bytes): the mean position, the mean of
+// distance + radius, the variance of that sum and its extremes.
+struct XpLightClusterStats
+{
+    float center[3];     // +0x00
+    float meanExtent;    // +0x0C
+    float variance;      // +0x10
+    float minExtent;     // +0x14
+    float maxExtent;     // +0x18
+};
+
+// PE 0x10194CA0 (ecx = result, edx = the light list). Unreachable in 1.50: no code or data
+// references; [INFERRED] name. Pass 1 averages the light positions (slot +0x80 translation), pass 2
+// takes distance-to-mean + radius (slot +0x90) per light - its mean, maximum and minimum of
+// distance - radius (clamped at zero) - and pass 3 the variance of distance + radius about that
+// mean (the shipped call is _CIpow(x, 2)). An empty list divides by zero and answers NaN means, as
+// shipped; no memory is touched. [CHOSEN, not recovered] intermediate precision: the x87 body
+// keeps extended temporaries between the float stores, this form uses double.
+XpLightClusterStats lightClusterStatistics(const std::vector<world::LightSource*>& lights)
+{
+    float sumX = 0.0f, sumY = 0.0f, sumZ = 0.0f;
+    for (std::vector<world::LightSource*>::const_iterator it = lights.begin(); it != lights.end(); ++it)
+    {
+        const Mat4& transform = (*it)->getAbsoluteTransformation();            // slot +0x80
+        sumX = static_cast<float>(static_cast<double>(sumX) + transform.m[12]);
+        sumY = static_cast<float>(static_cast<double>(sumY) + transform.m[13]);
+        sumZ = static_cast<float>(static_cast<double>(sumZ) + transform.m[14]);
+    }
+    const double count = static_cast<double>(static_cast<unsigned int>(lights.size()));
+    const double inverse = 1.0 / count;
+    const float cx = static_cast<float>(sumX * inverse);
+    const float cy = static_cast<float>(sumY * inverse);
+    const float cz = static_cast<float>(sumZ * inverse);
+
+    float maxExtent = 0.0f;
+    float sumExtent = 0.0f;
+    float minExtent = FLT_MAX;
+    for (std::vector<world::LightSource*>::const_iterator it = lights.begin(); it != lights.end(); ++it)
+    {
+        const Mat4& transform = (*it)->getAbsoluteTransformation();
+        const double dx = static_cast<double>(cx) - transform.m[12];
+        const double dy = static_cast<double>(cy) - transform.m[13];
+        const double dz = static_cast<double>(cz) - transform.m[14];
+        const float distance = static_cast<float>(std::sqrt((dz * dz + dy * dy) + dx * dx));
+        const double radius = (*it)->getVisualBoundingRadius();                // slot +0x90
+        const double outer = static_cast<double>(distance) + radius;
+        sumExtent = static_cast<float>(static_cast<double>(sumExtent) + outer);
+        const float outerFloat = static_cast<float>(outer);
+        if (maxExtent < outerFloat)
+            maxExtent = outerFloat;
+        const double inner = static_cast<double>(distance) - radius;
+        if (inner < static_cast<double>(minExtent))
+            minExtent = static_cast<float>(inner);
+    }
+    const float meanExtent = static_cast<float>(sumExtent / count);
+    if (minExtent < 0.0f)
+        minExtent = 0.0f;
+
+    float varianceSum = 0.0f;
+    for (std::vector<world::LightSource*>::const_iterator it = lights.begin(); it != lights.end(); ++it)
+    {
+        const Mat4& transform = (*it)->getAbsoluteTransformation();
+        const float dx = cx - transform.m[12];
+        const float dy = cy - transform.m[13];
+        const float dz = cz - transform.m[14];
+        const double radius = (*it)->getVisualBoundingRadius();
+        const double distance = std::sqrt((static_cast<double>(dz) * dz + static_cast<double>(dy) * dy)
+                                          + static_cast<double>(dx) * dx);
+        const double deviation = (distance + radius) - meanExtent;
+        varianceSum = static_cast<float>(static_cast<double>(varianceSum) + std::pow(deviation, 2.0));
+    }
+
+    XpLightClusterStats result;
+    result.center[0] = cx;
+    result.center[1] = cy;
+    result.center[2] = cz;
+    result.meanExtent = meanExtent;
+    result.variance = static_cast<float>(varianceSum / count);
+    result.minExtent = minExtent;
+    result.maxExtent = maxExtent;
+    return result;
+}
+
+// PE 0x10194F10 (ecx = the light list, edx = the cluster light, spread and boost on the stack,
+// retn 8). Unreachable in 1.50: no code or data references; [INFERRED] name. Moves the cluster
+// light to the cluster's mean position with an identity rotation, then retunes its template:
+// attenuation range 1 becomes the mean extent, range 2 (1 + boost) times a radius that lies between
+// mean + standard deviation and the largest extent (spread > 0 interpolates towards the largest
+// extent, otherwise the deviation is scaled by 1 + spread), and the colour and specular colour are
+// set to white. The template is shared; the answer is the light. The template slots are +0x14C /
+// +0x154 / +0x15C / +0x164 of the light template (PE; the ELF table sits one slot later).
+world::LightSource* fitLightToCluster(const std::vector<world::LightSource*>& lights,
+                                      world::LightSource* light, float spread, float boost)
+{
+    const XpLightClusterStats stats = lightClusterStatistics(lights);
+    const double deviation = std::sqrt(static_cast<double>(stats.variance));
+    double radius;
+    if (spread > 0.0f)
+    {
+        const double base = deviation + stats.meanExtent;
+        radius = base + (static_cast<double>(stats.maxExtent) - base) * spread;
+    }
+    else
+        radius = ((deviation + stats.meanExtent) - stats.meanExtent) * (spread + 1.0f) + stats.meanExtent;
+    const float scaledRadius = static_cast<float>((boost + 1.0f) * radius);
+
+    Mat4 transform;
+    for (int i = 0; i < 16; ++i)
+        transform.m[i] = 0.0f;
+    transform.m[0] = 1.0f;
+    transform.m[5] = 1.0f;
+    transform.m[10] = 1.0f;
+    transform.m[12] = stats.center[0];
+    transform.m[13] = stats.center[1];
+    transform.m[14] = stats.center[2];
+    transform.m[15] = 1.0f;
+    world::LightSourceTemplate* const objectTemplate =
+        const_cast<world::LightSourceTemplate*>(lightSourceTemplatePointer(light));
+    light->setAbsoluteTransformation(transform);                               // slot +0x88
+    objectTemplate->setAttenuationRange1(stats.meanExtent);                    // template +0x14C
+    objectTemplate->setAttenuationRange2(scaledRadius);                        // template +0x154
+    Vec3 white = { 1.0f, 1.0f, 1.0f };
+    objectTemplate->setColor(white);                                           // template +0x15C
+    white.x = 1.0f; white.y = 1.0f; white.z = 1.0f;
+    objectTemplate->setSpecColor(white);                                       // template +0x164
+    return light;
+}
+
+world::LightSource* xpCreateOwnedLight(unsigned int argument);   // PE 0x100EF380, defined below
+
+// PE 0x10195090 (ecx = the cluster list, spread and boost on the stack, retn 8). Unreachable in
+// 1.50: no code or data references; [INFERRED] name. For every cluster: its light becomes the first
+// member, then a fresh owned point light (PE 0x100EF380, xpCreateOwnedLight), then that light fitted to the members
+// (fitLightToCluster). The smallest and largest member counts are computed and discarded.
+// [CHOSEN] an empty member list leaves the light untouched in the first step: the retail body reads
+// the first element through a null pointer, which the native backends fault on.
+void fitListedLightClusters(std::vector<XpLightListEntry>& entries, float spread, float boost)
+{
+    float smallest = FLT_MAX;
+    float largest = 0.0f;
+    for (std::vector<XpLightListEntry>::iterator it = entries.begin(); it != entries.end(); ++it)
+    {
+        const float count = static_cast<float>(static_cast<unsigned int>(it->lights.size()));
+        smallest = (smallest < count) ? smallest : count;
+        largest = (count < largest) ? largest : count;
+        if (!it->lights.empty())
+            it->light = it->lights.front();
+        it->light = xpCreateOwnedLight(1);
+        it->light = fitLightToCluster(it->lights, it->light, spread, boost);
+    }
+    (void)smallest;
+    (void)largest;
+}
+
+void fitLightToSize(world::LightSource* light, const Vec3* direction, float size);   // defined below (PE 0x10194B50)
+
+// PE 0x10195140 (ecx = the light list, edx = the pass count). Unreachable in 1.50: no code or data
+// references; [INFERRED] name. Up to `passes` times, every ordered pair of distinct lights whose
+// spheres overlap (distance - radii < 0) pushes the second light away from the first with
+// fitLightToSize (PE 0x10194B50): direction = -normalize(second - first), size = -gap * 0.25. The
+// passes stop when one pass moved nothing. The x87 body keeps the dy and dz differences and the
+// gap in extended precision; this form uses double for them.
+void separateOverlappingLights(const std::vector<world::LightSource*>& lights, int passes)
+{
+    for (int pass = 0; pass < passes; ++pass)
+    {
+        bool moved = false;
+        for (std::vector<world::LightSource*>::const_iterator outer = lights.begin();
+             outer != lights.end(); ++outer)
+        {
+            for (std::vector<world::LightSource*>::const_iterator inner = lights.begin();
+                 inner != lights.end(); ++inner)
+            {
+                if (*outer == *inner)
+                    continue;
+                const Mat4& innerTransform = (*inner)->getAbsoluteTransformation();    // slot +0x80
+                const float innerRadius = (*inner)->getVisualBoundingRadius();         // slot +0x90
+                const Mat4& outerTransform = (*outer)->getAbsoluteTransformation();
+                const float outerRadius = (*outer)->getVisualBoundingRadius();
+                const float dx = outerTransform.m[12] - innerTransform.m[12];
+                const double dy = static_cast<double>(outerTransform.m[13]) - innerTransform.m[13];
+                const double dz = static_cast<double>(outerTransform.m[14]) - innerTransform.m[14];
+                const double distance = std::sqrt((dz * dz + dy * dy) + static_cast<double>(dx) * dx);
+                const double gapExact = distance - (static_cast<double>(outerRadius) + innerRadius);
+                const float gap = static_cast<float>(gapExact);
+                if (!(gapExact < 0.0))
+                    continue;
+                Vec3 direction;
+                {
+                    const Mat4& firstTransform = (*outer)->getAbsoluteTransformation();
+                    (void)(*outer)->getVisualBoundingRadius();
+                    const Mat4& secondTransform = (*inner)->getAbsoluteTransformation();
+                    (void)(*inner)->getVisualBoundingRadius();
+                    direction.x = secondTransform.m[12] - firstTransform.m[12];
+                    direction.y = secondTransform.m[13] - firstTransform.m[13];
+                    direction.z = secondTransform.m[14] - firstTransform.m[14];
+                }
+                shadowNormalizeInPlace(direction);
+                Vec3 away;
+                away.x = -direction.x;
+                away.y = -direction.y;
+                away.z = -direction.z;
+                fitLightToSize(*inner, &away, gap * -1.0f * 0.25f);
+                moved = true;
+            }
+        }
+        if (!moved)
+            break;
+    }
+}
+
+// PE 0x10195330 (ecx = the cluster list, edx = the pool of lights, the scale on the stack, retn 4;
+// answers al). Unreachable in 1.50: no code or data references; [INFERRED] name. For every cluster,
+// each pooled light whose sphere overlaps the cluster light's - (r1 + r2)^2 * scale^2 against the
+// squared distance, summed z, y, x - joins the cluster's members and leaves the pool (the tail is
+// moved down). Answers whether any light moved.
+bool absorbOverlappingLights(std::vector<XpLightListEntry>& entries,
+                             std::vector<world::LightSource*>& pool, float scale)
+{
+    bool absorbed = false;
+    for (std::vector<XpLightListEntry>::iterator entry = entries.begin(); entry != entries.end(); ++entry)
+    {
+        std::vector<world::LightSource*>::size_type index = 0;
+        while (index != pool.size())
+        {
+            world::LightSource* const candidate = pool[index];
+            const Mat4& candidateTransform = candidate->getAbsoluteTransformation();   // slot +0x80
+            const float candidateRadius = candidate->getVisualBoundingRadius();        // slot +0x90
+            const Mat4& clusterTransform = entry->light->getAbsoluteTransformation();
+            const double clusterRadius = entry->light->getVisualBoundingRadius();
+            const float dx = clusterTransform.m[12] - candidateTransform.m[12];
+            const double dy = static_cast<double>(clusterTransform.m[13]) - candidateTransform.m[13];
+            const double dz = static_cast<double>(clusterTransform.m[14]) - candidateTransform.m[14];
+            const double radii = clusterRadius + candidateRadius;
+            const double squaredDistance = (dz * dz + dy * dy) + static_cast<double>(dx) * dx;
+            if (radii * radii * scale * scale > squaredDistance)
+            {
+                entry->lights.push_back(candidate);
+                pool.erase(pool.begin() + index);
+                absorbed = true;
+            }
+            else
+                ++index;
+        }
+    }
+    return absorbed;
+}
+
+// PE 0x101955C0 (ecx = the light list, edx = the keep set, the remainder set on the stack, retn 4).
+// Unreachable in 1.50: no code or data references; [INFERRED] name. Keeps only the lights that are
+// in the keep set (an empty keep set also releases the list's storage), then adds keep \ list to the
+// remainder set. The shipped body copies the kept lights into a scratch set first (hinted inserts),
+// removes the others with find_if + remove_copy_if and finishes with set_difference into an insert
+// iterator at the remainder's begin.
+void intersectLightList(std::vector<world::LightSource*>& list,
+                        const std::set<world::LightSource*>& keep,
+                        std::set<world::LightSource*>& remainder)
+{
+    if (keep.empty())
+    {
+        std::vector<world::LightSource*>().swap(list);
+        return;
+    }
+    std::set<world::LightSource*> kept;
+    for (std::vector<world::LightSource*>::const_iterator it = list.begin(); it != list.end(); ++it)
+    {
+        if (keep.find(*it) != keep.end())
+            kept.insert(kept.begin(), *it);
+    }
+    std::vector<world::LightSource*>::iterator write = list.begin();
+    while (write != list.end() && keep.find(*write) != keep.end())
+        ++write;
+    if (write != list.end())
+    {
+        for (std::vector<world::LightSource*>::iterator read = write + 1; read != list.end(); ++read)
+        {
+            if (keep.find(*read) != keep.end())
+                *write++ = *read;
+        }
+        list.erase(write, list.end());
+    }
+    std::set_difference(keep.begin(), keep.end(), kept.begin(), kept.end(),
+                        std::inserter(remainder, remainder.begin()));
+}
+
+// PE 0x101956D0 (ecx = the light list, edx = the output, the scale on the stack, retn 4).
+// Unreachable in 1.50: no code or data references; [INFERRED] name. Appends, for every light, an
+// element holding the lights of the list (other than itself) whose spheres overlap its own - the
+// overlap test of absorbOverlappingLights, summed z, y, x.
+void collectNeighbourLists(const std::vector<world::LightSource*>& lights,
+                           std::vector<XpLightNeighbours>& output, float scale)
+{
+    for (std::vector<world::LightSource*>::const_iterator outer = lights.begin(); outer != lights.end(); ++outer)
+    {
+        XpLightNeighbours element;
+        element.key = *outer;
+        element.entry.light = 0;
+        for (std::vector<world::LightSource*>::const_iterator inner = lights.begin();
+             inner != lights.end(); ++inner)
+        {
+            if (*outer == *inner)
+                continue;
+            const Mat4& innerTransform = (*inner)->getAbsoluteTransformation();        // slot +0x80
+            const float innerRadius = (*inner)->getVisualBoundingRadius();             // slot +0x90
+            const Mat4& outerTransform = element.key->getAbsoluteTransformation();
+            const double outerRadius = element.key->getVisualBoundingRadius();
+            const float dx = outerTransform.m[12] - innerTransform.m[12];
+            const double dy = static_cast<double>(outerTransform.m[13]) - innerTransform.m[13];
+            const double dz = static_cast<double>(outerTransform.m[14]) - innerTransform.m[14];
+            const double radii = outerRadius + innerRadius;
+            const double squaredDistance = (dz * dz + dy * dy) + static_cast<double>(dx) * dx;
+            if (radii * radii * scale * scale > squaredDistance)
+                element.entry.lights.push_back(*inner);
+        }
+        output.push_back(element);
+    }
+}
+
+// The order of the neighbour lists in groupLightsByNeighbours, the longer member list first
+// (instructions at 0x10194B10, a fragment that Ghidra folds into the preceding function). Unreachable in 1.50: no code or data
+// references; [INFERRED] name.
+bool neighbourListLonger(const XpLightNeighbours& first, const XpLightNeighbours& second)
+{
+    return first.entry.lights.size() > second.entry.lights.size();
+}
+
+// PE 0x10195840 (ecx = the light list, edx = the neighbour lists, the clusters and the loose lights
+// on the stack, retn 8). Unreachable in 1.50: no code or data references; [INFERRED] name. Sorts the
+// neighbour lists (longest first, PE 0x10194B10) and walks them with a set of the still unassigned
+// lights: each list gains its own light, is cut down to the unassigned lights (intersectLightList,
+// which also yields the unassigned lights left over) and, when more than one remains, is appended to
+// the clusters (PE 0x10197DD0); otherwise its light is appended to the loose lights. The unassigned
+// set becomes the leftover set after every element. The sort is std::sort with the retail
+// predicate; elements of equal length may end up in a different order than the shipped
+// introsort leaves them in.
+void groupLightsByNeighbours(const std::vector<world::LightSource*>& lights,
+                             std::vector<XpLightNeighbours>& neighbours,
+                             std::vector<XpLightListEntry>& clusters,
+                             std::vector<world::LightSource*>& loose)
+{
+    std::sort(neighbours.begin(), neighbours.end(), neighbourListLonger);
+    std::set<world::LightSource*> unassigned(lights.begin(), lights.end());
+    for (std::vector<XpLightNeighbours>::iterator it = neighbours.begin(); it != neighbours.end(); ++it)
+    {
+        it->entry.lights.push_back(it->key);
+        std::set<world::LightSource*> remainder;
+        intersectLightList(it->entry.lights, unassigned, remainder);
+        unassigned.clear();
+        unassigned.swap(remainder);
+        if (it->entry.lights.size() > 1)
+            clusters.push_back(it->entry);
+        else
+            loose.push_back(it->key);
+    }
+    unassigned.clear();
+}
+
+// PE 0x10190C40 (ecx = the map owner, whose tree head is at +0x04): the in-order walk of a std::map
+// with pointer-sized elements, answering the key (node +0x0C) of the last entry whose mapped value
+// (node +0x10) equals the argument, or null. The walk does not stop at the first match. [INFERRED]
+// owner: the coordinator's source-to-wrapper map is the only such map; unreachable in 1.50: no code
+// or data references.
+world::LightSource* sourceOfXpLight(const XpLight* wanted)
+{
+    world::LightSource* result = 0;
+    for (std::map<world::LightSource*, XpLight*>::const_iterator it = g_xpCoordinator.bySource.begin();
+         it != g_xpCoordinator.bySource.end(); ++it)
+    {
+        if (it->second == wanted)
+            result = it->first;
+    }
+    return result;
+}
+
+// PE 0x10190CB0: whether sourceOfXpLight finds a source for the wrapper. Unreachable in 1.50: no
+// code or data references; [INFERRED] name.
+bool isXpLightRegistered(const XpLight* wanted)
+{
+    return sourceOfXpLight(wanted) != 0;
+}
+
+// PE 0x10194AD0 (ecx = result, edx = light): a light's bounding sphere - the translation of its
+// absolute transformation and its visual bounding radius. Unreachable in 1.50: no code or data
+// references; [INFERRED] name.
+void lightSourceBoundingSphere(float sphere[4], world::LightSource* light)
+{
+    const Mat4& transform = light->getAbsoluteTransformation();            // slot +0x80
+    const float radius = light->getVisualBoundingRadius();                 // slot +0x90
+    sphere[0] = transform.m[12];
+    sphere[1] = transform.m[13];
+    sphere[2] = transform.m[14];
+    sphere[3] = radius;
+}
+
+// PE 0x10194A70 (ecx = first sphere, eax = second sphere, scale on the stack): whether
+// (r1 + r2)^2 * scale^2 exceeds the squared centre distance, summed as (dx^2 + dz^2) + dy^2. The
+// shipped x87 body keeps extended intermediates; this form rounds each step to float. Unreachable in
+// 1.50: no code or data references; [INFERRED] name.
+bool spheresOverlapScaled(const float first[4], const float second[4], float scale)
+{
+    const float dx = first[0] - second[0];
+    const float dy = first[1] - second[1];
+    const float dz = first[2] - second[2];
+    const float radii = first[3] + second[3];
+    const float distanceSquared = (dx * dx + dz * dz) + dy * dy;
+    return radii * radii * scale * scale > distanceSquared;
+}
+
+// PE 0x10194B50 (ecx = light, edx = direction, size on the stack). Unreachable in 1.50: no code or
+// data references; [INFERRED] name. Fits a light around an object: the size is replaced by a quarter
+// of the light's radius when that radius exceeds twice the size; the light moves back along the
+// direction by 0.1 * size * direction; its second attenuation range becomes radius - 0.1 * size and
+// its first half of that range.
+void fitLightToSize(world::LightSource* light, const Vec3* direction, float size)
+{
+    (void)light->getAbsoluteTransformation();                              // slot +0x80, discarded
+    if (light->getVisualBoundingRadius() > size + size)                    // slot +0x90
+        size = light->getVisualBoundingRadius() * 0.25f;
+    Mat4 transform(light->getAbsoluteTransformation());
+    const float x = size * direction->x * 0.1f;
+    const float y = size * direction->y * 0.1f;
+    const float z = size * direction->z * 0.1f;
+    transform.m[12] -= x;
+    transform.m[13] -= y;
+    transform.m[14] -= z;
+    light->setAbsoluteTransformation(transform);                           // slot +0x88
+    (void)light->getAbsoluteTransformation();
+    light->setAttenuationRange2(light->getVisualBoundingRadius() - size * 0.1f);   // slot +0x18C
+    light->setAttenuationRange1(light->getAttenuationRange2() * 0.5f);             // slots +0x190, +0x184
+}
+
+// PE 0x10190B80: the light wrapper for a source - null for a null source or a failed 0x38-byte
+// allocation (PE 0x1005F320), else the constructed wrapper (PE 0x1018FF40). Unreachable in 1.50: no
+// code or data references.
+XpLight* createXpLight(world::LightSource* source)
+{
+    if (!source)
+        return 0;
+    XpLight* const light = static_cast<XpLight*>(::renddx9abi::engineAlloc(sizeof(XpLight)));
+    if (!light)
+        return 0;
+    constructXpLight(light, source);
+    return light;
+}
+
+// PE 0x10190150: stores the collector's flags dword (+0x00; bit 0x1 and 0x10 select the debug
+// draws of the gather and budget steps). Unreachable in 1.50: no code or data references, so
+// the flags stay at their constructed zero.
+void setXpCollectorFlags(unsigned int* flags, unsigned int value)
+{
+    *flags = value;
+}
+
+XpLight* xpLightForSource(world::LightSource* source)
+{
+    // PE 0x100EF3F0: count first, then operator[] on the coordinator's source hash map.
+    if (g_xpCoordinator.bySource.count(source) != 0)
+        return g_xpCoordinator.bySource[source];
+    return 0;
+}
+
+void appendXpLightsForGeometry(void* geometry, std::vector<XpLight*>& output)
+{
+    // PE 0x100EF4E0: append the +0xA4 multimap's equal-key range without clearing output.
+    typedef std::multimap<void*, world::LightSource*> Associations;
+    const Associations& pairs = g_xpCoordinator.geometryPairs;
+    Associations::const_iterator it = pairs.lower_bound(geometry);
+    while (it != pairs.end() && it->first == geometry)
+    {
+        // The shipped query appends even when the source lookup returns null.
+        output.push_back(xpLightForSource(it->second));
+        ++it;
+    }
+}
+
+// Unreachable island of the coordinator (root PE 0x10195090 has no code or data reference). The
+// bodies below are recovered from the listings and invent no callers. `self` of the retail methods
+// is the coordinator, so the hash tables at +0x00 / +0x48 / +0x70 map onto the members of
+// g_xpCoordinator (see its declaration for the [CHOSEN, not recovered] types).
+
+// PE 0x100EEAF0: the unused stack argument is cleaned by `retn 4`, never read, and its type is
+// [CHOSEN, not recovered]. unreachable in 1.50: no code or data references
+// Creates "XpLight%p" from the "LightSource" class, as a never-dynamic enabled Point light, and
+// returns its object. [PLATFORM] %p formatting differs between the CRTs; the name is only a key.
+world::LightSource* xpCreatePointLightObject(const void* self, unsigned int)
+{
+    world::ObjectTemplateManager* const templateManager =
+        static_cast<world::ObjectTemplateManager*>(classManager->getSingleton(
+            renddx9abi::HostString("ObjectTemplateManager")));
+
+    char buffer[0x134];
+    std::snprintf(buffer, sizeof(buffer), "%p", self);
+    renddx9abi::HostString objectName("XpLight");
+    objectName += renddx9abi::HostString(buffer);
+
+    world::LightSourceTemplate* objectTemplate;
+    {
+        const renddx9abi::HostString className("LightSource");
+        objectTemplate = static_cast<world::LightSourceTemplate*>(
+            templateManager->createTemplate(hostStdString(className), hostStdString(objectName)));
+    }
+    objectTemplate->addRef();
+    objectTemplate->updateFlags(0u, 0u);
+    objectTemplate->setEnabled(true);
+    objectTemplate->setIsDynamic(false);
+    {
+        const renddx9abi::HostString type("Point");
+        objectTemplate->setLightType(hostStdString(type));
+    }
+    world::LightSource* const light =
+        static_cast<world::LightSource*>(objectTemplate->createObject());
+    light->addRef();
+    return light;
+}
+
+// PE 0x100EECC0: unreachable in 1.50: no code or data references
+// Destroys a wrapper (PE 0x1018FFB0) and frees its storage; null is ignored. `this` is not read.
+void xpDestroyAndFree(XpLight* light)
+{
+    if (light)
+    {
+        destroyXpLight(light);
+        ::renddx9abi::engineFree(light);
+    }
+}
+
+// PE 0x100EECE0: unreachable in 1.50: no code or data references
+// Whether a wrapper is a mapped value of the registration table (walks the hash list's nodes).
+bool xpWrapperIsRegistered(const XpLight* light)
+{
+    for (std::map<world::LightSource*, XpLight*>::const_iterator it =
+             g_xpCoordinator.bySource.begin(); it != g_xpCoordinator.bySource.end(); ++it)
+    {
+        if (it->second == light)
+            return true;
+    }
+    return false;
+}
+
+// PE 0x100EEDA0: unreachable in 1.50: no code or data references
+// Whether the +0x70 lookup holds the key (hash equal_range count != 0).
+bool xpRecordLookupCContains(const void* key)
+{
+    return g_xpCoordinator.recordLookupC.count(key) != 0;
+}
+
+// PE 0x100EEDE0: unreachable in 1.50: no code or data references
+// Whether the +0x48 lookup holds the key (hash equal_range count != 0).
+bool xpRecordLookupBContains(const void* key)
+{
+    return g_xpCoordinator.recordLookupB.count(key) != 0;
+}
+
+// PE 0x100EF380: the unused stack argument is forwarded to 0x100EEAF0 and its type is
+// [CHOSEN, not recovered]. unreachable in 1.50: no code or data references
+// Creates a Point light object, records it as owned, wraps and registers it with the creation flag
+// raised around the registration, and returns the object. A failed wrapper allocation is passed on
+// to the collector unchecked, as shipped.
+world::LightSource* xpCreateOwnedLight(unsigned int argument)
+{
+    world::LightSource* const light = xpCreatePointLightObject(&g_xpCoordinator, argument);
+    g_xpCoordinator.ownedLights.insert(light);
+    g_xpCoordinator.registeringOwnedLight = 1;
+    XpLight* wrapper = 0;
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(XpLight));
+    if (storage)
+    {
+        constructXpLight(static_cast<XpLight*>(storage), light);
+        wrapper = static_cast<XpLight*>(storage);
+    }
+    // PE 0x100EF050 also publishes (light, wrapper) in the registration table.
+    registerWithCollector(wrapper);
+    g_xpCoordinator.bySource.insert(std::make_pair(light, wrapper));
+    g_xpCoordinator.iterationOrder.push_back(wrapper);
+    g_xpCoordinator.registeringOwnedLight = 0;
+    return light;
+}
+
+// PE 0x100EF480: unreachable in 1.50: no code or data references
+// Fills a light record from the registered wrapper of `source`; nothing happens when unregistered.
+void xpFillRecordForSource(const Mat4& inverse, world::LightSource* source,
+                           dx9rend::Ra::RaLightRecord& output)
+{
+    if (g_xpCoordinator.bySource.count(source) != 0)
+        xpLightFillRecord(xpLightForSource(source), inverse, output);
+}
+
+// PE 0x100EF5E0: unreachable in 1.50: no code or data references
+// Marks the registered wrapper of `source` active; nothing happens when unregistered.
+void xpActivateSource(world::LightSource* source)
+{
+    if (g_xpCoordinator.bySource.count(source) != 0)
+        setXpLightActive(g_xpCoordinator.bySource[source], true);
+}
+
+// PE 0x100EF670: unreachable in 1.50: no code or data references
+// Marks the registered wrapper of `source` inactive; nothing happens when unregistered.
+void xpDeactivateSource(world::LightSource* source)
+{
+    if (g_xpCoordinator.bySource.count(source) != 0)
+        setXpLightActive(g_xpCoordinator.bySource[source], false);
+}
+
+// PE 0x100EF7F0: the record mapped to `key` in the +0x48 lookup (find-or-insert, then the value).
+// Reached only from the unreachable PE 0x100EF960.
+LightMergerRecord* xpLookupRecordB(const void* key)
+{
+    return g_xpCoordinator.recordLookupB[key];
+}
+
+// PE 0x100EF7A0: the record mapped to `key` in the +0x70 lookup (find-or-insert, then the value).
+// Reached only from the unreachable PE 0x100EF9F0.
+LightMergerRecord* xpLookupRecordC(const void* key)
+{
+    return g_xpCoordinator.recordLookupC[key];
+}
+
+// [CHOSEN, not recovered] Unobservable-type exception: the element type of the vector PE
+// 0x100EF700 walks. Each element is the LightMerger key itself, and its dword at +0x38 is the
+// +0x48 lookup key; nothing calls 0x100EF700, so no element type can be observed.
+struct XpMergedRecordOwner
+{
+    unsigned char unread[0x38];
+    const void* recordKey;                              // +0x38
+};
+
+// PE 0x100EF700: unreachable in 1.50: no code or data references
+// For every element the merger has a record for, stores that record in the +0x48 lookup under
+// the element's +0x38 key (find-or-insert, then assign). The end is re-read every iteration.
+void xpCacheMergedRecords(const std::vector<XpMergedRecordOwner*>& owners)
+{
+    for (std::vector<XpMergedRecordOwner*>::const_iterator it = owners.begin(); it != owners.end();
+         ++it)
+    {
+        XpMergedRecordOwner* const owner = *it;
+        LightMergerRecord* const record = g_xpCoordinator.merger.findRecord(owner);
+        if (record)
+            g_xpCoordinator.recordLookupB[owner->recordKey] = record;
+    }
+}
+
+// PE 0x100EF960: unreachable in 1.50: no code or data references
+// When the +0x48 lookup holds `from`, stores its mapped record (PE 0x100EF7F0) under `to` in the
+// +0x70 lookup (find-or-insert, then assign).
+void xpAliasRecord(const void* from, const void* to)
+{
+    if (g_xpCoordinator.recordLookupB.count(from) != 0)
+    {
+        LightMergerRecord* const record = xpLookupRecordB(from);
+        g_xpCoordinator.recordLookupC[to] = record;
+    }
+}
+
+// PE 0x100EF9F0: unreachable in 1.50: no code or data references
+// When the +0x70 lookup holds `key`: the first time, saves the light manager's sun and sky colours
+// into the saved record; then publishes the mapped record (PE 0x100EF7A0) and answers true.
+// Otherwise a saved record is published back and forgotten (true); with nothing saved, false.
+bool xpApplyMergedRecord(const void* key)
+{
+    if (g_xpCoordinator.recordLookupC.count(key) != 0)
+    {
+        if (!g_xpCoordinator.sunSaved)
+        {
+            g_xpCoordinator.savedSunRecord.captureLightManagerColors();
+            g_xpCoordinator.sunSaved = true;
+        }
+        xpLookupRecordC(key)->applyToLightManager();
+        return true;
+    }
+    if (g_xpCoordinator.sunSaved)
+    {
+        g_xpCoordinator.savedSunRecord.applyToLightManager();
+        g_xpCoordinator.sunSaved = false;
+        return true;
+    }
+    return false;
+}
+
+// PE 0x100EFAA0: unreachable in 1.50: no code or data references
+// Empties the geometry association multimap (+0xA4) and both record lookups (+0x48, +0x70).
+void xpClearAssociationTables()
+{
+    g_xpCoordinator.geometryPairs.clear();
+    g_xpCoordinator.recordLookupB.clear();
+    g_xpCoordinator.recordLookupC.clear();
+}
+
+// PE 0x100F22D0: unreachable in 1.50: no code or data references
+// [INFERRED] source name and placement beside the other simple-shadow bodies. Stores the two-bit
+// cell of `value` (scaled by 3/255, rounded) at column x of row z of the packed map: byte
+// row z * stride + (x >> 2) with the arithmetic shift, low cell first. Unlike the sampler
+// (PE 0x100F1F10) it applies no origin offsets. loadSimpleShadowMaps carries the same arithmetic
+// inline for each pixel of the raw file.
+void simpleShadowMapStoreTexel(void* self, int x, int z, unsigned char value)
+{
+    const unsigned int cell = static_cast<unsigned int>(std::floor(
+        static_cast<double>(value) * static_cast<double>(3.0f / 255.0f) + 0.5));
+    const unsigned int shift = static_cast<unsigned int>((x & 3) * 2);
+    unsigned char& destination = lm(self).simpleShadowMap[
+        lm(self).simpleShadowStride * z + (x >> 2)];
+    destination = static_cast<unsigned char>((destination & ~(3u << shift)) | ((cell & 3u) << shift));
+}
+
+// PE 0x100EF840: destroys every registered wrapper, empties the registration table, then deletes
+// every owned light object (virtual slot +0x14 with flag 1, the deleting destructor) and empties
+// the owned set. Retail reaches it from the coordinator destructor (PE 0x100EFBA0, at exit) and
+// from the unreferenced PE 0x100EFB90. The insertion-order mirror of the registration table is
+// native-only and is emptied with it.
+void xpClearCoordinator()
+{
+    for (std::map<world::LightSource*, XpLight*>::iterator it = g_xpCoordinator.bySource.begin();
+         it != g_xpCoordinator.bySource.end(); ++it)
+    {
+        XpLight* const light = it->second;
+        unregisterFromCollector(light);
+        if (light)
+        {
+            destroyXpLight(light);
+            ::renddx9abi::engineFree(light);
+        }
+    }
+    g_xpCoordinator.bySource.clear();
+    g_xpCoordinator.iterationOrder.clear();
+    for (std::set<world::LightSource*>::iterator it = g_xpCoordinator.ownedLights.begin();
+         it != g_xpCoordinator.ownedLights.end(); ++it)
+    {
+        if (*it)
+            delete *it;
+    }
+    g_xpCoordinator.ownedLights.clear();
+}
+
+int xpLightCategory(const XpLight* light)
+{
+    // PE 0x1018FB90. Named native-layout access to the retail +0x30 field.
+    return light->category;
+}
+
+const std::vector<LightShadowRecord>& xpLightShadowRecords(const XpLight* light)
+{
+    // PE 0x1018F9F0. The leading member is the render-record vector.
+    return light->records;
+}
+
+int xpLightType(const XpLight* light)
+{
+    // PE 0x1018FBA0.
+    return lightSourceTemplatePointer(light->source)->getLightTypeEnum();
+}
+
+void xpLightFillRecord(const XpLight* light, const Mat4& inverse,
+                       dx9rend::Ra::RaLightRecord& output)
+{
+    // PE 0x1018FBC0. [INFERRED] placement beside the existing XpLight.cpp bodies.
+    const Mat4& transform = light->source->getAbsoluteTransformation();
+    const Vec3 direction = { transform.m[8], transform.m[9], transform.m[10] };
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87 intermediates until the three stores.
+    typedef bf2x87::Real Real;
+#else
+    typedef float Real;
+#endif
+    const float* const m = inverse.m;
+    output.direction[0] = static_cast<float>((Real(m[8]) * Real(direction.z)
+        + Real(m[4]) * Real(direction.y)) + Real(direction.x) * Real(m[0]));
+    output.direction[1] = static_cast<float>((Real(m[9]) * Real(direction.z)
+        + Real(m[5]) * Real(direction.y)) + Real(m[1]) * Real(direction.x));
+    output.direction[2] = static_cast<float>((Real(m[10]) * Real(direction.z)
+        + Real(m[6]) * Real(direction.y)) + Real(m[2]) * Real(direction.x));
+
+    // PE 0x100777A0's normalization, including the unit-length and degenerate early outs.
+    // [INFERRED] local spelling: the other recovered copy is TU-local in BundledMeshDraw.cpp.
+    const float lengthSquared = static_cast<float>(
+        (Real(output.direction[0]) * Real(output.direction[0])
+         + Real(output.direction[1]) * Real(output.direction[1]))
+        + Real(output.direction[2]) * Real(output.direction[2]));
+    if (!(std::fabs(static_cast<double>(Real(lengthSquared) - Real(1.0f))) < FLT_EPSILON))
+    {
+        if (std::fabs(lengthSquared) < FLT_EPSILON)
+            output.direction[0] = output.direction[1] = output.direction[2] = 0.0f;
+        else
+        {
+#if defined(__APPLE__)
+            const Real scale = Real(1.0f) / bf2x87::squareRoot(Real(lengthSquared));
+#else
+            const Real scale = 1.0f / std::sqrt(lengthSquared);
+#endif
+            for (unsigned int i = 0; i < 3; ++i)
+                output.direction[i] = static_cast<float>(scale * Real(output.direction[i]));
+        }
+    }
+
+    float rangeScale = 1.0f;
+    if (light->category == 0)
+        rangeScale = g_LightManager->getDynamicLightRangeScale();
+    const Mat4& positioned = light->source->getAbsoluteTransformation();
+    const Vec3 position = { positioned.m[12], positioned.m[13], positioned.m[14] };
+    output.position[0] = static_cast<float>(((Real(m[8]) * Real(position.z)
+        + Real(m[4]) * Real(position.y)) + Real(position.x) * Real(m[0])) + Real(m[12]));
+    output.position[1] = static_cast<float>(((Real(m[1]) * Real(position.x)
+        + Real(m[9]) * Real(position.z)) + Real(m[5]) * Real(position.y)) + Real(m[13]));
+    output.position[2] = static_cast<float>(((Real(m[2]) * Real(position.x)
+        + Real(m[10]) * Real(position.z)) + Real(m[6]) * Real(position.y)) + Real(m[14]));
+    const Real range = Real(light->source->getAttenuationRange2()) * Real(rangeScale);
+    output.invRangeSq = static_cast<float>(Real(1.0f) / (range * range));
+    const Vec3& color = light->source->getColor();
+    output.color[0] = color.x;
+    output.color[1] = color.y;
+    output.color[2] = color.z;
+    const Vec3& specular = light->source->getSpecColor();
+    output.unread28[0] = specular.x;
+    output.unread28[1] = specular.y;
+    output.unread28[2] = specular.z;
+    typedef void (__thiscall* FillFn)(void*, unsigned char*);
+    reinterpret_cast<FillFn>(const_cast<void*>(light->culler->vtable[0x10 / 4]))(
+        light->culler, reinterpret_cast<unsigned char*>(&output));
+    // ds:102637DC has no writer in the image (only the CRT teardown also references it).
+    // The optional +0x14 debug dispatch is consequently unreachable in the shipped image.
+}
+
+void submitSourceLightRecord(world::LightSource* source, const Mat4& inverse,
+                             dx9rend::RenderQueueEntry* entry, bool transparent)
+{
+    // PE 0x100FB8F0 constructs/destroys this transient wrapper with 0x1018FF40/0x1018FFB0.
+    alignas(XpLight) unsigned char storage[sizeof(XpLight)];
+    XpLight* const light = reinterpret_cast<XpLight*>(storage);
+    constructXpLight(light, source);
+    xpLightFillRecord(light, inverse,
+        *static_cast<dx9rend::Ra::RaLightRecord*>(entry->lightArray.lights.value));
+    dx9rend::renderQueueEnqueue(entry, transparent, false, true);
+    destroyXpLight(light);
+}
+
 void initializeLightManager(LightManager* manager)
 {
     initializeLightManagerBody(manager);
@@ -7260,16 +10174,90 @@ void LightManager::loadSimpleShadowMaps()
     loadSimpleShadowMapsBody(this);
 }
 
+// PE 0x100EFAF0. Retail also clears the two source lookup hash tables (+0x48/+0x70); their only
+// inserters (PE 0x100EF7A0 / 0x100EF7F0) are reached from unreferenced roots, so they are always
+// empty and this reset leaves the native lookups (recordLookupB / recordLookupC) alone.
+void resetXpTransientState()
+{
+    g_xpCoordinator.geometryPairs.clear();
+    g_xpCoordinator.merger.clearTransient();
+    LightMerger::releaseRecords();
+}
+
+// PE 0x100EF100. The containers start empty, the merger, the collectors and the saved record are
+// built (retail: heap-allocated, see the struct), and both flag bytes (+0xBC, +0xC4) start zero.
+XpCoordinator::XpCoordinator()
+    : sunSaved(false), staticFlags(0), staticTime(0.0), dynamicTime(0.0), registeringOwnedLight(0)
+{
+    // Retail builds the merger (0x100EF229), the static collector (0x100EF248), the dynamic
+    // collector (0x100EF267), clears +0xBC, builds the saved record (0x100EF28C) and clears +0xC4.
+    staticCollectorConstruct(*this);
+    dynamicCollectorConstruct(*this);
+}
+
+// PE 0x100EFBA0. Runs at exit, as the retail atexit thunk does: clears the registration table and
+// the owned lights (PE 0x100EF840: every wrapper is unregistered and destroyed, releasing its
+// LightSource) and the transient state (PE 0x100EFAF0); the members are then destroyed in the
+// retail delete order (see the struct).
+XpCoordinator::~XpCoordinator()
+{
+    xpClearCoordinator();
+    resetXpTransientState();
+}
+
+// PE 0x100EFB90: unreachable in 1.50: no code or data references
+// Clears the coordinator (PE 0x100EF840), then resets the transient state (PE 0x100EFAF0).
+void xpClearAndResetCoordinator()
+{
+    xpClearCoordinator();
+    resetXpTransientState();
+}
+
+// PE 0x100EFB50. Resets transient grouping state, updates all wrappers and both capped
+// collectors, emits geometry->LightSource pairs into coordinator +0xA4, then finalizes the
+// LightMerger (+0xB0). The merger's input map has no producer in the shipped image, so the
+// finalizer only clears its dirty byte; it does not consume or clear the +0xA4 pairs.
 void prepareLightFrame(double time)
 {
-    // reset transient grouping state, update all wrappers and both capped
-    // collectors, emit geometry->LightSource pairs into coordinator +0xA4, then call 0x10193F40
-    // on the separate helper at +0xB0. Full PE xref/raw inspection proves the helper's own +0x04
-    // multimap has no reachable producer on this path; the finalizer observes size zero and only
-    // clears its dirty byte. It does not consume or clear the +0xA4 pairs built here.
-    g_xpCoordinator.geometryPairs.clear();
+    resetXpTransientState();
     updateXpCoordinator(time);
     buildXpGeometryPairs();
+    g_xpCoordinator.merger.finalize();
+}
+
+// PE 0x100EEED0. Appends the instance's associations without clearing prior entries.
+void xpGatherDebugLights(void* geometry, std::vector<world::LightSource*>* out)
+{
+    auto cursor = g_xpCoordinator.geometryPairs.find(geometry); // PE 0x100A5850
+    if (cursor != g_xpCoordinator.geometryPairs.end() && cursor->first == geometry)
+    {
+        do
+        {
+            if (cursor == g_xpCoordinator.geometryPairs.end())
+                return;
+            out->push_back(cursor->second);
+            ++cursor;
+#if defined(_MSC_VER) && defined(_M_IX86)
+            // Shipped defect: the sentinel's key is read before the next iteration's end test.
+        } while (cursor->first == geometry);
+#else
+            // [CHOSEN, not recovered] Native STL sentinels have no value payload. Under the
+            // native-container port (issue #7), test end before accessing that absent key.
+        } while (cursor != g_xpCoordinator.geometryPairs.end() && cursor->first == geometry);
+#endif
+    }
+}
+
+// PE 0x100EEA80: unreachable in 1.50: no code or data references. Allocates the 0x38-byte wrapper
+// for `source` and constructs it with constructXpLight (PE 0x1018FF40); a failed allocation answers
+// null. [INFERRED] name.
+XpLight* xpNewLightWrapper(world::LightSource* source)
+{
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(XpLight));
+    if (!storage)
+        return 0;
+    constructXpLight(static_cast<XpLight*>(storage), source);
+    return static_cast<XpLight*>(storage);
 }
 
 IBase* __fastcall createLightManager(unsigned int iid, IBase* outer)
@@ -7278,7 +10266,7 @@ IBase* __fastcall createLightManager(unsigned int iid, IBase* outer)
         return 0;
 
     LightManager* const self = static_cast<LightManager*>(
-        ::renddx9abi::engineAlloc(kLightManagerSize));
+        ::renddx9abi::engineAlloc(sizeof(LightManagerData)));
     if (self)
         constructLightManager(self);
     void* const itf = self->LightManager::queryInterface(iid);

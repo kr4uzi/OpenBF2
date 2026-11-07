@@ -33,6 +33,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -311,10 +312,10 @@ bool VoipServerConnection::InitEnabledVoip()
     // m_sharedSecret, and the in-process server must expect the same bytes. The PE stores it in the
     // shared-secret field (this+0x43FC) rather than a temporary, then hands that same string to the
     // server's Start.
-    const int letterCount = rand() % 10 + 8;
+    const int letterCount = bf2crt::rand() % 10 + 8;
     m_sharedSecret = static_cast<char>(118);            // leading 'v'
     for (int i = 0; i < letterCount; ++i)
-        m_sharedSecret += static_cast<char>(rand() % 26 + 'a');
+        m_sharedSecret += static_cast<char>(bf2crt::rand() % 26 + 'a');
     m_localVoipServer440C->Start(m_sharedSecret, static_cast<unsigned int>(m_infoWord4400));
     return true;
 }
@@ -632,7 +633,7 @@ int VoipServerConnection::CreateClientSessionId(int playerId)
         return 0;
 
     const int range = (int)powf(256.0f, 2.0f);          // 65536, computed not folded
-    int id = rand() % range;
+    int id = bf2crt::rand() % range;
 
     const std::list<world::IPlayer*>& players = world::playerManager->getPlayers();
 
@@ -645,7 +646,7 @@ int VoipServerConnection::CreateClientSessionId(int playerId)
         {
             if ((*it)->getVoipSessionId() == id)        // vslot 624 = +0x270
             {
-                id += 1 + (rand() % 500);               // random bump, not +1
+                id += 1 + (bf2crt::rand() % 500);               // random bump, not +1
                 clash = true;                           // and rescan from the head
                 break;
             }

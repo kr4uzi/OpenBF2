@@ -22,6 +22,8 @@
 #include "../../../AI/AIInterface/SingletonServer.h"       // BFSingletonServer::m_iaiPlayerCourier
 #include "../../../AI/AIInterface/IAIPlayerCourier.h"      // ds:0x8AC35A0 +0x08 - the bot's order
 #include <cmath>                                           // the distance
+#include <cstdio>                                          // [TEMP] BF2_ENTRY_TRACE
+#include <cstdlib>                                         // [TEMP] BF2_ENTRY_TRACE
 #include <vector>
 
 #if defined(_MSC_VER)
@@ -311,6 +313,20 @@ void findPlayerInputObjects(IObject* root, std::list<IObject*>& out, bool stopAt
 // Returns the closest usable entry point matching the requested template, or null.
 // Filters by distance, armor, team and line of sight, preferring empty seats over bot occupants.
 // AI entry uses its own radius and vehicle rules.
+#if !defined(_WIN32)
+// [TEMP] BF2_ENTRY_TRACE=1: the per-candidate gate results (vehicle-entry diagnosis, no behaviour).
+// [RETIRE-WHEN: vehicle-entry-diagnosed]
+static bool epTraceArmed()
+{
+    static const bool armed = std::getenv("BF2_ENTRY_TRACE") != 0;
+    return armed;
+}
+#define BF2_EP_TRACE(...) do { if (player && !player->getIsAIPlayer() && epTraceArmed()) { \
+    std::fprintf(stderr, "[ENTRY]   " __VA_ARGS__); std::fputc('\n', stderr); std::fflush(stderr); } } while (0)
+#else
+#define BF2_EP_TRACE(...) do { } while (0)
+#endif
+
 IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int team,
                                        IPlayer* player, bool useEntryPointRadius,
                                        bool acceptAiOccupied, bool requireLineOfSight)
@@ -349,6 +365,7 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
     for (unsigned int i = 0; i < scratch.size(); ++i)
         candidates.push_back(scratch[i]);
 
+    BF2_EP_TRACE("grid: %u objects within %.1f m", (unsigned int) candidates.size(), (double) radius);
     for (unsigned int c = 0; c < candidates.size(); ++c)
     {
         IObject* const object = candidates[c];
@@ -383,6 +400,9 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
         {
             // the field is read RAW in both ports (0x81A35AE: `fld dword ptr [eax+164h]`);
             // EntryPointTemplate has no getter symbol of its own.
+            BF2_EP_TRACE("entry point %p at %.1f/%.1f/%.1f dist %.2f entryRadius %.2f", (void*) object,
+                         (double) to.x, (double) to.y, (double) to.z, (double) distance,
+                         (double) static_cast<const EntryPointTemplate*>(L::objectTemplate(object))->m_entryRadius);
             if (distance > static_cast<const EntryPointTemplate*>(
                                L::objectTemplate(object))->m_entryRadius)             // +0x164
                 continue;
@@ -403,7 +423,10 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
                 break;
         }
         if (armor && armor->isDestroyed())                                           // +0x54
+        {
+            BF2_EP_TRACE("  refused: destroyed");
             continue;
+        }
 
         // gate 6: whose vehicle is it
         // the `vehicle ?` test is redundant - it was proved non-null above - but retail compiles
@@ -421,7 +444,10 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
         }
         // NO NULL guard ON `owner`, as shipped - see the header block.
         if (team != owner->getTeam() && owner->getTeam() != 0)                       // +0x98 twice
+        {
+            BF2_EP_TRACE("  refused: team %d != owner team %d", team, owner->getTeam());
             continue;
+        }
 
         // gate 7: can the player actually see it
         if (!isAI && requireLineOfSight)
@@ -432,7 +458,10 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
             Vec3 rayFrom;
             rayFrom.x = position.x; rayFrom.y = position.y; rayFrom.z = position.z;
             if (checkIfRayHitAnyObject(rayFrom, rayTo, root, true))    // ; object-line LOS live
+            {
+                BF2_EP_TRACE("  refused: line of sight");
                 continue;
+            }
         }
 
         // the seat sweep
@@ -446,6 +475,7 @@ IPlayerControlObject* BFfindEntryPoint(const Vec3& position, float radius, int t
                 aiRequestedVehicle != candidate->queryInterface(IID_IObject))         // +0x0C
                 continue;
 
+            BF2_EP_TRACE("  seat %d occupied=%d", seat->first, candidate->isOccupied() ? 1 : 0);
             if (!candidate->isOccupied())                                             // +0x18
             {
                 best     = candidate;

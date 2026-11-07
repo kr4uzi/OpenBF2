@@ -7,7 +7,21 @@
 #include "Event.h"
 #include "Action.h"
 #include "Function.h"
+#include <cstdio>
+#include <cstdlib>
 namespace dice { namespace meme {
+// [FRONTIER] [TEMP] [CHOSEN, not recovered] BF2.exe 83D010 publishes the "dice::meme::Tree"
+// descriptor (table 94F4D8, base Object, factory 83CFF0: twelve bytes, table 94F440, two zeroed
+// fields). No Tree class exists in this tree, so the descriptor is not published; the null-type
+// streamTree branch stops here instead.
+// [RETIRE-WHEN: MEME-TREE-FAMILY] Recover dice::meme::Tree (table 94F440 and its bodies), then
+// define this as Tree::getClassType() and validate a .con/menu load that streams a tree.
+TypeDescriptor* getTreeClassType()
+{
+    std::fprintf(stderr, "[FRONTIER] dice::meme::getTreeClassType reached\n");
+    std::fflush(stderr);
+    std::abort();
+}
 TypeDescriptor* getEventClassType() { return Event::getClassType(); }
 TypeDescriptor* getActionClassType() { return Action::getClassType(); }
 TypeDescriptor* getFunctionClassType() { return Function::getClassType(); }
@@ -24,8 +38,8 @@ bool Stream::streamInt(int*, const char*) { return isPassive(); }
 bool Stream::streamString(char**, const char*) { return isPassive(); }
 bool Stream::streamWideString(wchar_t**, const char*) { return isPassive(); }
 bool Stream::streamCharacter(wchar_t*, const char*) { return isPassive(); }
-bool Stream::streamTexture(System*, int*, const char*) { return isPassive(); }
-bool Stream::streamFont(System*, int*, const char*) { return isPassive(); }
+bool Stream::streamTexture(System*, TextureHandle*, const char*) { return isPassive(); }
+bool Stream::streamFont(System*, FontHandle*, const char*) { return isPassive(); }
 bool Stream::streamSound(System*, int*, const char*) { return isPassive(); }
 bool Stream::streamCollection(System*, ObjectCollection*, const char*) { return isPassive(); }
 bool Stream::streamEnum(int*, EnumNext, EnumName, const char*) { return isPassive(); }
@@ -94,7 +108,9 @@ bool createObject(System* system, Object*& value, TypeDescriptor* type)
     deletion.streamObject(system, value, "Object", nullptr); // ignored result
     return false;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(Stream) == 4, "BFMeme stream prefix");
 static_assert(sizeof(DeletionStream) == 8, "BFMeme deletion visitor");
+#endif
 } }
 #endif

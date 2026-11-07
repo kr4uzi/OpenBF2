@@ -12,7 +12,7 @@ class IStream : public Stream
 public:
     explicit IStream(IStream* source = nullptr);    // 83A1A0, null source means self
     ~IStream() override;
-    TypeDescriptor* getType() override;             // 83A160 [FRONTIER]
+    TypeDescriptor* getType() override;             // 83A160, descriptor table 94EC00
     unsigned int getObjectSize() override;
     bool streamUByte(unsigned char*, const char*) override;
     bool streamByte(char*, const char*) override;
@@ -26,8 +26,8 @@ public:
     bool streamString(char**, const char*) override;
     bool streamWideString(wchar_t**, const char*) override;
     bool streamCharacter(wchar_t*, const char*) override;
-    bool streamTexture(System*, int*, const char*) override;
-    bool streamFont(System*, int*, const char*) override;
+    bool streamTexture(System*, TextureHandle*, const char*) override;
+    bool streamFont(System*, FontHandle*, const char*) override;
     bool streamSound(System*, int*, const char*) override;
     bool streamCollection(System*, ObjectCollection*, const char*) override;
     bool streamEnum(int*, EnumNext, EnumName, const char*) override;
@@ -39,7 +39,7 @@ public:
     virtual bool setPosition(int);                 // +9C 455400
     virtual bool readShortString(System*, char*, int capacity, const char*); // +A0 83A0A0
     IStream* getSource();                          // 839B60, follows self-terminated chain
-    static TypeDescriptor* getClassType();          // [FRONTIER] no partial publication
+    static TypeDescriptor* getClassType();          // 83A160; factory 83A1C0 inlines IStream(nullptr)
 private:
     IStream* m_source;                             // +4 borrowed; destructor does not free
 };

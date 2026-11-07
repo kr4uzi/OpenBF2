@@ -57,7 +57,7 @@ void objTemplSaveInSeparateFileSet(bool v)
 BF2_CONSOLE_PROPERTY_FN(saveInSeparateFile, bool, objectTemplateManager->getActiveObjectTemplate() != 0, (objectTemplateManager->getActiveObjectTemplate()->getFlags() & 1) != 0, objTemplSaveInSeparateFileSet, kObjectManagerConsoleTag)
 
 // Boolean properties update the active template's flags; an unused retail scratch store is omitted.
-// castsDynamicShadow is held under RW-261. Retail duplicates active-template queries; this helper uses one.
+// Retail duplicates active-template queries; this helper uses one.
 // The create command's current category differs from retail (2,0); this block uses (2,11).
 namespace {
 template <unsigned int Bit>
@@ -99,6 +99,16 @@ BF2_CONSOLE_PROPERTY_FN(isNotSaveable, bool, objectTemplateManager->getActiveObj
 BF2_CONSOLE_PROPERTY_FN(templateHasBeenUsed, bool, objectTemplateManager->getActiveObjectTemplate() != 0, objTemplFlagGet<0x20>(), objTemplFlagSet<0x20>, kObjectManagerConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(createdInEditor, bool, objectTemplateManager->getActiveObjectTemplate() != 0, objTemplFlagGet<0x80>(), objTemplFlagSet<0x80>, kObjectManagerConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(isDestructable, bool, objectTemplateManager->getActiveObjectTemplate() != 0, objTemplFlagGet<0x200>(), objTemplFlagSet<0x200>, kObjectManagerConsoleTag)
+// Template flag 0x800: the BundledMesh and SkinnedMesh drawers make an object a dynamic-shadow caster
+// and receiver only when its root template carries it. PE constructor 0x714635 (built right after
+// isDestructable's 0x7144C8), isObjectActive 0x7146A6, executor 0x71471B with the flag helpers
+// 0x713BF0 (get, getFlags +0x44) and 0x713C0C (set, updateFlags +0x48); ELF ConsoleClass367 of
+// this TU, executor 0x87F5620, isObjectActive 0x87F5320. ModuleWorldObjTemplBase.cpp registers a
+// LightSource row of the same name. This TU's list registers first in both images (world::Module
+// inits before GameLogicObjTemplBaseModule: BF2.exe module vtables stored at 0x44762F / 0x447B19,
+// lists 0xA09380 / 0x9C8498; ELF 0x813B310 / 0x813B63B, lists 0x8B1B944 / 0x8AF17A4), and the
+// lookup takes the first active row, so this row also answers for LightSource templates.
+BF2_CONSOLE_PROPERTY_FN(castsDynamicShadow, bool, objectTemplateManager->getActiveObjectTemplate() != 0, objTemplFlagGet<0x800>(), objTemplFlagSet<0x800>, kObjectManagerConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(hasRelativeOffset, bool, objectTemplateManager->getActiveObjectTemplate() != 0, objTemplFlagGet<0x1000>(), objTemplFlagSet<0x1000>, kObjectManagerConsoleTag)
 
 // Preserves the preCacheObject command's no-op behavior: setter ignores its argument

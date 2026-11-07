@@ -28,7 +28,7 @@ class SensingAgent
 public:
     // The second parameter is in the ABI and is never read - see the header block.
     SensingAgent(BotMain* owner, unsigned char behaviourCount);
-    ~SensingAgent();                            // [FRONTIER]
+    ~SensingAgent();                            // ELF 0x1BBB50
 
     // A focus candidate: one per sensed object (evaluateSensedObjects 0x1BC5B0) or incoming shot
     // (evaluateFireObjects 0x1BC7E0); 16 bytes, the vector stride (`>> 4`). [INFERRED] member names.

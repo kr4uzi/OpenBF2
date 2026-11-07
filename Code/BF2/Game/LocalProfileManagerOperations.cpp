@@ -22,23 +22,13 @@
 #include "DemoRecorder/DemoLibrary.h"  // IDemoLibrary::refresh - login's demo-directory rescan
 #include "../Core/ClassManager.h"
 #include "../Core/EventManager.h"
+#include "../IO/File/FileManager.h"   // deleteProfile: io::fileManager +0x48 / +0x20
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 
 namespace dice { namespace hfe {
 extern ClassManager* classManager;
-
-namespace {
-// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: local-profile-operation-calls]
-// These stops belong to known callers; no suffix slot or payload ABI is invented.
-[[noreturn]] void deleteSelectedProfileFrontier()
-{
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::LocalProfileManager::deleteProfile: the default-user comparison at PE4AB01D and the directory removal that follows are unrecovered\n");
-    std::fflush(stderr);
-    std::abort();
-}
-}
 
 // Loads and applies a profile; the middle argument is unused.
 // Online profiles must pass presence login. Requires current-profile, ProfileManager, and DemoLibrary objects.
@@ -157,7 +147,21 @@ bool LocalProfileManager::deleteProfile(int profileIndex)
     getLocalProfiles(profiles, true);
     // Unlike login, PE4AAFEC uses a signed comparison and has no negative guard.
     if (profileIndex >= static_cast<int>(profiles.size())) return false;
-    deleteSelectedProfileFrontier();
+    // PE4AB003..4AB10C. A deleted default user is forgotten first (Global.con's +0x20/+0x24,
+    // the empty string by value).
+    IGlobalSettings* global = static_cast<IGlobalSettings*>(g_globalSettings);
+    if (profiles[profileIndex].name == global->getDefaultUser())
+        global->setDefaultUser(std::string(""));
+    saveGlobalSettings();                                                            // +C4 4AB05F; result discarded
+    // The profile directory under the file manager's own home substitution (+0x48 on
+    // io::fileManager itself, not its base system), with the shipped backslashes.
+    std::string path = std::string(io::fileManager->getHomeSubstitution()) + "\\Profiles\\";
+    std::string directory = path + profiles[profileIndex].name;
+    // PE4AB0D1: erase(size(), 1) - a no-op the shipped body performs.
+    directory.erase(directory.size(), 1);
+    io::fileManager->deleteFile(directory);                                          // +0x20; result discarded
+    m_profilesDirty = true;                                                          // +0x21
+    return true;
 }
 
 // Creates an online account only for a current profile without a GameSpy nickname.

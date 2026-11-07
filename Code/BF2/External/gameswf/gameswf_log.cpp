@@ -11,6 +11,12 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#if !defined(_MSC_VER)
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
+#include <time.h>
+#endif
 
 
 namespace gameswf
@@ -69,6 +75,51 @@ namespace gameswf
 
 		s_log_callback(true, s_buffer);
 	}
+
+#if !defined(_MSC_VER)
+	int	g_swf_mouse_pass_depth = 0;
+
+	bool	swf_list_trace_on()
+	{
+		static int	s_on = -1;
+		if (s_on < 0)
+		{
+			const char*	v = getenv("BF2_SWF_LIST_TRACE");
+			s_on = (v && v[0] >= '1' && v[0] <= '9') ? 1 : 0;
+		}
+		return s_on != 0;
+	}
+
+	void	swf_list_trace(const char* fmt, ...)
+	{
+		static char	s_last[512];
+		static int	s_repeats = 0;
+		char	line[512];
+		va_list	ap;
+		va_start(ap, fmt);
+		vsnprintf(line, sizeof(line), fmt, ap);
+		va_end(ap);
+		if (strcmp(line, s_last) == 0)
+		{
+			s_repeats++;
+			return;
+		}
+		struct timeval	tv;
+		gettimeofday(&tv, NULL);
+		struct tm	tmv;
+		localtime_r(&tv.tv_sec, &tmv);
+		if (s_repeats > 0)
+		{
+			fprintf(stderr, "[swf-list] (previous line x%d more)\n", s_repeats);
+		}
+		fprintf(stderr, "%02d:%02d:%02d.%03d [swf-list] %s%s\n", tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
+			(int) (tv.tv_usec / 1000), g_swf_mouse_pass_depth > 0 ? "[mouse] " : "", line);
+		fflush(stderr);
+		strncpy(s_last, line, sizeof(s_last) - 1);
+		s_last[sizeof(s_last) - 1] = '\0';
+		s_repeats = 0;
+	}
+#endif
 }
 
 

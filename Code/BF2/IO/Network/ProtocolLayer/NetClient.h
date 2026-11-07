@@ -6,6 +6,11 @@
 #if !DEDICATED
 
 #include <string>
+#if !defined(_WIN32)
+#include <atomic>
+#include "../../../Core/Mutex.h"
+#include "../../../Core/Thread.h"
+#endif
 
 #include "../PacketFilter.h"                         // by-value member at +0x128
 #include "Packet.h"                                 // io::Packet - by-value member at +0xC8
@@ -164,9 +169,17 @@ public:
     bool           m_bInit;                      // +0x10C
     bool           m_threaded;                   // +0x10D
     bool           m_byte10E;                    // +0x10E [UNRESOLVED]
+#if defined(_WIN32)
     void*          m_mutex;                      // +0x110 handle
     void*          m_thread;                     // +0x114 handle
     bool           m_stopRequested;              // +0x118
+#else
+    // [CHOSEN, not recovered] POSIX ownership; create publishes state, stop joins
+    // before freeing the mutex/socket. The stop request uses S2.10 seq-cst publication.
+    Mutex*         m_mutex;
+    Thread*        m_thread;
+    std::atomic<bool> m_stopRequested;
+#endif
     unsigned int   m_totalTimeSentinel;          // +0x11C
     bool           m_bDebugNetwork;              // +0x124
     PacketFilter   m_packetFilter;               // +0x128

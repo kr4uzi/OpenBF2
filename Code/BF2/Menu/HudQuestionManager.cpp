@@ -1,5 +1,8 @@
 // Client HUD questions and responses. [INFERRED] Names and source placement.
 #include "HudQuestionManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "../Core/System.h"
 #include "../Core/ClassManager.h"
@@ -16,6 +19,10 @@
 #include "HudSquad.h"
 #include "../Game/GeneralSettings.h"   // getOutOfVoting, the +0x80 bridge (was HudQuestionSettings.h's seam)
 #include <cmath>
+// [CHOSEN, not recovered] SSE2 is used only by the Windows x64 arm; arm64 has no emmintrin.h.
+#if defined(_WIN32) && !defined(_M_IX86)
+#include <emmintrin.h>
+#endif
 
 namespace dice { namespace hfe {
 extern IBase* squadManager;
@@ -41,16 +48,23 @@ void replyWithoutQuestion(bool affirmative) // PE787FF0, complete100 bytes
 }
 int voteMinutes(float seconds)
 {
+#if defined(_WIN32)
     // PE7876C7 materializes the float product before ceil(float)->double463930;
     // the final x87 conversion truncates and preserves the caller's control word.
     const float fraction = 0.01666666753590107f;
     float minutes;
+#if defined(_M_IX86)
     __asm {
         fld seconds
         fmul fraction
         fstp minutes
     }
+#else
+    // The product of two floats is exact in double; the float store is the only rounding.
+    minutes = static_cast<float>(static_cast<double>(seconds) * fraction);
+#endif
     const double rounded = std::ceil(static_cast<double>(minutes));
+#if defined(_M_IX86)
     unsigned short saved, truncated;
     int result;
     __asm { fnstcw saved }
@@ -62,6 +76,25 @@ int voteMinutes(float seconds)
         fldcw saved
     }
     return result;
+#else
+    // cvttsd2si truncates like the chopped fistp, including the 0x80000000 indefinite result.
+    return _mm_cvttsd_si32(_mm_set_sd(rounded));
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    // PE7876C7 materializes the float product before ceil(float)->double463930;
+    // the final x87 conversion truncates and preserves the caller's control word.
+    const float fraction = 0.01666666753590107f;
+    float minutes;
+    // [CHOSEN, not recovered] Preserve x87 product float store before ceil.
+    minutes = bf2x87::store(bf2x87::mul(bf2x87::wide(seconds), bf2x87::wide(fraction)));
+    const double rounded = std::ceil(static_cast<double>(minutes));
+    unsigned short saved, truncated;
+    int result;
+    // [CHOSEN, not recovered] Preserve x87 truncation without changing caller rounding mode.
+    result = bf2x87::integer<int>(bf2x87::wide(rounded));
+    return result;
+#endif
 }
 }
 

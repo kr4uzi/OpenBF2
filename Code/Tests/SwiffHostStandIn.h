@@ -39,9 +39,9 @@ struct SwiffHostStandIn : dice::hfe::ui::ISwiffHost
     std::string getCurrentMapGameMode() override { std::abort(); }
     int  getCurrentMapMaxPlayers() override { std::abort(); }
     int  getCurrentMapSize() override { std::abort(); }
-    bool setPlayerRenderCapability0(int) override { std::abort(); }
+    bool setPlayerRenderCapability0(intptr_t) override { std::abort(); }
     void* getCursor(int) override { std::abort(); }
-    bool setPlayerRenderCapability1(int) override { std::abort(); }
+    bool setPlayerRenderCapability1(intptr_t) override { std::abort(); }
     void setFlag28(bool) override { std::abort(); }
     bool getFlag28() override { std::abort(); }
     dice::hfe::ui::IServerBrowser* getServerList(const std::string&) override { std::abort(); }
@@ -114,7 +114,7 @@ struct SwiffHostStandIn : dice::hfe::ui::ISwiffHost
     bool playSound(const std::string&) override { std::abort(); }
     void slot18C(int) override { std::abort(); }
     bool getModCount(int*) override { std::abort(); }
-    bool slot194(int, int) override { std::abort(); }
+    bool getModAt(int, dice::hfe::IModInfo::Mod*) override { std::abort(); }
     bool requestActivateMod(const std::string*) override { std::abort(); }
     bool requestBrowseModHomepage(const dice::hfe::IModInfo::Mod*) override { std::abort(); }
     bool getVersionString(std::string&) override { std::abort(); }
@@ -231,7 +231,7 @@ struct SwiffHostStandIn : dice::hfe::ui::ISwiffHost
     void setIntF4C(int) override { std::abort(); }
     bool isPlayingDemo() override { std::abort(); }
     std::string getModName() override { std::abort(); }
-    bool slot368(int, int, int) override { std::abort(); }
+    bool slot368(const std::string&, const std::string&, int) override { std::abort(); }
     int  getExpansionPack(const std::string&) override { std::abort(); }
     std::string getLanguageSetting() override { std::abort(); }
     void parseResolution(const std::string&, int*, int*, int*) override { std::abort(); }
