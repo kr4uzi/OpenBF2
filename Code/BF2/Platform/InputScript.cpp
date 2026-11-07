@@ -607,8 +607,8 @@ bool InputScript::steer(Step& s, IInputScriptSink& sink)
     auto clampf = [](float v, float lim) { return v > lim ? lim : v < -lim ? -lim : v; };
     float mx = std::fabs(yawErr) > tol * 0.5f ? clampf(yawErr * m_gainX * 0.8f, 250.0f) : 0.0f;
     float my = std::fabs(pitchErr) > tol * 0.5f ? clampf(pitchErr * m_gainY * 0.8f, 150.0f) : 0.0f;
-    if (std::fabs(mx) < 1 && mx != 0) mx = mx > 0 ? 1 : -1;
-    if (std::fabs(my) < 1 && my != 0) my = my > 0 ? 1 : -1;
+    if (std::fabs(mx) < 1 && mx != 0) mx = mx > 0 ? 1.0f : -1.0f;
+    if (std::fabs(my) < 1 && my != 0) my = my > 0 ? 1.0f : -1.0f;
     m_lastYaw = yaw; m_lastPitch = pitch; m_lastDx = mx; m_lastDy = my; m_haveLast = true;
     if (mx != 0 || my != 0)
         sink.scriptMouseBy(mx, my);
