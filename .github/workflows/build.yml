@@ -171,7 +171,7 @@ jobs:
           retention-days: 7
 
   # [CHOSEN, not recovered] The macOS port: the renderer-on Metal client, the dedicated server and the
-  # AI library, one leg per architecture on the Apple-silicon runner (macos-15) (x86_64 is cross-compiled, as the
+  # AI library, one leg per architecture on the Apple-silicon runner, macos-15 (x86_64 is cross-compiled, as the
   # local Intel builds cross-compile arm64). The client needs the native effect compiler, built here
   # from pinned vkd3d-shader 2.1 and MojoShader sources with the repository's patches
   # (tools/macos/nativefx/build.sh, tools/macos/vkd3d-patches).
@@ -195,7 +195,10 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install flex bison mingw-w64 autoconf automake libtool
+          brew install flex bison mingw-w64 autoconf automake libtool cpanminus
+          # vkd3d's configure needs Perl's JSON module.
+          cpanm --notest --local-lib "$HOME/perl5" JSON
+          echo "PERL5LIB=$HOME/perl5/lib/perl5" >> "$GITHUB_ENV"
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "WIDL=$(brew --prefix mingw-w64)/toolchain-x86_64/bin/x86_64-w64-mingw32-widl" >> "$GITHUB_ENV"
