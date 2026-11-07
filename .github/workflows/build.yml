@@ -171,13 +171,13 @@ jobs:
           retention-days: 7
 
   # [CHOSEN, not recovered] The macOS port: the renderer-on Metal client, the dedicated server and the
-  # AI library, one leg per architecture on the Apple-silicon runner (x86_64 is cross-compiled, as the
+  # AI library, one leg per architecture on the Apple-silicon runner (macos-15) (x86_64 is cross-compiled, as the
   # local Intel builds cross-compile arm64). The client needs the native effect compiler, built here
   # from pinned vkd3d-shader 2.1 and MojoShader sources with the repository's patches
   # (tools/macos/nativefx/build.sh, tools/macos/vkd3d-patches).
   macos:
     name: macOS ${{ matrix.arch }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     strategy:
       fail-fast: false
