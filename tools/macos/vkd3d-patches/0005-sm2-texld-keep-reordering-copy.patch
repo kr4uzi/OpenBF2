@@ -1,0 +1,34 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+Companion of 0002: vsir copy propagation must not fold a component-reordering
+mov (e.g. an interpolator's .wz) into a shader model 2 texld coordinate.
+
+diff --git a/libs/vkd3d-shader/ir.c b/libs/vkd3d-shader/ir.c
+index 294dd37..18ca3fa 100644
+--- a/libs/vkd3d-shader/ir.c
++++ b/libs/vkd3d-shader/ir.c
+@@ -16836,6 +16836,25 @@ static enum vkd3d_result vsir_program_copy_propagation(struct vsir_program *prog
+             mov_src = &mov->src[0];
+             data_type = src->reg.data_type;
+ 
++            /* Shader model 2 texld/texldd cannot swizzle their coordinate: keep
++             * a copy that reorders components (see track_liveness()). */
++            if (j == 0 && program->shader_version.major == 2
++                    && (ins->opcode == VSIR_OP_TEXLD || ins->opcode == VSIR_OP_TEXLDD)
++                    && mov_src->reg.type != VSIR_REGISTER_IMMCONST)
++            {
++                bool in_order = true;
++
++                for (unsigned int k = 0; k < 2; ++k)
++                {
++                    unsigned int s = vsir_swizzle_get_component(src->swizzle, k);
++
++                    if (vsir_swizzle_get_component(mov_src->swizzle, s) != k)
++                        in_order = false;
++                }
++                if (!in_order)
++                    continue;
++            }
++
+             TRACE("Propagating write to sr%u into %s instruction.\n",
+                     src->reg.idx[0].offset, vsir_opcode_get_name(ins->opcode, "<unknown>"));
+ 

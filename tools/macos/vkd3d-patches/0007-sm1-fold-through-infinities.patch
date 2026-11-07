@@ -1,0 +1,64 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+Constant folding of log2(0), 1/0 and rsqrt(0) in sm1-3 is an error in vkd3d; d3dx9
+folds through it (pow(0, 36) = exp2(36 * log2(0)) = 0). Report a warning instead.
+BF2: LightManager_r3x0 point-light shadow pixel shaders.
+
+diff --git a/libs/vkd3d-shader/hlsl_constant_ops.c b/libs/vkd3d-shader/hlsl_constant_ops.c
+index e1bbcac..a0a08fe 100644
+--- a/libs/vkd3d-shader/hlsl_constant_ops.c
++++ b/libs/vkd3d-shader/hlsl_constant_ops.c
+@@ -468,7 +468,9 @@ static bool fold_log2(struct hlsl_ctx *ctx, struct hlsl_constant_value *dst, con
+                 dst->u[k].f = log2f(src->value.u[k].f);
+                 if (ctx->profile->major_version < 4 && !isfinite(dst->u[k].f))
+                 {
+-                    hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_NON_FINITE_RESULT,
++                    /* d3dx9 folds through intermediate infinities (pow(0, n) is
++                     * exp2(n * log2(0)) = 0); only report them. */
++                    hlsl_warning(ctx, loc, VKD3D_SHADER_WARNING_HLSL_NON_FINITE_RESULT,
+                             "Infinities and NaNs are not allowed by the shader model.");
+                 }
+                 break;
+@@ -572,7 +574,9 @@ static bool fold_rcp(struct hlsl_ctx *ctx, struct hlsl_constant_value *dst, cons
+                 dst->u[k].f = 1.0f / src->value.u[k].f;
+                 if (ctx->profile->major_version < 4 && !isfinite(dst->u[k].f))
+                 {
+-                    hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_DIVISION_BY_ZERO,
++                    /* d3dx9 folds through intermediate infinities (pow(0, n) is
++                     * exp2(n * log2(0)) = 0); only report them. */
++                    hlsl_warning(ctx, loc, VKD3D_SHADER_WARNING_HLSL_NON_FINITE_RESULT,
+                             "Infinities and NaNs are not allowed by the shader model.");
+                 }
+                 break;
+@@ -663,7 +667,9 @@ static bool fold_rsq(struct hlsl_ctx *ctx, struct hlsl_constant_value *dst, cons
+                 dst->u[k].f = 1.0f / sqrtf(src->value.u[k].f);
+                 if (ctx->profile->major_version < 4 && !isfinite(dst->u[k].f))
+                 {
+-                    hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_NON_FINITE_RESULT,
++                    /* d3dx9 folds through intermediate infinities (pow(0, n) is
++                     * exp2(n * log2(0)) = 0); only report them. */
++                    hlsl_warning(ctx, loc, VKD3D_SHADER_WARNING_HLSL_NON_FINITE_RESULT,
+                             "Infinities and NaNs are not allowed by the shader model.");
+                 }
+                 break;
+@@ -755,7 +761,9 @@ static bool fold_sqrt(struct hlsl_ctx *ctx, struct hlsl_constant_value *dst, con
+                 dst->u[k].f = sqrtf(src->value.u[k].f);
+                 if (ctx->profile->major_version < 4 && !isfinite(dst->u[k].f))
+                 {
+-                    hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_NON_FINITE_RESULT,
++                    /* d3dx9 folds through intermediate infinities (pow(0, n) is
++                     * exp2(n * log2(0)) = 0); only report them. */
++                    hlsl_warning(ctx, loc, VKD3D_SHADER_WARNING_HLSL_NON_FINITE_RESULT,
+                             "Infinities and NaNs are not allowed by the shader model.");
+                 }
+                 break;
+@@ -981,7 +989,9 @@ static bool fold_div(struct hlsl_ctx *ctx, struct hlsl_constant_value *dst, cons
+                 dst->u[k].f = src1->value.u[k].f / src2->value.u[k].f;
+                 if (ctx->profile->major_version < 4 && !isfinite(dst->u[k].f))
+                 {
+-                    hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_DIVISION_BY_ZERO,
++                    /* d3dx9 folds through intermediate infinities (pow(0, n) is
++                     * exp2(n * log2(0)) = 0); only report them. */
++                    hlsl_warning(ctx, loc, VKD3D_SHADER_WARNING_HLSL_NON_FINITE_RESULT,
+                             "Infinities and NaNs are not allowed by the shader model.");
+                 }
+                 break;

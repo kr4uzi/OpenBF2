@@ -1,0 +1,39 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+Write a struct constant's member table right after its CTAB type info, as d3dx9 does.
+MojoShader rejects the CTAB ("corrupt CTAB data") when a struct with three or more
+members is the last type before the creator string. BF2: struct Light parameters.
+
+diff --git a/libs/vkd3d-shader/hlsl_codegen.c b/libs/vkd3d-shader/hlsl_codegen.c
+index 5572d9f..ad285f7 100644
+--- a/libs/vkd3d-shader/hlsl_codegen.c
++++ b/libs/vkd3d-shader/hlsl_codegen.c
+@@ -12064,7 +12064,17 @@ static void ctab_write_type(struct ctab_ctx *ctab, struct hlsl_type *type,
+             ctab_write_type(ctab, field->type, false, HLSL_SAMPLER_DIM_GENERIC, ctab_start);
+         }
+ 
++        size_t fields_offset_pos;
++
++        /* The member table follows its struct type info, as in d3dx9 output
++         * (MojoShader rejects a CTAB where it would not fit after it). */
++        bytecode_align(buffer);
++        type_info->bytecode_offset = put_u32(buffer, vkd3d_make_u32(D3DXPC_STRUCT, D3DXPT_VOID));
++        put_u32(buffer, vkd3d_make_u32(1, hlsl_type_component_count(array_type)));
++        put_u32(buffer, vkd3d_make_u32(array_size, field_count));
++        fields_offset_pos = put_u32(buffer, 0);
+         fields_offset = bytecode_align(buffer) - ctab_start;
++        set_u32(buffer, fields_offset_pos, fields_offset);
+ 
+         for (i = 0; i < field_count; ++i)
+         {
+@@ -12075,11 +12085,6 @@ static void ctab_write_type(struct ctab_ctx *ctab, struct hlsl_type *type,
+             put_u32(buffer, field->name_bytecode_offset - ctab_start);
+             put_u32(buffer, field_type_info->bytecode_offset - ctab_start);
+         }
+-
+-        type_info->bytecode_offset = put_u32(buffer, vkd3d_make_u32(D3DXPC_STRUCT, D3DXPT_VOID));
+-        put_u32(buffer, vkd3d_make_u32(1, hlsl_type_component_count(array_type)));
+-        put_u32(buffer, vkd3d_make_u32(array_size, field_count));
+-        put_u32(buffer, fields_offset);
+     }
+     else
+     {

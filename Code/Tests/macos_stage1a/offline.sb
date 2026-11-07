@@ -1,0 +1,9 @@
+(version 1)
+(allow default)
+; [TEMP] [CHOSEN, not recovered] Milestone 1 smoke profile, portable reference path.
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(deny file-write* (subpath (param "REFERENCE")))
+; The owner's port remains forbidden even if the engine ignores its configuration.
+(deny network-bind (local ip "*:16567"))

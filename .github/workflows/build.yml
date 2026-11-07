@@ -54,16 +54,38 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --build out/build/ci-${{ matrix.arch }} --target ${{ matrix.server }}
 
-      # Keep the client/plugin and editor builds sequential within this checkout.
-      - name: Build the x86 AI library and client with plugins
+      - name: Build the x86 AI library
         if: matrix.arch == 'x86'
         run: |
           call Code\Build\vsdevcmd.cmd x86
           if errorlevel 1 exit /b 1
-          cmake --build out/build/ci-x86 --target bf2_aidll bf2_client
+          cmake --build out/build/ci-x86 --target bf2_aidll
+
+      # RendDX9.dll and TextureAtlasBuilder.dll, and so the client and the editor, build against the
+      # April 2005 DirectX SDK (Code/Build/dxsdk.cmd). Hosted runners do not have it; without it both
+      # images are skipped with a notice and left out of the packages.
+      - name: Locate the April 2005 DirectX SDK
+        id: dxsdk
+        if: matrix.arch == 'x86'
+        run: |
+          call Code\Build\dxsdk.cmd x86
+          if errorlevel 1 (
+            echo ::notice title=DirectX SDK not installed::The x86 client and editor need the April 2005 DirectX SDK; they are not built or packaged on this runner.
+            echo found=false>> "%GITHUB_OUTPUT%"
+          ) else (
+            echo found=true>> "%GITHUB_OUTPUT%"
+          )
+
+      # Keep the client/plugin and editor builds sequential within this checkout.
+      - name: Build the x86 client with plugins
+        if: matrix.arch == 'x86' && steps.dxsdk.outputs.found == 'true'
+        run: |
+          call Code\Build\vsdevcmd.cmd x86
+          if errorlevel 1 exit /b 1
+          cmake --build out/build/ci-x86 --target bf2_client
 
       - name: Build the x86 editor with its plugins
-        if: matrix.arch == 'x86'
+        if: matrix.arch == 'x86' && steps.dxsdk.outputs.found == 'true'
         run: |
           call Code\Build\vsdevcmd.cmd x86
           if errorlevel 1 exit /b 1
@@ -72,7 +94,7 @@ jobs:
       # Future Windows signing belongs here, before packaging and checksums.
       # No signing credentials or signing step are configured yet.
       - name: Package Windows binaries
-        run: python Code/Build/package_release.py --platform windows-${{ matrix.arch }} --build-dir out/build/ci-${{ matrix.arch }} --output-dir out/packages --revision "%GITHUB_SHA%" --repository "%GITHUB_REPOSITORY%"
+        run: python Code/Build/package_release.py --platform windows-${{ matrix.arch }} --build-dir out/build/ci-${{ matrix.arch }} --output-dir out/packages --revision "%GITHUB_SHA%" --repository "%GITHUB_REPOSITORY%" ${{ (matrix.arch == 'x86' && steps.dxsdk.outputs.found != 'true') && '--omit client-diagnostic --omit editor-diagnostic' || '' }}
 
       - name: Upload Windows packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -145,5 +167,93 @@ jobs:
           path: |
             out/build/ci-linux-x64/CMakeFiles/CMakeConfigureLog.yaml
             out/build/ci-linux-x64/CMakeFiles/CMake*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # [CHOSEN, not recovered] The macOS port: the renderer-on Metal client, the dedicated server and the
+  # AI library, one leg per architecture on the Apple-silicon runner (x86_64 is cross-compiled, as the
+  # local Intel builds cross-compile arm64). The client needs the native effect compiler, built here
+  # from pinned vkd3d-shader 2.1 and MojoShader sources with the repository's patches
+  # (tools/macos/nativefx/build.sh, tools/macos/vkd3d-patches).
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          brew install flex bison mingw-w64 autoconf automake libtool
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "WIDL=$(brew --prefix mingw-w64)/toolchain-x86_64/bin/x86_64-w64-mingw32-widl" >> "$GITHUB_ENV"
+
+      - name: Fetch the native effect sources
+        run: |
+          git clone --depth 1 --branch vkd3d-2.1 https://gitlab.winehq.org/wine/vkd3d.git out/third_party/vkd3d
+          test "$(git -C out/third_party/vkd3d rev-parse HEAD)" = fb7f9ff3c1f8d972ee6f1b8c6a92caf6c8ba1e10
+          (cd out/third_party/vkd3d && ./autogen.sh)
+          git clone https://github.com/icculus/mojoshader.git out/third_party/mojoshader
+          git -C out/third_party/mojoshader checkout --detach ad5dff84830c2863c841f4b1f4e3df78c705b383
+
+      - name: Build the native effect libraries
+        run: sh tools/macos/nativefx/build.sh ${{ matrix.arch }}
+
+      - name: Configure
+        run: |
+          deps=nativefx
+          if [ "${{ matrix.arch }}" = arm64 ]; then deps=nativefx-arm64; fi
+          cmake --preset macos-x64 -B out/build/ci-macos-${{ matrix.arch }} \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DBF2_MACOS_LINK_RENDDX9=ON \
+            -DBF2_FX_NATIVE_DEPS="$GITHUB_WORKSPACE/out/build/$deps" \
+            -DBF2_GAME_DIR:PATH="$GITHUB_WORKSPACE/out/no-game-content"
+
+      - name: Build the client, the dedicated server and the AI library
+        run: cmake --build out/build/ci-macos-${{ matrix.arch }} --target bf2_client bf2 bf2_aidll
+
+      - name: Check the architecture and the Python runtime
+        run: |
+          for image in bf2_client bf2 libdice_py.dylib libaidll.dylib; do
+            lipo out/build/ci-macos-${{ matrix.arch }}/bin_macos/$image -verify_arch ${{ matrix.arch }}
+          done
+          # The runner is arm64; the cross-compiled x86_64 images are not executed here.
+          if [ "${{ matrix.arch }}" = arm64 ]; then
+            cmake --build out/build/ci-macos-arm64 --target dice_py_check_run
+          fi
+
+      - name: Package macOS binaries
+        run: python3 Code/Build/package_release.py --platform macos-${{ matrix.arch }} --build-dir out/build/ci-macos-${{ matrix.arch }} --output-dir out/packages --revision "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY"
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-macos-${{ matrix.arch }}
+          path: |
+            out/packages/*.zip
+            out/packages/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload macOS build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-macos-${{ matrix.arch }}
+          path: |
+            out/build/ci-macos-${{ matrix.arch }}/CMakeFiles/CMakeConfigureLog.yaml
+            out/build/nativefx*/logs/*.log
           if-no-files-found: ignore
           retention-days: 7
