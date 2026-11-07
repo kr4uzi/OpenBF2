@@ -1970,7 +1970,7 @@ void SAI::BotInfo::occupy(std::set<int>::iterator& it, AIStrategicObject* from, 
         moved = true;
     }
     if (moved)
-        sai->m_assignedBots.find(id);
+        (void)sai->m_assignedBots.find(id);
     from->removeAsPresentUnit(it, sai->m_side);
     m_currentlyOccupiedSquare = to->getIndex();
 }
@@ -2184,7 +2184,7 @@ void SAI::BotInfo::respawn(AIStrategicObject* object, SAI* sai)
 {
     m_currentlyOccupiedSquare = object->getIndex();
     object->setAsPresentUnit(m_bot->getBotId(), sai->m_side);
-    sai->m_assignedBots.find(m_bot->getBotId());              // result unused in the image
+    (void)sai->m_assignedBots.find(m_bot->getBotId());        // result unused in the image
     sai->m_freeBots.insert(m_bot->getBotId());
 }
 
