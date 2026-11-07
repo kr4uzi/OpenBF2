@@ -82,7 +82,7 @@ void PasswordCodec::write(std::ostream& stream) // PE5B0400
 
 void PasswordCodec::readHexPairs(const std::string& text, unsigned char* out) // PE5B0260
 {
-    const unsigned int count = text.size() >> 1;
+    const unsigned int count = static_cast<unsigned int>(text.size() >> 1);   // a 32-bit count, as in the image
     std::stringstream unused(std::ios::in | std::ios::out); // constructed and never used (retail)
     std::istringstream reader(text);
     for (unsigned int i = 0; i < count; ++i) {
@@ -96,7 +96,7 @@ void PasswordCodec::readHexPairs(const std::string& text, unsigned char* out) //
 
 bool PasswordCodec::decode(std::string& text) // PE5B0320
 {
-    const unsigned int count = text.size() >> 1;
+    const unsigned int count = static_cast<unsigned int>(text.size() >> 1);   // a 32-bit count, as in the image
 #if defined(_WIN32)
     LPWSTR description = 0;
 #endif
