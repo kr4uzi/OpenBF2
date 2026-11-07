@@ -1,0 +1,13 @@
+--- a/profiles/mojoshader_profile_metal.c
++++ b/profiles/mojoshader_profile_metal.c
+@@ -764,7 +764,9 @@
+ 
+         // !!! FIXME: might trigger unused var warnings in Clang.
+         //output_line(ctx, "constant %s &%s = %s[%d];", utype, varname, name, index);
+-        output_line(ctx, "#define %s %s[%d];", varname, name, index);
++        // [CHOSEN, not recovered] No trailing ';': the macro is used inside expressions
++        // (e.g. "-c1.w"), where upstream's semicolon ends the statement early.
++        output_line(ctx, "#define %s %s[%d]", varname, name, index);
+         push_output(ctx, &ctx->mainline);
+         ctx->indent++;
+         output_line(ctx, "#undef %s", varname);  // !!! FIXME: gross.

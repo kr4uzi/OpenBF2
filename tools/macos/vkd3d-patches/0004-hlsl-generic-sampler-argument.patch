@@ -1,0 +1,31 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+d3dx9 accepts a generic `sampler` argument for a `sampler2D` parameter (and the
+reverse). BF2: RaShaderSTM calculateParallaxCoordinatesFromAlpha (80+80 shaders).
+
+diff --git a/libs/vkd3d-shader/hlsl.y b/libs/vkd3d-shader/hlsl.y
+index 0f9a5ac..480aebc 100644
+--- a/libs/vkd3d-shader/hlsl.y
++++ b/libs/vkd3d-shader/hlsl.y
+@@ -326,6 +326,11 @@ static bool implicit_compatible_data_types(struct hlsl_ctx *ctx, struct hlsl_typ
+         }
+     }
+ 
++    /* d3dx9 effects pass a generic sampler where a typed one is declared. */
++    if (src->class == HLSL_CLASS_SAMPLER && dst->class == HLSL_CLASS_SAMPLER
++            && (src->sampler_dim == HLSL_SAMPLER_DIM_GENERIC || dst->sampler_dim == HLSL_SAMPLER_DIM_GENERIC))
++        return true;
++
+     return hlsl_types_are_componentwise_equal(ctx, src, dst);
+ }
+ 
+@@ -358,6 +363,10 @@ static struct hlsl_ir_node *add_cast(struct hlsl_ctx *ctx, struct hlsl_block *bl
+     if (src_type->class == HLSL_CLASS_NULL)
+         return node;
+ 
++    /* Generic and typed samplers convert without a cast (see implicit_compatible_data_types()). */
++    if (src_type->class == HLSL_CLASS_SAMPLER && dst_type->class == HLSL_CLASS_SAMPLER)
++        return node;
++
+     return hlsl_block_add_cast(ctx, block, node, dst_type, loc);
+ }
+ 

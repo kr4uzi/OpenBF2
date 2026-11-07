@@ -1,0 +1,115 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+vs_1_x frc can only write .y or .xy (it is an expp macro). Emit frc one component
+at a time into .y of a fixed-mask result register and move it into place. BF2:
+every D3DCOLORtoUBYTE4-style index computation in vs_1_1 (1094 shaders).
+
+diff --git a/libs/vkd3d-shader/hlsl_codegen.c b/libs/vkd3d-shader/hlsl_codegen.c
+index 60d2414..bab786b 100644
+--- a/libs/vkd3d-shader/hlsl_codegen.c
++++ b/libs/vkd3d-shader/hlsl_codegen.c
+@@ -7666,6 +7666,13 @@ static void allocate_instr_temp_register(struct hlsl_ctx *ctx, struct hlsl_ir_no
+                 dst_writemask = VKD3DSP_WRITEMASK_1;
+                 break;
+ 
++            case HLSL_OP1_FRACT:
++                /* vs_1_x frc writes only .y or .xy; it is emitted one
++                 * component at a time through .y of the result register. */
++                if (ctx->profile->type == VKD3D_SHADER_TYPE_VERTEX && ctx->profile->major_version < 2)
++                    is_per_component = true;
++                break;
++
+             case HLSL_OP1_EXP2:
+             case HLSL_OP1_LOG2:
+             case HLSL_OP1_RCP:
+@@ -10853,6 +10860,62 @@ static void sm1_generate_vsir_instr_expr_per_component_instr_op(struct hlsl_ctx
+     }
+ }
+ 
++/* vs_1_x frc can only write .y (or .xy). Each component is computed into .y
++ * of the (per-component, fixed-mask) result register and moved to its place;
++ * .y itself is done last. */
++static void sm1_generate_vsir_instr_expr_frc_vs1(struct hlsl_ctx *ctx,
++        struct vsir_program *program, struct hlsl_ir_expr *expr)
++{
++    struct hlsl_ir_node *operand = expr->operands[0].node;
++    struct hlsl_ir_node *instr = &expr->node;
++    static const unsigned int order[] = {0, 2, 3, 1};
++    struct vkd3d_shader_instruction *ins;
++    struct vsir_src_operand *src;
++    struct vsir_dst_operand *dst;
++    uint32_t src_swizzle;
++    unsigned int k, i, c;
++
++    VKD3D_ASSERT(instr->reg.allocated);
++    VKD3D_ASSERT(operand);
++
++    src_swizzle = generate_vsir_get_src_swizzle(operand->reg.writemask, instr->reg.writemask);
++    for (k = 0; k < 4; ++k)
++    {
++        i = order[k];
++        if (!(instr->reg.writemask & (1u << i)))
++            continue;
++
++        if (!(ins = generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_FRC, 1, 1)))
++            return;
++        dst = &ins->dst[0];
++        vsir_dst_operand_init(dst, instr->reg.type, VSIR_DATA_F32, 1);
++        dst->reg.idx[0].offset = instr->reg.id;
++        dst->reg.dimension = VSIR_DIMENSION_VEC4;
++        dst->write_mask = VKD3DSP_WRITEMASK_1;
++        src = &ins->src[0];
++        vsir_src_operand_init(src, operand->reg.type, VSIR_DATA_F32, 1);
++        src->reg.idx[0].offset = operand->reg.id;
++        src->reg.dimension = VSIR_DIMENSION_VEC4;
++        c = vsir_swizzle_get_component(src_swizzle, i);
++        src->swizzle = vsir_swizzle_from_writemask(1u << c);
++
++        if (i == 1)
++            continue;
++        if (!(ins = generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_MOV, 1, 1)))
++            return;
++        dst = &ins->dst[0];
++        vsir_dst_operand_init(dst, instr->reg.type, VSIR_DATA_F32, 1);
++        dst->reg.idx[0].offset = instr->reg.id;
++        dst->reg.dimension = VSIR_DIMENSION_VEC4;
++        dst->write_mask = 1u << i;
++        src = &ins->src[0];
++        vsir_src_operand_init(src, instr->reg.type, VSIR_DATA_F32, 1);
++        src->reg.idx[0].offset = instr->reg.id;
++        src->reg.dimension = VSIR_DIMENSION_VEC4;
++        src->swizzle = VKD3D_SHADER_SWIZZLE(Y, Y, Y, Y);
++    }
++}
++
+ static void sm1_generate_vsir_instr_expr_sincos(struct hlsl_ctx *ctx, struct vsir_program *program,
+         struct hlsl_ir_expr *expr)
+ {
+@@ -11172,7 +11235,10 @@ static bool sm1_generate_vsir_instr_expr(struct hlsl_ctx *ctx, struct vsir_progr
+             break;
+ 
+         case HLSL_OP1_FRACT:
+-            generate_vsir_instr_expr_single_instr_op(ctx, program, expr, VSIR_OP_FRC, 0, 0, true);
++            if (ctx->profile->type == VKD3D_SHADER_TYPE_VERTEX && ctx->profile->major_version < 2)
++                sm1_generate_vsir_instr_expr_frc_vs1(ctx, program, expr);
++            else
++                generate_vsir_instr_expr_single_instr_op(ctx, program, expr, VSIR_OP_FRC, 0, 0, true);
+             break;
+ 
+         case HLSL_OP2_LOGIC_AND:
+diff --git a/libs/vkd3d-shader/ir.c b/libs/vkd3d-shader/ir.c
+index 7b29436..294dd37 100644
+--- a/libs/vkd3d-shader/ir.c
++++ b/libs/vkd3d-shader/ir.c
+@@ -12029,6 +12029,12 @@ static void liveness_track_dst(struct liveness_tracker *tracker, struct vsir_dst
+             reg->fixed_mask = true;
+             break;
+ 
++        case VSIR_OP_FRC:
++            /* vs_1_x frc writes .y (see sm1_generate_vsir_instr_expr_frc_vs1()). */
++            if (version->type == VKD3D_SHADER_TYPE_VERTEX && version->major < 2)
++                reg->fixed_mask = true;
++            break;
++
+         case VSIR_OP_SINCOS:
+             /* sm1 has a fixed destination like LIT, NRM.
+              * sm4 is two-component and masked, like IMUL. */

@@ -1,0 +1,4434 @@
+{
+ "source": "libaidll.so 1.5.3153 (ia-32)",
+ "unresolved_pure_slots": [],
+ "classes": {
+  "IAimerHelper": {
+   "vtable": "0x4BE8E8",
+   "slots": [
+    "IAimerHelper::~IAimerHelper [complete]",
+    "IAimerHelper::~IAimerHelper [deleting]",
+    "pure"
+   ],
+   "bases": [],
+   "header": "AIUtils/IAimerHelper.h"
+  },
+  "AimerHelper": {
+   "vtable": "0x4BE8C0",
+   "slots": [
+    "AimerHelper::~AimerHelper [complete]",
+    "AimerHelper::~AimerHelper [deleting]",
+    "pure",
+    "AimerHelper::hasIndirectLineOfFire"
+   ],
+   "bases": ["IAimerHelper"],
+   "header": "AIUtils/AimerHelper.h"
+  },
+  "BAPAAimAt": {
+   "vtable": "0x4B7780",
+   "slots": [
+    "BAPAAimAt::execute",
+    "BAPAAimAt::~BAPAAimAt [complete]",
+    "BAPAAimAt::~BAPAAimAt [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt::getId",
+    "BAPAAimAt::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "pure",
+    "pure",
+    "pure",
+    "pure",
+    "pure",
+    "pure",
+    "pure",
+    "pure",
+    "pure"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAt.h"
+  },
+  "BAPAAimAt3d": {
+   "vtable": "0x4B7800",
+   "slots": [
+    "BAPAAimAt3d::execute",
+    "BAPAAimAt3d::~BAPAAimAt3d [complete]",
+    "BAPAAimAt3d::~BAPAAimAt3d [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt3d::getId",
+    "BAPAAimAt3d::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "pure",
+    "pure",
+    "pure",
+    "BAPAAimAt3d::getAimerTransform",
+    "BAPAAimAt3d::isAimVecValid",
+    "BAPAAimAt3d::getLastAimVec",
+    "BAPAAimAt3d::getPredictedPosition",
+    "BAPAAimAt3d::getImpactTime",
+    "BAPAAimAt3d::getImpactPosition",
+    "BAPAAimAt3d::getNearestImpactPosition",
+    "BAPAAimAt3d::getPredictedPosition"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAt3d.h"
+  },
+  "BAPAAimAtObject": {
+   "vtable": "0x4B7860",
+   "slots": [
+    "BAPAAimAt::execute",
+    "BAPAAimAtObject::~BAPAAimAtObject [complete]",
+    "BAPAAimAtObject::~BAPAAimAtObject [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt::getId",
+    "BAPAAimAt::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAAimAtObject::getAimAtType",
+    "BAPAAimAtObject::getAimVec",
+    "BAPAAimAtObject::getVectorToTarget",
+    "BAPAAimAtObject::getAimerTransform",
+    "BAPAAimAtObject::isAimingValid",
+    "BAPAAimAtObject::getLastAimVec",
+    "BAPAAimAtObject::getPredictedPosition",
+    "BAPAAimAtObject::getImpactTime",
+    "BAPAAimAtObject::getImpactPosition"
+   ],
+   "bases": [
+    "BAPAAimAt"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAtObject.h"
+  },
+  "BAPAAimAtObject3d": {
+   "vtable": "0x4B7900",
+   "slots": [
+    "BAPAAimAt3d::execute",
+    "BAPAAimAtObject3d::~BAPAAimAtObject3d [complete]",
+    "BAPAAimAtObject3d::~BAPAAimAtObject3d [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt3d::getId",
+    "BAPAAimAt3d::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAAimAtObject3d::getAimAtType",
+    "BAPAAimAtObject3d::getVectorToTarget",
+    "BAPAAimAtObject3d::getAimVec",
+    "BAPAAimAt3d::getAimerTransform",
+    "BAPAAimAt3d::isAimVecValid",
+    "BAPAAimAt3d::getLastAimVec",
+    "BAPAAimAt3d::getPredictedPosition",
+    "BAPAAimAt3d::getImpactTime",
+    "BAPAAimAt3d::getImpactPosition",
+    "BAPAAimAt3d::getNearestImpactPosition",
+    "BAPAAimAt3d::getPredictedPosition"
+   ],
+   "bases": [
+    "BAPAAimAt3d"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAtObject3d.h"
+  },
+  "BAPAAimAtPoint": {
+   "vtable": "0x4B79A0",
+   "slots": [
+    "BAPAAimAt::execute",
+    "BAPAAimAtPoint::~BAPAAimAtPoint [complete]",
+    "BAPAAimAtPoint::~BAPAAimAtPoint [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt::getId",
+    "BAPAAimAt::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAAimAtPoint::getAimAtType",
+    "BAPAAimAtPoint::getAimVec",
+    "BAPAAimAtPoint::getVectorToTarget",
+    "BAPAAimAtPoint::getAimerTransform",
+    "BAPAAimAtPoint::isAimingValid",
+    "BAPAAimAtPoint::getLastAimVec",
+    "BAPAAimAtPoint::getPredictedPosition",
+    "BAPAAimAtPoint::getImpactTime",
+    "BAPAAimAtPoint::getImpactPosition"
+   ],
+   "bases": [
+    "BAPAAimAt"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAtPoint.h"
+  },
+  "BAPAAimAtPoint3d": {
+   "vtable": "0x4B7A00",
+   "slots": [
+    "BAPAAimAt3d::execute",
+    "BAPAAimAtPoint3d::~BAPAAimAtPoint3d [complete]",
+    "BAPAAimAtPoint3d::~BAPAAimAtPoint3d [deleting]",
+    "BAPStatement::getControls",
+    "BAPAAimAt3d::getId",
+    "BAPAAimAt3d::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAAimAtPoint3d::getAimAtType",
+    "BAPAAimAtPoint3d::getVectorToTarget",
+    "BAPAAimAtPoint3d::getAimVec",
+    "BAPAAimAt3d::getAimerTransform",
+    "BAPAAimAt3d::isAimVecValid",
+    "BAPAAimAt3d::getLastAimVec",
+    "BAPAAimAt3d::getPredictedPosition",
+    "BAPAAimAt3d::getImpactTime",
+    "BAPAAimAt3d::getImpactPosition",
+    "BAPAAimAt3d::getNearestImpactPosition",
+    "BAPAAimAt3d::getPredictedPosition"
+   ],
+   "bases": [
+    "BAPAAimAt3d"
+   ],
+   "header": "AIBotActionPlan/BAPAAimAtPoint3d.h"
+  },
+  "BAPAChangeWeapon": {
+   "vtable": "0x4B7AA0",
+   "slots": [
+    "BAPAChangeWeapon::execute",
+    "BAPAChangeWeapon::~BAPAChangeWeapon [complete]",
+    "BAPAChangeWeapon::~BAPAChangeWeapon [deleting]",
+    "BAPStatement::getControls",
+    "BAPAChangeWeapon::getId",
+    "BAPAChangeWeapon::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAChangeWeapon.h"
+  },
+  "BAPAComponentSoldierPose": {
+   "vtable": "0x4B7AE0",
+   "slots": [
+    "BAPAComponentSoldierPose::~BAPAComponentSoldierPose [complete]",
+    "BAPAComponentSoldierPose::~BAPAComponentSoldierPose [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [],
+   "header": "AIBotActionPlan/BAPAComponentSoldierPose.h"
+  },
+  "BAPADebug": {
+   "vtable": "0x4BA540",
+   "slots": [
+    "BAPADebug::execute",
+    "BAPADebug::~BAPADebug [complete]",
+    "BAPADebug::~BAPADebug [deleting]",
+    "BAPADebug::getControls",
+    "BAPADebug::getId",
+    "BAPADebug::hasDefault",
+    "BAPStatement::debug",
+    "BAPADebug::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPADebug.h"
+  },
+  "BAPAEvaluate": {
+   "vtable": "0x4B7B40",
+   "slots": [
+    "BAPAEvaluate::execute",
+    "BAPAEvaluate::~BAPAEvaluate [complete]",
+    "BAPAEvaluate::~BAPAEvaluate [deleting]",
+    "BAPStatement::getControls",
+    "BAPAEvaluate::getId",
+    "BAPAEvaluate::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPAEvaluate.h"
+  },
+  "BAPAEvaluateCondition": {
+   "vtable": "0x4B7BC0",
+   "slots": [
+    "BAPAEvaluateCondition::execute",
+    "BAPAEvaluateCondition::~BAPAEvaluateCondition [complete]",
+    "BAPAEvaluateCondition::~BAPAEvaluateCondition [deleting]",
+    "BAPAEvaluateCondition::getControls",
+    "BAPAEvaluateCondition::getId",
+    "BAPAEvaluateCondition::hasDefault",
+    "BAPStatement::debug",
+    "BAPAEvaluateCondition::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPAEvaluateCondition.h"
+  },
+  "BAPAForgetTarget": {
+   "vtable": "0x4B7C40",
+   "slots": [
+    "BAPAForgetTarget::execute",
+    "BAPAForgetTarget::~BAPAForgetTarget [complete]",
+    "BAPAForgetTarget::~BAPAForgetTarget [deleting]",
+    "BAPStatement::getControls",
+    "BAPAForgetTarget::getId",
+    "BAPAForgetTarget::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPAForgetTarget.h"
+  },
+  "BAPAHonkHorn": {
+   "vtable": "0x4B7C80",
+   "slots": [
+    "BAPAHonkHorn::execute",
+    "BAPAHonkHorn::~BAPAHonkHorn [complete]",
+    "BAPAHonkHorn::~BAPAHonkHorn [deleting]",
+    "BAPStatement::getControls",
+    "BAPAHonkHorn::getId",
+    "BAPAHonkHorn::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAHonkHorn.h"
+  },
+  "BAPAIdle": {
+   "vtable": "0x4B7CC0",
+   "slots": [
+    "BAPAIdle::execute",
+    "BAPAIdle::~BAPAIdle [complete]",
+    "BAPAIdle::~BAPAIdle [deleting]",
+    "BAPAIdle::getControls",
+    "BAPAIdle::getId",
+    "BAPAIdle::hasDefault",
+    "BAPAIdle::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAIdle.h"
+  },
+  "BAPALook": {
+   "vtable": "0x4B7D00",
+   "slots": [
+    "BAPALook::execute",
+    "BAPALook::~BAPALook [complete]",
+    "BAPALook::~BAPALook [deleting]",
+    "BAPStatement::getControls",
+    "BAPALook::getId",
+    "BAPALook::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "pure"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPALook.h"
+  },
+  "BAPALookAhead": {
+   "vtable": "0x4B7D40",
+   "slots": [
+    "BAPALook::execute",
+    "BAPALookAhead::~BAPALookAhead [complete]",
+    "BAPALookAhead::~BAPALookAhead [deleting]",
+    "BAPStatement::getControls",
+    "BAPALook::getId",
+    "BAPALook::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPALookAhead::getLookDirection"
+   ],
+   "bases": [
+    "BAPALook"
+   ],
+   "header": "AIBotActionPlan/BAPALookAhead.h"
+  },
+  "BAPALookAtObject": {
+   "vtable": "0x4B7DC0",
+   "slots": [
+    "BAPALook::execute",
+    "BAPALookAtObject::~BAPALookAtObject [complete]",
+    "BAPALookAtObject::~BAPALookAtObject [deleting]",
+    "BAPStatement::getControls",
+    "BAPALook::getId",
+    "BAPALook::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPALookAtObject::getLookDirection"
+   ],
+   "bases": [
+    "BAPALook"
+   ],
+   "header": "AIBotActionPlan/BAPALookAtObject.h"
+  },
+  "BAPALookAtPoint": {
+   "vtable": "0x4B7E00",
+   "slots": [
+    "BAPALook::execute",
+    "BAPALookAtPoint::~BAPALookAtPoint [complete]",
+    "BAPALookAtPoint::~BAPALookAtPoint [deleting]",
+    "BAPStatement::getControls",
+    "BAPALook::getId",
+    "BAPALook::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPALookAtPoint::getLookDirection"
+   ],
+   "bases": [
+    "BAPALook"
+   ],
+   "header": "AIBotActionPlan/BAPALookAtPoint.h"
+  },
+  "BAPALookInDir": {
+   "vtable": "0x4B7E40",
+   "slots": [
+    "BAPALook::execute",
+    "BAPALookInDir::~BAPALookInDir [complete]",
+    "BAPALookInDir::~BAPALookInDir [deleting]",
+    "BAPStatement::getControls",
+    "BAPALook::getId",
+    "BAPALook::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPALookInDir::getLookDirection"
+   ],
+   "bases": [
+    "BAPALook"
+   ],
+   "header": "AIBotActionPlan/BAPALookInDir.h"
+  },
+  "BAPAMergeSoldierInputs": {
+   "vtable": "0x4B7EC0",
+   "slots": [
+    "BAPAMergeSoldierInputs::execute",
+    "BAPAMergeSoldierInputs::~BAPAMergeSoldierInputs [complete]",
+    "BAPAMergeSoldierInputs::~BAPAMergeSoldierInputs [deleting]",
+    "BAPStatement::getControls",
+    "BAPAMergeSoldierInputs::getId",
+    "BAPAMergeSoldierInputs::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAMergeSoldierInputs.h"
+  },
+  "BAPAMoveAwayFrom3dObject": {
+   "vtable": "0x4B7F00",
+   "slots": [
+    "BAPAMoveAwayFrom3dObject::execute",
+    "BAPAMoveAwayFrom3dObject::~BAPAMoveAwayFrom3dObject [complete]",
+    "BAPAMoveAwayFrom3dObject::~BAPAMoveAwayFrom3dObject [deleting]",
+    "BAPAMoveAwayFrom3dObject::getControls",
+    "BAPAMoveAwayFrom3dObject::getId",
+    "BAPAMoveAwayFrom3dObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveAwayFrom3dObject::isFinished"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveAwayFrom3dObject.h"
+  },
+  "BAPAMoveTo": {
+   "vtable": "0x4B7F40",
+   "slots": [
+    "pure",
+    "BAPAMoveTo::~BAPAMoveTo [complete]",
+    "BAPAMoveTo::~BAPAMoveTo [deleting]",
+    "BAPAMoveTo::getControls",
+    "BAPAMoveTo::getId",
+    "BAPAMoveTo::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveTo::getIsMovingAway",
+    "BAPAMoveTo::getCurrentPoint",
+    "BAPAMoveTo::update",
+    "BAPAMoveTo::isFinished",
+    "BAPAMoveTo::getSecondPoint",
+    "BAPAMoveTo::getLargestAngleDiff",
+    "BAPAMoveTo::getTargetDistance",
+    "BAPAMoveTo::getObject",
+    "BAPAMoveTo::getSimpleTargetDistance",
+    "BAPAMoveTo::getSimpleTargetDistanceSqr",
+    "pure",
+    "pure",
+    "BAPAMoveTo::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveTo::~BAPAMoveTo [complete]",
+    "thunk BAPAMoveTo::~BAPAMoveTo [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAction",
+    "BAPAComponentSoldierPose"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveTo.h"
+  },
+  "BAPAMoveTo3d": {
+   "vtable": "0x4B8080",
+   "slots": [
+    "BAPAMoveTo3d::execute",
+    "BAPAMoveTo3d::~BAPAMoveTo3d [complete]",
+    "BAPAMoveTo3d::~BAPAMoveTo3d [deleting]",
+    "BAPAMoveTo3d::getControls",
+    "BAPAMoveTo3d::getId",
+    "BAPAMoveTo3d::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveTo3d::isFinished"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveTo3d.h"
+  },
+  "BAPAMoveTo3dDirection": {
+   "vtable": "0x4B80C0",
+   "slots": [
+    "BAPAMoveTo3dDirection::execute",
+    "BAPAMoveTo3dDirection::~BAPAMoveTo3dDirection [complete]",
+    "BAPAMoveTo3dDirection::~BAPAMoveTo3dDirection [deleting]",
+    "BAPAMoveTo3dDirection::getControls",
+    "BAPAMoveTo3dDirection::getId",
+    "BAPAMoveTo3dDirection::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveTo3dDirection::isFinished"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveTo3dDirection.h"
+  },
+  "BAPAMoveTo3dObject": {
+   "vtable": "0x4B8100",
+   "slots": [
+    "BAPAMoveTo3dObject::execute",
+    "BAPAMoveTo3dObject::~BAPAMoveTo3dObject [complete]",
+    "BAPAMoveTo3dObject::~BAPAMoveTo3dObject [deleting]",
+    "BAPAMoveTo3dObject::getControls",
+    "BAPAMoveTo3dObject::getId",
+    "BAPAMoveTo3dObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveTo3dObject::isFinished"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveTo3dObject.h"
+  },
+  "BAPAMoveToDirect": {
+   "vtable": "0x4B8140",
+   "slots": [
+    "BAPAMoveToDirect::execute",
+    "BAPAMoveToDirect::~BAPAMoveToDirect [complete]",
+    "BAPAMoveToDirect::~BAPAMoveToDirect [deleting]",
+    "BAPAMoveTo::getControls",
+    "BAPAMoveTo::getId",
+    "BAPAMoveTo::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveTo::getIsMovingAway",
+    "BAPAMoveTo::getCurrentPoint",
+    "BAPAMoveToDirect::update",
+    "BAPAMoveTo::isFinished",
+    "BAPAMoveTo::getSecondPoint",
+    "BAPAMoveTo::getLargestAngleDiff",
+    "BAPAMoveTo::getTargetDistance",
+    "BAPAMoveTo::getObject",
+    "BAPAMoveTo::getSimpleTargetDistance",
+    "BAPAMoveTo::getSimpleTargetDistanceSqr",
+    "BAPAMoveToDirect::usesPathfinding",
+    "BAPAMoveToDirect::withinDistance",
+    "BAPAMoveTo::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveToDirect::~BAPAMoveToDirect [complete]",
+    "thunk BAPAMoveToDirect::~BAPAMoveToDirect [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveTo"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToDirect.h"
+  },
+  "BAPAMoveToDirection": {
+   "vtable": "0x4B8200",
+   "slots": [
+    "pure",
+    "BAPAMoveToDirection::~BAPAMoveToDirection [complete]",
+    "BAPAMoveToDirection::~BAPAMoveToDirection [deleting]",
+    "BAPAMoveToDirection::getControls",
+    "BAPAMoveToDirection::getId",
+    "BAPAMoveToDirection::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveToDirection::update",
+    "BAPAMoveToDirection::isFinished",
+    "pure",
+    "pure",
+    "-",
+    "-",
+    "thunk BAPAMoveToDirection::~BAPAMoveToDirection [complete]",
+    "thunk BAPAMoveToDirection::~BAPAMoveToDirection [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAction",
+    "BAPAComponentSoldierPose"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToDirection.h"
+  },
+  "BAPAMoveToDirectionDirect": {
+   "vtable": "0x4B82C0",
+   "slots": [
+    "BAPAMoveToDirectionDirect::execute",
+    "BAPAMoveToDirectionDirect::~BAPAMoveToDirectionDirect [complete]",
+    "BAPAMoveToDirectionDirect::~BAPAMoveToDirectionDirect [deleting]",
+    "BAPAMoveToDirection::getControls",
+    "BAPAMoveToDirection::getId",
+    "BAPAMoveToDirection::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveToDirection::update",
+    "BAPAMoveToDirection::isFinished",
+    "pure",
+    "pure",
+    "-",
+    "-",
+    "thunk BAPAMoveToDirectionDirect::~BAPAMoveToDirectionDirect [complete]",
+    "thunk BAPAMoveToDirectionDirect::~BAPAMoveToDirectionDirect [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveToDirection"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToDirectionDirect.h"
+  },
+  "BAPAMoveToDirectionFinding": {
+   "vtable": "0x4B8360",
+   "slots": [
+    "BAPAMoveToDirectionFinding::execute",
+    "BAPAMoveToDirectionFinding::~BAPAMoveToDirectionFinding [complete]",
+    "BAPAMoveToDirectionFinding::~BAPAMoveToDirectionFinding [deleting]",
+    "BAPAMoveToDirection::getControls",
+    "BAPAMoveToDirection::getId",
+    "BAPAMoveToDirection::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPAMoveToDirection::update",
+    "BAPAMoveToDirection::isFinished",
+    "pure",
+    "pure",
+    "-",
+    "-",
+    "thunk BAPAMoveToDirectionFinding::~BAPAMoveToDirectionFinding [complete]",
+    "thunk BAPAMoveToDirectionFinding::~BAPAMoveToDirectionFinding [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveToDirection"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToDirectionFinding.h"
+  },
+  "BAPAMoveToFinding": {
+   "vtable": "0x4B8440",
+   "slots": [
+    "BAPAMoveToFinding::execute",
+    "BAPAMoveToFinding::~BAPAMoveToFinding [complete]",
+    "BAPAMoveToFinding::~BAPAMoveToFinding [deleting]",
+    "BAPAMoveTo::getControls",
+    "BAPAMoveTo::getId",
+    "BAPAMoveTo::hasDefault",
+    "BAPStatement::debug",
+    "BAPAMoveToFinding::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveTo::getIsMovingAway",
+    "BAPAMoveTo::getCurrentPoint",
+    "BAPAMoveToFinding::update",
+    "BAPAMoveToFinding::isFinished",
+    "BAPAMoveToFinding::getSecondPoint",
+    "BAPAMoveToFinding::getLargestAngleDiff",
+    "BAPAMoveToFinding::getTargetDistance",
+    "BAPAMoveTo::getObject",
+    "BAPAMoveTo::getSimpleTargetDistance",
+    "BAPAMoveTo::getSimpleTargetDistanceSqr",
+    "BAPAMoveToFinding::usesPathfinding",
+    "BAPAMoveToFinding::withinDistance",
+    "BAPAMoveToFinding::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveToFinding::~BAPAMoveToFinding [complete]",
+    "thunk BAPAMoveToFinding::~BAPAMoveToFinding [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveTo"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToFinding.h"
+  },
+  "BAPAMoveToObject": {
+   "vtable": "0x4B8500",
+   "slots": [
+    "BAPAMoveToObject::execute",
+    "BAPAMoveToObject::~BAPAMoveToObject [complete]",
+    "BAPAMoveToObject::~BAPAMoveToObject [deleting]",
+    "BAPAMoveToObject::getControls",
+    "BAPAMoveToObject::getId",
+    "BAPAMoveToObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPAMoveToObject::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveTo::getIsMovingAway",
+    "BAPAMoveTo::getCurrentPoint",
+    "BAPAMoveTo::update",
+    "BAPAMoveToObject::isFinished",
+    "BAPAMoveTo::getSecondPoint",
+    "BAPAMoveTo::getLargestAngleDiff",
+    "BAPAMoveTo::getTargetDistance",
+    "BAPAMoveToObject::getObject",
+    "BAPAMoveToObject::getSimpleTargetDistance",
+    "BAPAMoveToObject::getSimpleTargetDistanceSqr",
+    "pure",
+    "pure",
+    "BAPAMoveTo::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveToObject::~BAPAMoveToObject [complete]",
+    "thunk BAPAMoveToObject::~BAPAMoveToObject [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveTo"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToObject.h"
+  },
+  "BAPAMoveToObjectDirect": {
+   "vtable": "0x4B85C0",
+   "slots": [
+    "BAPAMoveToObject::execute",
+    "BAPAMoveToObjectDirect::~BAPAMoveToObjectDirect [complete]",
+    "BAPAMoveToObjectDirect::~BAPAMoveToObjectDirect [deleting]",
+    "BAPAMoveToObject::getControls",
+    "BAPAMoveToObject::getId",
+    "BAPAMoveToObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPAMoveToObject::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveTo::getIsMovingAway",
+    "BAPAMoveToObjectDirect::getCurrentPoint",
+    "BAPAMoveTo::update",
+    "BAPAMoveToObject::isFinished",
+    "BAPAMoveTo::getSecondPoint",
+    "BAPAMoveTo::getLargestAngleDiff",
+    "BAPAMoveTo::getTargetDistance",
+    "BAPAMoveToObject::getObject",
+    "BAPAMoveToObject::getSimpleTargetDistance",
+    "BAPAMoveToObject::getSimpleTargetDistanceSqr",
+    "BAPAMoveToObjectDirect::usesPathfinding",
+    "pure",
+    "BAPAMoveTo::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveToObjectDirect::~BAPAMoveToObjectDirect [complete]",
+    "thunk BAPAMoveToObjectDirect::~BAPAMoveToObjectDirect [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveToObject"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToObjectDirect.h"
+  },
+  "BAPAMoveToObjectFinding": {
+   "vtable": "0x4B86C0",
+   "slots": [
+    "BAPAMoveToObject::execute",
+    "BAPAMoveToObjectFinding::~BAPAMoveToObjectFinding [complete]",
+    "BAPAMoveToObjectFinding::~BAPAMoveToObjectFinding [deleting]",
+    "BAPAMoveToObject::getControls",
+    "BAPAMoveToObject::getId",
+    "BAPAMoveToObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPAMoveToObjectFinding::streamSelf",
+    "BAPAMoveTo::getIsSprinting",
+    "BAPAMoveToObjectFinding::getIsMovingAway",
+    "BAPAMoveTo::getCurrentPoint",
+    "BAPAMoveToObjectFinding::update",
+    "BAPAMoveToObjectFinding::isFinished",
+    "BAPAMoveTo::getSecondPoint",
+    "BAPAMoveToObjectFinding::getLargestAngleDiff",
+    "BAPAMoveToObjectFinding::getTargetDistance",
+    "BAPAMoveToObject::getObject",
+    "BAPAMoveToObjectFinding::getSimpleTargetDistance",
+    "BAPAMoveToObjectFinding::getSimpleTargetDistanceSqr",
+    "BAPAMoveToObjectFinding::usesPathfinding",
+    "BAPAMoveToObjectFinding::withinDistance",
+    "BAPAMoveTo::isStuck",
+    "-",
+    "-",
+    "thunk BAPAMoveToObjectFinding::~BAPAMoveToObjectFinding [complete]",
+    "thunk BAPAMoveToObjectFinding::~BAPAMoveToObjectFinding [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAMoveToObject"
+   ],
+   "header": "AIBotActionPlan/BAPAMoveToObjectFinding.h"
+  },
+  "BAPANotifyBot": {
+   "vtable": "0x4B8780",
+   "slots": [
+    "BAPANotifyBot::execute",
+    "BAPANotifyBot::~BAPANotifyBot [complete]",
+    "BAPANotifyBot::~BAPANotifyBot [deleting]",
+    "BAPStatement::getControls",
+    "BAPANotifyBot::getId",
+    "BAPANotifyBot::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPANotifyBot.h"
+  },
+  "BAPAOverrideSensingAgent": {
+   "vtable": "0x4B87C0",
+   "slots": [
+    "BAPAOverrideSensingAgent::execute",
+    "BAPAOverrideSensingAgent::~BAPAOverrideSensingAgent [complete]",
+    "BAPAOverrideSensingAgent::~BAPAOverrideSensingAgent [deleting]",
+    "BAPStatement::getControls",
+    "BAPAOverrideSensingAgent::getId",
+    "BAPAOverrideSensingAgent::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAOverrideSensingAgent.h"
+  },
+  "BAPAPhysicsEnable": {
+   "vtable": "0x4B8800",
+   "slots": [
+    "BAPAPhysicsEnable::execute",
+    "BAPAPhysicsEnable::~BAPAPhysicsEnable [complete]",
+    "BAPAPhysicsEnable::~BAPAPhysicsEnable [deleting]",
+    "BAPStatement::getControls",
+    "BAPAPhysicsEnable::getId",
+    "BAPAPhysicsEnable::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAPhysicsEnable.h"
+  },
+  "BAPAPlaceC4": {
+   "vtable": "0x4B8840",
+   "slots": [
+    "BAPAPlaceC4::execute",
+    "BAPAPlaceC4::~BAPAPlaceC4 [complete]",
+    "BAPAPlaceC4::~BAPAPlaceC4 [deleting]",
+    "BAPStatement::getControls",
+    "BAPAPlaceC4::getId",
+    "BAPAPlaceC4::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAPlaceC4.h"
+  },
+  "BAPAResetControls": {
+   "vtable": "0x4B88C0",
+   "slots": [
+    "BAPAResetControls::execute",
+    "BAPAResetControls::~BAPAResetControls [complete]",
+    "BAPAResetControls::~BAPAResetControls [deleting]",
+    "BAPAResetControls::getControls",
+    "BAPAResetControls::getId",
+    "BAPAResetControls::hasDefault",
+    "BAPStatement::debug",
+    "BAPAResetControls::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAResetControls.h"
+  },
+  "BAPARevive": {
+   "vtable": "0x4B8940",
+   "slots": [
+    "BAPARevive::execute",
+    "BAPARevive::~BAPARevive [complete]",
+    "BAPARevive::~BAPARevive [deleting]",
+    "BAPStatement::getControls",
+    "BAPARevive::getId",
+    "BAPARevive::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPARevive.h"
+  },
+  "BAPARoll3d": {
+   "vtable": "0x4B8980",
+   "slots": [
+    "BAPARoll3d::execute",
+    "BAPARoll3d::~BAPARoll3d [complete]",
+    "BAPARoll3d::~BAPARoll3d [deleting]",
+    "BAPARoll3d::getControls",
+    "BAPARoll3d::getId",
+    "BAPARoll3d::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPARoll3d.h"
+  },
+  "BAPARunOverObject": {
+   "vtable": "0x4B8A00",
+   "slots": [
+    "BAPARunOverObject::execute",
+    "BAPARunOverObject::~BAPARunOverObject [complete]",
+    "BAPARunOverObject::~BAPARunOverObject [deleting]",
+    "BAPStatement::getControls",
+    "BAPARunOverObject::getId",
+    "BAPARunOverObject::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPARunOverObject.h"
+  },
+  "BAPASendRadioMessage": {
+   "vtable": "0x4B8A40",
+   "slots": [
+    "BAPASendRadioMessage::execute",
+    "BAPASendRadioMessage::~BAPASendRadioMessage [complete]",
+    "BAPASendRadioMessage::~BAPASendRadioMessage [deleting]",
+    "BAPStatement::getControls",
+    "BAPASendRadioMessage::getId",
+    "BAPASendRadioMessage::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPASendRadioMessage.h"
+  },
+  "BAPASense": {
+   "vtable": "0x4B8AC0",
+   "slots": [
+    "BAPASense::execute",
+    "BAPASense::~BAPASense [complete]",
+    "BAPASense::~BAPASense [deleting]",
+    "BAPASense::getControls",
+    "BAPASense::getId",
+    "BAPASense::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPASense.h"
+  },
+  "BAPASetSensingAgentFocus": {
+   "vtable": "0x4B8B00",
+   "slots": [
+    "BAPASetSensingAgentFocus::execute",
+    "BAPASetSensingAgentFocus::~BAPASetSensingAgentFocus [complete]",
+    "BAPASetSensingAgentFocus::~BAPASetSensingAgentFocus [deleting]",
+    "BAPStatement::getControls",
+    "BAPASetSensingAgentFocus::getId",
+    "BAPASetSensingAgentFocus::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPASetSensingAgentFocus.h"
+  },
+  "BAPASoldierPose": {
+   "vtable": "0x4B8B80",
+   "slots": [
+    "BAPASoldierPose::execute",
+    "BAPASoldierPose::~BAPASoldierPose [complete]",
+    "BAPASoldierPose::~BAPASoldierPose [deleting]",
+    "BAPStatement::getControls",
+    "BAPASoldierPose::getId",
+    "BAPASoldierPose::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "-",
+    "-",
+    "thunk BAPASoldierPose::~BAPASoldierPose [complete]",
+    "thunk BAPASoldierPose::~BAPASoldierPose [deleting]",
+    "BAPAComponentSoldierPose::setNormalPose",
+    "BAPAComponentSoldierPose::setIncommingFirePose",
+    "BAPAComponentSoldierPose::setFireObjectsThreshold",
+    "BAPAComponentSoldierPose::setDangerPose",
+    "BAPAComponentSoldierPose::setControlThreshold",
+    "BAPAComponentSoldierPose::setTimeDuration",
+    "BAPAComponentSoldierPose::getNormalPose",
+    "BAPAComponentSoldierPose::getIncommingFirePose",
+    "BAPAComponentSoldierPose::getFireObjectsThreshold",
+    "BAPAComponentSoldierPose::getDangerPose",
+    "BAPAComponentSoldierPose::getControlThreshold",
+    "BAPAComponentSoldierPose::getTimeDuration",
+    "BAPAComponentSoldierPose::getCurrentPose",
+    "BAPAComponentSoldierPose::computeCurrentPose"
+   ],
+   "bases": [
+    "BAPAction",
+    "BAPAComponentSoldierPose"
+   ],
+   "header": "AIBotActionPlan/BAPASoldierPose.h"
+  },
+  "BAPATrigger": {
+   "vtable": "0x4B8C80",
+   "slots": [
+    "BAPATrigger::execute",
+    "BAPATrigger::~BAPATrigger [complete]",
+    "BAPATrigger::~BAPATrigger [deleting]",
+    "BAPATrigger::getControls",
+    "BAPATrigger::getId",
+    "BAPATrigger::hasDefault",
+    "BAPATrigger::debug",
+    "BAPATrigger::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPATrigger.h"
+  },
+  "BAPATriggerContinously": {
+   "vtable": "0x4B8D00",
+   "slots": [
+    "BAPATriggerContinously::execute",
+    "BAPATriggerContinously::~BAPATriggerContinously [complete]",
+    "BAPATriggerContinously::~BAPATriggerContinously [deleting]",
+    "BAPATriggerContinously::getControls",
+    "BAPATriggerContinously::getId",
+    "BAPATriggerContinously::hasDefault",
+    "BAPStatement::debug",
+    "BAPATriggerContinously::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPATriggerContinously.h"
+  },
+  "BAPATurn": {
+   "vtable": "0x4B8D40",
+   "slots": [
+    "BAPATurn::execute",
+    "BAPATurn::~BAPATurn [complete]",
+    "BAPATurn::~BAPATurn [deleting]",
+    "BAPStatement::getControls",
+    "BAPATurn::getId",
+    "BAPATurn::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "pure"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPATurn.h"
+  },
+  "BAPATurnTowardsDirection": {
+   "vtable": "0x4B8D80",
+   "slots": [
+    "BAPATurn::execute",
+    "BAPATurnTowardsDirection::~BAPATurnTowardsDirection [complete]",
+    "BAPATurnTowardsDirection::~BAPATurnTowardsDirection [deleting]",
+    "BAPStatement::getControls",
+    "BAPATurn::getId",
+    "BAPATurn::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPATurnTowardsDirection::getDirection"
+   ],
+   "bases": [
+    "BAPATurn"
+   ],
+   "header": "AIBotActionPlan/BAPATurnTowardsDirection.h"
+  },
+  "BAPATurnTowardsObject": {
+   "vtable": "0x4B8DC0",
+   "slots": [
+    "BAPATurn::execute",
+    "BAPATurnTowardsObject::~BAPATurnTowardsObject [complete]",
+    "BAPATurnTowardsObject::~BAPATurnTowardsObject [deleting]",
+    "BAPStatement::getControls",
+    "BAPATurn::getId",
+    "BAPATurn::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "BAPATurnTowardsObject::getDirection"
+   ],
+   "bases": [
+    "BAPATurn"
+   ],
+   "header": "AIBotActionPlan/BAPATurnTowardsObject.h"
+  },
+  "BAPAUpdateVehicle": {
+   "vtable": "0x4B8E00",
+   "slots": [
+    "BAPAUpdateVehicle::execute",
+    "BAPAUpdateVehicle::~BAPAUpdateVehicle [complete]",
+    "BAPAUpdateVehicle::~BAPAUpdateVehicle [deleting]",
+    "BAPAUpdateVehicle::getControls",
+    "BAPAUpdateVehicle::getId",
+    "BAPAUpdateVehicle::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAUpdateVehicle.h"
+  },
+  "BAPAUseFlareOnMissileLock": {
+   "vtable": "0x4B8E80",
+   "slots": [
+    "BAPAUseFlareOnMissileLock::execute",
+    "BAPAUseFlareOnMissileLock::~BAPAUseFlareOnMissileLock [complete]",
+    "BAPAUseFlareOnMissileLock::~BAPAUseFlareOnMissileLock [deleting]",
+    "BAPStatement::getControls",
+    "BAPAUseFlareOnMissileLock::getId",
+    "BAPAUseFlareOnMissileLock::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPAction"
+   ],
+   "header": "AIBotActionPlan/BAPAUseFlareOnMissileLock.h"
+  },
+  "BAPAction": {
+   "vtable": "0x4B8000",
+   "slots": [
+    "pure",
+    "BAPAction::~BAPAction [complete]",
+    "BAPAction::~BAPAction [deleting]",
+    "BAPStatement::getControls",
+    "pure",
+    "pure",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPAction.h"
+  },
+  "BAPBoleanOp": {
+   "vtable": "0x4B9E60",
+   "slots": [
+    "pure",
+    "pure",
+    "BAPCondition::streamSelf",
+    "BAPBoleanOp::~BAPBoleanOp [complete]",
+    "BAPBoleanOp::~BAPBoleanOp [deleting]",
+    "pure"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPBoleanOp.h"
+  },
+  "BAPCConBombPrecision3d": {
+   "vtable": "0x4B9510",
+   "slots": [
+    "BAPCConBombPrecision3d::evaluate",
+    "BAPCConBombPrecision3d::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPCConBombPrecision3d::~BAPCConBombPrecision3d [complete]",
+    "BAPCConBombPrecision3d::~BAPCConBombPrecision3d [deleting]"
+   ],
+   "bases": [
+    "BAPConnectedCondition"
+   ],
+   "header": "AIBotActionPlan/BAPCConBombPrecision3d.h"
+  },
+  "BAPCConLookDeviation": {
+   "vtable": "0x4B9548",
+   "slots": [
+    "BAPCConLookDeviation::evaluate",
+    "BAPCConLookDeviation::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPCConLookDeviation::~BAPCConLookDeviation [complete]",
+    "BAPCConLookDeviation::~BAPCConLookDeviation [deleting]"
+   ],
+   "bases": [
+    "BAPConnectedCondition"
+   ],
+   "header": "AIBotActionPlan/BAPCConLookDeviation.h"
+  },
+  "BAPCConPrecision": {
+   "vtable": "0x4B95A8",
+   "slots": [
+    "BAPCConPrecision::evaluate",
+    "BAPCConPrecision::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPCConPrecision::~BAPCConPrecision [complete]",
+    "BAPCConPrecision::~BAPCConPrecision [deleting]"
+   ],
+   "bases": [
+    "BAPConnectedCondition"
+   ],
+   "header": "AIBotActionPlan/BAPCConPrecision.h"
+  },
+  "BAPCConPrecision3d": {
+   "vtable": "0x4B95D0",
+   "slots": [
+    "BAPCConPrecision3d::evaluate",
+    "BAPCConPrecision3d::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPCConPrecision3d::~BAPCConPrecision3d [complete]",
+    "BAPCConPrecision3d::~BAPCConPrecision3d [deleting]"
+   ],
+   "bases": [
+    "BAPConnectedCondition"
+   ],
+   "header": "AIBotActionPlan/BAPCConPrecision3d.h"
+  },
+  "BAPCombiner": {
+   "vtable": "0x4B9080",
+   "slots": [
+    "pure",
+    "BAPCombiner::~BAPCombiner [complete]",
+    "BAPCombiner::~BAPCombiner [deleting]",
+    "pure",
+    "pure",
+    "pure",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf",
+    "pure"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPCombiner.h"
+  },
+  "BAPCombinerParallel": {
+   "vtable": "0x4B9040",
+   "slots": [
+    "BAPCombinerParallel::execute",
+    "BAPCombinerParallel::~BAPCombinerParallel [complete]",
+    "BAPCombinerParallel::~BAPCombinerParallel [deleting]",
+    "BAPCombinerParallel::getControls",
+    "BAPCombinerParallel::getId",
+    "BAPCombinerParallel::hasDefault",
+    "BAPStatement::debug",
+    "BAPCombinerParallel::streamSelf",
+    "BAPCombinerParallel::addStatement"
+   ],
+   "bases": [
+    "BAPCombiner"
+   ],
+   "header": "AIBotActionPlan/BAPCombinerParallel.h"
+  },
+  "BAPCombinerSerial": {
+   "vtable": "0x4B90E0",
+   "slots": [
+    "BAPCombinerSerial::execute",
+    "BAPCombinerSerial::~BAPCombinerSerial [complete]",
+    "BAPCombinerSerial::~BAPCombinerSerial [deleting]",
+    "BAPCombinerSerial::getControls",
+    "BAPCombinerSerial::getId",
+    "BAPCombinerSerial::hasDefault",
+    "BAPStatement::debug",
+    "BAPCombinerSerial::streamSelf",
+    "BAPCombinerSerial::addStatement"
+   ],
+   "bases": [
+    "BAPCombiner"
+   ],
+   "header": "AIBotActionPlan/BAPCombinerSerial.h"
+  },
+  "BAPConAllowFire": {
+   "vtable": "0x4B9118",
+   "slots": [
+    "BAPConAllowFire::evaluate",
+    "BAPConAllowFire::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConAllowFire::~BAPConAllowFire [complete]",
+    "BAPConAllowFire::~BAPConAllowFire [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConAllowFire.h"
+  },
+  "BAPConAnd": {
+   "vtable": "0x4B9E40",
+   "slots": [
+    "BAPConAnd::evaluate",
+    "BAPConAnd::getConditionType",
+    "BAPConAnd::streamSelf",
+    "BAPConAnd::~BAPConAnd [complete]",
+    "BAPConAnd::~BAPConAnd [deleting]",
+    "BAPConAnd::addCondition"
+   ],
+   "bases": [
+    "BAPBoleanOp"
+   ],
+   "header": "AIBotActionPlan/BAPConAnd.h"
+  },
+  "BAPConDistanceToProj": {
+   "vtable": "0x4B9168",
+   "slots": [
+    "BAPConDistanceToProj::evaluate",
+    "BAPConDistanceToProj::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConDistanceToProj::~BAPConDistanceToProj [complete]",
+    "BAPConDistanceToProj::~BAPConDistanceToProj [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConDistanceToProj.h"
+  },
+  "BAPConEndOfPath": {
+   "vtable": "0x4B9190",
+   "slots": [
+    "BAPConEndOfPath::evaluate",
+    "BAPConEndOfPath::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConEndOfPath::~BAPConEndOfPath [complete]",
+    "BAPConEndOfPath::~BAPConEndOfPath [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConEndOfPath.h"
+  },
+  "BAPConFalse": {
+   "vtable": "0x4B74E0",
+   "slots": [
+    "BAPConFalse::evaluate",
+    "BAPConFalse::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConFalse::~BAPConFalse [complete]",
+    "BAPConFalse::~BAPConFalse [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConFalse.h"
+  },
+  "BAPConInsideBattleZone": {
+   "vtable": "0x4B91B8",
+   "slots": [
+    "BAPConInsideBattleZone::evaluate",
+    "BAPConInsideBattleZone::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConInsideBattleZone::~BAPConInsideBattleZone [complete]",
+    "BAPConInsideBattleZone::~BAPConInsideBattleZone [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConInsideBattleZone.h"
+  },
+  "BAPConIsSprinting": {
+   "vtable": "0x4B9208",
+   "slots": [
+    "BAPConIsSprinting::evaluate",
+    "BAPConIsSprinting::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConIsSprinting::~BAPConIsSprinting [complete]",
+    "BAPConIsSprinting::~BAPConIsSprinting [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConIsSprinting.h"
+  },
+  "BAPConIsTriggered": {
+   "vtable": "0x4B9268",
+   "slots": [
+    "BAPConIsTriggered::evaluate",
+    "BAPConIsTriggered::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConIsTriggered::~BAPConIsTriggered [complete]",
+    "BAPConIsTriggered::~BAPConIsTriggered [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConIsTriggered.h"
+  },
+  "BAPConIteration": {
+   "vtable": "0x4B9290",
+   "slots": [
+    "BAPConIteration::evaluate",
+    "BAPConIteration::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConIteration::~BAPConIteration [complete]",
+    "BAPConIteration::~BAPConIteration [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConIteration.h"
+  },
+  "BAPConLineOfFire": {
+   "vtable": "0x4B92B8",
+   "slots": [
+    "BAPConLineOfFire::evaluate",
+    "BAPConLineOfFire::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConLineOfFire::~BAPConLineOfFire [complete]",
+    "BAPConLineOfFire::~BAPConLineOfFire [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConLineOfFire.h"
+  },
+  "BAPConNot": {
+   "vtable": "0x4B9EA0",
+   "slots": [
+    "BAPConNot::evaluate",
+    "BAPConNot::getConditionType",
+    "BAPConNot::streamSelf",
+    "BAPConNot::~BAPConNot [complete]",
+    "BAPConNot::~BAPConNot [deleting]",
+    "BAPConNot::addCondition"
+   ],
+   "bases": [
+    "BAPBoleanOp"
+   ],
+   "header": "AIBotActionPlan/BAPConNot.h"
+  },
+  "BAPConObjectBehind": {
+   "vtable": "0x4B95F8",
+   "slots": [
+    "BAPConObjectBehind::evaluate",
+    "BAPConObjectBehind::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectBehind::~BAPConObjectBehind [complete]",
+    "BAPConObjectBehind::~BAPConObjectBehind [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectBehind.h"
+  },
+  "BAPConObjectDistance": {
+   "vtable": "0x4B9620",
+   "slots": [
+    "BAPConObjectDistance::evaluate",
+    "BAPConObjectDistance::getConditionType",
+    "BAPConObjectDistance::streamSelf",
+    "BAPConObjectDistance::~BAPConObjectDistance [complete]",
+    "BAPConObjectDistance::~BAPConObjectDistance [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectDistance.h"
+  },
+  "BAPConObjectDistanceToPoint": {
+   "vtable": "0x4B9648",
+   "slots": [
+    "BAPConObjectDistanceToPoint::evaluate",
+    "BAPConObjectDistanceToPoint::getConditionType",
+    "BAPConObjectDistanceToPoint::streamSelf",
+    "BAPConObjectDistanceToPoint::~BAPConObjectDistanceToPoint [complete]",
+    "BAPConObjectDistanceToPoint::~BAPConObjectDistanceToPoint [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectDistanceToPoint.h"
+  },
+  "BAPConObjectEnemyOccupied": {
+   "vtable": "0x4B9670",
+   "slots": [
+    "BAPConObjectEnemyOccupied::evaluate",
+    "BAPConObjectEnemyOccupied::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectEnemyOccupied::~BAPConObjectEnemyOccupied [complete]",
+    "BAPConObjectEnemyOccupied::~BAPConObjectEnemyOccupied [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectEnemyOccupied.h"
+  },
+  "BAPConObjectExists": {
+   "vtable": "0x4B9698",
+   "slots": [
+    "BAPConObjectExists::evaluate",
+    "BAPConObjectExists::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectExists::~BAPConObjectExists [complete]",
+    "BAPConObjectExists::~BAPConObjectExists [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectExists.h"
+  },
+  "BAPConObjectHealth": {
+   "vtable": "0x4B96C0",
+   "slots": [
+    "BAPConObjectHealth::evaluate",
+    "BAPConObjectHealth::getConditionType",
+    "BAPConObjectHealth::streamSelf",
+    "BAPConObjectHealth::~BAPConObjectHealth [complete]",
+    "BAPConObjectHealth::~BAPConObjectHealth [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectHealth.h"
+  },
+  "BAPConObjectInFront": {
+   "vtable": "0x4B96E8",
+   "slots": [
+    "BAPConObjectInFront::evaluate",
+    "BAPConObjectInFront::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectInFront::~BAPConObjectInFront [complete]",
+    "BAPConObjectInFront::~BAPConObjectInFront [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectInFront.h"
+  },
+  "BAPConObjectInLandingZone": {
+   "vtable": "0x4B9710",
+   "slots": [
+    "BAPConObjectInLandingZone::evaluate",
+    "BAPConObjectInLandingZone::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectInLandingZone::~BAPConObjectInLandingZone [complete]",
+    "BAPConObjectInLandingZone::~BAPConObjectInLandingZone [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectInLandingZone.h"
+  },
+  "BAPConObjectInsideFrustum": {
+   "vtable": "0x4B9738",
+   "slots": [
+    "BAPConObjectInsideFrustum::evaluate",
+    "BAPConObjectInsideFrustum::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectInsideFrustum::~BAPConObjectInsideFrustum [complete]",
+    "BAPConObjectInsideFrustum::~BAPConObjectInsideFrustum [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectInsideFrustum.h"
+  },
+  "BAPConObjectLineOfFire": {
+   "vtable": "0x4B9790",
+   "slots": [
+    "BAPConObjectLineOfFire::evaluate",
+    "BAPConObjectLineOfFire::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectLineOfFire::~BAPConObjectLineOfFire [complete]",
+    "BAPConObjectLineOfFire::~BAPConObjectLineOfFire [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectLineOfFire.h"
+  },
+  "BAPConObjectManDown": {
+   "vtable": "0x4B97B8",
+   "slots": [
+    "BAPConObjectManDown::evaluate",
+    "BAPConObjectManDown::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectManDown::~BAPConObjectManDown [complete]",
+    "BAPConObjectManDown::~BAPConObjectManDown [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectManDown.h"
+  },
+  "BAPConObjectMoved": {
+   "vtable": "0x4B97E0",
+   "slots": [
+    "BAPConObjectMoved::evaluate",
+    "BAPConObjectMoved::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectMoved::~BAPConObjectMoved [complete]",
+    "BAPConObjectMoved::~BAPConObjectMoved [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectMoved.h"
+  },
+  "BAPConObjectOccupied": {
+   "vtable": "0x4B9848",
+   "slots": [
+    "BAPConObjectOccupied::evaluate",
+    "BAPConObjectOccupied::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectOccupied::~BAPConObjectOccupied [complete]",
+    "BAPConObjectOccupied::~BAPConObjectOccupied [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectOccupied.h"
+  },
+  "BAPConObjectSpeed": {
+   "vtable": "0x4B9870",
+   "slots": [
+    "BAPConObjectSpeed::evaluate",
+    "BAPConObjectSpeed::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectSpeed::~BAPConObjectSpeed [complete]",
+    "BAPConObjectSpeed::~BAPConObjectSpeed [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectSpeed.h"
+  },
+  "BAPConObjectTouchingLand": {
+   "vtable": "0x4B9898",
+   "slots": [
+    "BAPConObjectTouchingLand::evaluate",
+    "BAPConObjectTouchingLand::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectTouchingLand::~BAPConObjectTouchingLand [complete]",
+    "BAPConObjectTouchingLand::~BAPConObjectTouchingLand [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectTouchingLand.h"
+  },
+  "BAPConObjectValidAiming": {
+   "vtable": "0x4B98E8",
+   "slots": [
+    "BAPConObjectValidAiming::evaluate",
+    "BAPConObjectValidAiming::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectValidAiming::~BAPConObjectValidAiming [complete]",
+    "BAPConObjectValidAiming::~BAPConObjectValidAiming [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectValidAiming.h"
+  },
+  "BAPConObjectValidPitchAiming": {
+   "vtable": "0x4B9948",
+   "slots": [
+    "BAPConObjectValidPitchAiming::evaluate",
+    "BAPConObjectValidPitchAiming::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectValidPitchAiming::~BAPConObjectValidPitchAiming [complete]",
+    "BAPConObjectValidPitchAiming::~BAPConObjectValidPitchAiming [deleting]"
+   ],
+   "bases": [
+    "BAPConObjectValidAiming"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectValidPitchAiming.h"
+  },
+  "BAPConObjectValidPosition": {
+   "vtable": "0x4B99A8",
+   "slots": [
+    "BAPConObjectValidPosition::evaluate",
+    "BAPConObjectValidPosition::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectValidPosition::~BAPConObjectValidPosition [complete]",
+    "BAPConObjectValidPosition::~BAPConObjectValidPosition [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectValidPosition.h"
+  },
+  "BAPConObjectValidYawAiming": {
+   "vtable": "0x4B9A08",
+   "slots": [
+    "BAPConObjectValidYawAiming::evaluate",
+    "BAPConObjectValidYawAiming::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectValidYawAiming::~BAPConObjectValidYawAiming [complete]",
+    "BAPConObjectValidYawAiming::~BAPConObjectValidYawAiming [deleting]"
+   ],
+   "bases": [
+    "BAPConObjectValidAiming"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectValidYawAiming.h"
+  },
+  "BAPConObjectVisible": {
+   "vtable": "0x4B9A40",
+   "slots": [
+    "BAPConObjectVisible::evaluate",
+    "BAPConObjectVisible::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConObjectVisible::~BAPConObjectVisible [complete]",
+    "BAPConObjectVisible::~BAPConObjectVisible [deleting]",
+    "BAPConObjectVisible::operator<<(std::ostream&)"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConObjectVisible.h"
+  },
+  "BAPConOkToThrowGrenade": {
+   "vtable": "0x4B9308",
+   "slots": [
+    "BAPConOkToThrowGrenade::evaluate",
+    "BAPConOkToThrowGrenade::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConOkToThrowGrenade::~BAPConOkToThrowGrenade [complete]",
+    "BAPConOkToThrowGrenade::~BAPConOkToThrowGrenade [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConOkToThrowGrenade.h"
+  },
+  "BAPConOr": {
+   "vtable": "0x4B9EE0",
+   "slots": [
+    "BAPConOr::evaluate",
+    "BAPConOr::getConditionType",
+    "BAPConOr::streamSelf",
+    "BAPConOr::~BAPConOr [complete]",
+    "BAPConOr::~BAPConOr [deleting]",
+    "BAPConOr::addCondition"
+   ],
+   "bases": [
+    "BAPBoleanOp"
+   ],
+   "header": "AIBotActionPlan/BAPConOr.h"
+  },
+  "BAPConPointAt": {
+   "vtable": "0x4B9340",
+   "slots": [
+    "BAPConPointAt::evaluate",
+    "BAPConPointAt::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConPointAt::~BAPConPointAt [complete]",
+    "BAPConPointAt::~BAPConPointAt [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConPointAt.h"
+  },
+  "BAPConPointDistance": {
+   "vtable": "0x4B9368",
+   "slots": [
+    "BAPConPointDistance::evaluate",
+    "BAPConPointDistance::getConditionType",
+    "BAPConPointDistance::streamSelf",
+    "BAPConPointDistance::~BAPConPointDistance [complete]",
+    "BAPConPointDistance::~BAPConPointDistance [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConPointDistance.h"
+  },
+  "BAPConPointInFront": {
+   "vtable": "0x4B9390",
+   "slots": [
+    "BAPConPointInFront::evaluate",
+    "BAPConPointInFront::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConPointInFront::~BAPConPointInFront [complete]",
+    "BAPConPointInFront::~BAPConPointInFront [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConPointInFront.h"
+  },
+  "BAPConPosition": {
+   "vtable": "0x4B93B8",
+   "slots": [
+    "BAPConPosition::evaluate",
+    "BAPConPosition::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConPosition::~BAPConPosition [complete]",
+    "BAPConPosition::~BAPConPosition [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConPosition.h"
+  },
+  "BAPConSharedCondition": {
+   "vtable": "0x4B93E0",
+   "slots": [
+    "BAPConSharedCondition::evaluate",
+    "BAPConSharedCondition::getConditionType",
+    "BAPConSharedCondition::streamSelf",
+    "BAPConSharedCondition::~BAPConSharedCondition [complete]",
+    "BAPConSharedCondition::~BAPConSharedCondition [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConSharedCondition.h"
+  },
+  "BAPConSplashDamage": {
+   "vtable": "0x4B9448",
+   "slots": [
+    "BAPConSplashDamage::evaluate",
+    "BAPConSplashDamage::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConSplashDamage::~BAPConSplashDamage [complete]",
+    "BAPConSplashDamage::~BAPConSplashDamage [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConSplashDamage.h"
+  },
+  "BAPConStrategicObjectStatus": {
+   "vtable": "0x4B9470",
+   "slots": [
+    "BAPConStrategicObjectStatus::evaluate",
+    "BAPConStrategicObjectStatus::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConStrategicObjectStatus::~BAPConStrategicObjectStatus [complete]",
+    "BAPConStrategicObjectStatus::~BAPConStrategicObjectStatus [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConStrategicObjectStatus.h"
+  },
+  "BAPConTime": {
+   "vtable": "0x4B9498",
+   "slots": [
+    "BAPConTime::evaluate",
+    "BAPConTime::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConTime::~BAPConTime [complete]",
+    "BAPConTime::~BAPConTime [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConTime.h"
+  },
+  "BAPConTotalAmmo": {
+   "vtable": "0x4B9AA8",
+   "slots": [
+    "BAPConTotalAmmo::evaluate",
+    "BAPConTotalAmmo::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConTotalAmmo::~BAPConTotalAmmo [complete]",
+    "BAPConTotalAmmo::~BAPConTotalAmmo [deleting]"
+   ],
+   "bases": [
+    "BAPConObject"
+   ],
+   "header": "AIBotActionPlan/BAPConTotalAmmo.h"
+  },
+  "BAPConTriggerableActive": {
+   "vtable": "0x4B94E8",
+   "slots": [
+    "BAPConTriggerableActive::evaluate",
+    "BAPConTriggerableActive::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConTriggerableActive::~BAPConTriggerableActive [complete]",
+    "BAPConTriggerableActive::~BAPConTriggerableActive [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConTriggerableActive.h"
+  },
+  "BAPConTrue": {
+   "vtable": "0x4B7500",
+   "slots": [
+    "BAPConTrue::evaluate",
+    "BAPConTrue::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConTrue::~BAPConTrue [complete]",
+    "BAPConTrue::~BAPConTrue [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConTrue.h"
+  },
+  "BAPConWeaponDetonatorIsActive": {
+   "vtable": "0x4B9B08",
+   "slots": [
+    "BAPConWeaponDetonatorIsActive::evaluate",
+    "BAPConWeaponDetonatorIsActive::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponDetonatorIsActive::~BAPConWeaponDetonatorIsActive [complete]",
+    "BAPConWeaponDetonatorIsActive::~BAPConWeaponDetonatorIsActive [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponDetonatorIsActive.h"
+  },
+  "BAPConWeaponHasLockOnTarget": {
+   "vtable": "0x4B9B68",
+   "slots": [
+    "BAPConWeaponHasLockOnTarget::evaluate",
+    "BAPConWeaponHasLockOnTarget::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponHasLockOnTarget::~BAPConWeaponHasLockOnTarget [complete]",
+    "BAPConWeaponHasLockOnTarget::~BAPConWeaponHasLockOnTarget [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponHasLockOnTarget.h"
+  },
+  "BAPConWeaponHeat": {
+   "vtable": "0x4B9BC8",
+   "slots": [
+    "BAPConWeaponHeat::evaluate",
+    "BAPConWeaponHeat::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponHeat::~BAPConWeaponHeat [complete]",
+    "BAPConWeaponHeat::~BAPConWeaponHeat [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponHeat.h"
+  },
+  "BAPConWeaponIsActive": {
+   "vtable": "0x4B9C28",
+   "slots": [
+    "BAPConWeaponIsActive::evaluate",
+    "BAPConWeaponIsActive::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponIsActive::~BAPConWeaponIsActive [complete]",
+    "BAPConWeaponIsActive::~BAPConWeaponIsActive [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponIsActive.h"
+  },
+  "BAPConWeaponIsZoomed": {
+   "vtable": "0x4B9C88",
+   "slots": [
+    "BAPConWeaponIsZoomed::evaluate",
+    "BAPConWeaponIsZoomed::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponIsZoomed::~BAPConWeaponIsZoomed [complete]",
+    "BAPConWeaponIsZoomed::~BAPConWeaponIsZoomed [deleting]"
+   ],
+   "bases": [
+    "BAPCondition"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponIsZoomed.h"
+  },
+  "BAPConWeaponMagAmmo": {
+   "vtable": "0x4B9CE8",
+   "slots": [
+    "BAPConWeaponMagAmmo::evaluate",
+    "BAPConWeaponMagAmmo::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponMagAmmo::~BAPConWeaponMagAmmo [complete]",
+    "BAPConWeaponMagAmmo::~BAPConWeaponMagAmmo [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponMagAmmo.h"
+  },
+  "BAPConWeaponReadyToFire": {
+   "vtable": "0x4B9D48",
+   "slots": [
+    "BAPConWeaponReadyToFire::evaluate",
+    "BAPConWeaponReadyToFire::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponReadyToFire::~BAPConWeaponReadyToFire [complete]",
+    "BAPConWeaponReadyToFire::~BAPConWeaponReadyToFire [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponReadyToFire.h"
+  },
+  "BAPConWeaponTargetReachable": {
+   "vtable": "0x4B9DA8",
+   "slots": [
+    "BAPConWeaponTargetReachable::evaluate",
+    "BAPConWeaponTargetReachable::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponTargetReachable::~BAPConWeaponTargetReachable [complete]",
+    "BAPConWeaponTargetReachable::~BAPConWeaponTargetReachable [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponTargetReachable.h"
+  },
+  "BAPConWeaponTotalAmmo": {
+   "vtable": "0x4B9E08",
+   "slots": [
+    "BAPConWeaponTotalAmmo::evaluate",
+    "BAPConWeaponTotalAmmo::getConditionType",
+    "BAPCondition::streamSelf",
+    "BAPConWeaponTotalAmmo::~BAPConWeaponTotalAmmo [complete]",
+    "BAPConWeaponTotalAmmo::~BAPConWeaponTotalAmmo [deleting]"
+   ],
+   "bases": [
+    "BAPConWeapon"
+   ],
+   "header": "AIBotActionPlan/BAPConWeaponTotalAmmo.h"
+  },
+  "BAPCondition": {
+   "vtable": "0x4BA1C8",
+   "slots": [
+    "pure",
+    "pure",
+    "BAPCondition::streamSelf",
+    "BAPCondition::~BAPCondition [complete]",
+    "BAPCondition::~BAPCondition [deleting]"
+   ],
+   "bases": [],
+   "header": "AIBotActionPlan/BAPCondition.h"
+  },
+  "BAPDebugger": {
+   "vtable": "0x4BC9C8",
+   "slots": [
+    "BAPDebugger::~BAPDebugger [complete]",
+    "BAPDebugger::~BAPDebugger [deleting]",
+    "BAPDebugger::debug",
+    "BAPDebugger::clear",
+    "BAPDebugger::getImplementation"
+   ],
+   "bases": [
+    "BotScriptDebugger"
+   ],
+   "header": "AIPlanInterpreter/BAPDebugger.h"
+  },
+  "BAPFlowCEnd": {
+   "vtable": "0x4B8EC0",
+   "slots": [
+    "BAPFlowCEnd::execute",
+    "BAPFlowCEnd::~BAPFlowCEnd [complete]",
+    "BAPFlowCEnd::~BAPFlowCEnd [deleting]",
+    "BAPFlowCEnd::getControls",
+    "BAPFlowCEnd::getId",
+    "BAPFlowCEnd::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPFlowControl"
+   ],
+   "header": "AIBotActionPlan/BAPFlowCEnd.h"
+  },
+  "BAPFlowCIf": {
+   "vtable": "0x4B8F40",
+   "slots": [
+    "BAPFlowCIf::execute",
+    "BAPFlowCIf::~BAPFlowCIf [complete]",
+    "BAPFlowCIf::~BAPFlowCIf [deleting]",
+    "BAPFlowCIf::getControls",
+    "BAPFlowCIf::getId",
+    "BAPFlowCIf::hasDefault",
+    "BAPFlowCIf::debug",
+    "BAPFlowCIf::streamSelf"
+   ],
+   "bases": [
+    "BAPFlowControl"
+   ],
+   "header": "AIBotActionPlan/BAPFlowCIf.h"
+  },
+  "BAPFlowCWait": {
+   "vtable": "0x4B8F80",
+   "slots": [
+    "BAPFlowCWait::execute",
+    "BAPFlowCWait::~BAPFlowCWait [complete]",
+    "BAPFlowCWait::~BAPFlowCWait [deleting]",
+    "BAPFlowCWait::getControls",
+    "BAPFlowCWait::getId",
+    "BAPFlowCWait::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPFlowControl"
+   ],
+   "header": "AIBotActionPlan/BAPFlowCWait.h"
+  },
+  "BAPFlowCWhile": {
+   "vtable": "0x4B9000",
+   "slots": [
+    "BAPFlowCWhile::execute",
+    "BAPFlowCWhile::~BAPFlowCWhile [complete]",
+    "BAPFlowCWhile::~BAPFlowCWhile [deleting]",
+    "BAPFlowCWhile::getControls",
+    "BAPFlowCWhile::getId",
+    "BAPFlowCWhile::hasDefault",
+    "BAPStatement::debug",
+    "BAPFlowCWhile::streamSelf"
+   ],
+   "bases": [
+    "BAPFlowControl"
+   ],
+   "header": "AIBotActionPlan/BAPFlowCWhile.h"
+  },
+  "BAPICChangeVehicle": {
+   "vtable": "0x4BA280",
+   "slots": [
+    "BAPICChangeVehicle::execute",
+    "BAPICChangeVehicle::~BAPICChangeVehicle [complete]",
+    "BAPICChangeVehicle::~BAPICChangeVehicle [deleting]",
+    "BAPStatement::getControls",
+    "BAPICChangeVehicle::getId",
+    "BAPICChangeVehicle::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPInterruptControl"
+   ],
+   "header": "AIBotActionPlan/BAPICChangeVehicle.h"
+  },
+  "BAPICTurnLock": {
+   "vtable": "0x4BA2C0",
+   "slots": [
+    "BAPICTurnLock::execute",
+    "BAPICTurnLock::~BAPICTurnLock [complete]",
+    "BAPICTurnLock::~BAPICTurnLock [deleting]",
+    "BAPStatement::getControls",
+    "BAPICTurnLock::getId",
+    "BAPICTurnLock::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPInterruptControl"
+   ],
+   "header": "AIBotActionPlan/BAPICTurnLock.h"
+  },
+  "BAPIWChange": {
+   "vtable": "0x4B9FE0",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWChange::~BAPIWChange [complete]",
+    "BAPIWChange::~BAPIWChange [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWChange::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWChange.h"
+  },
+  "BAPIWDefuseMines": {
+   "vtable": "0x4BA020",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWDefuseMines::~BAPIWDefuseMines [complete]",
+    "BAPIWDefuseMines::~BAPIWDefuseMines [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWDefuseMines::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWDefuseMines.h"
+  },
+  "BAPIWFire": {
+   "vtable": "0x4BA060",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWFire::~BAPIWFire [complete]",
+    "BAPIWFire::~BAPIWFire [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWFire::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWFire.h"
+  },
+  "BAPIWIdle": {
+   "vtable": "0x4BA0A0",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWIdle::~BAPIWIdle [complete]",
+    "BAPIWIdle::~BAPIWIdle [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWIdle::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWIdle.h"
+  },
+  "BAPIWMoveTo": {
+   "vtable": "0x4BA0E0",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWMoveTo::~BAPIWMoveTo [complete]",
+    "BAPIWMoveTo::~BAPIWMoveTo [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWMoveTo::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWMoveTo.h"
+  },
+  "BAPIWRoam": {
+   "vtable": "0x4BA120",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWRoam::~BAPIWRoam [complete]",
+    "BAPIWRoam::~BAPIWRoam [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWRoam::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWRoam.h"
+  },
+  "BAPIWTakeCover": {
+   "vtable": "0x4BA160",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPIWTakeCover::~BAPIWTakeCover [complete]",
+    "BAPIWTakeCover::~BAPIWTakeCover [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPIWTakeCover::getInfoType"
+   ],
+   "bases": [
+    "BAPInfoWrapper"
+   ],
+   "header": "AIBotActionPlan/BAPIWTakeCover.h"
+  },
+  "BAPInfoWrapper": {
+   "vtable": "0x4B9F60",
+   "slots": [
+    "BAPInfoWrapper::execute",
+    "BAPInfoWrapper::~BAPInfoWrapper [complete]",
+    "BAPInfoWrapper::~BAPInfoWrapper [deleting]",
+    "BAPInfoWrapper::getControls",
+    "BAPInfoWrapper::getId",
+    "BAPInfoWrapper::hasDefault",
+    "BAPStatement::debug",
+    "BAPInfoWrapper::streamSelf",
+    "BAPInfoWrapper::getInfoType"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPInfoWrapper.h"
+  },
+  "BAPInterpreter": {
+   "vtable": "0x4BCA48",
+   "slots": [
+    "BAPInterpreter::~BAPInterpreter [complete]",
+    "BAPInterpreter::~BAPInterpreter [deleting]",
+    "BAPInterpreter::execute"
+   ],
+   "bases": [
+    "PlanInterpreter"
+   ],
+   "header": "AIPlanInterpreter/BAPInterpreter.h"
+  },
+  "BAPStatement": {
+   "vtable": "0x4BA240",
+   "slots": [
+    "pure",
+    "BAPStatement::~BAPStatement [complete]",
+    "BAPStatement::~BAPStatement [deleting]",
+    "BAPStatement::getControls",
+    "pure",
+    "pure",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BotScript"
+   ],
+   "header": "AIBotActionPlan/BAPStatement.h"
+  },
+  "BAPWrapperAiming": {
+   "vtable": "0x4BA340",
+   "slots": [
+    "BAPWrapperAiming::execute",
+    "BAPWrapperAiming::~BAPWrapperAiming [complete]",
+    "BAPWrapperAiming::~BAPWrapperAiming [deleting]",
+    "BAPStatement::getControls",
+    "BAPWrapperAiming::getId",
+    "BAPWrapperAiming::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPWrapperAiming.h"
+  },
+  "BAPWrapperFinished": {
+   "vtable": "0x4BA3C0",
+   "slots": [
+    "BAPWrapperFinished::execute",
+    "BAPWrapperFinished::~BAPWrapperFinished [complete]",
+    "BAPWrapperFinished::~BAPWrapperFinished [deleting]",
+    "BAPStatement::getControls",
+    "BAPWrapperFinished::getId",
+    "BAPWrapperFinished::hasDefault",
+    "BAPStatement::debug",
+    "BAPWrapperFinished::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPWrapperFinished.h"
+  },
+  "BAPWrapperLookAt": {
+   "vtable": "0x4BA440",
+   "slots": [
+    "BAPWrapperLookAt::execute",
+    "BAPWrapperLookAt::~BAPWrapperLookAt [complete]",
+    "BAPWrapperLookAt::~BAPWrapperLookAt [deleting]",
+    "BAPStatement::getControls",
+    "BAPWrapperLookAt::getId",
+    "BAPWrapperLookAt::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPWrapperLookAt.h"
+  },
+  "BAPWrapperWeapon": {
+   "vtable": "0x4BA4C0",
+   "slots": [
+    "BAPWrapperWeapon::execute",
+    "BAPWrapperWeapon::~BAPWrapperWeapon [complete]",
+    "BAPWrapperWeapon::~BAPWrapperWeapon [deleting]",
+    "BAPStatement::getControls",
+    "BAPWrapperWeapon::getId",
+    "BAPWrapperWeapon::hasDefault",
+    "BAPStatement::debug",
+    "BAPStatement::streamSelf"
+   ],
+   "bases": [
+    "BAPStatement"
+   ],
+   "header": "AIBotActionPlan/BAPWrapperWeapon.h"
+  },
+  "BBAvoid": {
+   "vtable": "0x4BA5C0",
+   "slots": [
+    "BBAvoid::~BBAvoid [complete]",
+    "BBAvoid::~BBAvoid [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBAvoid::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBAvoid.h"
+  },
+  "BBBridgeRepair": {
+   "vtable": "0x4BA660",
+   "slots": [
+    "BBBridgeRepair::~BBBridgeRepair [complete]",
+    "BBBridgeRepair::~BBBridgeRepair [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBBridgeRepair::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBBridgeRepair::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBBridgeRepair.h"
+  },
+  "BBC4": {
+   "vtable": "0x4BA700",
+   "slots": [
+    "BBC4::~BBC4 [complete]",
+    "BBC4::~BBC4 [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBC4::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBC4::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBC4.h"
+  },
+  "BBCallForMedic": {
+   "vtable": "0x4BA7A0",
+   "slots": [
+    "BBCallForMedic::~BBCallForMedic [complete]",
+    "BBCallForMedic::~BBCallForMedic [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBCallForMedic::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBCallForMedic.h"
+  },
+  "BBChange": {
+   "vtable": "0x4BA860",
+   "slots": [
+    "BBChange::~BBChange [complete]",
+    "BBChange::~BBChange [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBChange::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBChange.h"
+  },
+  "BBChangeLandingCraft": {
+   "vtable": "0x4BA920",
+   "slots": [
+    "BBChangeLandingCraft::~BBChangeLandingCraft [complete]",
+    "BBChangeLandingCraft::~BBChangeLandingCraft [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBChangeLandingCraft::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBChangeLandingCraft.h"
+  },
+  "BBChangeTeleport": {
+   "vtable": "0x4BA9C0",
+   "slots": [
+    "BBChangeTeleport::~BBChangeTeleport [complete]",
+    "BBChangeTeleport::~BBChangeTeleport [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBChangeTeleport::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBChangeTeleport.h"
+  },
+  "BBDefuseMines": {
+   "vtable": "0x4BAA60",
+   "slots": [
+    "BBDefuseMines::~BBDefuseMines [complete]",
+    "BBDefuseMines::~BBDefuseMines [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBDefuseMines::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBDefuseMines::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBDefuseMines.h"
+  },
+  "BBFire": {
+   "vtable": "0x4BAB00",
+   "slots": [
+    "BBFire::~BBFire [complete]",
+    "BBFire::~BBFire [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFire::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBFire::initializeGenerator",
+    "BBFire::initializeGenerator"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBFire.h"
+  },
+  "BBFire3d": {
+   "vtable": "0x4BABA0",
+   "slots": [
+    "BBFire3d::~BBFire3d [complete]",
+    "BBFire3d::~BBFire3d [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFire3d::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBFire3d.h"
+  },
+  "BBFireArtilleryDriver": {
+   "vtable": "0x4BAC40",
+   "slots": [
+    "BBFireArtilleryDriver::~BBFireArtilleryDriver [complete]",
+    "BBFireArtilleryDriver::~BBFireArtilleryDriver [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFireArtilleryDriver::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBFireArtilleryDriver.h"
+  },
+  "BBFireInfantery": {
+   "vtable": "0x4BACA0",
+   "slots": [
+    "BBFireInfantery::~BBFireInfantery [complete]",
+    "BBFireInfantery::~BBFireInfantery [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFire::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBFireInfantery::initializeGenerator",
+    "BBFire::initializeGenerator"
+   ],
+   "bases": [
+    "BBFire"
+   ],
+   "header": "AIBotBehaviour/BBFireInfantery.h"
+  },
+  "BBFireLargeBore": {
+   "vtable": "0x4BAD40",
+   "slots": [
+    "BBFireLargeBore::~BBFireLargeBore [complete]",
+    "BBFireLargeBore::~BBFireLargeBore [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFireLargeBore::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBFireLargeBore::initializeGenerator"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBFireLargeBore.h"
+  },
+  "BBFireUnarmed": {
+   "vtable": "0x4BADE0",
+   "slots": [
+    "BBFireUnarmed::~BBFireUnarmed [complete]",
+    "BBFireUnarmed::~BBFireUnarmed [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBFireUnarmed::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBFireUnarmed.h"
+  },
+  "BBIdle": {
+   "vtable": "0x4BAE80",
+   "slots": [
+    "BBIdle::~BBIdle [complete]",
+    "BBIdle::~BBIdle [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BBIdle::reset",
+    "BBIdle::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBIdle.h"
+  },
+  "BBMedicAssist": {
+   "vtable": "0x4BAF20",
+   "slots": [
+    "BBMedicAssist::~BBMedicAssist [complete]",
+    "BBMedicAssist::~BBMedicAssist [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBMedicAssist::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BBMedicAssist::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBMedicAssist.h"
+  },
+  "BBMoveTo": {
+   "vtable": "0x4BAF80",
+   "slots": [
+    "BBMoveTo::~BBMoveTo [complete]",
+    "BBMoveTo::~BBMoveTo [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBMoveTo::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBMoveTo.h"
+  },
+  "BBMoveToFixed": {
+   "vtable": "0x4BAFE0",
+   "slots": [
+    "BBMoveToFixed::~BBMoveToFixed [complete]",
+    "BBMoveToFixed::~BBMoveToFixed [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBMoveToFixed::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBMoveToFixed.h"
+  },
+  "BBPAvoidCollision": {
+   "vtable": "0x4BB6A0",
+   "slots": [
+    "BBPAvoidCollision::~BBPAvoidCollision [complete]",
+    "BBPAvoidCollision::~BBPAvoidCollision [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "pure"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPAvoidCollision.h"
+  },
+  "BBPAvoidCollision2d": {
+   "vtable": "0x4BB720",
+   "slots": [
+    "BBPAvoidCollision2d::~BBPAvoidCollision2d [complete]",
+    "BBPAvoidCollision2d::~BBPAvoidCollision2d [deleting]",
+    "BBPAvoidCollision2d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPAvoidCollision2d::init"
+   ],
+   "bases": [
+    "BBPAvoidCollision"
+   ],
+   "header": "AIBotBehaviourPattern/BBPAvoidCollision2d.h"
+  },
+  "BBPAvoidCollision3d": {
+   "vtable": "0x4BB7A0",
+   "slots": [
+    "BBPAvoidCollision3d::~BBPAvoidCollision3d [complete]",
+    "BBPAvoidCollision3d::~BBPAvoidCollision3d [deleting]",
+    "BBPAvoidCollision3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPAvoidCollision3d::init"
+   ],
+   "bases": [
+    "BBPAvoidCollision"
+   ],
+   "header": "AIBotBehaviourPattern/BBPAvoidCollision3d.h"
+  },
+  "BBPAvoidCollisionInfantery": {
+   "vtable": "0x4BB820",
+   "slots": [
+    "BBPAvoidCollisionInfantery::~BBPAvoidCollisionInfantery [complete]",
+    "BBPAvoidCollisionInfantery::~BBPAvoidCollisionInfantery [deleting]",
+    "BBPAvoidCollisionInfantery::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPAvoidCollisionInfantery::init"
+   ],
+   "bases": [
+    "BBPAvoidCollision"
+   ],
+   "header": "AIBotBehaviourPattern/BBPAvoidCollisionInfantery.h"
+  },
+  "BBPBridgeRepair": {
+   "vtable": "0x4BB8A0",
+   "slots": [
+    "BBPBridgeRepair::~BBPBridgeRepair [complete]",
+    "BBPBridgeRepair::~BBPBridgeRepair [deleting]",
+    "BBPBridgeRepair::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPBridgeRepair.h"
+  },
+  "BBPC4": {
+   "vtable": "0x4BB920",
+   "slots": [
+    "BBPC4::~BBPC4 [complete]",
+    "BBPC4::~BBPC4 [deleting]",
+    "BBPC4::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPC4.h"
+  },
+  "BBPCallForMedic": {
+   "vtable": "0x4BB980",
+   "slots": [
+    "BBPCallForMedic::~BBPCallForMedic [complete]",
+    "BBPCallForMedic::~BBPCallForMedic [deleting]",
+    "BBPCallForMedic::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPCallForMedic.h"
+  },
+  "BBPChange": {
+   "vtable": "0x4BBA00",
+   "slots": [
+    "BBPChange::~BBPChange [complete]",
+    "BBPChange::~BBPChange [deleting]",
+    "BBPChange::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPChange.h"
+  },
+  "BBPChangeLandingCraft": {
+   "vtable": "0x4BBA80",
+   "slots": [
+    "BBPChangeLandingCraft::~BBPChangeLandingCraft [complete]",
+    "BBPChangeLandingCraft::~BBPChangeLandingCraft [deleting]",
+    "BBPChangeLandingCraft::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPChangeLandingCraft.h"
+  },
+  "BBPChangeTeleport": {
+   "vtable": "0x4BBB00",
+   "slots": [
+    "BBPChangeTeleport::~BBPChangeTeleport [complete]",
+    "BBPChangeTeleport::~BBPChangeTeleport [deleting]",
+    "BBPChangeTeleport::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPChangeTeleport.h"
+  },
+  "BBPDefuseMines": {
+   "vtable": "0x4BBB80",
+   "slots": [
+    "BBPDefuseMines::~BBPDefuseMines [complete]",
+    "BBPDefuseMines::~BBPDefuseMines [deleting]",
+    "BBPDefuseMines::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPDefuseMines.h"
+  },
+  "BBPFire": {
+   "vtable": "0x4BBBC0",
+   "slots": [
+    "BBPFire::~BBPFire [complete]",
+    "BBPFire::~BBPFire [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "pure",
+    "pure",
+    "BBPFire::getImplementationType"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPFire.h"
+  },
+  "BBPFire2d": {
+   "vtable": "0x4BBC80",
+   "slots": [
+    "BBPFire2d::~BBPFire2d [complete]",
+    "BBPFire2d::~BBPFire2d [deleting]",
+    "BBPFire2d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPFire2d::init",
+    "BBPFire2d::init",
+    "BBPFire2d::getImplementationType"
+   ],
+   "bases": [
+    "BBPFire"
+   ],
+   "header": "AIBotBehaviourPattern/BBPFire2d.h"
+  },
+  "BBPFire2dDriver": {
+   "vtable": "0x4BBD60",
+   "slots": [
+    "BBPFire2dDriver::~BBPFire2dDriver [complete]",
+    "BBPFire2dDriver::~BBPFire2dDriver [deleting]",
+    "BBPFire2dDriver::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPFire2dDriver::init",
+    "BBPFire2dDriver::init",
+    "BBPFire2dDriver::getImplementationType"
+   ],
+   "bases": [
+    "BBPFire"
+   ],
+   "header": "AIBotBehaviourPattern/BBPFire2dDriver.h"
+  },
+  "BBPFire3d": {
+   "vtable": "0x4BBE00",
+   "slots": [
+    "BBPFire3d::~BBPFire3d [complete]",
+    "BBPFire3d::~BBPFire3d [deleting]",
+    "BBPFire3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPFire3d::init",
+    "BBPFire3d::init",
+    "BBPFire3d::getImplementationType"
+   ],
+   "bases": [
+    "BBPFire"
+   ],
+   "header": "AIBotBehaviourPattern/BBPFire3d.h"
+  },
+  "BBPFireInfantery": {
+   "vtable": "0x4BBE80",
+   "slots": [
+    "BBPFireInfantery::~BBPFireInfantery [complete]",
+    "BBPFireInfantery::~BBPFireInfantery [deleting]",
+    "BBPFireInfantery::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPFireInfantery::init",
+    "BBPFireInfantery::init",
+    "BBPFireInfantery::getImplementationType"
+   ],
+   "bases": [
+    "BBPFire"
+   ],
+   "header": "AIBotBehaviourPattern/BBPFireInfantery.h"
+  },
+  "BBPGotoWaypoint": {
+   "vtable": "0x4BBF40",
+   "slots": [
+    "BBPGotoWaypoint::~BBPGotoWaypoint [complete]",
+    "BBPGotoWaypoint::~BBPGotoWaypoint [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "pure"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPGotoWaypoint.h"
+  },
+  "BBPGotoWaypoint2d": {
+   "vtable": "0x4BBF00",
+   "slots": [
+    "BBPGotoWaypoint2d::~BBPGotoWaypoint2d [complete]",
+    "BBPGotoWaypoint2d::~BBPGotoWaypoint2d [deleting]",
+    "BBPGotoWaypoint2d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPGotoWaypoint2d::init"
+   ],
+   "bases": [
+    "BBPGotoWaypoint"
+   ],
+   "header": "AIBotBehaviourPattern/BBPGotoWaypoints2d.h"
+  },
+  "BBPGotoWaypoint3d": {
+   "vtable": "0x4BBFC0",
+   "slots": [
+    "BBPGotoWaypoint3d::~BBPGotoWaypoint3d [complete]",
+    "BBPGotoWaypoint3d::~BBPGotoWaypoint3d [deleting]",
+    "BBPGotoWaypoint3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPGotoWaypoint3d::init"
+   ],
+   "bases": [
+    "BBPGotoWaypoint"
+   ],
+   "header": "AIBotBehaviourPattern/BBPGotoWaypoints3d.h"
+  },
+  "BBPGotoWaypointBoat": {
+   "vtable": "0x4BC040",
+   "slots": [
+    "BBPGotoWaypointBoat::~BBPGotoWaypointBoat [complete]",
+    "BBPGotoWaypointBoat::~BBPGotoWaypointBoat [deleting]",
+    "BBPGotoWaypointBoat::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPGotoWaypointBoat::init"
+   ],
+   "bases": [
+    "BBPGotoWaypoint"
+   ],
+   "header": "AIBotBehaviourPattern/BBPGotoWaypointsBoat.h"
+  },
+  "BBPGotoWaypointSoldier": {
+   "vtable": "0x4BC0C0",
+   "slots": [
+    "BBPGotoWaypointSoldier::~BBPGotoWaypointSoldier [complete]",
+    "BBPGotoWaypointSoldier::~BBPGotoWaypointSoldier [deleting]",
+    "BBPGotoWaypointSoldier::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPGotoWaypointSoldier::init"
+   ],
+   "bases": [
+    "BBPGotoWaypoint"
+   ],
+   "header": "AIBotBehaviourPattern/BBPGotoWaypointsInfantery.h"
+  },
+  "BBPHeliFire3d": {
+   "vtable": "0x4BC140",
+   "slots": [
+    "BBPHeliFire3d::~BBPHeliFire3d [complete]",
+    "BBPHeliFire3d::~BBPHeliFire3d [deleting]",
+    "BBPHeliFire3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPHeliFire3d::init",
+    "BBPHeliFire3d::init",
+    "BBPHeliFire3d::getImplementationType"
+   ],
+   "bases": [
+    "BBPFire"
+   ],
+   "header": "AIBotBehaviourPattern/BBPHeliFire3d.h"
+  },
+  "BBPIdle": {
+   "vtable": "0x4BC1C0",
+   "slots": [
+    "BBPIdle::~BBPIdle [complete]",
+    "BBPIdle::~BBPIdle [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPIdle::getType"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPIdle.h"
+  },
+  "BBPIdle2d": {
+   "vtable": "0x4BC240",
+   "slots": [
+    "BBPIdle2d::~BBPIdle2d [complete]",
+    "BBPIdle2d::~BBPIdle2d [deleting]",
+    "BBPIdle2d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPIdle2d::getType"
+   ],
+   "bases": [
+    "BBPIdle"
+   ],
+   "header": "AIBotBehaviourPattern/BBPIdle2d.h"
+  },
+  "BBPIdle3d": {
+   "vtable": "0x4BC2C0",
+   "slots": [
+    "BBPIdle3d::~BBPIdle3d [complete]",
+    "BBPIdle3d::~BBPIdle3d [deleting]",
+    "BBPIdle3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPIdle3d::getType"
+   ],
+   "bases": [
+    "BBPIdle"
+   ],
+   "header": "AIBotBehaviourPattern/BBPIdle3d.h"
+  },
+  "BBPIdleInfantery": {
+   "vtable": "0x4BC340",
+   "slots": [
+    "BBPIdleInfantery::~BBPIdleInfantery [complete]",
+    "BBPIdleInfantery::~BBPIdleInfantery [deleting]",
+    "BBPIdleInfantery::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPIdleInfantery::getType"
+   ],
+   "bases": [
+    "BBPIdle"
+   ],
+   "header": "AIBotBehaviourPattern/BBPIdleInfantery.h"
+  },
+  "BBPMedicAssist": {
+   "vtable": "0x4BC3C0",
+   "slots": [
+    "BBPMedicAssist::~BBPMedicAssist [complete]",
+    "BBPMedicAssist::~BBPMedicAssist [deleting]",
+    "BBPMedicAssist::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPMedicAssist.h"
+  },
+  "BBPPattern": {
+   "vtable": "0x4BC400",
+   "slots": [
+    "BBPPattern::~BBPPattern [complete]",
+    "BBPPattern::~BBPPattern [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "PlanGenerator"
+   ],
+   "header": "AIBotBehaviourPattern/BBPPattern.h"
+  },
+  "BBPRandom": {
+   "vtable": "0x4BC4A0",
+   "slots": [
+    "BBPRandom::~BBPRandom [complete]",
+    "BBPRandom::~BBPRandom [deleting]",
+    "BBPRandom::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRandom.h"
+  },
+  "BBPRevive": {
+   "vtable": "0x4BC520",
+   "slots": [
+    "BBPRevive::~BBPRevive [complete]",
+    "BBPRevive::~BBPRevive [deleting]",
+    "BBPRevive::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRevive.h"
+  },
+  "BBPRoam": {
+   "vtable": "0x4BC560",
+   "slots": [
+    "BBPRoam::~BBPRoam [complete]",
+    "BBPRoam::~BBPRoam [deleting]",
+    "pure",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPRoam::getRoamType"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRoam.h"
+  },
+  "BBPRoam2d": {
+   "vtable": "0x4BC5E0",
+   "slots": [
+    "BBPRoam2d::~BBPRoam2d [complete]",
+    "BBPRoam2d::~BBPRoam2d [deleting]",
+    "BBPRoam2d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPRoam2d::getRoamType"
+   ],
+   "bases": [
+    "BBPRoam"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRoam2d.h"
+  },
+  "BBPRoam3d": {
+   "vtable": "0x4BC660",
+   "slots": [
+    "BBPRoam3d::~BBPRoam3d [complete]",
+    "BBPRoam3d::~BBPRoam3d [deleting]",
+    "BBPRoam3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated",
+    "BBPRoam3d::getRoamType"
+   ],
+   "bases": [
+    "BBPRoam"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRoam3d.h"
+  },
+  "BBPRunOverSoldier": {
+   "vtable": "0x4BC6E0",
+   "slots": [
+    "BBPRunOverSoldier::~BBPRunOverSoldier [complete]",
+    "BBPRunOverSoldier::~BBPRunOverSoldier [deleting]",
+    "BBPRunOverSoldier::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPRunOverSoldier.h"
+  },
+  "BBPSuicide": {
+   "vtable": "0x4BC760",
+   "slots": [
+    "BBPSuicide::~BBPSuicide [complete]",
+    "BBPSuicide::~BBPSuicide [deleting]",
+    "BBPSuicide::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPSuicide.h"
+  },
+  "BBPTakeCover": {
+   "vtable": "0x4BC7E0",
+   "slots": [
+    "BBPTakeCover::~BBPTakeCover [complete]",
+    "BBPTakeCover::~BBPTakeCover [deleting]",
+    "BBPTakeCover::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPTakeCover.h"
+  },
+  "BBPTakeCover3d": {
+   "vtable": "0x4BC860",
+   "slots": [
+    "BBPTakeCover3d::~BBPTakeCover3d [complete]",
+    "BBPTakeCover3d::~BBPTakeCover3d [deleting]",
+    "BBPTakeCover3d::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPTakeCover3d.h"
+  },
+  "BBPTakeCoverInfantry": {
+   "vtable": "0x4BC8E0",
+   "slots": [
+    "BBPTakeCoverInfantry::~BBPTakeCoverInfantry [complete]",
+    "BBPTakeCoverInfantry::~BBPTakeCoverInfantry [deleting]",
+    "BBPTakeCoverInfantry::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPTakeCoverInfantry.h"
+  },
+  "BBPTriggerable": {
+   "vtable": "0x4BC960",
+   "slots": [
+    "BBPTriggerable::~BBPTriggerable [complete]",
+    "BBPTriggerable::~BBPTriggerable [deleting]",
+    "BBPTriggerable::createPlan",
+    "BBPPattern::isInitiated",
+    "BBPPattern::unInit",
+    "BBPPattern::forceInitiated"
+   ],
+   "bases": [
+    "BBPPattern"
+   ],
+   "header": "AIBotBehaviourPattern/BBPTriggerable.h"
+  },
+  "BBRandom": {
+   "vtable": "0x4BB080",
+   "slots": [
+    "BBRandom::~BBRandom [complete]",
+    "BBRandom::~BBRandom [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBRandom::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBRandom::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBRandom.h"
+  },
+  "BBRevive": {
+   "vtable": "0x4BB120",
+   "slots": [
+    "BBRevive::~BBRevive [complete]",
+    "BBRevive::~BBRevive [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBRevive::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BBRevive::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBRevive.h"
+  },
+  "BBRunOverSoldier": {
+   "vtable": "0x4BB1C0",
+   "slots": [
+    "BBRunOverSoldier::~BBRunOverSoldier [complete]",
+    "BBRunOverSoldier::~BBRunOverSoldier [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBRunOverSoldier::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBRunOverSoldier::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBRunOverSoldier.h"
+  },
+  "BBSuicide": {
+   "vtable": "0x4BB220",
+   "slots": [
+    "BBSuicide::~BBSuicide [complete]",
+    "BBSuicide::~BBSuicide [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBSuicide::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBSuicide.h"
+  },
+  "BBTakeCover": {
+   "vtable": "0x4BB2C0",
+   "slots": [
+    "BBTakeCover::~BBTakeCover [complete]",
+    "BBTakeCover::~BBTakeCover [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BBTakeCover::reset",
+    "BBTakeCover::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBTakeCover.h"
+  },
+  "BBTakeCover3d": {
+   "vtable": "0x4BB3E0",
+   "slots": [
+    "BBTakeCover3d::~BBTakeCover3d [complete]",
+    "BBTakeCover3d::~BBTakeCover3d [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBTakeCover3d::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBTakeCover3d.h"
+  },
+  "BBTakeCoverInfantry": {
+   "vtable": "0x4BB480",
+   "slots": [
+    "BBTakeCoverInfantry::~BBTakeCoverInfantry [complete]",
+    "BBTakeCoverInfantry::~BBTakeCoverInfantry [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBTakeCoverInfantry::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBTakeCoverInfantry.h"
+  },
+  "BBTriggerable": {
+   "vtable": "0x4BB520",
+   "slots": [
+    "BBTriggerable::~BBTriggerable [complete]",
+    "BBTriggerable::~BBTriggerable [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "BBTriggerable::calculateUrgency",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable",
+    "BBTriggerable::isApplicable"
+   ],
+   "bases": [
+    "BotBehaviour"
+   ],
+   "header": "AIBotBehaviour/BBTriggerable.h"
+  },
+  "BotBehaviour": {
+   "vtable": "0x4BB580",
+   "slots": [
+    "BotBehaviour::~BotBehaviour [complete]",
+    "BotBehaviour::~BotBehaviour [deleting]",
+    "BotBehaviour::getUrgency",
+    "BotBehaviour::getActiveUrgency",
+    "BotBehaviour::updateActiveUrgency",
+    "BotBehaviour::hasChangedTarget",
+    "BotBehaviour::quotientChanged",
+    "BotBehaviour::hasChanged",
+    "BotBehaviour::getChosenGenerator",
+    "BotBehaviour::reset",
+    "pure",
+    "BotBehaviour::generatePlan",
+    "BotBehaviour::isAplicable"
+   ],
+   "bases": [
+    "UrgencyGenerator"
+   ],
+   "header": "AIBotBehaviour/BotBehaviour.h"
+  },
+  "BotScript": {
+   "vtable": "0x4B77D8",
+   "slots": [
+    "pure",
+    "BotScript::~BotScript [complete]",
+    "BotScript::~BotScript [deleting]"
+   ],
+   "bases": [],
+   "header": "AIBotActionPlan/BotScript.h"
+  },
+  "BotScriptDebugger": {
+   "vtable": "0x4BC9E8",
+   "slots": [
+    "BotScriptDebugger::~BotScriptDebugger [complete]",
+    "BotScriptDebugger::~BotScriptDebugger [deleting]",
+    "pure",
+    "pure",
+    "BotScriptDebugger::getImplementation"
+   ],
+   "bases": [],
+   "header": "AIPlanInterpreter/BotScriptDebugger.h"
+  },
+  "EntryBoatMoveTo": {
+   "vtable": "0x4BCBC8",
+   "slots": [
+    "EntryBoatMoveTo::~EntryBoatMoveTo [complete]",
+    "EntryBoatMoveTo::~EntryBoatMoveTo [deleting]",
+    "EntryBoatMoveTo::execute",
+    "EntryBoatMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryBoatMoveTo.h"
+  },
+  "EntryBoatMoveToDirection": {
+   "vtable": "0x4BCC48",
+   "slots": [
+    "EntryBoatMoveToDirection::~EntryBoatMoveToDirection [complete]",
+    "EntryBoatMoveToDirection::~EntryBoatMoveToDirection [deleting]",
+    "EntryBoatMoveToDirection::execute",
+    "EntryBoatMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryBoatMoveToDirection.h"
+  },
+  "EntryBoatMoveToObject": {
+   "vtable": "0x4BCCA8",
+   "slots": [
+    "EntryBoatMoveToObject::~EntryBoatMoveToObject [complete]",
+    "EntryBoatMoveToObject::~EntryBoatMoveToObject [deleting]",
+    "EntryBoatMoveToObject::execute",
+    "EntryBoatMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryBoatMoveToObject.h"
+  },
+  "EntryBoatResetControls": {
+   "vtable": "0x4BCD08",
+   "slots": [
+    "EntryBoatResetControls::~EntryBoatResetControls [complete]",
+    "EntryBoatResetControls::~EntryBoatResetControls [deleting]",
+    "EntryBoatResetControls::execute",
+    "EntryBoatResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryBoatResetControls.h"
+  },
+  "EntryCarMoveTo": {
+   "vtable": "0x4BCD70",
+   "slots": [
+    "EntryCarMoveTo::~EntryCarMoveTo [complete]",
+    "EntryCarMoveTo::~EntryCarMoveTo [deleting]",
+    "EntryCarMoveTo::execute",
+    "EntryCarMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryCarMoveTo.h"
+  },
+  "EntryCarMoveToDirection": {
+   "vtable": "0x4BCDC8",
+   "slots": [
+    "EntryCarMoveToDirection::~EntryCarMoveToDirection [complete]",
+    "EntryCarMoveToDirection::~EntryCarMoveToDirection [deleting]",
+    "EntryCarMoveToDirection::execute",
+    "EntryCarMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryCarMoveToDirection.h"
+  },
+  "EntryCarMoveToObject": {
+   "vtable": "0x4BCE30",
+   "slots": [
+    "EntryCarMoveToObject::~EntryCarMoveToObject [complete]",
+    "EntryCarMoveToObject::~EntryCarMoveToObject [deleting]",
+    "EntryCarMoveToObject::execute",
+    "EntryCarMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryCarMoveToObject.h"
+  },
+  "EntryCarResetControls": {
+   "vtable": "0x4BCE88",
+   "slots": [
+    "EntryCarResetControls::~EntryCarResetControls [complete]",
+    "EntryCarResetControls::~EntryCarResetControls [deleting]",
+    "EntryCarResetControls::execute",
+    "EntryCarResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryCarResetControls.h"
+  },
+  "EntryHeliAimAt": {
+   "vtable": "0x4BCEE8",
+   "slots": [
+    "EntryHeliAimAt::~EntryHeliAimAt [complete]",
+    "EntryHeliAimAt::~EntryHeliAimAt [deleting]",
+    "EntryHeliAimAt::execute",
+    "EntryHeliAimAt::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliAimAt.h"
+  },
+  "EntryHeliMoveAwayFromObject": {
+   "vtable": "0x4BCF48",
+   "slots": [
+    "EntryHeliMoveAwayFromObject::~EntryHeliMoveAwayFromObject [complete]",
+    "EntryHeliMoveAwayFromObject::~EntryHeliMoveAwayFromObject [deleting]",
+    "EntryHeliMoveAwayFromObject::execute",
+    "EntryHeliMoveAwayFromObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliMoveAwayFromObject.h"
+  },
+  "EntryHeliMoveTo": {
+   "vtable": "0x4BCFA8",
+   "slots": [
+    "EntryHeliMoveTo::~EntryHeliMoveTo [complete]",
+    "EntryHeliMoveTo::~EntryHeliMoveTo [deleting]",
+    "EntryHeliMoveTo::execute",
+    "EntryHeliMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliMoveTo.h"
+  },
+  "EntryHeliMoveToDirection": {
+   "vtable": "0x4BD008",
+   "slots": [
+    "EntryHeliMoveToDirection::~EntryHeliMoveToDirection [complete]",
+    "EntryHeliMoveToDirection::~EntryHeliMoveToDirection [deleting]",
+    "EntryHeliMoveToDirection::execute",
+    "EntryHeliMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliMoveToDirection.h"
+  },
+  "EntryHeliMoveToObject": {
+   "vtable": "0x4BD068",
+   "slots": [
+    "EntryHeliMoveToObject::~EntryHeliMoveToObject [complete]",
+    "EntryHeliMoveToObject::~EntryHeliMoveToObject [deleting]",
+    "EntryHeliMoveToObject::execute",
+    "EntryHeliMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliMoveToObject.h"
+  },
+  "EntryHeliResetControls": {
+   "vtable": "0x4BD0C8",
+   "slots": [
+    "EntryHeliResetControls::~EntryHeliResetControls [complete]",
+    "EntryHeliResetControls::~EntryHeliResetControls [deleting]",
+    "EntryHeliResetControls::execute",
+    "EntryHeliResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryHeliResetControls.h"
+  },
+  "EntryInfanteryMoveTo": {
+   "vtable": "0x4BD128",
+   "slots": [
+    "EntryInfanteryMoveTo::~EntryInfanteryMoveTo [complete]",
+    "EntryInfanteryMoveTo::~EntryInfanteryMoveTo [deleting]",
+    "EntryInfanteryMoveTo::execute",
+    "EntryInfanteryMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryInfanteryMoveTo.h"
+  },
+  "EntryInfanteryMoveToDirection": {
+   "vtable": "0x4BD188",
+   "slots": [
+    "EntryInfanteryMoveToDirection::~EntryInfanteryMoveToDirection [complete]",
+    "EntryInfanteryMoveToDirection::~EntryInfanteryMoveToDirection [deleting]",
+    "EntryInfanteryMoveToDirection::execute",
+    "EntryInfanteryMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryInfanteryMoveToDirection.h"
+  },
+  "EntryInfanteryMoveToObject": {
+   "vtable": "0x4BD1E8",
+   "slots": [
+    "EntryInfanteryMoveToObject::~EntryInfanteryMoveToObject [complete]",
+    "EntryInfanteryMoveToObject::~EntryInfanteryMoveToObject [deleting]",
+    "EntryInfanteryMoveToObject::execute",
+    "EntryInfanteryMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryInfanteryMoveToObject.h"
+  },
+  "EntryInfanteryResetControls": {
+   "vtable": "0x4BD248",
+   "slots": [
+    "EntryInfanteryResetControls::~EntryInfanteryResetControls [complete]",
+    "EntryInfanteryResetControls::~EntryInfanteryResetControls [deleting]",
+    "EntryInfanteryResetControls::execute",
+    "EntryInfanteryResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryInfanteryResetControls.h"
+  },
+  "EntryInfoWrapper": {
+   "vtable": "0x4BD2A8",
+   "slots": [
+    "EntryInfoWrapper::~EntryInfoWrapper [complete]",
+    "EntryInfoWrapper::~EntryInfoWrapper [deleting]",
+    "EntryInfoWrapper::execute",
+    "EntryInfoWrapper::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryInfoWrapper.h"
+  },
+  "EntryKeyTurretAimAt": {
+   "vtable": "0x4BD308",
+   "slots": [
+    "EntryKeyTurretAimAt::~EntryKeyTurretAimAt [complete]",
+    "EntryKeyTurretAimAt::~EntryKeyTurretAimAt [deleting]",
+    "EntryKeyTurretAimAt::execute",
+    "EntryKeyTurretAimAt::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryKeyTurretAimAt.h"
+  },
+  "EntryMouseTurretAimAt": {
+   "vtable": "0x4BD368",
+   "slots": [
+    "EntryMouseTurretAimAt::~EntryMouseTurretAimAt [complete]",
+    "EntryMouseTurretAimAt::~EntryMouseTurretAimAt [deleting]",
+    "EntryMouseTurretAimAt::execute",
+    "EntryMouseTurretAimAt::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMouseTurretAimAt.h"
+  },
+  "EntryMouseTurretLookAt": {
+   "vtable": "0x4BD3C8",
+   "slots": [
+    "EntryMouseTurretLookAt::~EntryMouseTurretLookAt [complete]",
+    "EntryMouseTurretLookAt::~EntryMouseTurretLookAt [deleting]",
+    "EntryMouseTurretLookAt::execute",
+    "EntryMouseTurretLookAt::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMouseTurretLookAt.h"
+  },
+  "EntryMoveToMedium": {
+   "vtable": "0x4BD428",
+   "slots": [
+    "EntryMoveToMedium::~EntryMoveToMedium [complete]",
+    "EntryMoveToMedium::~EntryMoveToMedium [deleting]",
+    "EntryMoveToMedium::execute",
+    "EntryMoveToMedium::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToMedium.h"
+  },
+  "EntryMoveToMediumBoat": {
+   "vtable": "0x4BD488",
+   "slots": [
+    "EntryMoveToMediumBoat::~EntryMoveToMediumBoat [complete]",
+    "EntryMoveToMediumBoat::~EntryMoveToMediumBoat [deleting]",
+    "EntryMoveToMediumBoat::execute",
+    "EntryMoveToMediumBoat::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToMediumBoat.h"
+  },
+  "EntryMoveToMediumSoldier": {
+   "vtable": "0x4BD4E8",
+   "slots": [
+    "EntryMoveToMediumSoldier::~EntryMoveToMediumSoldier [complete]",
+    "EntryMoveToMediumSoldier::~EntryMoveToMediumSoldier [deleting]",
+    "EntryMoveToMediumSoldier::execute",
+    "EntryMoveToMediumSoldier::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToMediumSoldier.h"
+  },
+  "EntryMoveToObjectMedium": {
+   "vtable": "0x4BD510",
+   "slots": [
+    "EntryMoveToObjectMedium::~EntryMoveToObjectMedium [complete]",
+    "EntryMoveToObjectMedium::~EntryMoveToObjectMedium [deleting]",
+    "EntryMoveToObjectMedium::execute",
+    "EntryMoveToObjectMedium::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToObjectMedium.h"
+  },
+  "EntryMoveToObjectMediumBoat": {
+   "vtable": "0x4BD538",
+   "slots": [
+    "EntryMoveToObjectMediumBoat::~EntryMoveToObjectMediumBoat [complete]",
+    "EntryMoveToObjectMediumBoat::~EntryMoveToObjectMediumBoat [deleting]",
+    "EntryMoveToObjectMediumBoat::execute",
+    "EntryMoveToObjectMediumBoat::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToObjectMediumBoat.h"
+  },
+  "EntryMoveToObjectMediumSoldier": {
+   "vtable": "0x4BD560",
+   "slots": [
+    "EntryMoveToObjectMediumSoldier::~EntryMoveToObjectMediumSoldier [complete]",
+    "EntryMoveToObjectMediumSoldier::~EntryMoveToObjectMediumSoldier [deleting]",
+    "EntryMoveToObjectMediumSoldier::execute",
+    "EntryMoveToObjectMediumSoldier::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryMoveToObjectMediumSoldier.h"
+  },
+  "EntryPlaneAimAt": {
+   "vtable": "0x4BD5C8",
+   "slots": [
+    "EntryPlaneAimAt::~EntryPlaneAimAt [complete]",
+    "EntryPlaneAimAt::~EntryPlaneAimAt [deleting]",
+    "EntryPlaneAimAt::execute",
+    "EntryPlaneAimAt::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneAimAt.h"
+  },
+  "EntryPlaneMoveTo": {
+   "vtable": "0x4BD628",
+   "slots": [
+    "EntryPlaneMoveTo::~EntryPlaneMoveTo [complete]",
+    "EntryPlaneMoveTo::~EntryPlaneMoveTo [deleting]",
+    "EntryPlaneMoveTo::execute",
+    "EntryPlaneMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneMoveTo.h"
+  },
+  "EntryPlaneMoveToDirection": {
+   "vtable": "0x4BD688",
+   "slots": [
+    "EntryPlaneMoveToDirection::~EntryPlaneMoveToDirection [complete]",
+    "EntryPlaneMoveToDirection::~EntryPlaneMoveToDirection [deleting]",
+    "EntryPlaneMoveToDirection::execute",
+    "EntryPlaneMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneMoveToDirection.h"
+  },
+  "EntryPlaneMoveToObject": {
+   "vtable": "0x4BD6E8",
+   "slots": [
+    "EntryPlaneMoveToObject::~EntryPlaneMoveToObject [complete]",
+    "EntryPlaneMoveToObject::~EntryPlaneMoveToObject [deleting]",
+    "EntryPlaneMoveToObject::execute",
+    "EntryPlaneMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneMoveToObject.h"
+  },
+  "EntryPlaneResetControls": {
+   "vtable": "0x4BD748",
+   "slots": [
+    "EntryPlaneResetControls::~EntryPlaneResetControls [complete]",
+    "EntryPlaneResetControls::~EntryPlaneResetControls [deleting]",
+    "EntryPlaneResetControls::execute",
+    "EntryPlaneResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneResetControls.h"
+  },
+  "EntryPlaneRoll": {
+   "vtable": "0x4BD7A8",
+   "slots": [
+    "EntryPlaneRoll::~EntryPlaneRoll [complete]",
+    "EntryPlaneRoll::~EntryPlaneRoll [deleting]",
+    "EntryPlaneRoll::execute",
+    "EntryPlaneRoll::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryPlaneRoll.h"
+  },
+  "EntrySense": {
+   "vtable": "0x4BD808",
+   "slots": [
+    "EntrySense::~EntrySense [complete]",
+    "EntrySense::~EntrySense [deleting]",
+    "EntrySense::execute",
+    "EntrySense::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntrySense.h"
+  },
+  "EntrySoldierPose": {
+   "vtable": "0x4BD868",
+   "slots": [
+    "EntrySoldierPose::~EntrySoldierPose [complete]",
+    "EntrySoldierPose::~EntrySoldierPose [deleting]",
+    "EntrySoldierPose::execute",
+    "EntrySoldierPose::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntrySoldierPose.h"
+  },
+  "EntryTankMoveTo": {
+   "vtable": "0x4BD8C8",
+   "slots": [
+    "EntryTankMoveTo::~EntryTankMoveTo [complete]",
+    "EntryTankMoveTo::~EntryTankMoveTo [deleting]",
+    "EntryTankMoveTo::execute",
+    "EntryTankMoveTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTankMoveTo.h"
+  },
+  "EntryTankMoveToDirection": {
+   "vtable": "0x4BD928",
+   "slots": [
+    "EntryTankMoveToDirection::~EntryTankMoveToDirection [complete]",
+    "EntryTankMoveToDirection::~EntryTankMoveToDirection [deleting]",
+    "EntryTankMoveToDirection::execute",
+    "EntryTankMoveToDirection::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTankMoveToDirection.h"
+  },
+  "EntryTankMoveToObject": {
+   "vtable": "0x4BD988",
+   "slots": [
+    "EntryTankMoveToObject::~EntryTankMoveToObject [complete]",
+    "EntryTankMoveToObject::~EntryTankMoveToObject [deleting]",
+    "EntryTankMoveToObject::execute",
+    "EntryTankMoveToObject::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTankMoveToObject.h"
+  },
+  "EntryTankResetControls": {
+   "vtable": "0x4BD9E8",
+   "slots": [
+    "EntryTankResetControls::~EntryTankResetControls [complete]",
+    "EntryTankResetControls::~EntryTankResetControls [deleting]",
+    "EntryTankResetControls::execute",
+    "EntryTankResetControls::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTankResetControls.h"
+  },
+  "EntryTankTurnTo": {
+   "vtable": "0x4BDA48",
+   "slots": [
+    "EntryTankTurnTo::~EntryTankTurnTo [complete]",
+    "EntryTankTurnTo::~EntryTankTurnTo [deleting]",
+    "EntryTankTurnTo::execute",
+    "EntryTankTurnTo::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTankTurnTo.h"
+  },
+  "EntryTrigger": {
+   "vtable": "0x4BDAA8",
+   "slots": [
+    "EntryTrigger::~EntryTrigger [complete]",
+    "EntryTrigger::~EntryTrigger [deleting]",
+    "EntryTrigger::execute",
+    "EntryTrigger::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTrigger.h"
+  },
+  "EntryTriggerContinously": {
+   "vtable": "0x4BDB08",
+   "slots": [
+    "EntryTriggerContinously::~EntryTriggerContinously [complete]",
+    "EntryTriggerContinously::~EntryTriggerContinously [deleting]",
+    "EntryTriggerContinously::execute",
+    "EntryTriggerContinously::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTriggerContinously.h"
+  },
+  "EntryTurnToMedium": {
+   "vtable": "0x4BDB68",
+   "slots": [
+    "EntryTurnToMedium::~EntryTurnToMedium [complete]",
+    "EntryTurnToMedium::~EntryTurnToMedium [deleting]",
+    "EntryTurnToMedium::execute",
+    "EntryTurnToMedium::getTargetId"
+   ],
+   "bases": [
+    "BAPEntry"
+   ],
+   "header": "AIPlanInterpreter/EntryTurnToMedium.h"
+  },
+  "PlanGenerator": {
+   "vtable": "0x4BC420",
+   "slots": [
+    "PlanGenerator::~PlanGenerator [complete]",
+    "PlanGenerator::~PlanGenerator [deleting]",
+    "pure",
+    "pure",
+    "pure",
+    "pure"
+   ],
+   "bases": [],
+   "header": "AIBotBehaviourPattern/PlanGenerator.h"
+  },
+  "PlanInterpreter": {
+   "vtable": "0x4BCA60",
+   "slots": [
+    "PlanInterpreter::~PlanInterpreter [complete]",
+    "PlanInterpreter::~PlanInterpreter [deleting]",
+    "pure"
+   ],
+   "bases": [],
+   "header": "AIPlanInterpreter/PlanInterpreter.h"
+  },
+  "WPPatrol": {
+   "vtable": "0x4B73E0",
+   "slots": [
+    "WPPatrol::~WPPatrol [complete]",
+    "WPPatrol::~WPPatrol [deleting]",
+    "WPPatrol::getUrgency",
+    "WPPatrol::getGoalPoint",
+    "WPPatrol::getId",
+    "WaypointList::setWayPointError",
+    "WaypointList::getWayPointError",
+    "WPPatrol::getWayPointRadius"
+   ],
+   "bases": [
+    "WaypointList"
+   ],
+   "header": "AIBot/WPPatrol.h"
+  },
+  "WPAltitudeCloseTo": {
+   "vtable": "0x4B6EE0",
+   "slots": [
+    "WPAltitudeCloseTo::~WPAltitudeCloseTo [complete]",
+    "WPAltitudeCloseTo::~WPAltitudeCloseTo [deleting]",
+    "WPAltitudeCloseTo::getUrgency",
+    "WPAltitudeCloseTo::getGoalPoint",
+    "WPAltitudeCloseTo::getId",
+    "WaypointList::setWayPointError",
+    "WaypointList::getWayPointError",
+    "WPAltitudeCloseTo::getWayPointRadius"
+   ],
+   "bases": [
+    "WaypointList"
+   ],
+   "header": "AIBot/WPAltitudeCloseTo.h"
+  },
+  "WPAltitudePatrol": {
+   "vtable": "0x4B7260",
+   "slots": [
+    "WPAltitudePatrol::~WPAltitudePatrol [complete]",
+    "WPAltitudePatrol::~WPAltitudePatrol [deleting]",
+    "WPAltitudePatrol::getUrgency",
+    "WPAltitudePatrol::getGoalPoint",
+    "WPAltitudePatrol::getId",
+    "WaypointList::setWayPointError",
+    "WaypointList::getWayPointError",
+    "WPAltitudePatrol::getWayPointRadius"
+   ],
+   "bases": [
+    "WaypointList"
+   ],
+   "header": "AIBot/WPAltitudePatrol.h"
+  },
+  "WPBeachLanding": {
+   "vtable": "0x4B72A0",
+   "slots": [
+    "WPBeachLanding::~WPBeachLanding [complete]",
+    "WPBeachLanding::~WPBeachLanding [deleting]",
+    "WPBeachLanding::getUrgency",
+    "WPBeachLanding::getGoalPoint",
+    "WPBeachLanding::getId",
+    "WaypointList::setWayPointError",
+    "WaypointList::getWayPointError",
+    "WPBeachLanding::getWayPointRadius"
+   ],
+   "bases": [
+    "WaypointList"
+   ],
+   "header": "AIBot/WPBeachLanding.h"
+  }
+ }
+}

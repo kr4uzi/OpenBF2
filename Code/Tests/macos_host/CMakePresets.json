@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "macos-host-test",
+      "displayName": "[TEMP] S2.4 Cocoa host and input test app",
+      "description": "Same settings as the root macos-x64 preset: Unix Makefiles, macosx sysroot, host architecture.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/../../../out/build/macos-host-test",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "macosx",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos-host-test", "configurePreset": "macos-host-test" }
+  ]
+}

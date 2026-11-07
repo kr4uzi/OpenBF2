@@ -1,0 +1,119 @@
+[CHOSEN, not recovered] vkd3d-shader 2.1 patch for the BF2 macOS port (LGPL-2.1+, as vkd3d).
+Local common subexpression elimination before sm1-3 register allocation: identical
+expressions, swizzles, constants and uniform loads in one block are computed once.
+A matrix read through a non-constant array index (skinning: Bones[idx]) otherwise
+loads each constant register once per component and exceeds the 12 temporaries of
+vs_1_1/vs_2_0 (365 BF2 vertex shaders; one even exceeded vs_3_0's 32).
+
+diff --git a/libs/vkd3d-shader/hlsl_codegen.c b/libs/vkd3d-shader/hlsl_codegen.c
+index ad285f7..6348bdf 100644
+--- a/libs/vkd3d-shader/hlsl_codegen.c
++++ b/libs/vkd3d-shader/hlsl_codegen.c
+@@ -6858,6 +6858,98 @@ static bool cast_discard_neg_conditions_to_vec4(struct hlsl_ctx *ctx, struct hls
+     return true;
+ }
+ 
++/* Local common subexpression elimination for sm1: identical pure expressions,
++ * swizzles, constants and loads of uniforms within one block. Without it, a
++ * matrix read through a non-constant array index (skinning: Bones[idx]) loads
++ * the same constant register once per component and exhausts the 12 vs_1_1 /
++ * vs_2_0 temporaries. */
++static bool sm1_cse_equal(const struct hlsl_ir_node *a, const struct hlsl_ir_node *b)
++{
++    unsigned int i;
++
++    if (a->type != b->type || !a->data_type || !b->data_type || !hlsl_types_are_equal(a->data_type, b->data_type))
++        return false;
++    switch (a->type)
++    {
++        case HLSL_IR_EXPR:
++        {
++            const struct hlsl_ir_expr *x = hlsl_ir_expr((struct hlsl_ir_node *)a), *y = hlsl_ir_expr((struct hlsl_ir_node *)b);
++
++            if (x->op != y->op)
++                return false;
++            for (i = 0; i < HLSL_MAX_OPERANDS; ++i)
++            {
++                if (x->operands[i].node != y->operands[i].node)
++                    return false;
++            }
++            return true;
++        }
++        case HLSL_IR_SWIZZLE:
++        {
++            const struct hlsl_ir_swizzle *x = hlsl_ir_swizzle((struct hlsl_ir_node *)a), *y = hlsl_ir_swizzle((struct hlsl_ir_node *)b);
++
++            return x->val.node == y->val.node && !memcmp(&x->u, &y->u, sizeof(x->u));
++        }
++        case HLSL_IR_CONSTANT:
++        {
++            const struct hlsl_ir_constant *x = hlsl_ir_constant((struct hlsl_ir_node *)a), *y = hlsl_ir_constant((struct hlsl_ir_node *)b);
++
++            return !memcmp(&x->value, &y->value, sizeof(x->value));
++        }
++        case HLSL_IR_LOAD:
++        {
++            const struct hlsl_ir_load *x = hlsl_ir_load((struct hlsl_ir_node *)a), *y = hlsl_ir_load((struct hlsl_ir_node *)b);
++
++            if (x->src.var != y->src.var || !x->src.var->is_uniform || x->src.var->is_output_semantic)
++                return false;
++            if (!hlsl_deref_is_lowered(&x->src) || !hlsl_deref_is_lowered(&y->src))
++                return false;
++            if (x->src.rel_offset.node != y->src.rel_offset.node || x->src.const_offset != y->src.const_offset
++                    || !hlsl_types_are_equal(x->src.data_type, y->src.data_type))
++                return false;
++            return true;
++        }
++        default:
++            return false;
++    }
++}
++
++static bool sm1_local_cse(struct hlsl_ctx *ctx, struct hlsl_block *block)
++{
++    struct hlsl_ir_node *instr, *next, *prev;
++    bool progress = false;
++
++    LIST_FOR_EACH_ENTRY_SAFE(instr, next, &block->instrs, struct hlsl_ir_node, entry)
++    {
++        if (instr->type == HLSL_IR_IF)
++        {
++            progress |= sm1_local_cse(ctx, &hlsl_ir_if(instr)->then_block);
++            progress |= sm1_local_cse(ctx, &hlsl_ir_if(instr)->else_block);
++            continue;
++        }
++        if (instr->type == HLSL_IR_LOOP)
++        {
++            progress |= sm1_local_cse(ctx, &hlsl_ir_loop(instr)->body);
++            continue;
++        }
++        if (instr->type != HLSL_IR_EXPR && instr->type != HLSL_IR_SWIZZLE
++                && instr->type != HLSL_IR_CONSTANT && instr->type != HLSL_IR_LOAD)
++            continue;
++        LIST_FOR_EACH_ENTRY(prev, &block->instrs, struct hlsl_ir_node, entry)
++        {
++            if (prev == instr)
++                break;
++            if (sm1_cse_equal(prev, instr))
++            {
++                hlsl_replace_node(instr, prev);
++                progress = true;
++                break;
++            }
++        }
++    }
++    return progress;
++}
++
+ static bool dce(struct hlsl_ctx *ctx, struct hlsl_ir_node *instr, void *context)
+ {
+     switch (instr->type)
+@@ -16971,6 +17063,8 @@ static void process_entry_function(struct hlsl_ctx *ctx, struct vsir_program *pr
+     transform_derefs(ctx, replace_deref_path_with_offset, body);
+     simplify_exprs(ctx, body);
+     transform_derefs(ctx, clean_constant_deref_offset_srcs, body);
++    if (profile->major_version < 4)
++        while (sm1_local_cse(ctx, body));
+ 
+     do
+         compute_liveness(ctx, body);

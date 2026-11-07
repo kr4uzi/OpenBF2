@@ -1,0 +1,136 @@
+--- a/mojoshader_effects.c
++++ b/mojoshader_effects.c
+@@ -811,7 +811,63 @@
+             object->shader.technique = technique;
+             object->shader.pass = index;
+ 
+-            if (type == 2)
++            /* [CHOSEN, not recovered] FX2 type 1 names a shader parameter;
++             * it is not bytecode. Resolve its live object at CommitChanges. */
++            if (type == 1)
++            {
++                int parameter;
++                unsigned int element = 0;
++                const char *name = (const char *) *ptr;
++                const char *bracket;
++                size_t namelen;
++                if (length == 0 || memchr(*ptr, '\0', length) == NULL)
++                {
++                    errorlist_add(errors, NULL, 0, "Invalid shader parameter reference");
++                    return;
++                }
++                namelen = strlen(name);
++                bracket = strchr(name, '[');
++                if (bracket != NULL)
++                {
++                    const char *digit = bracket + 1;
++                    namelen = bracket - name;
++                    if (*digit < '0' || *digit > '9')
++                    {
++                        errorlist_add(errors, NULL, 0, "Invalid shader parameter array index");
++                        return;
++                    }
++                    while (*digit >= '0' && *digit <= '9')
++                    {
++                        if (element > (UINT32_MAX - 9) / 10)
++                        {
++                            errorlist_add(errors, NULL, 0, "Shader parameter array index overflow");
++                            return;
++                        }
++                        element = element * 10 + (*digit++ - '0');
++                    }
++                    if (*digit != ']' || digit[1] != '\0')
++                    {
++                        errorlist_add(errors, NULL, 0, "Invalid shader parameter array index");
++                        return;
++                    }
++                }
++                for (parameter = 0; parameter < effect->param_count; parameter++)
++                    if (strncmp(effect->params[parameter].value.name, name, namelen) == 0
++                        && effect->params[parameter].value.name[namelen] == '\0')
++                        break;
++                if (parameter == effect->param_count || effect->params[parameter].value.type.parameter_type != object->type
++                    || element >= effect->params[parameter].value.value_count)
++                {
++                    errorlist_add(errors, NULL, 0, "Unknown or out-of-range shader parameter reference");
++                    return;
++                }
++                object->shader.is_preshader = 2;
++                object->shader.param_count = 2;
++                object->shader.params = (uint32 *) m(2 * sizeof (uint32), d);
++                object->shader.params[0] = parameter;
++                object->shader.params[1] = element;
++            }
++            else if (type == 2)
+             {
+                 /* This is a standalone preshader!
+                  * It exists solely for effect passes that do not use a single
+@@ -1175,7 +1231,7 @@
+         {
+             if (object->shader.is_preshader)
+                 MOJOSHADER_freePreshader(object->shader.preshader);
+-            else
++            else if (object->shader.shader != NULL)
+                 effect->ctx.deleteShader(effect->ctx.shaderContext, object->shader.shader);
+             f((void *) object->shader.params, d);
+             f((void *) object->shader.samplers, d);
+@@ -1572,11 +1628,14 @@
+ 
+             if (clone->objects[i].shader.is_preshader)
+             {
+-                clone->objects[i].shader.preshader = copypreshader(effect->objects[i].shader.preshader,
+-                                                                   m, d);
++                if (effect->objects[i].shader.preshader != NULL)
++                    clone->objects[i].shader.preshader = copypreshader(effect->objects[i].shader.preshader,
++                                                                       m, d);
+                 continue;
+             } // if
+ 
++            if (effect->objects[i].shader.shader == NULL)
++                continue;
+             effect->ctx.shaderAddRef(effect->objects[i].shader.shader);
+             clone->objects[i].shader.shader = effect->objects[i].shader.shader;
+             pd = clone->ctx.getParseData(clone->objects[i].shader.shader);
+@@ -1869,17 +1928,21 @@
+     #define SELECT_SHADER_FROM_PRESHADER(raw, gls) \
+         if (raw != NULL && raw->is_preshader) \
+         { \
+-            i = 0; \
+-            do \
++            selector = 0; \
++            if (raw->is_preshader == 1) \
+             { \
+-                param = &effect->params[raw->preshader_params[i]].value; \
+-                for (j = 0; j < (param->value_count >> 2); j++) \
+-                    memcpy(raw->preshader->registers + raw->preshader->symbols[i].register_index + j, \
+-                           param->valuesI + (j << 2), \
+-                           param->type.columns << 2); \
+-            } while (++i < raw->preshader->symbol_count); \
+-            run_preshader(raw->preshader, &selector); \
+-            shader_object = effect->params[raw->params[0]].value.valuesI[(int) selector]; \
++                for (i = 0; i < raw->preshader->symbol_count; i++) \
++                { \
++                    param = &effect->params[raw->preshader_params[i]].value; \
++                    for (j = 0; j < (param->value_count >> 2); j++) \
++                        memcpy(raw->preshader->registers + raw->preshader->symbols[i].register_index + j, \
++                               param->valuesI + (j << 2), \
++                               param->type.columns << 2); \
++                } \
++                run_preshader(raw->preshader, &selector); \
++            } \
++            shader_object = effect->params[raw->params[0]].value.valuesI[ \
++                raw->is_preshader == 2 ? raw->params[1] : (unsigned int) selector]; \
+             raw = &effect->objects[shader_object].shader; \
+             gls = raw->shader; \
+             selector_ran = 1; \
+--- a/mojoshader.h
++++ b/mojoshader.h
+@@ -2668,7 +2668,7 @@
+     MOJOSHADER_symbolType type;
+     unsigned int technique;
+     unsigned int pass;
+-    unsigned int is_preshader;
++    unsigned int is_preshader; /* [CHOSEN, not recovered] 1: selector, 2: named parameter/element reference. */
+     unsigned int preshader_param_count;
+     unsigned int *preshader_params;
+     unsigned int param_count;
