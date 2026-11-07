@@ -1,5 +1,8 @@
 // Per-frame HUD and pending-request updates. [INFERRED] Source split.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "HudVoip.h"
 #include "Ref2System.h"
@@ -30,6 +33,9 @@
 #include "../Scene/Object/ObjectPredicator.h"
 #include "../Core/System.h"
 #include "../Core/SettingsRepostitory.h"
+#if !defined(_M_IX86)
+#include <cmath>
+#endif
 
 namespace dice { namespace hfe {
 class IMenuLogic;
@@ -42,6 +48,8 @@ namespace {
 // rounding. Inclusive expiry uses ordered <=0; icon expiry uses ordered <0.
 bool subtractTimer(float& timer, float delta, bool inclusive)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     bool expired;
     __asm {
         mov ecx, timer
@@ -62,10 +70,26 @@ bool subtractTimer(float& timer, float delta, bool inclusive)
     expiry_done:
     }
     return expired;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // setnp: inclusive expiry is an ordered <= 0, strict expiry an ordered < 0.
+    const double remaining = static_cast<double>(timer) - delta;
+    timer = static_cast<float>(remaining);
+    return inclusive ? remaining <= 0.0 : remaining < 0.0;
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    bool expired;
+    // [CHOSEN, not recovered] Preserve x87 ordered retained timer expiry after store.
+    expired = bf2x87::subtractTimer(timer, delta, inclusive);
+    return expired;
+#endif
 }
 bool addDemoTimer(float& timer, float delta)
 {
+#if defined(_WIN32)
     const float threshold = 10.0f;
+#if defined(_M_IX86)
     bool due;
     __asm {
         mov ecx, timer
@@ -78,6 +102,21 @@ bool addDemoTimer(float& timer, float delta)
         setz due
     }
     return due;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // C0 clear means an ordered sum at or above the threshold.
+    const double elapsed = static_cast<double>(delta) + timer;
+    timer = static_cast<float>(elapsed);
+    return elapsed >= threshold;
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float threshold = 10.0f;
+    bool due;
+    // [CHOSEN, not recovered] Preserve x87 ordered retained timer threshold after store.
+    due = bf2x87::addDemoTimer(timer, delta);
+    return due;
+#endif
 }
 std::string requestInUseMessage(int type)
 {
@@ -250,6 +289,7 @@ void BF2HudManager::updateDemoHelp(float delta)
 
 void BF2HudManager::updateMapPosition(world::IPlayer* player, Vec3 direction)
 {
+#if defined(_WIN32)
     if (!player || !player->getCamera() || !hudMap) return;
     world::ICameraObject* camera = player->getCamera();
     if (player->getIsCommander() && (hudMap->m_overheadZoomActive
@@ -271,6 +311,7 @@ void BF2HudManager::updateMapPosition(world::IPlayer* player, Vec3 direction)
     float heading;
     if (player->getIsAlive()) {
         const float x = direction.x, z = direction.z;
+#if defined(_M_IX86)
         __asm {
             fld x
             fld z
@@ -287,8 +328,16 @@ void BF2HudManager::updateMapPosition(world::IPlayer* player, Vec3 direction)
             fmul scaleZ
             fstp position.y
         }
+#else
+        // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates); the CRT atan2
+        // replaces fpatan (st1 = x over st0 = z) and agrees after the float store.
+        heading = static_cast<float>(std::atan2(static_cast<double>(x), static_cast<double>(z)));
+        position.x = static_cast<float>((static_cast<double>(worldX) * half + cameraX) * scaleX);
+        position.y = static_cast<float>((static_cast<double>(worldZ) * half + cameraZ) * scaleZ);
+#endif
     } else {
         heading = 0.0f;
+#if defined(_M_IX86)
         __asm {
             fld worldX
             fmul half
@@ -299,8 +348,48 @@ void BF2HudManager::updateMapPosition(world::IPlayer* player, Vec3 direction)
             fmul scaleZ
             fstp position.y
         }
+#else
+        // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+        position.x = static_cast<float>(static_cast<double>(worldX) * half * scaleX);
+        position.y = static_cast<float>(static_cast<double>(worldZ) * half * scaleZ);
+#endif
     }
     hudMap->setPlayerPosition(position, heading);
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    if (!player || !player->getCamera() || !hudMap) return;
+    world::ICameraObject* camera = player->getCamera();
+    if (player->getIsCommander() && (hudMap->m_overheadZoomActive
+        || (isCommanderShown() && m_field104->getMapZoom() == 1)))
+        camera = getCameraObject(player->getTeam());
+    if (!camera) return;
+    const Mat4& transform = camera->getTransformation(0.0f);
+    const float cameraX = transform.m[12], cameraZ = transform.m[14];
+    float worldZ, worldX;
+    {
+        const std::string keyZ("GLSWorldSizeZ"), keyX("GLSWorldSizeX");
+        const int zeroZ = 0, zeroX = 0;
+        worldZ = static_cast<float>(settings->intGet(keyZ, zeroZ));
+        worldX = static_cast<float>(settings->intGet(keyX, zeroX));
+    }
+    const float scaleZ = -1.0f / worldZ, scaleX = 1.0f / worldX;
+    const float half = 0.5f;
+    Vec2 position;
+    float heading;
+    if (player->getIsAlive()) {
+        const float x = direction.x, z = direction.z;
+        // [CHOSEN, not recovered] Preserve x87 atan2 operand order and retained map products.
+        heading = bf2x87::heading(x, z);
+        position.x = bf2x87::mapCoordinate(worldX, cameraX, scaleX, true);
+        position.y = bf2x87::mapCoordinate(worldZ, cameraZ, scaleZ, true);
+    } else {
+        heading = 0.0f;
+        // [CHOSEN, not recovered] Preserve x87 retained map products without camera offset.
+        position.x = bf2x87::mapCoordinate(worldX, 0.0f, scaleX, false);
+        position.y = bf2x87::mapCoordinate(worldZ, 0.0f, scaleZ, false);
+    }
+    hudMap->setPlayerPosition(position, heading);
+#endif
 }
 
 bool BF2HudManager::isVehicleDropPositionBlocked(const Vec3& position)

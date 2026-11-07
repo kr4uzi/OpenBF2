@@ -21,6 +21,10 @@
 #include <cmath>
 #include <climits>
 #include <cstring>
+#if !defined(_WIN32)
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 #if defined(BF2AUDIO_WITH_VORBIS)
 #include <vorbis/vorbisfile.h>
@@ -28,6 +32,29 @@
 
 namespace dice {
 namespace hfe {
+
+namespace {
+#if !defined(_WIN32)
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-weapon-sound-validated]
+// BF2_SOUND_TRACE=1 (or a substring of the sound file name, e.g. "fire"): one stderr line per
+// voice start / stop and a few gain/pitch samples per voice. Read-only: no OpenAL state changes.
+const char* soundTraceFilter()
+{
+    static const char* filter = std::getenv("BF2_SOUND_TRACE");
+    return filter;
+}
+bool soundTraceWants(const SoundFile* file)
+{
+    const char* f = soundTraceFilter();
+    if (!f || !*f)
+        return false;
+    if (!std::strcmp(f, "1"))
+        return true;
+    return file && file->m_name.find(f) != std::string::npos;
+}
+#endif
+} // namespace
+
 
 namespace {
 const char* const kFile = "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Sound\\SoundEngine\\OpenALSample.cpp";
@@ -466,6 +493,19 @@ bool OpenALSample::stop(bool force)
 done:
     m_stopped = true;
     checkOpenALError("OpenALSample::stop");
+#if !defined(_WIN32)
+    if (soundTraceWants(file))                                         // [TEMP] BF2_SOUND_TRACE
+    {
+        ALint state = 0, queued = 0, processed = 0;
+        al_GetSourcei(m_source, AL_SOURCE_STATE, &state);
+        al_GetSourcei(m_source, AL_BUFFERS_QUEUED, &queued);
+        al_GetSourcei(m_source, AL_BUFFERS_PROCESSED, &processed);
+        std::fprintf(stderr, "[SND] stop %p src=%u file=%s stopType=%d force=%d now=%d state=0x%x queued=%d processed=%d frame=%d\n",
+                     (void*) this, m_source, file->m_name.c_str(), stopType, force ? 1 : 0, stoppedNow ? 1 : 0,
+                     state, queued, processed, g_soundEngineInstance->m_frame);
+        std::fflush(stderr);
+    }
+#endif
     return stoppedNow;
 }
 
@@ -580,6 +620,23 @@ int OpenALSample::start(int startSample, int loops)
         update(0);
         al_SourcePlay(m_source);
         checkOpenALError("OpenALSample::start");
+#if !defined(_WIN32)
+        if (soundTraceWants(getSoundFile()))                           // [TEMP] BF2_SOUND_TRACE
+        {
+            SoundFile* f = getSoundFile();
+            SoundTemplate* t = m_sound->getTemplateImpl();
+            ALint looping = 0;
+            al_GetSourcei(m_source, AL_LOOPING, &looping);
+            std::fprintf(stderr, "[SND] start %p src=%u file=%s ch=%d rate=%d bits=%d samples=%d loop=[%d,%d) "
+                         "buffers intro=%u loop=%u outro=%u startSample=%d loops=%d AL_LOOPING=%d 3d=%d "
+                         "tmplLoopCount=%d stopType=%d frame=%d\n",
+                         (void*) this, m_source, f->m_name.c_str(), f->m_format.channels, f->m_format.samplesPerSecond,
+                         f->m_format.bitsPerSample, f->m_numSamples, f->m_loopStart, f->m_loopEnd,
+                         f->m_bufferIntro, f->m_bufferLoop, f->m_bufferOutro, startSample, loops, looping,
+                         is3D() ? 1 : 0, (int) t->getLoopCount(), t->getStopType(), g_soundEngineInstance->m_frame);
+            std::fflush(stderr);
+        }
+#endif
         return 0;
     }
     releaseSourceToPool(m_source);
@@ -653,6 +710,22 @@ void OpenALSample::update(int steps)
     al_Sourcef(m_source, AL_GAIN, gain);
     const float pitch = m_sound->computePitch(progress, m_pitchSeed);
     al_Sourcef(m_source, AL_PITCH, pitch);
+#if !defined(_WIN32)
+    if (soundTraceWants(file))                                         // [TEMP] BF2_SOUND_TRACE
+    {
+        const int age = g_soundEngineInstance->m_frame - m_startFrame;
+        if (age <= 3 || age % 15 == 0)
+        {
+            ALint state = 0, queued = 0, processed = 0;
+            al_GetSourcei(m_source, AL_SOURCE_STATE, &state);
+            al_GetSourcei(m_source, AL_BUFFERS_QUEUED, &queued);
+            al_GetSourcei(m_source, AL_BUFFERS_PROCESSED, &processed);
+            std::fprintf(stderr, "[SND] update %p src=%u age=%d progress=%.3f volume=%.3f gain=%.3f pitch=%.3f state=0x%x queued=%d processed=%d\n",
+                         (void*) this, m_source, age, progress, volume, gain, pitch, state, queued, processed);
+            std::fflush(stderr);
+        }
+    }
+#endif
     if (g_soundEngineInstance->getInteractiveMode())
         applyDistanceAndCone();
     if (g_eaxAvailable)

@@ -8,7 +8,7 @@ class OStream : public Stream
 {
 public:
     ~OStream() override;                            // 794CA0 -> RuntimeObject dtor
-    TypeDescriptor* getType() override;             // 8383E0 [FRONTIER] publication
+    TypeDescriptor* getType() override;             // 8383E0, descriptor table 94E954
     unsigned int getObjectSize() override;
     bool streamUByte(unsigned char*, const char*) override;
     bool streamByte(char*, const char*) override;
@@ -22,8 +22,8 @@ public:
     bool streamString(char**, const char*) override;
     bool streamWideString(wchar_t**, const char*) override;
     bool streamCharacter(wchar_t*, const char*) override;
-    bool streamTexture(System*, int*, const char*) override;
-    bool streamFont(System*, int*, const char*) override;
+    bool streamTexture(System*, TextureHandle*, const char*) override;
+    bool streamFont(System*, FontHandle*, const char*) override;
     bool streamSound(System*, int*, const char*) override;
     bool streamCollection(System*, ObjectCollection*, const char*) override;
     bool streamEnum(int*, EnumNext, EnumName, const char*) override;
@@ -33,7 +33,7 @@ public:
     virtual int getPosition();                     // +94 80D430; serializer82AA00
     virtual bool setPosition(int);
     virtual bool writeShortString(System*, const char*, const char* label); // +9C 838330
-    static TypeDescriptor* getClassType();          // [FRONTIER], no partial factory
+    static TypeDescriptor* getClassType();          // 8383E0; factory 838420 builds a bare OStream
 };
 } }
 #endif

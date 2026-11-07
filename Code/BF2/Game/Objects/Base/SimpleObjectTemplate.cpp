@@ -31,7 +31,7 @@
 #include "../../../Sound/BfSound.h"
 #include "../../../Sound/SoundObjectTemplate.h"
 #endif
-#if !DEDICATED && defined(_M_IX86) && BF2_PLUGIN_ABI_NATIVE
+#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
 #include "../../../Geom/GeometryTemplateManager.h"
 #endif
 
@@ -724,7 +724,7 @@ Vec3 SimpleObjectTemplate::getAnchorPos() const
 // [PLATFORM] Client calls getAnchorOffset before getAnchor; dedicated code uses the opposite order.
 Vec3 SimpleObjectTemplate::getAnchorPos() const
 {
-#if defined(_M_IX86) && BF2_PLUGIN_ABI_NATIVE
+#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
     geom::IGeometryTemplateManager* const manager =
         static_cast<geom::IGeometryTemplateManager*>(::dice::hfe::g_geometryTemplateManager);
     geom::IGeometryTemplate* const geometry = manager->getTemplate(m_geometry);

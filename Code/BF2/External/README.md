@@ -16,6 +16,8 @@ local changes small and documented alongside the affected dependency.
 | libogg 1.3.6 and libvorbis 1.3.7 | `libogg-1.3.6/` and `libvorbis-1.3.7/`; Xiph.Org sources | BF2Audio Ogg/Vorbis decoding |
 | Dear ImGui | `imgui/`; `v1.92.9b-docking`, commit `b48d1af` | Editor UI |
 | ImGuizmo | `ImGuizmo/`; tag `1.10`, commit `b796ac3` | Editor transform gizmo |
+| FFmpeg Bink decoders | `ffmpeg-bink/`; seven unmodified files of FFmpeg 7.1.1 plus an OpenBF2 shim ([README](ffmpeg-bink/README.md)), LGPL-2.1+ | Bink movie playback on macOS and Windows x64 (`RendDX9Abi/BinkFFmpeg.cpp`); Windows x86 uses RAD's `binkw32.dll` |
+| meshoptimizer | `meshoptimizer/`; `src/meshoptimizer.h` and `src/stripifier.cpp` of zeux/meshoptimizer tag `v1.3`, unmodified, MIT ([LICENSE](meshoptimizer/LICENSE.md)) | macOS D3DX subset: `D3DXConvertMeshSubsetToSingleStrip` (`Platform/Gfx/Metal/D3DXMesh.cpp`) |
 
 The table describes the vendored inputs, not a promise that every SDK module is
 part of each executable. Build manifests select the files for each image.
@@ -24,7 +26,9 @@ covered by the claim that an upstream library is unmodified.
 
 The individual sources and license files govern their respective components.
 Keep the [Python license](python-embedded/py-src-2.3.4/LICENSE),
-[Dear ImGui license](imgui/LICENSE.txt), and [ImGuizmo license](ImGuizmo/LICENSE)
+[FFmpeg LGPL notice](ffmpeg-bink/COPYING.LGPLv2.1),
+[Dear ImGui license](imgui/LICENSE.txt), [ImGuizmo license](ImGuizmo/LICENSE) and
+[meshoptimizer license](meshoptimizer/LICENSE.md)
 with their distributions. Other dependencies carry notices in their source
 files and accompanying upstream documentation.
 

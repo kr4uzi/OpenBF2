@@ -30,6 +30,16 @@ PACKAGES = {
     "linux-x64": {
         "server": ("bin_linux", ("bf2", "libdice_py.so")),
     },
+    # [CHOSEN, not recovered] The macOS port: one package set per architecture. The client hosts
+    # local games, so it carries the AI library as the server does.
+    "macos-arm64": {
+        "client": ("bin_macos", ("bf2_client", "libdice_py.dylib", "libaidll.dylib")),
+        "server": ("bin_macos", ("bf2", "libdice_py.dylib", "libaidll.dylib")),
+    },
+    "macos-x86_64": {
+        "client": ("bin_macos", ("bf2_client", "libdice_py.dylib", "libaidll.dylib")),
+        "server": ("bin_macos", ("bf2", "libdice_py.dylib", "libaidll.dylib")),
+    },
 }
 
 
@@ -66,8 +76,16 @@ def package(args):
         "licenses/RSA-MD5.txt": leading_notice(external / "GameSpy/md5c.c"),
         "licenses/GameSpy.txt": leading_notice(external / "GameSpy/gcdkey/gcdkeys.h"),
     }
+    roles = PACKAGES[args.platform]
+    unknown = sorted(set(args.omit) - set(roles))
+    if unknown:
+        raise ValueError("Cannot omit {}: {} packages only {}".format(
+            ", ".join(unknown), args.platform, ", ".join(roles)))
     plans = []
-    for role, (directory, names) in PACKAGES[args.platform].items():
+    for role, (directory, names) in roles.items():
+        if role in args.omit:
+            print("Omitted by request: openbf2-{}-{}".format(args.platform, role))
+            continue
         files = {name: args.build_dir / directory / name for name in names}
         files.update(common)
         package_notices = dict(notices)
@@ -76,6 +94,15 @@ def package(args):
             files["licenses/Vorbis-COPYING.txt"] = external / "libvorbis-1.3.7/COPYING"
             package_notices["licenses/gameswf.txt"] = leading_notice(external / "gameswf/gameswf.h")
             package_notices["licenses/gameswf-base.txt"] = leading_notice(external / "base/tu_random.cpp")
+        if role.startswith("client") and args.platform.startswith("macos-"):
+            # Statically linked into the macOS client: the effect compiler (vkd3d-shader,
+            # MojoShader, from the native dependency build), the mesh stripifier and the Bink decoder.
+            deps = args.native_sources
+            files["licenses/vkd3d-COPYING.txt"] = deps / "vkd3d/COPYING"
+            files["licenses/vkd3d-LICENSE.txt"] = deps / "vkd3d/LICENSE"
+            files["licenses/MojoShader-LICENSE.txt"] = deps / "mojoshader/LICENSE.txt"
+            files["licenses/meshoptimizer-LICENSE.md"] = external / "meshoptimizer/LICENSE.md"
+            files["licenses/FFmpeg-COPYING.LGPLv2.1.txt"] = external / "ffmpeg-bink/COPYING.LGPLv2.1"
         if role.startswith("editor"):
             files["licenses/ImGui-LICENSE.txt"] = external / "imgui/LICENSE.txt"
             files["licenses/ImGuizmo-LICENSE.txt"] = external / "ImGuizmo/LICENSE"
@@ -112,7 +139,11 @@ def package(args):
             "an OpenAL provider must be supplied separately where required. Windows\n"
             "binaries are not code-signed by this pipeline.\n"
             "Linux is built on Ubuntu 22.04 with dynamic glibc/ncurses dependencies.\n"
-            "Keep libdice_py.so beside bf2; use chmod +x bf2 if your extractor drops modes.\n\n"
+            "Keep libdice_py.so beside bf2; use chmod +x bf2 if your extractor drops modes.\n"
+            "macOS builds target macOS 11 or later, one archive per architecture (arm64 or\n"
+            "x86_64). Keep the .dylib files beside bf2_client/bf2. The binaries are ad-hoc\n"
+            "signed, not notarized: clear the quarantine flag (xattr -dr com.apple.quarantine)\n"
+            "after extracting.\n\n"
             "Build and fixture success do not establish loading, joining or gameplay.\n"
             "Automated server tests must explicitly use an unused port other than 16567.\n"
         ).format(name=name, revision=args.revision, source=source_url)
@@ -127,7 +158,8 @@ def package(args):
                 info = zipfile.ZipInfo.from_file(path, arcname=name + "/" + entry)
                 # Record Unix modes even when fixtures/package tooling run on Windows.
                 info.create_system = 3
-                mode = 0o755 if args.platform == "linux-x64" and entry in names else 0o644
+                executable = args.platform == "linux-x64" or args.platform.startswith("macos-")
+                mode = 0o755 if executable and entry in names else 0o644
                 info.external_attr = (stat.S_IFREG | mode) << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with path.open("rb") as src, archive.open(info, "w") as dst:
@@ -149,9 +181,17 @@ def main():
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--source-dir", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--native-sources", type=Path, default=None,
+                        help="macOS: the vkd3d and MojoShader source checkouts (default "
+                             "<source-dir>/out/third_party), for the client's licence files")
     parser.add_argument("--revision", required=True, help="Full source commit SHA")
     parser.add_argument("--repository", required=True, help="GitHub owner/repository")
+    parser.add_argument("--omit", action="append", default=[], metavar="ROLE",
+                        help="Skip one package role of this platform (repeatable); every other "
+                             "role stays required")
     args = parser.parse_args()
+    if args.native_sources is None:
+        args.native_sources = args.source_dir / "out/third_party"
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.revision):
         parser.error("--revision must be a full 40-character commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):

@@ -1,6 +1,6 @@
-// [PLATFORM] Host-compatible DllModule handshake using the correct image string ABI.
-// Initialize the renderer memory bucket before the null-check assertion, then acquire host services.
-// [UNRESOLVED] original source placement of the renderer-specific bucket initialization.
+// [PLATFORM] The plugins' DllModule handshake with the rebuilt host.
+// Name the renderer's heap category before the null-check assertion, then acquire host services.
+// [INFERRED] source placement of the heap-name registration (registerMemoryName).
 // [RETIRE-WHEN: RW-49] Consolidate with Core/DllModule once it can use the required per-image types.
 
 #ifndef RENDDX9ABI_PLUGINENTRY_H
@@ -21,21 +21,16 @@ class EventManager;
 extern IClassManager* classManager;
 
 // The host's SettingsRepostitory, pulled in by initDll. RendDX9Init.cpp reads GSDeviceType,
-// GSDeviceBehavior and GSRenderPath through it by raw vtable offset. Native consumers may use
-// the recovered class directly; the legacy host still needs VC7.1 string/reference adapters.
-#if BF2_PLUGIN_ABI_NATIVE
+// GSDeviceBehavior and GSRenderPath through it by raw vtable offset. Consumers may use the
+// recovered class directly.
 class SettingsRepostitory;
 extern SettingsRepostitory* settings;
-#else
-extern IBase* settings;
-#endif
 
-// Native host ConsoleObjects registry. Access only in native mode; retail VC7.1
-// container members do not match the current compiler's layout.
+// The host's ConsoleObjects registry; its containers are the shared std types.
 extern ConsoleObjects* mainConsoleObjects;
 
 // The host's MainConsole singleton.  Kept as IBase at the cross-image boundary; consumers that
-// recover a specific Console slot must select its host string ABI through PluginAbi::HostString.
+// recover a specific Console slot use PluginAbi's HostString (std::string).
 extern IBase* mainConsole;
 
 // The host's EventManager.  The singleton boundary stores the unadjusted pointer exactly as
@@ -64,5 +59,16 @@ void deinitDll();
 
 } // namespace hfe
 } // namespace dice
+
+namespace renddx9abi {
+
+// The image's Memory.dll name tag (PE dword_10244A8C); set by registerMemoryName.
+extern int memoryNameTag;
+
+// Stores the host's tag for the image's heap name while the tag is still zero. initDll calls it
+// first, with "renderer".
+void registerMemoryName(const char* name);
+
+} // namespace renddx9abi
 
 #endif // RENDDX9ABI_PLUGINENTRY_H

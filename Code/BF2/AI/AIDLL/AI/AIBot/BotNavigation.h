@@ -24,9 +24,8 @@ class BotNavigation
 {
 public:
     explicit BotNavigation(BotMain* owner);
-    ~BotNavigation();                           // [FRONTIER]
+    ~BotNavigation();                           // ELF 0x18FF30
 
-    // [FRONTIER] Navigation methods below remain incomplete unless implemented explicitly.
     bool update(bool& a, bool* b);
     void updateOccationally();                  // dice's spelling - "Occationally"
     // ELF 0x192200: the point to walk to; `arrived` at the last point, `direct` when the bot

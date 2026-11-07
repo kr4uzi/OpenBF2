@@ -43,13 +43,6 @@ inline Vec3 matrixPosition(const Mat4& transform)
     return result;
 }
 
-void unrecoveredQuadQuery(const char* name)
-{
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::world::QuadTreeCuller::%s reached\n", name);
-    std::fflush(stderr);
-    std::abort();
-}
-
 } // anonymous namespace
 
 QuadTreeCuller::Node::Node()
@@ -143,6 +136,7 @@ int QuadTreeCuller::getNumberOfObjects()
     return m_numberOfObjects;
 }
 
+// PE 0x0072ABA0; ELF 0x0831D470. Reinitializing a live root is a shipped invariant failure.
 void QuadTreeCuller::initQuadTree(const Vec3& centre, float childOffset,
                                   float minimumWidth, float width)
 {
@@ -522,12 +516,93 @@ void QuadTreeCuller::getObjects(const Vec3& from, const Vec3& direction,
     getDirectionObjects(m_root);
 }
 
-// The remaining box/frustum query families are named, fail-loud frontiers rather than silent
-// empty results.  They are independent of the recovered ray candidate path above.
-void QuadTreeCuller::getObjects(const Vec3&, const Vec3&, std::vector<IObject*>&,
-                                ObjectPredicator*)
+// PE 0x0072B6C0; ELF 0x0831EF10.
+void QuadTreeCuller::getObjects(const Vec3& minimum, const Vec3& maximum,
+                                std::vector<IObject*>& out, ObjectPredicator* predicator)
 {
-    unrecoveredQuadQuery("getObjects(box)");
+    if (!m_root)
+        return;
+    ++m_queryGeneration;
+    m_queryOut = &out;
+    m_boxMinimum = minimum;
+    m_boxMaximum = maximum;
+    m_queryPredicator = predicator;
+    getBoxObjects(m_root);
+}
+
+// PE 0x0072B280; ELF 0x0831EFB0.
+void QuadTreeCuller::getBoxObjects(Node* node)
+{
+    float distance = 0.0f;
+    if (m_boxMinimum.x > node->position.x)
+    {
+        const float delta = m_boxMinimum.x - node->position.x;
+        distance = delta * delta;
+    }
+    else if (node->position.x > m_boxMaximum.x)
+    {
+        const float delta = m_boxMaximum.x - node->position.x;
+        distance = delta * delta;
+    }
+    // shipped defect: z replaces x, and this same distance carries between objects below.
+    if (m_boxMinimum.z > node->position.z)
+    {
+        const float delta = m_boxMinimum.z - node->position.z;
+        distance = delta * delta;
+    }
+    else if (node->position.z > m_boxMaximum.z)
+    {
+        const float delta = m_boxMaximum.z - node->position.z;
+        distance = delta * delta;
+    }
+    if (distance > node->radius * node->radius)
+        return;
+
+    for (std::list<ObjectHolder*>::const_iterator it = node->objects.begin();
+         it != node->objects.end(); ++it)
+    {
+        ObjectHolder* const holder = *it;
+        if (holder->generation == m_queryGeneration)
+            continue;
+        holder->generation = m_queryGeneration;
+        IObject* const object = holder->object;
+        if (m_queryPredicator && !m_queryPredicator->predicate(object))
+            continue;
+
+        if (m_boxMinimum.x > object->getAbsoluteTransformation().m[12])
+        {
+            const float delta = m_boxMinimum.x - object->getAbsoluteTransformation().m[12];
+            distance = delta * delta;
+        }
+        else if (object->getAbsoluteTransformation().m[12] > m_boxMaximum.x)
+        {
+            const float delta = m_boxMaximum.x - object->getAbsoluteTransformation().m[12];
+            distance = delta * delta;
+        }
+        if (m_boxMinimum.z > object->getAbsoluteTransformation().m[14])
+        {
+            const float delta = m_boxMinimum.z - object->getAbsoluteTransformation().m[14];
+            distance = delta * delta;
+        }
+        else if (object->getAbsoluteTransformation().m[14] > m_boxMaximum.z)
+        {
+            const float delta = m_boxMaximum.z - object->getAbsoluteTransformation().m[14];
+            distance = delta * delta;
+        }
+
+        const float radius = object->getPhysicBoundingRadius();
+        if (distance <= radius * radius)
+            m_queryOut->push_back(object);
+    }
+
+    if (node->children[0])
+    {
+        for (unsigned int i = 0; i != 4; ++i)
+        {
+            if (node->children[i]->count)
+                getBoxObjects(node->children[i]);
+        }
+    }
 }
 
 // Dynamic-object frustum query (RW-121), retaining a pointer to the caller's frustum.

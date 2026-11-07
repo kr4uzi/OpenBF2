@@ -5,6 +5,8 @@ rem 2026-09-26 (G1). The manager TU and the REAL type-1 descriptor TU (ParticleS
 rem are linked; the descriptor's constructor and setters build the template the instance runs on.
 if not defined BF2_BUILD_OUT exit /b 2
 call "%~dp0..\Build\vsdevcmd.cmd" x86
+call "%~dp0..\Build\dxsdk.cmd" x86
+if errorlevel 1 exit /b 1
 set "TASK_ROOT=%~dp0..\.."
 if not defined BF2_TEST_OPT set "BF2_TEST_OPT=/O2"
 for %%A in (1) do (
@@ -14,7 +16,7 @@ for %%A in (1) do (
    /DDEDICATED=0 /DBF2_IMAGE_RENDDX9 /DBF2_PLUGIN_ABI_NATIVE=%%A /D_ITERATOR_DEBUG_LEVEL=0 ^
    /FI"%TASK_ROOT%\Code\BF2\Core\BuildConfig.h" /Fo"!OUT!\\" ^
    /Fe"!OUT!\particle_instance_type1_runtime.exe" ^
-   "%~dp0particle_instance_type1_runtime.cpp" "%TASK_ROOT%\Code\RendDX9Abi\Vc71String.cpp" ^
+   "%~dp0particle_instance_type1_runtime.cpp" ^
    "%TASK_ROOT%\Code\BF2\Geom\ParticleSystem\ParticleSystemTemplateType1.cpp" ^
    "%TASK_ROOT%\Code\BF2\Math\Mat4.cpp" "%TASK_ROOT%\Code\BF2\Math\Frustum.cpp" ^
    "%TASK_ROOT%\Code\BF2\Math\Mat4Inverse.cpp" "%TASK_ROOT%\Code\BF2\Math\Vec3.cpp" ^

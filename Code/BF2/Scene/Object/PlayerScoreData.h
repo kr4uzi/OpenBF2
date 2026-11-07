@@ -22,8 +22,6 @@ class PlayerScoreData                        // 0x60
 public:
     PlayerScoreData();
 
-    // Declared at their real addresses, no bodies - [FRONTIER]. Nothing on the current drive calls
-    // them; a player's score only moves once there is something to score.
     void reset();
     // reset clears round-scoped counters/maps while preserving rank and career values.
     void setRank(unsigned int rank, IPlayer* player);
@@ -38,6 +36,8 @@ public:
     bool receiveRepairScore(float limit);
     void addToAmmoScoreAmount(float amount, IObject* object);
     bool receiveAmmoScore(float limit);
+    // [FRONTIER] Declaration only: addVehicleDestroyed and the three set* below have no bodies.
+    // Nothing on the current drive calls them.
     void addVehicleDestroyed(unsigned int id);
     void addBulletsFired(unsigned int id, int count);
     void addBulletsGivingDamage(unsigned int id, int count, IObject* object);

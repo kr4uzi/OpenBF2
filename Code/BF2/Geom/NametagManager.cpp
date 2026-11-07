@@ -1,13 +1,17 @@
 // Floating-tag lifecycle, event handling and item updates.
-// Profiling brackets are omitted. Reissued orders retain the original unchanged-item result.
-// OrderNametagItem::setOrder keeps a named stop for the null-target arm;
-// callers must supply a target.
+// Profiling brackets are omitted except NametagManager::draw's. Reissued orders retain the original unchanged-item result.
+// OrderNametagItem::setOrder retains the shipped null-target fault.
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "NametagManager.h"
+#include "../RendDX9/QueueProfiler.h"
 #include "NameTagRenderer.h"                  // nt_renderer - the per-TagType batch renderer
 #include "StaticMesh.h"                       // staticMeshRootParent - sub_10103CE0
+#include "LcgRandom.h"                        // lcgrandStep - sub_1009EF30
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
@@ -19,9 +23,6 @@
 // The engine interfaces below are imported the way XpLightManager.cpp / BundledMeshDraw.cpp do it:
 // only their virtual interfaces cross the plugin boundary; in the retail-compatible flavour HfeAbi
 // already supplies ClassManager's VC7.1 carriers, so Core/ClassManager.h is kept out.
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../Game/IGame.h"
 #include "../Game/Objects/ObjectLayoutAccess.h"
 #include "../Game/Objects/IPlayer.h"
@@ -41,7 +42,6 @@
 #include "../Game/Objects/GameLogicComp/IArmorGLComp.h"
 #include "../Scene/Object/ObjectManager.h"
 #include "../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
-#if BF2_PLUGIN_ABI_NATIVE
 // Native flavour only: the host is built from these very headers, so the compiler's own layout of
 // these classes IS the host's layout. The retail-compatible flavour reads the retail offsets
 // instead (see the host seams below) and must not see these classes' native-STL layouts.
@@ -56,12 +56,9 @@
 #include "../Game/Objects/StrategicObjectComp.h"     // addTouchItem: m_holder (a friend line)
 #include "../Menu/BF2HudManager.h"                   // getPlayerKit (+0x90) / enableVOHelpMessage (+0xF8)
 #include "../Menu/ISwiffHost.h"                      // getLocalizedString (+0xA8)
-#endif
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#endif
 
 #include "../Math/Mat4.h"                            // nt_update
+#include "../RendDX9/RendDX9Math.h"                  // the RendDX9.dll Math copies
 #include "../RendMisc/IRenderer.h"                   // nt_update: Renderer +0xB0
 #include "../RendMisc/IRenderView.h"                 // nt_update: +0x14/+0x64/+0x68/+0x6C/+0x74
 
@@ -189,15 +186,6 @@ inline world::IStrategicObjectComp* strategicComponent(world::IObject* object)
         world::object_detail::LayoutAccess::strategicObjectComponent(object));
 }
 
-#if !BF2_PLUGIN_ABI_NATIVE
-inline void* strategicHolder(world::IStrategicObjectComp* component)
-{
-    // StrategicObjectComp::m_holder, +0x14 in both images (vptr + four scalars precede it - see
-    // StrategicObjectComp.h); private there, so read at its fixed offset. 0x10130CA1. The native
-    // flavour reads it typed in addTouchItem, through StrategicObjectComp's friend line (RW-266).
-    return *reinterpret_cast<void* const*>(reinterpret_cast<const unsigned char*>(component) + 0x14);
-}
-#endif
 
 inline void* rootParent(void* object)
 {
@@ -214,22 +202,9 @@ inline float geometryBoundingRadius(void* geometry)
 }
 
 // host strings
-#if BF2_PLUGIN_ABI_NATIVE
 typedef std::wstring HostWString;
 inline const std::string& hostStdString(const renddx9abi::HostString& value) { return value; }
 inline const renddx9abi::HostString& fromHostStdString(const std::string& value) { return value; }
-#else
-typedef vc71::wstring HostWString;
-// The host receives these by reference, so only the static spelling changes (XpLightManager.cpp).
-inline const std::string& hostStdString(const renddx9abi::HostString& value)
-{
-    return *reinterpret_cast<const std::string*>(&value);
-}
-inline const renddx9abi::HostString& fromHostStdString(const std::string& value)
-{
-    return *reinterpret_cast<const renddx9abi::HostString*>(&value);
-}
-#endif
 
 // std::operator==(const std::string&, const char*) (MSVCP71 import, 0x10130ECD) - compare() == 0.
 inline bool hostStringEquals(const renddx9abi::HostString& value, const char* text)
@@ -246,15 +221,9 @@ inline bool hostStringEquals(const renddx9abi::HostString& value, const char* te
 inline bool swiffHostGetLocalizedString(IBase* swiffHost, HostWString& out,
                                         const renddx9abi::HostString& key)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     // RW-266: in this flavour the flavour's string types ARE the host's std types, so the typed
     // interface applies - ISwiffHost slot 42 is +0xA8 (/d1reportSingleClassLayout).
     return static_cast<ui::ISwiffHost*>(swiffHost)->getLocalizedString(out, key);
-#else
-    typedef bool (__thiscall* LocalizeFn)(void*, HostWString&, const renddx9abi::HostString&);
-    return reinterpret_cast<LocalizeFn>((*reinterpret_cast<void***>(swiffHost))[0xA8 / 4])(
-        swiffHost, out, key);
-#endif
 }
 
 // Converts wide text using the current locale. The first size-error test intentionally
@@ -280,7 +249,7 @@ renddx9abi::HostString narrowString(const HostWString& wide)
 // internal linkage). 0xFFF limit; an overflow is replaced by the fixed warning.
 char g_nametagFormatBuffer[0x1000];
 
-vc71::string nametagFormatString(const char* format, ...)
+std::string nametagFormatString(const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -292,32 +261,10 @@ vc71::string nametagFormatString(const char* format, ...)
     else
         ::sprintf(g_nametagFormatBuffer, "%s",
                   "WARNING: The original message was too long for formatString(). \n");
-    return vc71::string(g_nametagFormatBuffer);
-}
-
-// lcgrand_step (0x1009EF30) - RendDX9's copy of dice::hfe::Random::getRaw (ELF 0x8166CE0): two
-// Schrage steps, 24112 then 26143. The particle code carries the same arithmetic
-// (ParticleInstanceType0Emission.inl's psmEmissionRandomStep); Core/Random.cpp is not in the
-// RendDX9 manifest, so it is reproduced here rather than linked.
-unsigned int randomStep(unsigned int value, unsigned int multiplier)
-{
-    const unsigned int low = (value & 0xFFFFu) * multiplier;
-    const unsigned int high = static_cast<unsigned int>(static_cast<int>(value) >> 16) * multiplier;
-    const int middle = static_cast<int>((low >> 16) + high);
-    const unsigned int next = (low & 0xFFFFu) + ((static_cast<unsigned int>(middle) & 0x7FFFu) << 16)
-        + static_cast<unsigned int>(middle >> 15);
-    const int reduced = static_cast<int>(next - 0x7FFFFFFFu);
-    return reduced < 0 ? next : static_cast<unsigned int>(reduced);
-}
-
-unsigned int randomRaw(Random& random)
-{
-    random.m_seed = randomStep(randomStep(random.m_seed, 24112u), 26143u);
-    return random.m_seed;
+    return std::string(g_nametagFormatBuffer);
 }
 
 // Native and plugin host layouts.
-#if BF2_PLUGIN_ABI_NATIVE
 
 // Protected fields reached the way C++ allows from outside: a pointer-to-member formed inside a
 // derived class. Nothing is instantiated.
@@ -381,57 +328,6 @@ inline bool vehicleHudUsesPlayerIcon(world::IObjectComponent* hudComponent)
     return static_cast<world::IVehicleHudComp*>(hudComponent)->getHudInfo()->usePlayerIcon;
 }
 
-#else  // the retail-compatible flavour: the retail host's own offsets
-
-template <typename T>
-inline T& retailField(void* object, unsigned int offset)
-{
-    return *reinterpret_cast<T*>(static_cast<unsigned char*>(object) + offset);
-}
-
-// ControlPoint is `Bundle, IControlPoint` with the IControlPoint subobject at PE +0x154 (ELF +0x13C
-// - one VC7.1 std::string larger, 28 - 4 bytes); m_flagPoleHeight is ELF +0x174 / PE +0x18C.
-
-inline world::IObject* controlPointObject(world::ControlPoint* cp)
-{
-    return reinterpret_cast<world::IObject*>(cp);                          // the primary base, +0
-}
-inline int controlPointTeam(world::ControlPoint* cp)
-{
-    return reinterpret_cast<world::IControlPoint*>(
-        reinterpret_cast<unsigned char*>(cp) + 0x154)->getTeam();          // +0x154 subobject, +0x1C
-}
-inline float controlPointFlagPoleHeight(world::ControlPoint* cp)
-{
-    return retailField<float>(cp, 0x18C);
-}
-// SupplyObjectTemplate visibleOn3dMap / 3dMapIcon: ELF +0x1A4 / +0x1A8, PE +0x254 / +0x258.
-inline bool supplyVisibleOn3dMap(void* t) { return retailField<unsigned char>(t, 0x254) != 0; }
-inline int  supplyMapIcon(void* t)        { return retailField<int>(t, 0x258); }
-// GenericProjectileTemplate visibleOn3dMap / 3dMapIcon: ELF +0x1FA / +0x1FC, PE +0x2DA / +0x2DC.
-inline bool projectileVisibleOn3dMap(void* t) { return retailField<unsigned char>(t, 0x2DA) != 0; }
-inline int  projectileMapIcon(void* t)        { return retailField<int>(t, 0x2DC); }
-// IProjectileObject subobject slots, PE = ELF - 4 (one destructor slot): +0x60 = ELF +0x64
-// getTeam (thunk 0x8287740 -> 0x8287730), +0xC4 = ELF +0xC8 getTargetObject (0x8287230 ->
-// 0x8284880) - read from GenericProjectile's -316 subtable (ELF 0x88BC650).
-inline int projectileTeam(world::IObject*, void* projectile)
-{
-    typedef int (__thiscall* TeamFn)(void*);
-    return reinterpret_cast<TeamFn>((*reinterpret_cast<void***>(projectile))[0x60 / 4])(projectile);
-}
-inline world::IObject* projectileTarget(world::IObject*, void* projectile)
-{
-    typedef world::IObject* (__thiscall* TargetFn)(void*);
-    return reinterpret_cast<TargetFn>((*reinterpret_cast<void***>(projectile))[0xC4 / 4])(projectile);
-}
-// VehicleHudInfo::usePlayerIcon - PE +0x94 (an int and five 28-byte strings precede the flags).
-inline bool vehicleHudUsesPlayerIcon(world::IObjectComponent* hudComponent)
-{
-    return retailField<unsigned char>(
-        static_cast<world::IVehicleHudComp*>(hudComponent)->getHudInfo(), 0x94) != 0;
-}
-
-#endif // BF2_PLUGIN_ABI_NATIVE
 
 
 // [CHOSEN, not recovered] Preserve the reissue defect's unchanged item state without
@@ -446,8 +342,7 @@ inline void reissueOrderDefect()
 double nametagFrameDelta()
 {
     // g_Renderer +0x5E8 - the delta Renderer::update stores (BF2Render.cpp: self + 1512).
-    return *reinterpret_cast<const double*>(
-        static_cast<const unsigned char*>(static_cast<const void*>(dx9rend::g_Renderer)) + 0x5E8);
+    return dx9rend::rendererTailDouble(0x5E8);
 }
 
 
@@ -492,6 +387,7 @@ NametagItem::NametagItem(int type, int slot)
 }
 
 // (body) / 0x1012C2D0 (scalar deleting): the two strings, +0x2C then +0x10.
+// PE 0x1012C2B0
 NametagItem::~NametagItem()
 {
 }
@@ -520,14 +416,13 @@ int PlayerNametagItem::getKey()
 
 
 // Updates and returns the soldier/vehicle-relative tag position; no player returns zero.
-// Repeated vehicle reads may observe different vehicles. The x component's original
-// x87 extended intermediate can differ by one ULP from SSE2.
-
+// Repeated vehicle reads may observe different vehicles.
+// PE 0x1012D880.
 const Vec3& PlayerNametagItem::updatePosition()
 {
     world::IPlayer* const player = m_player.get();
     if (!player)
-        return Vec3::getZero();
+        return rendmath::zeroVector();                               // PE 0x1007B1E0
 
     Vec3 offset;
     offset.x = 0.0f;
@@ -573,8 +468,16 @@ const Vec3& PlayerNametagItem::updatePosition()
             }
             offset.x = 0.0f;
             offset.z = 0.0f;
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Preserve the x87 intermediate across the multiply/add.
+            offset.y = bf2x87::store(bf2x87::add(
+                bf2x87::mul(bf2x87::wide(radius),
+                    bf2x87::wide(NametagManager::s_vehicleNametagOffsetFactor)),
+                bf2x87::wide(NametagManager::s_vehicleNametagOffset)));
+#else
             offset.y = radius * NametagManager::s_vehicleNametagOffsetFactor
                      + NametagManager::s_vehicleNametagOffset;
+#endif
         }
     }
 
@@ -582,11 +485,17 @@ const Vec3& PlayerNametagItem::updatePosition()
     if (player->getVehicle())
         base = &player->getVehicle()->getAbsolutePosition();            // PE +0x68
     else
-        base = &Vec3::getZero();
+        base = &rendmath::zeroVector();                              // PE 0x1007B1E0
 
     const float partialY = offset.y + m_offset.y;
     const float partialZ = offset.z + m_offset.z;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] X stays in x87 until its final store; Y/Z spill above.
+    m_position.x = bf2x87::store(bf2x87::add(
+        bf2x87::add(bf2x87::wide(offset.x), bf2x87::wide(m_offset.x)), bf2x87::wide(base->x)));
+#else
     m_position.x = (offset.x + m_offset.x) + base->x;
+#endif
     m_position.y = partialY + base->y;
     m_position.z = partialZ + base->z;
     return m_position;
@@ -687,6 +596,7 @@ int OrderNametagItem::getKey()
 }
 
 
+// PE 0x1012DDE0.
 const Vec3& OrderNametagItem::updatePosition()
 {
     if (m_flags & NIF_FollowTarget)
@@ -711,7 +621,7 @@ void OrderNametagItem::setOrder(const SquadOrder* order, const Vec3& position)
     m_targetPosition = position;
 }
 
-// 0x1012DCE0, 252 B, retn 8.
+// PE 0x1012DCE0, retn 8.
 void OrderNametagItem::setOrder(const SquadOrder* order, world::IObject* target)
 {
     m_order = *order;
@@ -720,12 +630,16 @@ void OrderNametagItem::setOrder(const SquadOrder* order, world::IObject* target)
         m_target = target->getWeakPtr();
         return;
     }
-    // the null-target arm retains the null temporary with `xor eax,eax; add [eax],1`
-    // - a guaranteed write to address 0. Unreachable from every shipped caller (addTouchItem tests
-    // the target first). Kept as a stop rather than written as UB or "fixed" into a clear.
-    RD9_FRONTIER_AT("dice::hfe::geom::OrderNametagItem::setOrder (0x1012DDB2 - the shipped null-"
-                    "target arm writes to address 0)", this, 0);
-    std::abort();
+    typedef WeakPtr<world::IObject>::Ctrl TargetControl;
+#if defined(_MSC_VER) && defined(_M_IX86)
+    TargetControl* incoming = 0;
+#else
+    // [CHOSEN, not recovered] Keep the null address opaque to the native optimizer so the
+    // shipped memory access survives instead of making the entire arm unreachable.
+    TargetControl* volatile incoming = 0;
+#endif
+    ++incoming->refCount; // shipped defect: retains a null control block before clearing the target.
+    m_target = WeakPtr<world::IObject>();
 }
 
 // 0x101C8080, 83 B, retn 4.
@@ -744,46 +658,34 @@ bool NametagRayPredicator::predicate(world::IObject* object)
     return (flags & m_flags) == m_flags;
 }
 
+namespace {
 
-// NametagTableVector
-
-NametagTableVector::~NametagTableVector()
+// The ray predicate narrowed to control-object roots (predicate, PE 0x101C80E0): the inherited test
+// (NametagRayPredicator::predicate, PE 0x101C8080, called on the same `this`), then the object must
+// answer IID_IPlayerControlObject (queryInterface slot +0x0C, id ds:10208CF0) and be its own root.
+// Unreachable in 1.50: no code or data references. [CHOSEN, not recovered] class name and
+// placement: retail has no constructor, vtable or caller for it, so neither is observable; the
+// member reads exactly the base's fields.
+class NametagRayControlRootPredicator : public NametagRayPredicator
 {
-    if (first)
-        ::renddx9abi::engineFree(first);
-    first = 0;
-    last = 0;
-    end = 0;
-}
+public:
+    NametagRayControlRootPredicator(world::IObject* ignoredRoot, unsigned int flags,
+                                    bool ignoreSoldiers)
+        : NametagRayPredicator(ignoredRoot, flags, ignoreSoldiers) {}
 
-// sub_10132390(n, value) - vector::resize. The only use is resize(3, 0) on an empty vector, where
-// VC7.1's _Insert_n allocates exactly n elements (capacity 0 + 0/2 < n, so n).
-void NametagTableVector::resize(unsigned int count, float* value)
-{
-    const unsigned int size = first ? static_cast<unsigned int>((last - first) / sizeof(float*)) : 0u;
-    if (size >= count)
+    // PE 0x101C80E0 (retn 4).
+    virtual bool predicate(world::IObject* object)
     {
-        last = first + count * sizeof(float*);
-        return;
+        if (!NametagRayPredicator::predicate(object))
+            return false;
+        if (object->queryInterface(world::IID_IPlayerControlObject) && rootParent(object) == object)
+            return true;
+        return false;
     }
-    const unsigned int capacity =
-        first ? static_cast<unsigned int>((end - first) / sizeof(float*)) : 0u;
-    if (capacity < count)
-    {
-        char* const block = static_cast<char*>(::renddx9abi::engineAlloc(count * sizeof(float*)));
-        if (first)
-        {
-            ::memcpy(block, first, size * sizeof(float*));
-            ::renddx9abi::engineFree(first);
-        }
-        first = block;
-        last = block + size * sizeof(float*);
-        end = block + count * sizeof(float*);
-    }
-    for (unsigned int i = size; i < count; ++i)
-        reinterpret_cast<float**>(first)[i] = value;
-    last = first + count * sizeof(float*);
-}
+};
+
+} // anonymous namespace
+
 
 
 // NametagManager - construction and destruction
@@ -817,7 +719,7 @@ NametagManager::NametagManager()
     eventManager->registerEventHandler(ECGame, static_cast<IEventListener*>(this), 0);
 
     m_transformations.resize(3, 0);                                      // sub_10132390(3, 0)
-    m_colors.resize(3, 0);
+    m_colors.resize(3, 0);                                               //   (vector::resize)
 
     // operator new(0xA924): a count prefix of 3 and three NameTagRenderer ctors (0x101B2F00). A
     // failed allocation leaves a NULL array and the next line dereferences it - shipped; the
@@ -894,7 +796,7 @@ int NametagManager::getRef()
     return m_refCount;
 }
 
-// The remaining count is cached before the destructor, as shipped.
+// The remaining count is cached before the destructor, as shipped. PE 0x10132880
 int NametagManager::release()
 {
     const int remaining = --m_refCount;
@@ -907,6 +809,7 @@ int NametagManager::release()
 }
 
 // iid 1 (dword_102088DC) or 0xB801DCFE (dword_1021AE7C) answer the raw `this`.
+// PE 0x101325C0
 void* NametagManager::queryInterface(unsigned int iid) const
 {
     if (iid == 1u)
@@ -932,7 +835,7 @@ bool NametagManager::registerControlPointIcons(const renddx9abi::HostString& tea
 {
     const unsigned int iconsBefore = NameTagRenderer::iconCount();       // dword_102670AC
 
-    vc71::string path("Menu/Nametag/Neutral/miniMap_CP");
+    std::string path("Menu/Nametag/Neutral/miniMap_CP");
     NameTagRenderer::removeTexture(kIconControlPoint + 0, 0);             // (42, 0)
     NameTagRenderer::setTexture(kIconControlPoint + 0, 0, path, 0, 0, 16, 16);
 
@@ -956,20 +859,23 @@ bool NametagManager::registerControlPointIcons(const renddx9abi::HostString& tea
 }
 
 
+// PE 0x10131260: the "Nametags" profiler is registered on first use (guard bit 0 at PE 0x1025D110,
+// object at PE 0x1025CEA8) and destroyed at exit.
 void NametagManager::draw()
 {
-    // the profiler bracket ("Nametags") - not reproduced, see
-    // the file header.
+    static dx9rend::QueueProfiler profiler(std::string("Nametags"));
+    profiler.begin();
     update();                                  // slot +0x14 - a virtual call
     for (int type = TTObject; type >= TTPlayer; --type)   // 0x70C0, 0x3860, 0 - renderers 2, 1, 0
         m_renderers[type].draw();
+    dx9rend::QueueProfiler::end();
 }
 
-// Adds a player nametag.
+// Adds a player nametag. PE 0x101309D0
 bool NametagManager::addTouchItem(world::IPlayer* player)
 {
     NametagItem* item;
-    NametagItemMap::node* const found = m_items.find(player->getId() + kNametagKeyPlayer);   // inline key
+    const NametagItemMap::iterator found = m_items.find(player->getId() + kNametagKeyPlayer);   // inline key
     if (found == m_items.end())
     {
         item = createPlayerItem(player);
@@ -978,7 +884,7 @@ bool NametagManager::addTouchItem(world::IPlayer* player)
     }
     else
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
 
@@ -998,7 +904,7 @@ bool NametagManager::addTouchItem(world::ControlPoint* controlPoint)
 {
     world::IObject* const object = controlPointObject(controlPoint);
     NametagItem* item;
-    NametagItemMap::node* const found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
+    const NametagItemMap::iterator found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
     if (found == m_items.end())
     {
         item = createObjectItem(object);
@@ -1007,7 +913,7 @@ bool NametagManager::addTouchItem(world::ControlPoint* controlPoint)
     }
     else
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
 
@@ -1030,16 +936,15 @@ bool NametagManager::addTouchItem(world::ControlPoint* controlPoint)
 }
 
 
-// 0x10130B90, 951 B, retn 4 - a soldier, a strategic object, a supply object, a projectile, a
+// PE 0x10130B90: 951 B, retn 4 - a soldier, a strategic object, a supply object, a projectile, a
 // vehicle drop, or anything else. Every exit, store and repeated call is the shipped one.
-
 bool NametagManager::addTouchItem(world::IObject* object)
 {
     NametagItem* item;
-    NametagItemMap::node* const found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
+    const NametagItemMap::iterator found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
     if (found != m_items.end())
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
     else
@@ -1076,11 +981,7 @@ bool NametagManager::addTouchItem(world::IObject* object)
         item->m_offset.y = object->getVisualBoundingRadius();            // PE +0x90
         item->m_offset.x = 0.0f;
         item->m_offset.z = 0.0f;
-#if BF2_PLUGIN_ABI_NATIVE
         if (static_cast<world::StrategicObjectComp*>(component)->m_holder)  // +0x14 (RW-266)
-#else
-        if (strategicHolder(component))
-#endif
             item->m_flags |= NIF_UseHolderPosition;                      // byte +0xB9 |= 1
         item->m_flags &= ~NIF_Visible;
         item->m_colorIndex = 4;
@@ -1194,11 +1095,11 @@ bool NametagManager::addTouchItem(world::IObject* object)
 // 0x101310A0, 204 B, retn 0Ch.
 bool NametagManager::addTouchItem(SquadOrder* order, int orderType, const Vec3& position)
 {
-    NametagItemMap::node* const found = m_items.find(orderType + kNametagKeyOrder);
+    const NametagItemMap::iterator found = m_items.find(orderType + kNametagKeyOrder);
     NametagItem* item = 0;
     if (found != m_items.end())
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
     if (!item)
@@ -1225,11 +1126,11 @@ bool NametagManager::addTouchItem(SquadOrder* order, int orderType, world::IObje
     if (!target)
         return false;
 
-    NametagItemMap::node* const found = m_items.find(orderType + kNametagKeyOrder);
+    const NametagItemMap::iterator found = m_items.find(orderType + kNametagKeyOrder);
     NametagItem* item = 0;
     if (found != m_items.end())
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
     if (!item)
@@ -1251,10 +1152,9 @@ bool NametagManager::addTouchItem(SquadOrder* order, int orderType, world::IObje
 }
 
 
-// 0x10130F50, 327 B, retn 8 - the UAV: rename it to the localised "KILLMESSAGE_VEHICLE_uav" text,
+// PE 0x10130F50: 327 B, retn 8 - the UAV: rename it to the localised "KILLMESSAGE_VEHICLE_uav" text,
 // then tag it with the owning team's relation colour.
 // The "SwiffHost" singleton is not null-tested; the localisation result is discarded.
-
 bool NametagManager::addTouchItem(world::IObject* object, int team)
 {
     IBase* const swiffHost = classManager->getSingleton(renddx9abi::HostString("SwiffHost"));
@@ -1265,7 +1165,7 @@ bool NametagManager::addTouchItem(world::IObject* object, int team)
     object->setName(hostStdString(name));                                // IObject PE +0x64
 
     NametagItem* item;
-    NametagItemMap::node* const found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
+    const NametagItemMap::iterator found = m_items.find(static_cast<int>(objectId(object)) + kNametagKeyObject);
     if (found == m_items.end())
     {
         item = createObjectItem(object);
@@ -1274,7 +1174,7 @@ bool NametagManager::addTouchItem(world::IObject* object, int team)
     }
     else
     {
-        item = found->value;
+        item = found->second;
         item->m_dirty = true;
     }
 
@@ -1292,16 +1192,20 @@ bool NametagManager::addTouchItem(world::IObject* object, int team)
 
 // the per-type tables
 
+// Unchecked indexing, as shipped (operator[], not the throwing at()).
+// PE 0x10132730
 float* NametagManager::getColors(int type)
 {
-    return m_colors.at(type);
+    return m_colors[type];
 }
 
+// PE 0x1012EFB0
 float* NametagManager::getTransformations(int type)
 {
-    return m_transformations.at(type);
+    return m_transformations[type];
 }
 
+// PE 0x1012C820
 float* NametagManager::getAlphaArray(int type)        // this + 0x38 + type * 0x100
 {
     return m_alphaArrays[type];
@@ -1314,16 +1218,16 @@ float* NametagManager::getAlphaArray(int type)        // this + 0x38 + type * 0x
 // 0x1012ED40, 117 B: every item re-buffered into its renderer (0x101B2320, full = true).
 void NametagManager::rebufferAll()
 {
-    for (NametagItemMap::node* it = m_items.begin(); it != m_items.end(); it = NametagItemMap::next(it))
-        m_renderers[it->value->m_type].bufferItem(it->value, true);
+    for (NametagItemMap::iterator it = m_items.begin(); it != m_items.end(); ++it)
+        m_renderers[it->second->m_type].bufferItem(it->second, true);
 }
 
 // 0x1012EDC0, 106 B - the renderer's ECCore CEPostLoad arm calls it: mark every item dirty and
 // let update() run.
 void NametagManager::enableBuffering()
 {
-    for (NametagItemMap::node* it = m_items.begin(); it != m_items.end(); it = NametagItemMap::next(it))
-        it->value->m_dirty = true;
+    for (NametagItemMap::iterator it = m_items.begin(); it != m_items.end(); ++it)
+        it->second->m_dirty = true;
     m_bufferingEnabled = true;
 }
 
@@ -1334,7 +1238,7 @@ void NametagManager::clearAll()
     for (int type = TTPlayer; type <= TTObject; ++type)
     {
         for (int slot = 0; slot < maxSlotCount(type); ++slot)
-            m_freeSlots[type].insert(static_cast<unsigned int>(slot));
+            m_freeSlots[type].insert(slot);
         m_slotMaps[type].clear();
     }
 }
@@ -1344,9 +1248,9 @@ void NametagManager::clearAll()
 // The item's type and slot are read before the item is null-tested.
 void NametagManager::removeAllItems()
 {
-    for (NametagItemMap::node* it = m_items.begin(); it != m_items.end(); it = m_items.begin())
+    for (NametagItemMap::iterator it = m_items.begin(); it != m_items.end(); it = m_items.begin())
     {
-        NametagItem* const item = it->value;
+        NametagItem* const item = it->second;
         float* const transformation = getTransformations(item->m_type) + item->m_slot * 4;   // virtual
         transformation[0] = 0.0f;
         transformation[1] = 0.0f;
@@ -1401,9 +1305,10 @@ void NametagManager::removeItem(int type, void* item)
 }
 
 // Frees the key's slot and removes its item. The type argument selects the transformation table.
+// PE 0x1012FB70.
 void NametagManager::removeKey(int type, int key)
 {
-    NametagItemMap::node* const found = m_items.find(key);
+    const NametagItemMap::iterator found = m_items.find(key);
     if (found == m_items.end())
         return;
 
@@ -1411,11 +1316,12 @@ void NametagManager::removeKey(int type, int key)
     if (slots.count(key) != 0)                                           // equal_range + _Distance
     {
         slots.erase(key);
-        m_freeSlots[type].insert(static_cast<unsigned int>(found->value->m_slot));
+        m_freeSlots[type].insert(found->second->m_slot);
     }
 
     NametagItem*& entry = m_items[key];
-    float* const transformation = getTransformations(type) + entry->m_slot * 4;   // virtual +0x38
+    float* const transformations = getTransformations(type);             // virtual +0x38
+    float* const transformation = transformations + entry->m_slot * 4;
     transformation[0] = 0.0f;
     transformation[1] = 0.0f;
     transformation[2] = -1.0f;
@@ -1439,6 +1345,7 @@ bool NametagManager::get3dMapOn() const
     return m_3dMapOn;
 }
 
+// PE 0x10132610
 void NametagManager::set3dMapOn(bool on)
 {
     m_3dMapOn = on;
@@ -1484,10 +1391,10 @@ void NametagManager::handleEvent(EventCategory category, unsigned int id, EventN
                 return;
             }
             // The spawned player is dereferenced with no null test; the key is built inline.
-            NametagItemMap::node* const found = m_items.find(spawned->getId() + kNametagKeyPlayer);
+            const NametagItemMap::iterator found = m_items.find(spawned->getId() + kNametagKeyPlayer);
             if (found == m_items.end())
                 return;
-            resetItem(found->value);
+            resetItem(found->second);
             return;
         }
         // any other ECGame id jumps into the ECHud id tests below. Shipped.
@@ -1515,10 +1422,10 @@ void NametagManager::handleEvent(EventCategory category, unsigned int id, EventN
         world::IPlayer* const caller = soldier->getOccupingPlayer();     // +0x34
         if (!caller)
             return;
-        NametagItemMap::node* const found = m_items.find(playerKey(caller));
+        const NametagItemMap::iterator found = m_items.find(playerKey(caller));
         if (found == m_items.end())
             return;
-        NametagItem* const item = found->value;
+        NametagItem* const item = found->second;
         world::IPlayer* const local = localHumanPlayer();
         if (!local)
             return;
@@ -1606,10 +1513,10 @@ void NametagManager::handleEvent(EventCategory category, unsigned int id, EventN
         world::IPlayer* const player = soldier->getOccupingPlayer();
         if (!player)
             return;
-        NametagItemMap::node* const found = m_items.find(player->getId() + kNametagKeyPlayer);
+        const NametagItemMap::iterator found = m_items.find(player->getId() + kNametagKeyPlayer);
         if (found == m_items.end())
             return;
-        NametagItem* const item = found->value;
+        NametagItem* const item = found->second;
         if (item->m_timer <= 0.0f)
             item->m_timer = s_callIconTime;
         item->m_flashColorIndex = (item->m_colorIndex != 4) ? 4 : 0;
@@ -1623,8 +1530,8 @@ void NametagManager::resetAllCalls()
     s_repairCallTimer = 0.0;                   // dbl_1025C228 first, as shipped
     s_medicCallTimer = 0.0;
     s_ammoCallTimer = 0.0;
-    for (NametagItemMap::node* it = m_items.begin(); it != m_items.end(); it = NametagItemMap::next(it))
-        resetItem(it->value);                  // 0x1012CA10, inlined in the shipped loop
+    for (NametagItemMap::iterator it = m_items.begin(); it != m_items.end(); ++it)
+        resetItem(it->second);                 // 0x1012CA10, inlined in the shipped loop
 }
 
 // 0x1012CA10, 74 B, retn 4.
@@ -1727,10 +1634,9 @@ float NametagManager::hierarchyVisualRadius(world::IObject* object, bool childre
 }
 
 
-// 0x1012DEC0, 1,060 B, retn 4. A player tag's icon (call-for-help / squad leader / commander /
+// PE 0x1012DEC0: 1,060 B, retn 4. A player tag's icon (call-for-help / squad leader / commander /
 // soldier / vehicle kind), its relation colour and whether it is drawn. Returns whether the
 // colour changed.
-
 bool NametagManager::refreshPlayerItem(PlayerNametagItem* item)
 {
     world::IPlayer* const player = item->m_player.get();
@@ -1938,7 +1844,7 @@ visibility:
     return changed;
 }
 
-// no caller in the image; the constructor and clearAll inline the same switch.
+// PE 0x1012C840: no caller in the image; the constructor and clearAll inline the same switch.
 int NametagManager::maxSlotCount(int type)
 {
     switch (type)
@@ -1950,7 +1856,7 @@ int NametagManager::maxSlotCount(int type)
     }
 }
 
-// unreferenced in the image. Counts the item's timer down by the frame delta and
+// PE 0x1012CB00: unreferenced in the image. Counts the item's timer down by the frame delta and
 // resets its call state at zero. The comparison is on the unrounded difference (fst keeps st0).
 void NametagManager::tickItemTimer(NametagItem* item)
 {
@@ -1963,7 +1869,33 @@ void NametagManager::tickItemTimer(NametagItem* item)
     }
 }
 
-// unreferenced dispatchers (the update inlines the same type test).
+// PE 0x1012C5B0: unreachable in 1.50: no code or data references. The map key of a tag by type:
+// a player's id (IPlayer slot +0x50), the order type, or an object's id (IObject +0x10) plus the
+// per-type base; any other type answers 0. Takes no `this` (ecx unread), retn 0xC. [INFERRED] name.
+int NametagManager::genericKey(int type, void* item, int orderType)
+{
+    switch (type)
+    {
+    case TTPlayer: return static_cast<world::IPlayer*>(item)->getId() + kNametagKeyPlayer;
+    case TTOrder:  return orderType + kNametagKeyOrder;
+    case TTObject: return static_cast<int>(objectId(static_cast<world::IObject*>(item))) + kNametagKeyObject;
+    default:       return 0;
+    }
+}
+
+// PE 0x1012F3E0: unreachable in 1.50: no code or data references. Finds the item filed under
+// `key` and marks it for re-buffering; answers the item, or null when the key is not in the map.
+// [INFERRED] name.
+NametagItem* NametagManager::markItemDirty(int key)
+{
+    const NametagItemMap::iterator found = m_items.find(key);
+    if (found == m_items.end())
+        return 0;
+    found->second->m_dirty = true;
+    return found->second;
+}
+
+// PE 0x1012E8D0: unreferenced dispatcher (the update inlines the same type test).
 void NametagManager::updateItemPosition(NametagItem* item)
 {
     if (item->m_type == TTPlayer)
@@ -1972,6 +1904,7 @@ void NametagManager::updateItemPosition(NametagItem* item)
         updateObjectItem(item);
 }
 
+// PE 0x1012EF90: unreferenced dispatcher, as updateItemPosition.
 void NametagManager::updateItemFade(NametagItem* item)
 {
     if (item->m_type == TTPlayer)
@@ -1994,11 +1927,11 @@ int NametagManager::allocateSlot(int type, int key)
     if (slots.count(key) != 0)                                           // sub_101319E0 + _Distance
         return slots[key];
 
-    if (freeSlots.size == 0)
+    if (freeSlots.size() == 0)
         return -1;
 
-    const int slot = static_cast<int>(freeSlots.begin()->key);
-    slots.insert(key, slot, 0);
+    const int slot = *freeSlots.begin();
+    slots.insert(NametagSlotMap::value_type(key, slot));
     freeSlots.erase(freeSlots.begin());
     return slot;
 }
@@ -2012,7 +1945,7 @@ NametagItem* NametagManager::insertItem(NametagItem* item)
         return 0;
 
     Random random;                                                       // m_seed = 0x759DC150
-    const int value = (static_cast<int>(randomRaw(random) | 0x80u) >> 7) + 1;   // lcgrand_step
+    const int value = (static_cast<int>(lcgrandStep(&random.m_seed) | 0x80u) >> 7) + 1;
     item->m_lastSightCheckTime = static_cast<double>(value) * 2.98023223876953125e-08; // flt_1020CFD0 = 2^-25
 
     m_items[item->getKey()] = item;                                      // slot +0x04, sub_10132750
@@ -2079,12 +2012,14 @@ int NametagManager::orderIcon(int orderType, int orderId)
 
 // the device listener - `this` at +0x08 in the shipped bodies
 
+// PE 0x1012CA60.
 void NametagManager::onDeviceLost()            // renderers 0, 1, 2
 {
     for (int type = TTPlayer; type <= TTObject; ++type)
         m_renderers[type].onDeviceLost();
 }
 
+// PE 0x1012CA90.
 void NametagManager::onDeviceReset()
 {
     for (int type = TTPlayer; type <= TTObject; ++type)
@@ -2092,6 +2027,7 @@ void NametagManager::onDeviceReset()
     rebufferAll();                             // `jmp [eax+40h]` - a virtual tail call
 }
 
+// PE 0x1012CAD0.
 void NametagManager::onDeviceDestroy()
 {
     for (int type = TTPlayer; type <= TTObject; ++type)
@@ -2119,13 +2055,12 @@ void NametagManager::createIcon(int itemId)
 }
 
 
-// 0x1012C720, 249 B, retn 30h - `setTexture <count> <path> <x> <y> <w> <h>` (the path BY value).
+// PE 0x1012C720: 249 B, retn 30h - `setTexture <count> <path> <x> <y> <w> <h>` (the path BY value).
 // An icon registers `count` frames at once. A bar needs two calls: index 0 stores the full
 // texture and its rect, index 1 registers both textures.
 // The second call's rect is ignored - the bar is registered with the first texture's rect.
 // Any other index in bar mode just replaces the stored texture.
-
-void NametagManager::setTexture(int count, vc71::string path, int x, int y, int width, int height)
+void NametagManager::setTexture(int count, std::string path, int x, int y, int width, int height)
 {
     if (m_textureMode == 0)
     {
@@ -2167,29 +2102,52 @@ void NametagManager::setCullDistance(int type, const Vec2& distance)
         s_cullDistances[type] = distance;
 }
 
+// PE 0x1012C8A0.
 float  NametagManager::getEnemyDotLimit()                  { return s_enemyDotLimit; }
+// PE 0x1012C890.
 void   NametagManager::setEnemyDotLimit(float v)           { s_enemyDotLimit = v; }
+// PE 0x1012C8C0.
 float  NametagManager::getMaxCallDistance()                { return s_maxCallDistance; }
+// PE 0x1012C8B0.
 void   NametagManager::setMaxCallDistance(float v)         { s_maxCallDistance = v; }
+// PE 0x1012C8E0.
 float  NametagManager::getVehicleNametagOffset()           { return s_vehicleNametagOffset; }
+// PE 0x1012C8D0.
 void   NametagManager::setVehicleNametagOffset(float v)    { s_vehicleNametagOffset = v; }
+// PE 0x1012C900.
 float  NametagManager::getVehicleNametagOffsetFactor()     { return s_vehicleNametagOffsetFactor; }
+// PE 0x1012C8F0.
 void   NametagManager::setVehicleNametagOffsetFactor(float v) { s_vehicleNametagOffsetFactor = v; }
+// PE 0x1012C920.
 float  NametagManager::getMaxFriendlyDistance()            { return s_maxFriendlyDistance; }
+// PE 0x1012C910.
 void   NametagManager::setMaxFriendlyDistance(float v)     { s_maxFriendlyDistance = v; }
+// PE 0x1012C940.
 double NametagManager::getEnemyTagDelayTime()              { return s_enemyTagDelayTime; }
+// PE 0x1012C930.
 void   NametagManager::setEnemyTagDelayTime(double v)      { s_enemyTagDelayTime = v; }
+// PE 0x1012C960.
 double NametagManager::getDeployableDistance()             { return s_deployableDistance; }
+// PE 0x1012C950.
 void   NametagManager::setDeployableDistance(double v)     { s_deployableDistance = v; }
+// PE 0x1012C980.
 double NametagManager::getEnemyTagFadeInTime()             { return s_enemyTagFadeInTime; }
+// PE 0x1012C970.
 void   NametagManager::setEnemyTagFadeInTime(double v)     { s_enemyTagFadeInTime = v; }
+// PE 0x1012C9A0.
 double NametagManager::getEnemyTagFadeOutTime()            { return s_enemyTagFadeOutTime; }
+// PE 0x1012C990.
 void   NametagManager::setEnemyTagFadeOutTime(double v)    { s_enemyTagFadeOutTime = v; }
+// PE 0x1012C9C0.
 float  NametagManager::getDeathFadeOutTime()               { return s_deathFadeOutTime; }
+// PE 0x1012C9B0.
 void   NametagManager::setDeathFadeOutTime(float v)        { s_deathFadeOutTime = v; }
+// PE 0x1012C9E0.
 float  NametagManager::getManDownFadeOutTime()             { return s_manDownFadeOutTime; }
+// PE 0x1012C9D0.
 void   NametagManager::setManDownFadeOutTime(float v)      { s_manDownFadeOutTime = v; }
 bool   NametagManager::getUseVisualRadiusForVehicles()     { return s_useVisualRadiusForVehicles; }
+// PE 0x1012C9F0: a byte store into the static (the getter is PE 0x1012CA00).
 void   NametagManager::setUseVisualRadiusForVehicles(bool v) { s_useVisualRadiusForVehicles = v; }
 
 

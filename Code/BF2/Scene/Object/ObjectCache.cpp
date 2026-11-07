@@ -25,6 +25,7 @@ ObjectCache::ObjectCache()
 // Caches roots only; children abort and already-cached objects do nothing. Disables the
 // object before assigning a fresh object id, invalidating weak pointers before insertion.
 // A zero networkable key becomes the new object id + 0xFFFF.
+// PE 0x00728930; ELF 0x0830D8D0. The parented-object stop is a shipped invariant.
 void ObjectCache::pushObject(IObject* object, unsigned int networkableId)
 {
     if (object->getFlags() & 0x20u)

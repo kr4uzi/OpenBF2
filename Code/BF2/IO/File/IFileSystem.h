@@ -16,6 +16,8 @@ namespace hfe {
 // Case-insensitive strict ordering for engine string-keyed containers.
 struct NoCaseStringCompare
 {
+    // RendDX9.dll PE 0x10015140 (COMDAT copy, `retn 8`, this unread: _stricmp(a, b) < 0 via setl),
+    // folded across the image's six string-keyed tree instantiations.
     bool operator()(const std::string& a, const std::string& b) const
     {
 #ifdef _MSC_VER

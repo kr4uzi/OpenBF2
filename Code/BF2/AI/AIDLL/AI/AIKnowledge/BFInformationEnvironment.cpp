@@ -1,6 +1,3 @@
-// [FRONTIER] Remaining methods stop by name until implemented.
-// [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the remaining BFInformationEnvironment operations.
-
 #include "BFInformationEnvironment.h"
 
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
@@ -102,9 +99,6 @@ BFInformationEnvironment::BFInformationEnvironment()
         }
     }
 }
-
-// [FRONTIER] Unimplemented environment queries and modifiers stop by name.
-// [RETIRE-WHEN: aidll-02-skeleton] Remove when the corresponding implementation is complete and validated.
 
 // ELF 0x2E6C30. Deletes every grid of the second vector, then of the first (null slots skipped,
 // the end re-read after each delete); the vectors free themselves.

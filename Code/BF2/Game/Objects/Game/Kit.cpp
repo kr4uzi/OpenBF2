@@ -18,6 +18,7 @@
 #include "../IObjectTemplate.h"
 #include "../IPlayer.h"
 #include "../ItemContainerTemplate.h"
+#include "../GeometryPartAccess.h"                // named geometry operations (non-MSVC)
 #include "../ObjectLayoutAccess.h"                // m_geometry (+0x38) - updateGeometry's gate
 #include <cstdlib>                                // the shipped aborts
 #include <set>                                    // updateUnlockStatus' two working sets
@@ -67,41 +68,46 @@ const unsigned int kGeometrySetGeomIndexSlot     = 0x6C;
 const unsigned int kGeometryGetGeomIndexSlot     = 0x70;
 const unsigned int kGeometryGetGeomCountSlot     = 0x74;
 const unsigned int kGeometrySetBoneTransformsSlot = 0x54;
-#else
-typedef int  (*GeometryGetIntFn)(void*);
-typedef void (*GeometrySetIntFn)(void*, int);
-typedef void (*GeometrySetBoneTransformsFn)(void*, const Mat4*, unsigned int);
-const unsigned int kGeometrySetGeomIndexSlot     = 0x70;
-const unsigned int kGeometryGetGeomIndexSlot     = 0x74;
-const unsigned int kGeometryGetGeomCountSlot     = 0x78;
-const unsigned int kGeometrySetBoneTransformsSlot = 0x58;
 #endif
+// Non-MSVC: the named geometry_part operations (ELF +0x70/+0x74/+0x78/+0x58).
 
 int geometryGetGeomCount(void* geometry)
 {
     if (!geometry)
         return 0;
+#ifdef _MSC_VER
     void** const vtable = *reinterpret_cast<void***>(geometry);
     return reinterpret_cast<GeometryGetIntFn>(
         vtable[kGeometryGetGeomCountSlot / 4])(geometry);
+#else
+    return geometry_part::getSubgeomCount(geometry);
+#endif
 }
 
 int geometryGetGeomIndex(void* geometry)
 {
     if (!geometry)
         return 0;
+#ifdef _MSC_VER
     void** const vtable = *reinterpret_cast<void***>(geometry);
     return reinterpret_cast<GeometryGetIntFn>(
         vtable[kGeometryGetGeomIndexSlot / 4])(geometry);
+#else
+    return geometry_part::getSubgeom(geometry);
+#endif
 }
 
 void geometrySetGeomIndex(void* geometry, int index)
 {
     if (!geometry)
         return;
+#ifdef _MSC_VER
     void** const vtable = *reinterpret_cast<void***>(geometry);
     reinterpret_cast<GeometrySetIntFn>(
         vtable[kGeometrySetGeomIndexSlot / 4])(geometry, index);
+#else
+    geometry_part::setSubgeom(geometry, index);
+#endif
 }
 
 
@@ -111,9 +117,13 @@ void geometrySetBoneTransforms(void* geometry, const Mat4* transforms, unsigned 
 {
     if (!geometry)
         return;
+#ifdef _MSC_VER
     void** const vtable = *reinterpret_cast<void***>(geometry);
     reinterpret_cast<GeometrySetBoneTransformsFn>(
         vtable[kGeometrySetBoneTransformsSlot / 4])(geometry, transforms, boneCount);
+#else
+    geometry_part::setBoneTransforms(geometry, transforms, static_cast<int>(boneCount));
+#endif
 }
 
 // removeAllKitItems - 0x8183ED0, 93 B. TU-local (the ELF's own anonymous namespace, keyed to

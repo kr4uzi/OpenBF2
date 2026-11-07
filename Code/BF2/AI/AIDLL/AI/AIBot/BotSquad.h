@@ -38,7 +38,7 @@ public:
     bool hasMoveOrderOrder();                // dice's name
     bool hasNoOrder();
 
-    // membership. joinSquad written; remaining methods are [FRONTIER].
+    // membership
     bool joinSquad(int squad);
     bool createSquad();
     void exitSquad();

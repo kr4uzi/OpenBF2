@@ -4,9 +4,15 @@
 // Occlusion evidence and validation: docs/recovery-notes/Geom/object-occlusion.md.
 
 #ifdef BF2_IMAGE_RENDDX9
+#include "../RendDX9/RendDX9Math.h"   // rendmath::zeroVector
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "ObjectDrawer.h"
+#include "GeometryInstanceData.h"             // the opacity pair and slot of a geometry instance
 #include "MeshTemplate.h"                     // meshBoundsFinalize (sub_101C5EB0) - slot +0x3C
+#include "StaticMesh.h"                       // StaticMeshOccluderRecord - slot +0xEC's records
+#include "StaticMeshTemplate.h"               // StaticMeshOccluderEdge
+#include "BoxCorners.h"                      // the eight-corner object box (0x100AE110)
 
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
@@ -19,12 +25,24 @@
 #include "../Math/Plane3.h"
 #include "../Math/Vec3.h"
 #include "../RendMisc/IRenderView.h"
+#include "../GeomMisc/Debug.h"
+#include "../GeomMisc/DebugRenderer.h"
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 #include "../Scene/Object/ObjectPredicator.h"
+#include "../Scene/Object/ObjectManager.h"
+#if !defined(_WIN32)
+#include "../Math/Frustum.h"
+#include "../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
+#endif
 
 #include <algorithm>
 #include <math.h>
 
+#include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 
@@ -44,28 +62,28 @@ namespace {
 // while the remaining method signatures are unknown.
 
 
-#define OD_FRONTIER(fn, slotOffset, addr, what)                                       \
-    void __fastcall fn(void* self, void*)                                             \
-    {                                                                                 \
-        RD9_FRONTIER_AT("dice::hfe::geom::ObjectDrawer::slot_" #slotOffset             \
-                        " (" #addr " - " what ")", self, slotOffset);                  \
-    }
-
-OD_FRONTIER(od_slot1C, 0x1C, 0x100F8DE0, "324 B, unread")
+void RD9_THUNK od_slot1C(void* self RD9_THUNK_EDX)
+{
+    static_cast<ObjectDrawer*>(self)->slot_0x1C();
+}
 // +0x3C, the box occlusion query; the body is ObjectDrawer::isBoundsOccluded below.
 // `retn 4`, the answer in AL, like +0x38.
-bool __fastcall od_slot3C(void* self, void*, void* bounds);
-#undef OD_FRONTIER
+bool RD9_THUNK od_slot3C(void* self RD9_THUNK_EDX, void* bounds);
 
 // +0x38, the occlusion query; the body is ObjectDrawer::isGeometryOccluded below.
 // `retn 4`, the answer in AL: __fastcall with the dummy edx gives the same shape.
-bool __fastcall od_slot38(void* self, void*, void* geometry);
+bool RD9_THUNK od_slot38(void* self RD9_THUNK_EDX, void* geometry);
 
+
+#if defined(_M_IX86)
+static_assert(offsetof(ObjectDrawer, m_eventVptr) == 0x04, "the ECCore handler subobject at +0x04");
+#endif
 
 // Handles the drawer's event subobject at +0x04 and updates the outer frame gate.
 // [UNRESOLVED] Event data at +0x2C must point to a word compared with 4; neither pointer is guarded.
 
-char __fastcall od_event00(void* self, void*, int category, int id, void* data, void* arg4)
+// PE 0x100F7C70
+char RD9_THUNK od_event00(void* self RD9_THUNK_EDX, int category, int id, void* data, void* arg4)
 {
     (void)category;
     (void)arg4;
@@ -73,12 +91,16 @@ char __fastcall od_event00(void* self, void*, int category, int id, void* data, 
     if (id != 1)
         return static_cast<char>(id - 1);
 
-    // &m_eventVptr sits at +0x04, so the object starts four bytes back.
-    ObjectDrawer* const drawer =
-        reinterpret_cast<ObjectDrawer*>(static_cast<unsigned char*>(self) - 4);
+    // &m_eventVptr sits at +0x04, so the object starts that far back.
+    ObjectDrawer* const drawer = reinterpret_cast<ObjectDrawer*>(
+        static_cast<unsigned char*>(self) - offsetof(ObjectDrawer, m_eventVptr));
 
-    const unsigned int* const probe =
-        *reinterpret_cast<unsigned int* const*>(static_cast<unsigned char*>(data) + 0x2C);
+    // `data` is the notification node; PE +0x2C is its payload pointer, m_data (asserted below).
+#if defined(_M_IX86)
+    static_assert(offsetof(NotificationEventNode, m_data) == 0x2C, "retail PE notification payload");
+#endif
+    const unsigned int* const probe = static_cast<const unsigned int*>(
+        static_cast<NotificationEventNode*>(static_cast<EventNode*>(data))->m_data);
 
     const char result = (*probe == 4u) ? 1 : 0;
     drawer->m_byte0C = static_cast<unsigned char>(result);
@@ -86,71 +108,69 @@ char __fastcall od_event00(void* self, void*, int category, int id, void* data, 
 }
 
 // The two that take an argument, so they cannot use the macro above.
-void __fastcall od_draw(void* self, void*, float time)
+void RD9_THUNK od_draw(void* self RD9_THUNK_EDX, float time)
 {
     static_cast<ObjectDrawer*>(self)->draw(time);
 }
 
-void __fastcall od_updateVisible(void* self, void*, float time)
+void RD9_THUNK od_updateVisible(void* self RD9_THUNK_EDX, float time)
 {
     static_cast<ObjectDrawer*>(self)->updateVisible(time);
 }
 
-void __fastcall od_slot18(void* self, void*)
+void RD9_THUNK od_slot18(void* self RD9_THUNK_EDX, float time)
 {
-    static_cast<ObjectDrawer*>(self)->slot_0x18();
+    static_cast<ObjectDrawer*>(self)->slot_0x18(time);
 }
 
-void __fastcall od_slot20(void* self, void*, void* object)
+void RD9_THUNK od_slot20(void* self RD9_THUNK_EDX, void* object)
 {
-    (void)object;
-    RD9_FRONTIER_AT("dice::hfe::geom::ObjectDrawer::slot_0x20 (0x100F8F30, 51 B - takes an object, "
-                    "clears a flag through its +0xA4, then two helpers)", self, 0x20);
+    static_cast<ObjectDrawer*>(self)->slot_0x20(object);
 }
 
 // the written leaf slots, as the thin __fastcall adapters the tables need
 
-void __fastcall od_addRef(void* self, void*)
+void RD9_THUNK od_addRef(void* self RD9_THUNK_EDX)
 {
     static_cast<ObjectDrawer*>(self)->addRef();
 }
 
-int __fastcall od_getRef(void* self, void*)
+int RD9_THUNK od_getRef(void* self RD9_THUNK_EDX)
 {
     return static_cast<ObjectDrawer*>(self)->getRef();
 }
 
-int __fastcall od_release(void* self, void*)
+int RD9_THUNK od_release(void* self RD9_THUNK_EDX)
 {
     return static_cast<ObjectDrawer*>(self)->release();
 }
 
-void* __fastcall od_queryInterface(void* self, void*, unsigned int iid)
+void* RD9_THUNK od_queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
 {
     return static_cast<const ObjectDrawer*>(self)->queryInterface(iid);
 }
 
-void* __fastcall od_getObjectVector(void* self, void*, int which)
+void* RD9_THUNK od_getObjectVector(void* self RD9_THUNK_EDX, int which)
 {
     return static_cast<ObjectDrawer*>(self)->getObjectVector(which);
 }
 
-void __fastcall od_setRenderView(void* self, void*, void* view)
+void RD9_THUNK od_setRenderView(void* self RD9_THUNK_EDX, void* view)
 {
     static_cast<ObjectDrawer*>(self)->setRenderView(view);
 }
 
-void* __fastcall od_getRenderView(void* self, void*)
+void* RD9_THUNK od_getRenderView(void* self RD9_THUNK_EDX)
 {
     return static_cast<const ObjectDrawer*>(self)->getRenderView();
 }
 
-void __fastcall od_setOccluder(void* self, void*, IBase* occluder)
+void RD9_THUNK od_setOccluder(void* self RD9_THUNK_EDX, IBase* occluder)
 {
     static_cast<ObjectDrawer*>(self)->setOccluder(occluder);
 }
 
-IBase* __fastcall od_getOccluder(void* self, void*)
+IBase* RD9_THUNK od_getOccluder(void* self RD9_THUNK_EDX)
 {
     return static_cast<const ObjectDrawer*>(self)->getOccluder();
 }
@@ -162,9 +182,11 @@ IBase* __fastcall od_getOccluder(void* self, void*)
 class ObjectDrawerFlagPredicator
 {
 public:
+    // PE 0x101C7E90
     explicit ObjectDrawerFlagPredicator(unsigned int mask) : m_mask(mask) {}
 
     // every bit of the mask must be present, not merely one of them.
+    // PE 0x101C7EB0
     virtual bool predicate(world::IObject* object)
     {
         return (m_mask & object->getFlags()) == m_mask;
@@ -211,6 +233,7 @@ void objectDrawerCensusReport()
 
 // Updates visual transforms and decals for an object; geometry submission runs in the deferred pass.
 // Null objects are ignored. Typed calls preserve platform-specific virtual ordering.
+// PE 0x100F7BE0
 void objectDrawerDrawObject(world::IObject* object)
 {
     if (!object)
@@ -227,9 +250,9 @@ void objectDrawerDrawObject(world::IObject* object)
 
     if (void* const decal = object->getDecalObject())            // PE +0xD8
     {
-        typedef void (__fastcall* DecalFn)(void*, void*, int);
+        typedef void (__thiscall* DecalFn)(void*, int);
         void** const vtbl = *reinterpret_cast<void***>(decal);
-        reinterpret_cast<DecalFn>(vtbl[0x0C / sizeof(void*)])(decal, 0, 1);
+        reinterpret_cast<DecalFn>(vtbl[0x0C / 4])(decal, 1);
     }
 
     if (world::object_detail::LayoutAccess::geometry(object))
@@ -265,6 +288,7 @@ class ObjectDrawerFlagPredicator;
 world::IObject** objectDrawerSetBegin(ObjectDrawerSet& set);
 world::IObject** objectDrawerSetEnd(ObjectDrawerSet& set);
 
+// PE 0x100F7E80
 void objectDrawerVisualDistanceUpdate(ObjectDrawer* self, ObjectDrawerSet& set, float time)
 {
     if (self->m_byte0C && g_objectDrawerVisualTick != 1)
@@ -286,9 +310,18 @@ void objectDrawerVisualDistanceUpdate(ObjectDrawer* self, ObjectDrawerSet& set, 
         const Mat4& objectMatrix = object->getVisualAbsoluteTransformation();  // PE +0x8C
 
         const float dx = viewMatrix->m[12] - objectMatrix.m[12];
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Only x is spilled before the x87 sum z*z + y*y + x*x.
+        using namespace bf2x87;
+        const Real dy = sub(wide(viewMatrix->m[13]), wide(objectMatrix.m[13]));
+        const Real dz = sub(wide(viewMatrix->m[14]), wide(objectMatrix.m[14]));
+        const float distance = store(squareRoot(add(add(mul(dz, dz), mul(dy, dy)),
+            mul(wide(dx), wide(dx)))));
+#else
         const float dy = viewMatrix->m[13] - objectMatrix.m[13];
         const float dz = viewMatrix->m[14] - objectMatrix.m[14];
-        const float distance = static_cast<float>(::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz)));
+        const float distance = static_cast<float>(::sqrt(static_cast<double>(dz * dz + dy * dy + dx * dx)));
+#endif
 
         object->handleVisualUpdate(time, distance);                        // PE +0xA4
     }
@@ -307,11 +340,11 @@ struct ObjectDrawerGeometrySortKey
         if (!lg || !rg)
             return false;
 
-        typedef unsigned int (__fastcall* KeyFn)(void*, void*);
+        typedef unsigned int (__thiscall* KeyFn)(void*);
         void** const lv = *reinterpret_cast<void***>(lg);
         void** const rv = *reinterpret_cast<void***>(rg);
-        return reinterpret_cast<KeyFn>(lv[0x38 / sizeof(void*)])(lg, 0)
-             < reinterpret_cast<KeyFn>(rv[0x38 / sizeof(void*)])(rg, 0);
+        return reinterpret_cast<KeyFn>(lv[0x38 / 4])(lg)
+             < reinterpret_cast<KeyFn>(rv[0x38 / 4])(rg);
     }
 };
 
@@ -322,20 +355,12 @@ struct ObjectDrawerGeometrySortKey
 
 world::IObject** objectDrawerSetBegin(ObjectDrawerSet& set)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return set.empty() ? 0 : &set[0];
-#else
-    return reinterpret_cast<world::IObject**>(set.first);
-#endif
 }
 
 world::IObject** objectDrawerSetEnd(ObjectDrawerSet& set)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return set.empty() ? 0 : &set[0] + set.size();
-#else
-    return reinterpret_cast<world::IObject**>(set.last);
-#endif
 }
 
 void objectDrawerSort(ObjectDrawerSet& set)
@@ -352,45 +377,62 @@ void objectDrawerSort(ObjectDrawerSet& set)
 // allocation-free.
 void objectDrawerClear(ObjectDrawerSet& set)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     set.clear();
-#else
-    set.last = set.first;
-#endif
 }
 
 unsigned int objectDrawerSetSize(const ObjectDrawerSet& set)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return static_cast<unsigned int>(set.size());
-#else
-    return set.first ? static_cast<unsigned int>((set.last - set.first) >> 2) : 0u;
-#endif
 }
 
-// Queries host collision/noncollision object grids through the selected compatibility slot.
-void objectDrawerQueryGrid(unsigned int slot, const void* frustum, ObjectDrawerSet& out,
+// [CHOSEN, not recovered] Restrict the native bridge to its two attested caller slots:
+// PE 0x100F97D6 (collision) and 0x100F9045 (noncollision).
+template<unsigned int Slot>
+void objectDrawerQueryGrid(const void* frustum, ObjectDrawerSet& out,
                            ObjectDrawerFlagPredicator* predicator, float time)
 {
-    if (!::dice::hfe::objectManager)
-        return;
-
+    static_assert(Slot == 0x40 || Slot == 0x4C, "ObjectDrawer only queries the two frustum grids");
+#if defined(_WIN32)
     // In the native build, out is the host's std::vector; the plugin ABI uses its own layout.
-    typedef void (__fastcall* QueryFn)(void*, void*, const void*, void*,
+    typedef void (__thiscall* QueryFn)(void*, const void*, void*,
                                        void*, int, float, float);
     void* const manager = ::dice::hfe::objectManager;
     void** const vtbl = *reinterpret_cast<void***>(manager);
-    reinterpret_cast<QueryFn>(vtbl[slot / sizeof(void*)])(
-        manager, 0, frustum, &out, predicator, 1, 0.0f, time);
+    reinterpret_cast<QueryFn>(vtbl[Slot / 4])(
+        manager, frustum, &out, predicator, 1, 0.0f, time);
+#else
+    // [CHOSEN, not recovered] Non-PE builds link the native world::ObjectManager, whose grid-query
+    // overloads follow the ELF table order (ObjectManager.h): the PE offsets +0x40/+0x4C name
+    // other overloads there (+0x40 is the sphere query), so the frustum queries returned nothing
+    // and no static, bundled or skinned mesh was ever submitted (docs/macos-c-metal-ingame.md).
+    // Called by name instead; ObjectDrawerFlagPredicator keeps ObjectPredicator's table.
+    world::ObjectManager* const manager =
+        reinterpret_cast<world::ObjectManager*>(::dice::hfe::objectManager);
+    const Frustum& f = *static_cast<const Frustum*>(frustum);
+    world::ObjectPredicator* const pred = reinterpret_cast<world::ObjectPredicator*>(predicator);
+    if (Slot == 0x40)
+        manager->getObjectsFromGrid(f, out, pred, true, 0.0f, time);
+    else
+        manager->getNoCollisionObjectsFromGrid(f, out, pred, true, 0.0f, time);
+#endif
 }
 
 
 void objectDrawerBuildOccluders(ObjectDrawer* self, ObjectDrawerSet& set);
+void objectDrawerDebugOccluders(ObjectDrawer* self, ObjectDrawerSet& set);
 void objectDrawerCullObjects(ObjectDrawer* self, ObjectDrawerSet& set);
 void objectDrawerDestroyMembers(ObjectDrawer* self);
 
+// The geometry instance's retail-ordered table: +0x18 submits, +0xCC answers the next geometry.
+inline void** objectDrawerGeometryTable(void* geometry)
+{
+    void** const vtbl = *reinterpret_cast<void***>(geometry);
+    return vtbl;
+}
+
 // Submits each geometry in the object's chain using the drawer's view and occluder.
 // The unmodeled interface uses +0x18 for submission and +0xCC for the next geometry.
+// PE 0x100F7C90
 void objectDrawerDeferredGeometryPass(ObjectDrawer* self, world::IObject* object)
 {
     if (!object)
@@ -404,12 +446,12 @@ void objectDrawerDeferredGeometryPass(ObjectDrawer* self, world::IObject* object
     void* geometry = world::object_detail::LayoutAccess::geometry(object);
     while (geometry)
     {
-        typedef void  (__fastcall* PassFn)(void*, void*, void*, void*, int);
-        typedef void* (__fastcall* NextFn)(void*, void*);
-        void** const vtbl = *reinterpret_cast<void***>(geometry);
-        reinterpret_cast<PassFn>(vtbl[0x18 / sizeof(void*)])(
-            geometry, 0, self->m_renderView, self->m_occluder, 1);
-        geometry = reinterpret_cast<NextFn>(vtbl[0xCC / sizeof(void*)])(geometry, 0);
+        typedef void  (__thiscall* PassFn)(void*, void*, void*, int);
+        typedef void* (__thiscall* NextFn)(void*);
+        void** const vtbl = objectDrawerGeometryTable(geometry);
+        reinterpret_cast<PassFn>(vtbl[0x18 / 4])(
+            geometry, self->m_renderView, self->m_occluder, 1);
+        geometry = reinterpret_cast<NextFn>(vtbl[0xCC / 4])(geometry);
     }
 }
 
@@ -438,35 +480,83 @@ void* const kObjectDrawerEventVtable[1] =
     reinterpret_cast<void*>(&od_event00)           // +0x00
 };
 
-// sub_100F9A80 - the sentinel allocator both containers use.  The constructor then self-links all
-// three of the node's pointers and sets the byte at +0x19, which is what identifies the container
-// as a _Tree rather than a list; see the header.
-void* objectDrawerTreeSentinel()
-{
-    unsigned char* const node = static_cast<unsigned char*>(::renddx9abi::engineAlloc(0x20));
-    if (!node)
-        return 0;
+} // anonymous namespace
 
-    node[0x19] = 1;
-    *reinterpret_cast<void**>(node + 0x00) = node;
-    *reinterpret_cast<void**>(node + 0x04) = node;
-    *reinterpret_cast<void**>(node + 0x08) = node;
-    return node;
+// PE 0x100F7B80: unreachable in 1.50: no code or data references (its only call site is its own
+// recursion). [INFERRED] name. Retail passes the receiver through the recursion without reading it,
+// so it is not modelled. Stores the base opacity (+0x28) in the object's geometry instance, hands
+// the instance's combined opacity (base times the distance opacity at +0x2C) to its opacity slot
+// (+0xF4), then does the same for the child chain (virtual +0xEC, sibling link +0x2C).
+void objectDrawerApplyFade(world::IObject* object, float fade)
+{
+    if (GeometryInstanceData* const geometry =
+            static_cast<GeometryInstanceData*>(world::object_detail::LayoutAccess::geometry(object)))
+    {
+        geometry->m_float28 = fade;
+        geometry->setOpacity(fade * geometry->m_float2C);
+    }
+    for (world::IObject* child = object->getChild(); child;
+         child = world::object_detail::LayoutAccess::sibling(child))
+        objectDrawerApplyFade(child, fade);
 }
 
-} // anonymous namespace
+// PE 0x100F9A00: unreachable in 1.50: no code or data references (only the Plane3 vector copy kernels
+// at PE 0x100F9B20 / 0x100F9D10 / 0x100FA760 carry the same step inline). [INFERRED] name and
+// placement: Plane3 declares no assignment, so the shipped one is kept as a function here.
+// Copies the normal, normalises it in place as PE 0x100777A0 does (a unit-length normal is left
+// alone; a near-zero one is zeroed; the squared length is spilled to a float first), and copies the
+// distance last and unscaled.
+Plane3& plane3AssignNormalized(Plane3& destination, const Plane3& source)
+{
+    const float distance = source.d;
+    Vec3& n = destination.normal;
+    n = source.normal;
+    const double epsilon = 1.1920928955078125e-7;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Keep the squared length and the scale in x87 precision.
+    typedef bf2x87::Real Real;
+    const float lengthSquared = static_cast<float>((Real(n.x) * Real(n.x) + Real(n.y) * Real(n.y))
+                                                   + Real(n.z) * Real(n.z));
+    if (!(::fabs(static_cast<double>(Real(lengthSquared) - Real(1.0f))) < epsilon))
+    {
+        if (::fabs(static_cast<double>(lengthSquared)) < epsilon)
+            n.x = n.y = n.z = 0.0f;
+        else
+        {
+            const Real scale = Real(1.0f) / bf2x87::squareRoot(Real(lengthSquared));
+            n.x = static_cast<float>(scale * Real(n.x));
+            n.y = static_cast<float>(scale * Real(n.y));
+            n.z = static_cast<float>(scale * Real(n.z));
+        }
+    }
+#else
+    const float lengthSquared = (n.x * n.x + n.y * n.y) + n.z * n.z;
+    if (!(::fabs(static_cast<double>(lengthSquared) - 1.0) < epsilon))
+    {
+        if (::fabs(static_cast<double>(lengthSquared)) < epsilon)
+            n.x = n.y = n.z = 0.0f;
+        else
+        {
+            const float scale = 1.0f / ::sqrtf(lengthSquared);
+            n.x = scale * n.x;
+            n.y = scale * n.y;
+            n.z = scale * n.z;
+        }
+    }
+#endif
+    destination.d = distance;
+    return destination;
+}
 
 
 // Initializes drawer state and registers its ECCore subobject at priority zero.
 
+// PE 0x100F9130
 ObjectDrawer::ObjectDrawer()
     : m_vptr(kObjectDrawerPrimaryVtable)
     , m_eventVptr(kObjectDrawerEventVtable)
     , m_refCount(1)
     , m_byte0C(0)
-    , m_updateVisibleHasRun(0)
-    , m_byte0E(0)
-    , m_renderView(0)
     , m_occluder(0)
     , m_byte60(1)
     , m_float64(60.0f)
@@ -476,35 +566,19 @@ ObjectDrawer::ObjectDrawer()
     , m_culledCount(0)
     , m_dword78(0)
     , m_dword7C(0)
-    , m_dword80(0)
-    , m_dword84(0)
     , m_byte88(0)
 {
-    m_tree10.comp = 0;
-    m_tree10.head = objectDrawerTreeSentinel();
-    m_tree10.size = 0;
-
-    m_tree1C.comp = 0;
-    m_tree1C.head = objectDrawerTreeSentinel();
-    m_tree1C.size = 0;
-
-    // +0x30 IS NOT zeroed and that is the shipped behaviour - see the header's note on the
-    // sixteen-byte vector shape.  The other three words of each are.
-#if !BF2_PLUGIN_ABI_NATIVE
-    m_visibleSet.first = 0;  m_visibleSet.last = 0;  m_visibleSet.end = 0;
-    m_drawSet.first    = 0;  m_drawSet.last    = 0;  m_drawSet.end    = 0;
-#endif
-    // +0x50 is the retail shape in both flavours (see the header).
-    m_vector50.first   = 0;  m_vector50.last   = 0;  m_vector50.end   = 0;
+    // The two trees (+0x10, +0x1C; sub_100F9A80 builds each sentinel), the two object sets
+    // (+0x30, +0x40) and the occluder list (+0x50) are default-constructed empty.
 
     // EventManager vslot +0x2C, registerEventHandler(category 0, &subobject, 0).
-    if (::dice::hfe::eventManager)
-    {
-        ::dice::hfe::eventManager->registerEventHandler(
-            static_cast<EventCategory>(0),
-            reinterpret_cast<IEventListener*>(&m_eventVptr),
-            0);
-    }
+    ::dice::hfe::eventManager->registerEventHandler(
+        static_cast<EventCategory>(0),
+        reinterpret_cast<IEventListener*>(&m_eventVptr),
+        0);
+    m_renderView = 0;
+    m_updateVisibleHasRun = 0;
+    m_byte0E = 0;
 }
 
 ObjectDrawer::~ObjectDrawer()
@@ -525,6 +599,7 @@ int ObjectDrawer::getRef()                                   // 0x10051870, the 
 }
 
 // Decrement, and on zero run the destructor and free through the engine allocator.
+// PE 0x100FAFF0
 int ObjectDrawer::release()
 {
     const int remaining = --m_refCount;
@@ -538,6 +613,7 @@ int ObjectDrawer::release()
 
 // Two ids answer, everything else is null.  IT IS NOT const-correct in the image -
 // the slot takes the object non-const - but every recovered reader treats it as a query.
+// PE 0x100FAFA0
 void* ObjectDrawer::queryInterface(unsigned int iid) const
 {
     if (iid == 1u)
@@ -586,9 +662,9 @@ IBase* ObjectDrawer::getOccluder() const
     return m_occluder;
 }
 
-// Builds and sorts visible candidates, applies occlusion, then stores camera distances.
+// PE 0x100F9790. Builds and sorts candidates, applies occlusion, then stores camera distances.
 // Requires setRenderView before the call.
-
+// PE 0x100F9790
 void ObjectDrawer::updateVisible(float time)
 {
     objectDrawerClear(m_visibleSet);                       // sub_10032330(this+0x30, 0, 0)
@@ -596,15 +672,13 @@ void ObjectDrawer::updateVisible(float time)
     ObjectDrawerFlagPredicator predicator(world::IObject::OFIsVisible);   // sub_101C7E90(2)
 
     dx9rend::IRenderView* const view = static_cast<dx9rend::IRenderView*>(m_renderView);
-    objectDrawerQueryGrid(0x40, view->getFrustumPtr(), m_visibleSet, &predicator, time);
+    objectDrawerQueryGrid<0x40>(view->getFrustumPtr(), m_visibleSet, &predicator, time);
 
     objectDrawerSort(m_visibleSet);
 
     if (m_byte88)
     {
-        RD9_FRONTIER_AT("dice::hfe::geom::ObjectDrawer::updateVisible (sub_100F8750, the +0x88 "
-                        "pass - unread; the constructor leaves +0x88 clear so nothing has reached "
-                        "it yet)", this, 0x14);
+        objectDrawerDebugOccluders(this, m_visibleSet); // PE 0x100F8750
     }
 
     m_dword7C = 0;
@@ -627,15 +701,15 @@ void ObjectDrawer::updateVisible(float time)
 }
 
 
-// Draws the visible collision set, then separately queries and draws noncollision objects.
-
+// PE 0x100F8F70. Draws collision objects before querying and drawing noncollision objects.
 void ObjectDrawer::draw(float time)
 {
+    ObjectDrawerFlagPredicator predicator(world::IObject::OFIsVisible);
     if (!m_updateVisibleHasRun)
     {
-        // The shipped diagnostic is sub_10074300(6, __FILE__, 598, "") streamed into - dice's own
-        // file and line.  This image logs instead of asserting; the text is theirs.
-        ::renddx9abi::logf("ObjectDrawer.cpp:598 updateVisible() must be drawn before this!");
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\ObjectDrawer.cpp", 598, "")
+            << "updateVisible() must be drawn before this!";
         return;
     }
 
@@ -647,10 +721,8 @@ void ObjectDrawer::draw(float time)
 
     objectDrawerClear(m_drawSet);                          // sub_10032330(this+0x40, 0, 0)
 
-    ObjectDrawerFlagPredicator predicator(world::IObject::OFIsVisible);
-
     dx9rend::IRenderView* const view = static_cast<dx9rend::IRenderView*>(m_renderView);
-    objectDrawerQueryGrid(0x4C, view->getFrustumPtr(), m_drawSet, &predicator, time);
+    objectDrawerQueryGrid<0x4C>(view->getFrustumPtr(), m_drawSet, &predicator, time);
 
     objectDrawerSort(m_drawSet);
 
@@ -681,16 +753,17 @@ void ObjectDrawer::draw(float time)
 // Submits the deferred geometry pass once per updateVisible/draw pair.
 // Consumes both completion flags before callbacks, so reentrant calls see them cleared.
 
-void ObjectDrawer::slot_0x18()
+// PE 0x100F7D60. The caller pushes a float, but neither return arm reads it (`retn 4`).
+void ObjectDrawer::slot_0x18(float /*time*/)
 {
     ObjectDrawerFlagPredicator predicator(world::IObject::OFIsVisible);   // built, never read
     (void)predicator;
 
     if (!m_updateVisibleHasRun || !m_byte0E)
     {
-        // sub_10074300(6, __FILE__, 638, "") streamed into - dice's own file and line.  This image
-        // logs where retail asserts; the text is theirs.
-        ::renddx9abi::logf("ObjectDrawer.cpp:638 updateVisible() must be drawn before this!");
+        ::renddx9abi::Debug(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\ObjectDrawer.cpp", 638, "")
+            << "updateVisible() must be drawn before this!";
         return;
     }
 
@@ -710,8 +783,67 @@ void ObjectDrawer::slot_0x18()
         objectDrawerDeferredGeometryPass(this, *cursor);
     }
 }
-void ObjectDrawer::slot_0x1C()           { od_slot1C(this, 0); }
-void ObjectDrawer::slot_0x20(void* o)    { od_slot20(this, 0, o); }
+// PE 0x100F7D20. Both leaf helpers guard a null object; the subsequent child call does not.
+void ObjectDrawer::submitObjectTree(world::IObject* object)
+{
+    objectDrawerDrawObject(object);                          // PE 0x100F7BE0
+    objectDrawerDeferredGeometryPass(this, object);           // PE 0x100F7C90
+    for (world::IObject* child = object->getChild(); child; child = child->getSibling())
+        submitObjectTree(child);
+}
+
+// PE 0x100F8C00. The first tree is walked forward, the second backward (rbegin to rend), each
+// node's geometry (+0x14) submitted through its +0x18 slot with the view and occluder re-read per
+// node; then the first tree is cleared, then the second. [CHOSEN, not recovered] node value type
+// under the unobservable-type exception (see ObjectDrawerTreeValue): nothing inserts into these
+// trees in 1.50, so both walks are empty in practice.
+void ObjectDrawer::flushDeferredGeometry()
+{
+    typedef void (__thiscall* PassFn)(void*, void*, void*, int);
+    for (ObjectDrawerTree::iterator it = m_tree10.begin(); it != m_tree10.end(); ++it)
+    {
+        void* const geometry = it->second.geometry;
+        reinterpret_cast<PassFn>(objectDrawerGeometryTable(geometry)[0x18 / 4])(
+            geometry, m_renderView, m_occluder, 1);
+    }
+    for (ObjectDrawerTree::reverse_iterator it = m_tree1C.rbegin(); it != m_tree1C.rend(); ++it)
+    {
+        void* const geometry = it->second.geometry;
+        reinterpret_cast<PassFn>(objectDrawerGeometryTable(geometry)[0x18 / 4])(
+            geometry, m_renderView, m_occluder, 1);
+    }
+    m_tree10.clear();
+    m_tree1C.clear();
+}
+
+// PE 0x100F8DE0. Iterate the manager's ID-ordered map without filtering null entries.
+void ObjectDrawer::slot_0x1C()
+{
+    world::ObjectManager* const manager =
+        reinterpret_cast<world::ObjectManager*>(::dice::hfe::objectManager);
+    std::map<unsigned int, world::IObject*>& objects = manager->getAllObjectsFromGrid();
+    for (std::map<unsigned int, world::IObject*>::iterator it = objects.begin();
+         it != objects.end(); ++it)
+    {
+        world::IObject* const object = it->second;
+        objectDrawerDrawObject(object);
+        objectDrawerDeferredGeometryPass(this, object);
+        // Shipped defect: a null map value reaches this unguarded virtual call.
+        for (world::IObject* child = object->getChild(); child; child = child->getSibling())
+            submitObjectTree(child);
+    }
+    flushDeferredGeometry();
+}
+
+// PE 0x100F8F30. The visual-update flag test and the object dereference are unguarded.
+void ObjectDrawer::slot_0x20(void* value)
+{
+    world::IObject* const object = static_cast<world::IObject*>(value);
+    if ((object->getFlags() & 0x00001000u) != 0)
+        object->handleVisualUpdate(0.0f, 0.0f);
+    submitObjectTree(object);
+    flushDeferredGeometry();
+}
 
 
 // Tests geometry against the occluder set and counts hidden objects.
@@ -724,162 +856,57 @@ namespace {
 // deferred pass above does (StaticMesh / BundledMesh / SkinnedMesh install the same arity at each).
 inline void* occlusionGeometrySlot(void* geometry, unsigned int offset)
 {
-    return (*reinterpret_cast<void***>(geometry))[offset / sizeof(void*)];
+    return (*reinterpret_cast<void***>(geometry))[offset / 4];
 }
 
 inline const LocalBoundingBox& occlusionGeometryLocalBounds(void* geometry)          // +0x40
 {
-    typedef const void* (__fastcall* BoundsFn)(void*, void*);
+    typedef const void* (__thiscall* BoundsFn)(void*);
     return *static_cast<const LocalBoundingBox*>(
-        reinterpret_cast<BoundsFn>(occlusionGeometrySlot(geometry, 0x40))(geometry, 0));
+        reinterpret_cast<BoundsFn>(occlusionGeometrySlot(geometry, 0x40))(geometry));
 }
 
 inline float occlusionGeometryBoundingRadius(void* geometry)                         // +0x44
 {
-    typedef float (__fastcall* RadiusFn)(void*, void*);
-    return reinterpret_cast<RadiusFn>(occlusionGeometrySlot(geometry, 0x44))(geometry, 0);
+    typedef float (__thiscall* RadiusFn)(void*);
+    return reinterpret_cast<RadiusFn>(occlusionGeometrySlot(geometry, 0x44))(geometry);
 }
 
 inline const Mat4* occlusionGeometryTransformation(void* geometry)                  // +0x48
 {
-    typedef const Mat4* (__fastcall* TransformFn)(void*, void*);
-    return reinterpret_cast<TransformFn>(occlusionGeometrySlot(geometry, 0x48))(geometry, 0);
+    typedef const Mat4* (__thiscall* TransformFn)(void*);
+    return reinterpret_cast<TransformFn>(occlusionGeometrySlot(geometry, 0x48))(geometry);
 }
 
-// VC7.1 size(): a signed byte span divided by the element size, compared unsigned (`jnb`).
-inline unsigned int occlusionVectorCount(const char* first, const char* last)
-{
-    return static_cast<unsigned int>((last - first) / 16);
-}
 
-// The eight-corner object box - 0x100AE110 (the 24 floats zeroed), 0x101C6750 (corner i takes x from
-// max when bit 2, y when bit 1, z when bit 0) and 0x101C67F0 (all three rows formed from the untouched
-// corner; corner 0's y and x rows associate differently from corners 1..7). The same bodies as
-// XpLightManager.cpp's ShadowBoxCorners, re-read for this slot.
-struct OcclusionBoxCorners
-{
-    Vec3 corner[8];
-
-    OcclusionBoxCorners()
-    {
-        for (unsigned int i = 0; i < 8; ++i)
-            corner[i].x = corner[i].y = corner[i].z = 0.0f;
-    }
-
-    void setBounds(const LocalBoundingBox& bounds)
-    {
-        for (unsigned int i = 0; i < 8; ++i)
-        {
-            corner[i].x = (i & 4u) ? bounds.m_max.x : bounds.m_min.x;
-            corner[i].y = (i & 2u) ? bounds.m_max.y : bounds.m_min.y;
-            corner[i].z = (i & 1u) ? bounds.m_max.z : bounds.m_min.z;
-        }
-    }
-
-    void transform(const Mat4& world)
-    {
-        const float* const m = world.m;
-        for (unsigned int i = 0; i < 8; ++i)
-        {
-            const float x = corner[i].x;
-            const float y = corner[i].y;
-            const float z = corner[i].z;
-            const float tz = z * m[10] + x * m[2] + y * m[6] + m[14];
-            const float ty = i == 0 ? x * m[1] + y * m[5] + z * m[9] + m[13]
-                                    : x * m[1] + z * m[9] + y * m[5] + m[13];
-            const float tx = i == 0 ? z * m[8] + x * m[0] + y * m[4] + m[12]
-                                    : y * m[4] + z * m[8] + x * m[0] + m[12];
-            corner[i].x = tx;
-            corner[i].y = ty;
-            corner[i].z = tz;
-        }
-    }
-};
-
+// The eight-corner object box is Geom/BoxCorners.h's BoxCorners (zeroed by 0x100AE110, then
+// setBounds and transform).
 
 // Frees each owned plane list while retaining capacity in the outer occluder list.
 void objectDrawerClearOccluders(ObjectDrawer* self)
 {
-    vc71::vector_layout& records = self->m_vector50;
-    for (char* p = records.first; p != records.last; p += sizeof(vc71::vector_layout))
-    {
-        vc71::vector_layout& planes = *reinterpret_cast<vc71::vector_layout*>(p);
-        if (planes.first)
-            ::renddx9abi::engineFree(planes.first);
-        planes.first = 0;
-        planes.last = 0;
-        planes.end = 0;
-    }
-    records.last = records.first;
+    self->m_vector50.clear();
 }
-
-// These private views describe the records produced by StaticMesh and its template.
-struct ObjectDrawerOccluderFace
-{
-    Plane3 plane;
-    vc71::vector_layout* edgeReferences;
-};
-
-struct ObjectDrawerOccluderRecord
-{
-    vc71::vector_layout faces;
-    vc71::vector_layout points;
-    vc71::vector_layout* edges;
-};
-
-static_assert(sizeof(ObjectDrawerOccluderFace) == 20, "world-space occluder face stride");
-static_assert(sizeof(ObjectDrawerOccluderRecord) == 36, "world-space occluder record stride");
-
-// Owns the local plane list while a separate copy is appended to the drawer's outer list.
-struct ObjectDrawerPlaneList
-{
-    vc71::vector_layout planes;
-
-    ObjectDrawerPlaneList()
-    {
-        planes.alloc = 0;
-        planes.first = 0;
-        planes.last = 0;
-        planes.end = 0;
-    }
-
-    ~ObjectDrawerPlaneList()
-    {
-        if (planes.first)
-            ::renddx9abi::engineFree(planes.first);
-    }
-
-    void append(const Plane3& plane)
-    {
-        if (!vc71::vectorPushBackIn(planes, sizeof(Plane3), &plane))
-            throw std::bad_alloc();
-    }
-
-    void appendCopyTo(vc71::vector_layout& records) const
-    {
-        ObjectDrawerPlaneList copy;
-        const unsigned int count = vc71::vectorSizeIn(planes, sizeof(Plane3));
-        if (count)
-        {
-            if (!vc71::vectorReserveIn(copy.planes, sizeof(Plane3), count))
-                throw std::bad_alloc();
-            ::memcpy(copy.planes.first, planes.first, count * sizeof(Plane3));
-            copy.planes.last = copy.planes.first + count * sizeof(Plane3);
-        }
-        if (!vc71::vectorPushBackIn(records, sizeof(vc71::vector_layout), &copy.planes))
-            throw std::bad_alloc();
-        copy.planes.first = 0;
-        copy.planes.last = 0;
-        copy.planes.end = 0;
-    }
-
-private:
-    ObjectDrawerPlaneList(const ObjectDrawerPlaneList&);
-    ObjectDrawerPlaneList& operator=(const ObjectDrawerPlaneList&);
-};
 
 void objectDrawerNormalizeOccluderNormal(Vec3& normal)
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the normalization helper's retained x87 inverse.
+    using namespace bf2x87;
+    const float lengthSquared = store(add(add(mul(wide(normal.x), wide(normal.x)),
+        mul(wide(normal.y), wide(normal.y))), mul(wide(normal.z), wide(normal.z))));
+    if (less(bf2x87::abs(sub(wide(lengthSquared), wide(1.0f))), wide(1.1920928955078125e-7f)))
+        return;
+    if (less(bf2x87::abs(wide(lengthSquared)), wide(1.1920928955078125e-7f)))
+    {
+        normal.x = normal.y = normal.z = 0.0f;
+        return;
+    }
+    const Real inverse = div(wide(1.0f), squareRoot(wide(lengthSquared)));
+    normal.x = store(mul(inverse, wide(normal.x)));
+    normal.y = store(mul(inverse, wide(normal.y)));
+    normal.z = store(mul(inverse, wide(normal.z)));
+#else
     const float lengthSquared = static_cast<float>(
         static_cast<double>(normal.x) * normal.x
         + static_cast<double>(normal.y) * normal.y
@@ -896,10 +923,125 @@ void objectDrawerNormalizeOccluderNormal(Vec3& normal)
     normal.x = static_cast<float>(inverse * normal.x);
     normal.y = static_cast<float>(inverse * normal.y);
     normal.z = static_cast<float>(inverse * normal.z);
+#endif
+}
+
+// PE 0x100F8750. Draws one box per occluder face, using its first two edge references.
+// Requires the same world-space StaticMesh records as the production occlusion builder.
+void objectDrawerDebugOccluders(ObjectDrawer* self, ObjectDrawerSet& objects)
+{
+    const float* camera = static_cast<dx9rend::IRenderView*>(self->m_renderView)->getViewMatrixPtr()->m + 12;
+    static_cast<dx9rend::IRenderView*>(self->m_renderView)->getViewMatrixPtr(); // Repeated, result discarded in PE.
+    for (unsigned int objectIndex = 0; objectIndex < objects.size(); ++objectIndex)
+    {
+        world::IObject* object = objects[objectIndex];
+        void* geometry = world::object_detail::LayoutAccess::geometry(object);
+        if (!geometry) continue;
+        typedef int (__thiscall* Count)(void*);
+        const int recordCount = reinterpret_cast<Count>(occlusionGeometrySlot(geometry, 0xE8))(geometry);
+        if (!recordCount) continue;
+        const Vec3& position = object->getAbsolutePosition();
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The PE retains all three differences and both squares in x87.
+        using namespace bf2x87;
+        const Real dx = sub(wide(position.x),wide(camera[0]));
+        const Real dy = sub(wide(position.y),wide(camera[1]));
+        const Real dz = sub(wide(position.z),wide(camera[2]));
+        const Real squared = add(add(mul(dx,dx),mul(dy,dy)),mul(dz,dz));
+        if (less(mul(wide(self->m_float64),wide(self->m_float64)),squared)) continue;
+#else
+        const float dx = position.x-camera[0], dy = position.y-camera[1], dz = position.z-camera[2];
+        if (self->m_float64*self->m_float64 < dx*dx+dy*dy+dz*dz) continue;
+#endif
+        typedef const StaticMeshOccluderRecord* (__thiscall* Record)(void*, int);
+        for (int recordIndex = 0; recordIndex < recordCount; ++recordIndex)
+        {
+            const StaticMeshOccluderRecord* record = reinterpret_cast<Record>(
+                occlusionGeometrySlot(geometry,0xEC))(geometry,recordIndex);
+            const std::vector<StaticMeshOccluderEdge>* edges = record->edges;
+            const int faceCount = static_cast<int>(record->faces.size());
+            const StaticMeshOccluderFace* face = record->faces.data();
+            for (int faceIndex = 0; faceIndex < faceCount; ++faceIndex, ++face)
+            {
+                const unsigned short* references = face->edgeReferences->data();
+                const Vec3 zero = rendmath::zeroVector();                   // PE 0x1007B1E0
+                // The high byte encodes edge ownership and is discarded here.
+                const StaticMeshOccluderEdge& first = (*edges)[references[0] & 0xFFu];
+                const StaticMeshOccluderEdge& second = (*edges)[references[1] & 0xFFu];
+                const Vec3& a = record->points[first.points[0]];
+                const Vec3& b = record->points[first.points[1]];
+                const Vec3& c = record->points[second.points[0]];
+                const Vec3& d = record->points[second.points[1]];
+                Vec3 e1, e2, size, minimum, center;
+#if defined(__APPLE__)
+                e1 = Vec3{store(bf2x87::abs(sub(wide(a.x),wide(b.x)))), store(bf2x87::abs(sub(wide(a.y),wide(b.y)))), store(bf2x87::abs(sub(wide(a.z),wide(b.z))))};
+                e2 = Vec3{store(bf2x87::abs(sub(wide(c.x),wide(d.x)))), store(bf2x87::abs(sub(wide(c.y),wide(d.y)))), store(bf2x87::abs(sub(wide(c.z),wide(d.z))))};
+                size.x = store(add(wide(e1.x),wide(zero.x)));
+                const Real y1 = add(wide(zero.y),wide(e1.y));
+                size.z = store(add(wide(e1.z),wide(zero.z)));
+                size.x = store(add(wide(e2.x),wide(size.x)));
+                const Real ySize = add(wide(e2.y),y1);
+                size.y = store(ySize);
+                size.z = store(add(wide(e2.z),wide(size.z)));
+                if (!greater(wide(size.x),wide(0.01f))) size.x=0.01f;
+                if (!greater(ySize,wide(0.01f))) size.y=0.01f;
+                if (!greater(wide(size.z),wide(0.01f))) size.z=0.01f;
+                auto lessValue = [](float left,float right) { return bf2x87::less(bf2x87::wide(left),bf2x87::wide(right)); };
+#else
+                e1 = Vec3{::fabsf(a.x-b.x),::fabsf(a.y-b.y),::fabsf(a.z-b.z)};
+                e2 = Vec3{::fabsf(c.x-d.x),::fabsf(c.y-d.y),::fabsf(c.z-d.z)};
+                size = Vec3{(e1.x+zero.x)+e2.x,e2.y+(zero.y+e1.y),(e1.z+zero.z)+e2.z};
+                if (!(size.x>0.01f)) size.x=0.01f;
+                if (!(size.y>0.01f)) size.y=0.01f;
+                if (!(size.z>0.01f)) size.z=0.01f;
+                auto lessValue = [](float left,float right) { return left<right; };
+#endif
+                auto minimumValue = [&](float av,float bv,float cv,float dv) {
+                    const float firstMin = lessValue(av,bv) ? av : bv;
+                    const float secondMin = lessValue(cv,dv) ? cv : dv;
+                    return lessValue(firstMin,secondMin) ? firstMin : (lessValue(cv,dv) ? cv : dv);
+                };
+                minimum = Vec3{minimumValue(a.x,b.x,c.x,d.x),minimumValue(a.y,b.y,c.y,d.y),minimumValue(a.z,b.z,c.z,d.z)};
+#if defined(__APPLE__)
+                const float halfZ1 = store(mul(wide(e1.z),wide(0.5f)));
+                center.x = store(add(mul(wide(e1.x),wide(0.5f)),wide(minimum.x)));
+                center.y = store(add(mul(wide(e1.y),wide(0.5f)),wide(minimum.y)));
+                const Real z1 = add(wide(minimum.z),wide(halfZ1));
+                const float halfZ2 = store(mul(wide(e2.z),wide(0.5f)));
+                center.x = store(add(mul(wide(e2.x),wide(0.5f)),wide(center.x)));
+                center.y = store(add(mul(wide(e2.y),wide(0.5f)),wide(center.y)));
+                center.z = store(add(wide(halfZ2),z1));
+#else
+                const float halfZ1=e1.z*0.5f;
+                center.x=e1.x*0.5f+minimum.x;
+                center.y=e1.y*0.5f+minimum.y;
+                const float z1=minimum.z+halfZ1;
+                const float halfZ2=e2.z*0.5f;
+                center.x=e2.x*0.5f+center.x;
+                center.y=e2.y*0.5f+center.y;
+                center.z=halfZ2+z1;
+#endif
+                Mat4 transform = Mat4::getIdentity();
+                transform.scale(size);
+                transform.m[12] += center.x;
+                transform.m[13] += center.y;
+                transform.m[14] += center.z;
+                static_cast<IDebugRenderer*>(g_DebugRenderer)->queueGeometry(81012u,transform,"occluder");
+            }
+        }
+    }
 }
 
 // Builds camera-facing source and silhouette planes from nearby world-space occluders.
 // Requires a render view and the StaticMesh face/edge/point records to remain valid for the call.
+// [CHOSEN, not recovered] The native port retains the x87 values until the observed float stores.
+#if defined(__APPLE__)
+using OcclusionScalar = bf2x87::Real;
+#else
+using OcclusionScalar = double;
+#endif
+
+// PE 0x100F9300
 void objectDrawerBuildOccluders(ObjectDrawer* self, ObjectDrawerSet& objects)
 {
     dx9rend::IRenderView* const view = static_cast<dx9rend::IRenderView*>(self->m_renderView);
@@ -915,110 +1057,113 @@ void objectDrawerBuildOccluders(ObjectDrawer* self, ObjectDrawerSet& objects)
         if (!geometry)
             continue;
 
-        typedef int (__fastcall* RecordCountFn)(void*, void*);
+        typedef int (__thiscall* RecordCountFn)(void*);
         const int recordCount = reinterpret_cast<RecordCountFn>(
-            occlusionGeometrySlot(geometry, 0xE8))(geometry, 0);
+            occlusionGeometrySlot(geometry, 0xE8))(geometry);
         if (!recordCount)
             continue;
 
         const Vec3& position = object->getAbsolutePosition();
-        const double dx = static_cast<double>(position.x) - camera[0];
-        const double dy = static_cast<double>(position.y) - camera[1];
-        const double dz = static_cast<double>(position.z) - camera[2];
-        if (static_cast<double>(self->m_float64) * self->m_float64 < dx * dx + dz * dz + dy * dy)
+        const OcclusionScalar dx = static_cast<OcclusionScalar>(position.x) - camera[0];
+        const OcclusionScalar dy = static_cast<OcclusionScalar>(position.y) - camera[1];
+        const OcclusionScalar dz = static_cast<OcclusionScalar>(position.z) - camera[2];
+        if (static_cast<OcclusionScalar>(self->m_float64) * self->m_float64 < dx * dx + dz * dz + dy * dy)
             continue;
 
-        typedef const ObjectDrawerOccluderRecord* (__fastcall* RecordFn)(void*, void*, int);
+        // The records are StaticMesh's world-space occluders; their edges are the template's.
+        typedef const StaticMeshOccluderRecord* (__thiscall* RecordFn)(void*, int);
         for (int recordIndex = 0; recordIndex < recordCount; ++recordIndex)
         {
-            const ObjectDrawerOccluderRecord* const record = reinterpret_cast<RecordFn>(
-                occlusionGeometrySlot(geometry, 0xEC))(geometry, 0, recordIndex);
-            vc71::vector_layout& edges = *record->edges;
-            const unsigned int edgeCount = vc71::vectorSizeIn(edges, 4u);
-            const unsigned int faceCount = vc71::vectorSizeIn(record->faces, sizeof(ObjectDrawerOccluderFace));
+            const StaticMeshOccluderRecord* const record = reinterpret_cast<RecordFn>(
+                occlusionGeometrySlot(geometry, 0xEC))(geometry, recordIndex);
+            std::vector<StaticMeshOccluderEdge>& edges = *record->edges;
+            const unsigned int edgeCount = static_cast<unsigned int>(edges.size());
+            const unsigned int faceCount = static_cast<unsigned int>(record->faces.size());
             if (!faceCount)
                 continue;
 
-            ObjectDrawerPlaneList planes;
-            const ObjectDrawerOccluderFace* const faces =
-                reinterpret_cast<const ObjectDrawerOccluderFace*>(record->faces.first);
+            // The local plane list; a separate copy is appended to the drawer's outer list.
+            std::vector<Plane3> planes;
+            const StaticMeshOccluderFace* const faces = record->faces.data();
             for (unsigned int faceIndex = 0; faceIndex < faceCount; ++faceIndex)
             {
-                const ObjectDrawerOccluderFace& face = faces[faceIndex];
+                const StaticMeshOccluderFace& face = faces[faceIndex];
                 const Plane3& plane = face.plane;
                 // The shipped loop takes every iteration's reference count from the first face.
-                const unsigned int referenceCount = vc71::vectorSizeIn(*faces[0].edgeReferences, 2u);
-                const double distance = static_cast<double>(plane.normal.y) * camera[1]
-                    + static_cast<double>(plane.normal.x) * camera[0]
-                    + static_cast<double>(plane.normal.z) * camera[2] + plane.d;
+                const unsigned int referenceCount =
+                    static_cast<unsigned int>(faces[0].edgeReferences->size());
+                const OcclusionScalar distance = static_cast<OcclusionScalar>(plane.normal.y) * camera[1]
+                    + static_cast<OcclusionScalar>(plane.normal.x) * camera[0]
+                    + static_cast<OcclusionScalar>(plane.normal.z) * camera[2] + plane.d;
                 unsigned char selected = 0;
                 // The original first comparison admits unordered values; the angle comparison does not.
                 if (!(distance <= 0.0))
                 {
-                    const double facing = -static_cast<double>(forward[2]) * plane.normal.z
-                        + -static_cast<double>(forward[1]) * plane.normal.y
-                        + -static_cast<double>(forward[0]) * plane.normal.x;
+                    const OcclusionScalar facing = -static_cast<OcclusionScalar>(forward[2]) * plane.normal.z
+                        + -static_cast<OcclusionScalar>(forward[1]) * plane.normal.y
+                        + -static_cast<OcclusionScalar>(forward[0]) * plane.normal.x;
                     float angleThreshold;
                     ::memcpy(&angleThreshold, &self->m_dword6C, sizeof(angleThreshold));
                     if (facing > angleThreshold)
                     {
-                        planes.append(plane);
+                        planes.push_back(plane);
                         selected = 1;
                     }
                 }
                 for (unsigned int referenceIndex = 0; referenceIndex < referenceCount; ++referenceIndex)
                 {
-                    const unsigned char* const reference = reinterpret_cast<const unsigned char*>(
-                        face.edgeReferences->first + 2u * referenceIndex);
-                    unsigned char* const edge = reinterpret_cast<unsigned char*>(edges.first + 4u * reference[0]);
-                    edge[reference[1] ? 2 : 3] = selected;
+                    // The edge index in the low byte, the created-here flag in the high byte.
+                    const unsigned short reference = (*face.edgeReferences)[referenceIndex];
+                    StaticMeshOccluderEdge& edge = edges[reference & 0xFFu];
+                    edge.marks[(reference >> 8) ? 0 : 1] = selected;
                 }
             }
-            if (!vc71::vectorSizeIn(planes.planes, sizeof(Plane3)))
+            if (planes.empty())
                 continue;
 
-            const Vec3* const points = reinterpret_cast<const Vec3*>(record->points.first);
+            const Vec3* const points = record->points.data();
             for (unsigned int edgeIndex = 0; edgeIndex < edgeCount; ++edgeIndex)
             {
-                const unsigned char* const edge = reinterpret_cast<const unsigned char*>(edges.first + 4u * edgeIndex);
-                if (static_cast<unsigned int>(edge[2]) + edge[3] != 1u)
+                const StaticMeshOccluderEdge& edge = edges[edgeIndex];
+                if (static_cast<unsigned int>(edge.marks[0]) + edge.marks[1] != 1u)
                     continue;
-                const Vec3& a = points[edge[0]];
-                const Vec3& b = points[edge[1]];
-                const double ax = static_cast<double>(a.x) - camera[0];
-                const double ay = static_cast<double>(a.y) - camera[1];
-                const float az = static_cast<float>(static_cast<double>(a.z) - camera[2]);
-                const double ex = static_cast<double>(b.x) - a.x;
-                const double ey = static_cast<double>(b.y) - a.y;
-                const double ez = static_cast<double>(b.z) - a.z;
+                const Vec3& a = points[edge.points[0]];
+                const Vec3& b = points[edge.points[1]];
+                const OcclusionScalar ax = static_cast<OcclusionScalar>(a.x) - camera[0];
+                const OcclusionScalar ay = static_cast<OcclusionScalar>(a.y) - camera[1];
+                const float az = static_cast<float>(static_cast<OcclusionScalar>(a.z) - camera[2]);
+                const OcclusionScalar ex = static_cast<OcclusionScalar>(b.x) - a.x;
+                const OcclusionScalar ey = static_cast<OcclusionScalar>(b.y) - a.y;
+                const OcclusionScalar ez = static_cast<OcclusionScalar>(b.z) - a.z;
                 const float storedEz = static_cast<float>(ez);
                 Plane3 silhouette;
                 silhouette.normal.x = static_cast<float>(ez * ay - ey * az);
                 silhouette.normal.y = static_cast<float>(az * ex - storedEz * ax);
                 silhouette.normal.z = static_cast<float>(ey * ax - ay * ex);
                 objectDrawerNormalizeOccluderNormal(silhouette.normal);
-                if (edge[2])
+                if (edge.marks[0])
                 {
                     silhouette.normal.x = -silhouette.normal.x;
                     silhouette.normal.y = -silhouette.normal.y;
                     silhouette.normal.z = -silhouette.normal.z;
                 }
-                silhouette.d = static_cast<float>(-(static_cast<double>(silhouette.normal.z) * b.z
-                    + static_cast<double>(silhouette.normal.y) * b.y
-                    + static_cast<double>(silhouette.normal.x) * b.x));
-                planes.append(silhouette);
+                silhouette.d = static_cast<float>(-(static_cast<OcclusionScalar>(silhouette.normal.z) * b.z
+                    + static_cast<OcclusionScalar>(silhouette.normal.y) * b.y
+                    + static_cast<OcclusionScalar>(silhouette.normal.x) * b.x));
+                planes.push_back(silhouette);
             }
-            planes.appendCopyTo(self->m_vector50);
+            self->m_vector50.push_back(planes);
         }
     }
 }
 
 // Removes objects wholly behind any occluder's planes, retaining the order of survivors.
 // Precise mode tests transformed geometry bounds only when the sphere intersects a plane.
+// PE 0x100F8430
 void objectDrawerCullObjects(ObjectDrawer* self, ObjectDrawerSet& set)
 {
     const bool precise = self->m_byte68 != 0;
-    OcclusionBoxCorners box;
+    BoxCorners box;
     unsigned int index = 0;
     while (index < objectDrawerSetSize(set))
     {
@@ -1030,23 +1175,21 @@ void objectDrawerCullObjects(ObjectDrawer* self, ObjectDrawerSet& set)
         bool boxBuilt = false;
         bool hidden = false;
 
-        for (unsigned int occluder = 0;
-             self->m_vector50.first && occluder < occlusionVectorCount(
-                 self->m_vector50.first, self->m_vector50.last); ++occluder)
+        for (unsigned int occluder = 0; occluder < self->m_vector50.size(); ++occluder)
         {
-            const vc71::vector_layout& planes = *reinterpret_cast<const vc71::vector_layout*>(
-                self->m_vector50.first + occluder * sizeof(vc71::vector_layout));
+            const std::vector<Plane3>& planes = self->m_vector50[occluder];
             hidden = true;
-            for (const char* cursor = planes.first; cursor != planes.last; cursor += sizeof(Plane3))
+            for (std::vector<Plane3>::const_iterator cursor = planes.begin(); cursor != planes.end();
+                 ++cursor)
             {
-                const Plane3& plane = *reinterpret_cast<const Plane3*>(cursor);
-                const double distance = precise
-                    ? static_cast<double>(plane.normal.z) * centre.z
-                      + static_cast<double>(plane.normal.y) * centre.y
-                      + static_cast<double>(plane.normal.x) * centre.x + plane.d
-                    : static_cast<double>(plane.normal.z) * centre.z
-                      + static_cast<double>(plane.normal.x) * centre.x
-                      + static_cast<double>(centre.y) * plane.normal.y + plane.d;
+                const Plane3& plane = *cursor;
+                const OcclusionScalar distance = precise
+                    ? static_cast<OcclusionScalar>(plane.normal.z) * centre.z
+                      + static_cast<OcclusionScalar>(plane.normal.y) * centre.y
+                      + static_cast<OcclusionScalar>(plane.normal.x) * centre.x + plane.d
+                    : static_cast<OcclusionScalar>(plane.normal.z) * centre.z
+                      + static_cast<OcclusionScalar>(plane.normal.x) * centre.x
+                      + static_cast<OcclusionScalar>(centre.y) * plane.normal.y + plane.d;
                 if (precise && distance > 0.0f)
                 {
                     hidden = false;
@@ -1068,9 +1211,9 @@ void objectDrawerCullObjects(ObjectDrawer* self, ObjectDrawerSet& set)
                     for (unsigned int corner = 0; corner < 8; ++corner)
                     {
                         const Vec3& point = box.corner[corner];
-                        if (static_cast<double>(point.z) * plane.normal.z
-                            + static_cast<double>(point.x) * plane.normal.x
-                            + static_cast<double>(plane.normal.y) * point.y + plane.d > 0.0)
+                        if (static_cast<OcclusionScalar>(point.z) * plane.normal.z
+                            + static_cast<OcclusionScalar>(point.x) * plane.normal.x
+                            + static_cast<OcclusionScalar>(plane.normal.y) * point.y + plane.d > 0.0)
                         {
                             hidden = false;
                             break;
@@ -1097,33 +1240,9 @@ void objectDrawerCullObjects(ObjectDrawer* self, ObjectDrawerSet& set)
     }
 }
 
-void objectDrawerDestroyTreeNodes(void* node)
-{
-    while (static_cast<unsigned char*>(node)[0x19] == 0)
-    {
-        void** const links = static_cast<void**>(node);
-        objectDrawerDestroyTreeNodes(links[2]);
-        void* const left = links[0];
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-}
-
-void objectDrawerDestroyTree(ObjectDrawerTreeHeader& tree)
-{
-    void** const head = static_cast<void**>(tree.head);
-    objectDrawerDestroyTreeNodes(head[1]);
-    head[1] = head;
-    tree.size = 0;
-    head[0] = head;
-    head[2] = head;
-    ::renddx9abi::engineFree(tree.head);
-    tree.head = 0;
-    tree.size = 0;
-}
-
 // Detaches the event listener and releases the drawer's owned storage and occluder.
 // The event manager must outlive the drawer. Render view and scene objects are borrowed.
+// PE 0x100F9210
 void objectDrawerDestroyMembers(ObjectDrawer* self)
 {
     self->m_vptr = kObjectDrawerPrimaryVtable;
@@ -1131,15 +1250,12 @@ void objectDrawerDestroyMembers(ObjectDrawer* self)
     ::dice::hfe::eventManager->unregisterEventHandler(
         static_cast<EventCategory>(0), reinterpret_cast<IEventListener*>(&self->m_eventVptr));
     objectDrawerClearOccluders(self);
-    if (self->m_vector50.first)
-        ::renddx9abi::engineFree(self->m_vector50.first);
-    self->m_vector50.first = self->m_vector50.last = self->m_vector50.end = 0;
+    std::vector<std::vector<Plane3> >().swap(self->m_vector50);
     ObjectDrawerSet().swap(self->m_drawSet);
     ObjectDrawerSet().swap(self->m_visibleSet);
     if (self->m_occluder)
         self->m_occluder->release();
-    objectDrawerDestroyTree(self->m_tree1C);
-    objectDrawerDestroyTree(self->m_tree10);
+    // The +0x1C tree, then the +0x10 tree, are destroyed with the drawer after this body.
 }
 
 } // anonymous namespace
@@ -1148,12 +1264,12 @@ namespace {
 
 // Table thunks use __fastcall with an unused EDX to match the __thiscall slots.
 // Keep definitions in the anonymous namespace containing their declarations.
-bool __fastcall od_slot38(void* self, void*, void* geometry)
+bool RD9_THUNK od_slot38(void* self RD9_THUNK_EDX, void* geometry)
 {
     return static_cast<ObjectDrawer*>(self)->isGeometryOccluded(geometry);
 }
 
-bool __fastcall od_slot3C(void* self, void*, void* bounds)
+bool RD9_THUNK od_slot3C(void* self RD9_THUNK_EDX, void* bounds)
 {
     return static_cast<ObjectDrawer*>(self)->isBoundsOccluded(static_cast<LocalBoundingBox*>(bounds));
 }
@@ -1170,21 +1286,19 @@ bool ObjectDrawer::isGeometryOccluded(void* geometry)
 
     if (m_byte68)
     {
-        OcclusionBoxCorners box;
+        BoxCorners box;
         bool boxBuilt = false;                                               // [ebp-1]
         for (unsigned int occluder = 0; ; ++occluder)
         {
-            if (!m_vector50.first || occluder >= occlusionVectorCount(m_vector50.first, m_vector50.last))
+            if (occluder >= m_vector50.size())
                 break;
-            const char* const record = m_vector50.first + occluder * 16;
+            const std::vector<Plane3>& record = m_vector50[occluder];
             bool hidden = true;                                              // [ebp-2]
             for (unsigned int index = 0; ; ++index)
             {
-                const char* const planes = *reinterpret_cast<const char* const*>(record + 4);
-                if (!planes ||
-                    index >= occlusionVectorCount(planes, *reinterpret_cast<const char* const*>(record + 8)))
+                if (index >= record.size())
                     break;
-                const Plane3& plane = *reinterpret_cast<const Plane3*>(planes + index * 16);
+                const Plane3& plane = record[index];
                 const float distance = plane.normal.z * centre.z + plane.normal.y * centre.y
                                      + plane.normal.x * centre.x + plane.d;
                 if (distance > 0.0f)
@@ -1222,16 +1336,13 @@ bool ObjectDrawer::isGeometryOccluded(void* geometry)
 
     for (unsigned int occluder = 0; ; ++occluder)
     {
-        if (!m_vector50.first || occluder >= occlusionVectorCount(m_vector50.first, m_vector50.last))
+        if (occluder >= m_vector50.size())
             break;
-        const char* const record = m_vector50.first + occluder * 16;
-        const char* const planes = *reinterpret_cast<const char* const*>(record + 4);
+        const std::vector<Plane3>& planes = m_vector50[occluder];
         bool hidden = true;
-        for (unsigned int index = 0;
-             planes && index < occlusionVectorCount(planes, *reinterpret_cast<const char* const*>(record + 8));
-             ++index)
+        for (unsigned int index = 0; index < planes.size(); ++index)
         {
-            const Plane3& plane = *reinterpret_cast<const Plane3*>(planes + index * 16);
+            const Plane3& plane = planes[index];
             const float distance = plane.normal.z * centre.z + plane.normal.x * centre.x
                                  + centre.y * plane.normal.y + plane.d;
             if (-radius < distance)                                          // 100F8409 `jnp`
@@ -1267,17 +1378,15 @@ bool ObjectDrawer::isBoundsOccluded(LocalBoundingBox* bounds)
     {
         for (unsigned int occluder = 0; ; ++occluder)
         {
-            if (!m_vector50.first || occluder >= occlusionVectorCount(m_vector50.first, m_vector50.last))
+            if (occluder >= m_vector50.size())
                 break;
-            const char* const record = m_vector50.first + occluder * 16;
+            const std::vector<Plane3>& record = m_vector50[occluder];
             bool hidden = true;                                              // [ebp-1]
             for (unsigned int index = 0; ; ++index)
             {
-                const char* const planes = *reinterpret_cast<const char* const*>(record + 4);
-                if (!planes ||
-                    index >= occlusionVectorCount(planes, *reinterpret_cast<const char* const*>(record + 8)))
+                if (index >= record.size())
                     break;
-                const Plane3& plane = *reinterpret_cast<const Plane3*>(planes + index * 16);
+                const Plane3& plane = record[index];
                 const float distance = centre.y * plane.normal.y + plane.normal.x * centre.x
                                      + centre.z * plane.normal.z + plane.d;
                 if (distance > 0.0f)
@@ -1311,16 +1420,13 @@ bool ObjectDrawer::isBoundsOccluded(LocalBoundingBox* bounds)
 
     for (unsigned int occluder = 0; ; ++occluder)
     {
-        if (!m_vector50.first || occluder >= occlusionVectorCount(m_vector50.first, m_vector50.last))
+        if (occluder >= m_vector50.size())
             break;
-        const char* const record = m_vector50.first + occluder * 16;
-        const char* const planes = *reinterpret_cast<const char* const*>(record + 4);
+        const std::vector<Plane3>& planes = m_vector50[occluder];
         bool hidden = true;
-        for (unsigned int index = 0;
-             planes && index < occlusionVectorCount(planes, *reinterpret_cast<const char* const*>(record + 8));
-             ++index)
+        for (unsigned int index = 0; index < planes.size(); ++index)
         {
-            const Plane3& plane = *reinterpret_cast<const Plane3*>(planes + index * 16);
+            const Plane3& plane = planes[index];
             const float distance = plane.normal.z * centre.z + plane.normal.x * centre.x
                                  + centre.y * plane.normal.y + plane.d;
             if (-radius < distance)                                          // 100F81DA `jnp`

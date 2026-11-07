@@ -21,6 +21,8 @@ class BoundingBox;
 
 struct LocalBoundingBox
 {
+    // RendDX9.dll PE 0x10030EF0 (COMDAT copy, answers this): +0x00..+0x1C zero, dirty byte +0x20 = 1,
+    // +0x24..+0x38 zero; the lightmap traces construct their light bounds with it.
     LocalBoundingBox()
     {
         m_min.x = m_min.y = m_min.z = 0.0f;
@@ -120,7 +122,9 @@ struct LocalBoundingBox
         return m_size;
     }
 
-    // ELF 0x4982E0; engine ELF 0x83B4AA0.
+    // ELF 0x4982E0; engine ELF 0x83B4AA0; RendDX9.dll copy PE 0x101C5DD0 (unreachable there: no code or
+    // data references; instruction-identical, once addresses are normalised, to BF2.exe PE 0x6DB430, and
+    // its rotated components use the same different association as the PE copy of isInside(point)).
     // Tests the world-space sphere center against this box expanded by radius in the owner's local frame.
     bool isInside(const Vec3& centre, float radius, const Vec3& ownerPosition,
                   const Mat4& ownerInverse) const

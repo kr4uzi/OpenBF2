@@ -89,6 +89,52 @@ struct BaseTemplateConsoleAccess
     static const std::string& getAiTemplate() { return simpleObject()->m_aiTemplate; }   // +296
     static void setAiTemplate(const std::string& value) { simpleObject()->m_aiTemplate = value; }
 
+    // The animated-UV block (offsets ELF / PE). Every executor stores the parsed value straight
+    // into the field; the PE Vec2 setters of Size, Max and RotationScale go through a small
+    // non-inlined helper that copies the two floats (PE 0x553857, 0x5539CB, 0x553F95), which
+    // the ELF executors inline.
+    static bool getAnimatedUVTranslation() { return simpleObject()->m_animatedUVTranslation; }       // 228 / 0x118
+    static void setAnimatedUVTranslation(bool value) { simpleObject()->m_animatedUVTranslation = value; }
+    static const Math::Vec2& getAnimatedUVTranslationSpeed()                                        // 232 / 0x11C
+        { return simpleObject()->m_animatedUVTranslationSpeed; }
+    static void setAnimatedUVTranslationSpeed(const Math::Vec2& value)
+        { simpleObject()->m_animatedUVTranslationSpeed = value; }
+    static const Math::Vec2& getAnimatedUVTranslationSize()                                         // 248 / 0x12C
+        { return simpleObject()->m_animatedUVTranslationSize; }
+    static void setAnimatedUVTranslationSize(const Math::Vec2& value)
+        { simpleObject()->m_animatedUVTranslationSize = value; }
+    static const Math::Vec2& getAnimatedUVTranslationMax()                                          // 240 / 0x124
+        { return simpleObject()->m_animatedUVTranslationMax; }
+    static void setAnimatedUVTranslationMax(const Math::Vec2& value)
+        { simpleObject()->m_animatedUVTranslationMax = value; }
+    static int getAnimatedUVTranslationIndex() { return simpleObject()->m_animatedUVTranslationIndex; }  // 256 / 0x134
+    static void setAnimatedUVTranslationIndex(int value) { simpleObject()->m_animatedUVTranslationIndex = value; }
+    static bool getAnimatedUVTranslationReverse()                                                   // 260 / 0x138
+        { return simpleObject()->m_animatedUVTranslationReverse; }
+    static void setAnimatedUVTranslationReverse(bool value)
+        { simpleObject()->m_animatedUVTranslationReverse = value; }
+    // The one int-typed flag: GET zero-extends the byte, SET stores `value != 0`.
+    static int getAnimatedUVRotation() { return simpleObject()->m_animatedUVRotation ? 1 : 0; }   // 261 / 0x139
+    static void setAnimatedUVRotation(int value) { simpleObject()->m_animatedUVRotation = value != 0; }
+    static int getAnimatedUVRotationIndex() { return simpleObject()->m_animatedUVRotationIndex; }    // 272 / 0x144
+    static void setAnimatedUVRotationIndex(int value) { simpleObject()->m_animatedUVRotationIndex = value; }
+    static const Math::Vec2& getAnimatedUVRotationScale()                                           // 264 / 0x13C
+        { return simpleObject()->m_animatedUVRotationScale; }
+    static void setAnimatedUVRotationScale(const Math::Vec2& value)
+        { simpleObject()->m_animatedUVRotationScale = value; }
+    static float getAnimatedUVRotationRadius() { return simpleObject()->m_animatedUVRotationRadius; }  // 276 / 0x148
+    static void setAnimatedUVRotationRadius(float value) { simpleObject()->m_animatedUVRotationRadius = value; }
+    static bool getAnimatedUVRotationReverse() { return simpleObject()->m_animatedUVRotationReverse; } // 280 / 0x14C
+    static void setAnimatedUVRotationReverse(bool value) { simpleObject()->m_animatedUVRotationReverse = value; }
+    static bool getRotateAsAnimatedUV() { return simpleObject()->m_rotateAsAnimatedUV; }               // 281 / 0x14D
+    static void setRotateAsAnimatedUV(bool value) { simpleObject()->m_rotateAsAnimatedUV = value; }
+    static const std::string& getRotateAsAnimatedUVObject()                                         // 284 / 0x150
+        { return simpleObject()->m_rotateAsAnimatedUVObject; }
+    static void setRotateAsAnimatedUVObject(const std::string& value)
+        { simpleObject()->m_rotateAsAnimatedUVObject = value; }
+    static bool getRotateAsAnimatedUVReverse() { return simpleObject()->m_rotateAsAnimatedUVReverse; } // 288 / 0x16C
+    static void setRotateAsAnimatedUVReverse(bool value) { simpleObject()->m_rotateAsAnimatedUVReverse = value; }
+
     // Console setters update individual physics bits. Physics-type changes recompute the selected type; sleeping does not.
     static bool getIsSleeping() { return (simpleObject()->m_physicsFlags & 0x01) != 0; }
     static void setIsSleeping(bool value)
@@ -560,6 +606,60 @@ BF2_CONSOLE_PROPERTY_FN(floaterMod, float, getActiveTemplate(CID_SimpleObjectTem
 BF2_CONSOLE_PROPERTY_FN(otherCollisionLod, int, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
                         BaseTemplateConsoleAccess::getOtherCollisionLod(),
                         BaseTemplateConsoleAccess::setOtherCollisionLod, kObjTemplBaseConsoleTag)
+
+// The animated-UV properties, in shipped registration order, all under the physics sub-table's
+// defaults ("ObjectTemplate", 2, 23 - the BF2.exe TU initializer constructs them at 0x84E96C..
+// 0x84EA8F right after that SetConsoleClassDefaults call). PE constructors 0x553485, 0x553599,
+// 0x5536FA, 0x55386E, 0x5539E2, 0x553AF6, 0x553C0A, 0x553D24, 0x553E38, 0x553FAC, 0x5540C9,
+// 0x5541DD, 0x5542F1, 0x55445E; executors 0x553543, 0x553684, 0x5537E5, 0x553959, 0x553AA0,
+// 0x553BB4, 0x553CC8, 0x553DE2, 0x553F23, 0x55406A, 0x554187, 0x55429B, 0x55436E, 0x55451C. The
+// ELF executors are ModuleWorldObjTemplBase.cpp ConsoleClass147..157, 159, 160 and 161
+// (0x8680310..0x8684030). Content authors these on vehicle parts (tank road wheels and tracks):
+// without them SimpleObject never allocates its AnimatedUV, the geometry keeps identity UV
+// matrices, and the BundledMesh _hasuvanimation_ shader samples the wrong texture region.
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslation, bool, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslation(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslation, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslationSpeed, Vec2, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslationSpeed(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslationSpeed, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslationSize, Vec2, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslationSize(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslationSize, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslationMax, Vec2, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslationMax(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslationMax, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslationIndex, int, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslationIndex(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslationIndex, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVTranslationReverse, bool, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVTranslationReverse(),
+                        BaseTemplateConsoleAccess::setAnimatedUVTranslationReverse, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVRotation, int, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVRotation(),
+                        BaseTemplateConsoleAccess::setAnimatedUVRotation, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVRotationIndex, int, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVRotationIndex(),
+                        BaseTemplateConsoleAccess::setAnimatedUVRotationIndex, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVRotationScale, Vec2, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVRotationScale(),
+                        BaseTemplateConsoleAccess::setAnimatedUVRotationScale, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVRotationRadius, float, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVRotationRadius(),
+                        BaseTemplateConsoleAccess::setAnimatedUVRotationRadius, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(animatedUVRotationReverse, bool, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getAnimatedUVRotationReverse(),
+                        BaseTemplateConsoleAccess::setAnimatedUVRotationReverse, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(rotateAsAnimatedUV, bool, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getRotateAsAnimatedUV(),
+                        BaseTemplateConsoleAccess::setRotateAsAnimatedUV, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(rotateAsAnimatedUVObject, std::string, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getRotateAsAnimatedUVObject(),
+                        BaseTemplateConsoleAccess::setRotateAsAnimatedUVObject, kObjTemplBaseConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(rotateAsAnimatedUVReverse, bool, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
+                        BaseTemplateConsoleAccess::getRotateAsAnimatedUVReverse(),
+                        BaseTemplateConsoleAccess::setRotateAsAnimatedUVReverse, kObjTemplBaseConsoleTag)
+
 BF2_CONSOLE_PROPERTY_FN(physicsFrequency, int, getActiveTemplate(CID_SimpleObjectTemplate) != 0,
                         BaseTemplateConsoleAccess::getPhysicsFrequency(),
                         BaseTemplateConsoleAccess::setPhysicsFrequency, kObjTemplBaseConsoleTag)
@@ -748,8 +848,9 @@ BF2_CONSOLE_FIELD(regulateRoll,                Vec2,      activeRotBundle(), m_r
 // Class-gated executors re-read the active template; geometry accesses the raw string field.
 // Preserve scale's reversed get/set slots and getConeAngle1 returning coneAngle2.
 // Range/angle setters report fatal errors above their caps (100 / 180); empty arguments are gets.
-// RW-261: the earlier objectManager castsDynamicShadow row remains withheld, so this
-// LightSource-specific row currently receives those calls. Registration order matters.
+// castsDynamicShadow: the objectManager row of the same name (Scene/Object/ObjectManagerConsole.cpp)
+// registers earlier and is active for every template, so console lookup never reaches this row; it
+// is kept because the shipped images register it. Registration order matters.
 
 namespace {
 LightSourceTemplate* activeLightSource()

@@ -17,6 +17,9 @@ cl /nologo /EHsc /O2 /std:c++14 /permissive /Gy /DDEDICATED=1 /FI"%~dp0..\BF2\Co
   ..\BF2\Game\Objects\Visual\LightSource.cpp ^
   ..\BF2\Game\Objects\Visual\LightSourceTemplate.cpp ^
   ..\BF2\Scene\Object\WorldObjTemplPortal\PortalManager.cpp ^
+  ..\BF2\Scene\Object\WorldObjTemplPortal\PortalPassing.cpp ^
+  ..\BF2\Scene\Object\WorldObjTemplPortal\Sector.cpp ^
+  ..\BF2\Scene\Object\WorldObjTemplPortal\PortalEvent.cpp ^
   ..\BF2\Scene\Object\Object.cpp ^
   ..\BF2\Scene\Object\ObjectPredicator.cpp ^
   ..\BF2\Scene\Object\ObjectUtil.cpp ^

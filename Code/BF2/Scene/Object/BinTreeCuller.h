@@ -92,6 +92,7 @@ private:
     void clear(Node* node);
     void getAllObjects(Node* node);
     void getObjectsByOriginAndRadius(Node* node);
+    void getObjectsInBoxByStartAndEndPos(Node* node);
     void getDirectionObjects(Node* node);
     // The frustum walk. Names attested from the symbolised ELF's own symbol table -
     // dice's own `NonPred` suffix confirms the predicator really is specialised out of the hot
@@ -112,11 +113,15 @@ private:
 
     // Retail stores traversal state in the culler object as well.  Names are inferred; the
     // set-before-walk and recursive-use sequence is exact.
-    std::vector<IObject*>* m_getAllOut;
+    std::vector<IObject*>* m_queryOut;          // PE/ELF +0x238, all object-vector queries
     ObjectPredicator*      m_queryPredicator;
-    Vec3                   m_queryOrigin;
-    float                  m_queryRadius;
-    std::vector<IObject*>* m_queryOut;
+    // PE/ELF +0x10: sphere/frustum centre and line midpoint share storage.
+    union
+    {
+        Vec3 m_queryOrigin;
+        Vec3 m_directionMidpoint;
+    };
+    float                  m_queryRadius;     // PE/ELF +0x4C, also the line half-length
 
     // Instance scratch for frustum traversal; recursive walkers only take Node pointers.
     // This compact native layout does not reproduce original embedded-frustum offsets.
@@ -124,12 +129,20 @@ private:
     std::vector<IObject*>* m_queryAllVisible;   // retail +0x23C - objects straddling the boundary
     // [INFERRED] Instance scratch for direction traversal. Queries share the existing output
     // pointer, so the recursive walker only needs a Node argument and is not reentrant.
-    Vec3 m_directionMidpoint;
-    Vec3 m_directionStart;
-    Vec3 m_directionEnd;
+    // PE/ELF +0x1C: line start and box minimum share storage.
+    union
+    {
+        Vec3 m_directionStart;
+        Vec3 m_boxMinimum;
+    };
+    // PE/ELF +0x28: line end and box maximum share storage.
+    union
+    {
+        Vec3 m_directionEnd;
+        Vec3 m_boxMaximum;
+    };
     Vec3 m_direction;
     Vec3 m_directionOverLengthSquared;
-    float m_directionHalfLength;
     std::vector<std::pair<float, IObject*> >* m_directionOut;
 };
 

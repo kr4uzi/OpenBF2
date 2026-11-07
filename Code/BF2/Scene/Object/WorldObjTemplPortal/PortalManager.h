@@ -12,13 +12,12 @@
 
 #include "../../../Core/IBase.h"
 #include "../../../Math/Vec3.h"            // Vec3 is a typedef (Math::Vec3), not a class
+#include "IPortalPassing.h"
 
 namespace dice {
 namespace hfe {
 namespace world {
 
-// Portal types remain forward-declared until their full interfaces are available.
-// Dependent [CHOSEN] placeholder bodies must not claim completed portal behavior.
 class IObject;
 class PortalEvent;
 
@@ -31,16 +30,6 @@ public:
 };
 class PortalPassing;
 class Sector;
-
-// Partial portal-passing interface exposing sector get/set after IBase.
-// The following coordinate return type and destructor ownership remain unverified; do not add
-// an implementing class until the complete virtual interface is established.
-class IPortalPassing : public IBase
-{
-public:
-    virtual IObject* getSector() const = 0;                                     // +0x10
-    virtual void setSector(IObject* sector) = 0;                                // +0x14 [INFERRED] void
-};
 
 // Portal transition type in world namespace; preserve enum type for MSVC signature linkage.
 // Names are [CHOSEN, not recovered], with observed ordinals 0 = enter and 1 = leave.
@@ -109,10 +98,10 @@ public:
     // except where noted; the offsets, sizes and types are read.
 
     // Previous position and portal component, 16 bytes on x86.
-    // This POD does not release its pointer; unregister performs release after detaching the object.
+    // The record does not release its pointer; unregister releases it after detaching the object.
     struct PassingObjectData
     {
-        /* +0x00 */ Vec3           lastPosition;
+        /* +0x00 */ Vec3           lastPosition = {0.0f, 0.0f, 0.0f}; // PE 0x0072E7DB
         /* +0x0C */ PortalPassing* portalPassing;
     };
 
@@ -121,8 +110,8 @@ public:
     struct PortalCollision
     {
         /* +0x00 */ int      portalId;              // attested name
-        /* +0x04 */ Vec3     intersectionNormal;    // attested name
-        /* +0x10 */ Vec3     intersectionPosition;  // attested name
+        /* +0x04 */ Vec3     intersectionNormal = {0.0f, 0.0f, 0.0f};
+        /* +0x10 */ Vec3     intersectionPosition = {0.0f, 0.0f, 0.0f};
         /* +0x1C */ IObject* portalObject;          // [CHOSEN] name; the IObject argument, stored raw
         /* +0x20 */ Sector*  sector;                // [CHOSEN] name; that object's ISector
                                                     //   implementation, from queryImplementation

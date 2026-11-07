@@ -6,7 +6,13 @@
 #ifndef GAME_MAIN_BF2WINDOW_H       // [INFERRED] guard style
 #define GAME_MAIN_BF2WINDOW_H
 
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+// [CHOSEN, not recovered] macOS port: HWND/UINT/WPARAM/LPARAM/LRESULT in dice::hfe, and the
+// Win32 message ids BF2Window_macos.mm synthesizes from Cocoa events.
+#include "../../Platform/macOS/HostWindowTypes.h"
+#endif
 #include <list>
 #include <string>
 
@@ -45,7 +51,12 @@ public:
     // the wndproc create() registers. Static: it reaches the window through
     // `mainWindow`, not through GWL_USERDATA (the `this` passed as lpParam to CreateWindowExA is
     // never read back).
+#if defined(_WIN32)
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+#else
+    // [CHOSEN, not recovered] macOS: called by BF2Window_macos.mm with synthesized messages.
+    static LRESULT wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+#endif
 
     friend class SwiffHost;                  //  clears m_hideCursor directly
 protected:

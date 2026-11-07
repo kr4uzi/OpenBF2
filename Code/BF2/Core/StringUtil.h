@@ -20,6 +20,9 @@ std::wstring formatString(const wchar_t* fmt, ...);
 // Converts multibyte text to wide characters, returning an empty string on failure. [INFERRED] Name.
 std::wstring toWideString(const std::string& s);
 
+// atof over the text; no error reporting (unparsable text answers 0).
+float stringToFloat(const std::string& s);
+
 // Case-insensitive comparison
 // Four overloads exist. The (const char*, const char*) form is a straight strcasecmp; the
 // std::string forms null-terminate their operands first and then delegate to it.

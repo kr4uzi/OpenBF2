@@ -3,35 +3,54 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] Retain x87 intermediates on native macOS.
+#endif
+
 #include "../../RendDX9Abi/PluginAbi.h"
+#include "../Core/StringUtil.h"         // formatString (sub_10074AB0)
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "QuadPatch.h"
+#include "RaQuadPatchAdapter.h"
+#include "MeshTemplate.h"
 #include "Terrain.h"
 #include "XpLightManager.h"
+#include "UndergrowthSystem.h"
+#include "SkyDome.h"
+#include "../Core/Debug.h"
 #include "../Math/Frustum.h"
+#include "../RendDX9/RendDX9Math.h"       // the RendDX9.dll Math copies
 #include "../Math/Mat4.h"
 #include "../Physics/HeightmapCluster.h"
 #include "../Physics/Heightmap.h"
 #include "../RendDX9/RendDX9Base.h"
+#include "../RendDX9/QueueProfiler.h"
 #include "../RendDX9/ShaderParameter.h"
+#include "../RendDX9/Ra/RaShader.h"
 #include "../RendDX9/Texture.h"
 #include "../RendMisc/IRenderView.h"
+#include "../RendMisc/IRenderer.h"
+#include "../RendMisc/EnvMapSystem/EnvMapManager.h"   // the borrowed environment texture
 
 #include <cfloat>
 #include <cmath>
 #include <new>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace dice {
 namespace hfe {
 
 namespace dx9rend {
+extern void* g_rendererBase;
+extern void* g_renderQueues;
 void* bufferManagerCreateVertexBuffer(unsigned int count, unsigned int stride,
                                       unsigned int usage, const char* name);
 void* vertexBufferLock(void* wrapper, unsigned int offsetVerts, unsigned int countVerts,
@@ -48,7 +67,9 @@ void  vertexBufferRelease(void* wrapper);                                       
 void  bufferManagerRemoveIndexBuffer(void* wrapper);
 // QueryManager.cpp - the Query holders' inline `if (!--q->refCount) { sub_10003FA0(q); free(q); }`.
 void  queryReleaseRef(void* query);
+void* queryManagerCreateQuery(int type);
 void  vertexBufferBindStream(void* wrapper, unsigned int stream);
+IDirect3DVertexBuffer9* vertexBufferD3D(void* wrapper);
 void  indexBufferBind(void* wrapper);
 void  rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, int baseVertex,
                                    unsigned int minIndex, unsigned int numVertices,
@@ -58,15 +79,24 @@ void  rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, in
 namespace geom {
 
 extern LightManager* g_LightManager;                                               // ModuleGeom.cpp
+// StaticMeshMaterial.cpp's fixed D3DCOLOR encoder, PE 0x10049E80.
+unsigned int packVertexNormalColor(const float* normal);
 
 namespace {
+
+// The count word the culler's node array carries ahead of its first node (4 bytes in retail).
+// [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): padded to pointer size so
+// the nodes, which hold pointers, stay pointer-aligned.
+const unsigned int kNodeCountHeader =
+    sizeof(void*) > sizeof(unsigned int) ? static_cast<unsigned int>(sizeof(void*))
+                                         : static_cast<unsigned int>(sizeof(unsigned int));
 
 inline dx9rend::ShaderParameter* param(void* handle)
 {
     return static_cast<dx9rend::ShaderParameter*>(handle);
 }
 
-// The eight-corner plane test both walks run: how many corners of the box lie in front of `plane`
+// The mode-3 child walk's plane test: how many corners of the box lie in front of `plane`
 // (normal xyz, d), corners in the shipped order.
 inline int cornersInFront(const TerrainAabb& b, const float* p)
 {
@@ -110,30 +140,28 @@ inline bool lod1(const TerrainCullerNode* n) { return n->visible && n->lod == 1;
 inline bool lod0n(const TerrainCullerNode* n) { return n && n->visible && n->lod == 0; }
 inline bool lod1n(const TerrainCullerNode* n) { return n && n->visible && n->lod == 1; }
 
-// sub_10074AB0 - the image's printf-into-a-std::string helper: vsnprintf into a 0xFFF-byte
-// buffer, or the "WARNING: ..." text when it does not fit (StaticMesh.cpp carries the same body).
-void formatString(vc71::string& out, const char* format, int a, int b, int c)
-{
-    char buffer[0x1000];
-    const int written = std::snprintf(buffer, 0xFFF, format, a, b, c);
-    if (written < 0)
-        std::snprintf(buffer, sizeof(buffer), "%s",
-                      "WARNING: The original message was too long for formatString(). \n");
-    else
-        buffer[written] = 0;
-    out = buffer;
-}
+// [CHOSEN, not recovered] Native arithmetic support for the retained x87 walk expressions.
+#if defined(__APPLE__)
+using CullerWalkReal = bf2x87::Real;
+inline bool cullerWalkLess(CullerWalkReal a, CullerWalkReal b) { return bf2x87::less(a, b); }
+inline bool cullerWalkGreater(CullerWalkReal a, CullerWalkReal b) { return bf2x87::greater(a, b); }
+inline bool cullerWalkLessEqual(CullerWalkReal a, CullerWalkReal b) { return bf2x87::lessEqual(a, b); }
+inline CullerWalkReal cullerWalkSqrt(CullerWalkReal value) { return bf2x87::squareRoot(value); }
+#else
+using CullerWalkReal = double;
+inline bool cullerWalkLess(CullerWalkReal a, CullerWalkReal b) { return a < b; }
+inline bool cullerWalkGreater(CullerWalkReal a, CullerWalkReal b) { return a > b; }
+inline bool cullerWalkLessEqual(CullerWalkReal a, CullerWalkReal b) { return a <= b; }
+inline CullerWalkReal cullerWalkSqrt(CullerWalkReal value) { return std::sqrt(value); }
+#endif
 
-inline unsigned int layerCount(const vc71::vector_layout& v)
-{
-    return vc71::vectorSizeIn(v, 4u);
-}
 
 } // anonymous namespace
 
 
 // QuadPatchDetailLayer
 
+// PE 0x101BB710
 QuadPatchDetailLayer::QuadPatchDetailLayer(Terrain* owner)
 {
     indexBuffer = 0;
@@ -153,6 +181,7 @@ QuadPatchDetailLayer::QuadPatchDetailLayer(Terrain* owner)
 
 // returns the layer's detail texture index. The low-quality-B arm parses the fields
 // and seeks past the tables and indices without keeping any of them.
+// PE 0x101BB7C0.
 int QuadPatchDetailLayer::load(TerrainRawReader& reader)
 {
     Terrain* const t = terrain;
@@ -184,18 +213,18 @@ int QuadPatchDetailLayer::load(TerrainRawReader& reader)
 
     if (t->m_rawHasVersion && t->m_rawVersion >= 0x18u)
     {
-        // N records of 400 bytes; record i links to children 1+4i..4+4i while they exist, and
-        // reads its three 64-byte rows as (row, row+192) u32 pairs.
+        // N TerrainLodRecords (400 bytes each in retail); record i links to children 1+4i..4+4i
+        // while they exist, and reads its three 64-byte rows as (row, row+192) u32 pairs.
         int tableCount = 0;
         reader.readU32(&tableCount);
-        lodTables = static_cast<unsigned char*>(::renddx9abi::engineAlloc(static_cast<unsigned int>(400 * tableCount)));
+        lodTables = static_cast<unsigned char*>(::renddx9abi::engineAlloc(static_cast<unsigned int>(kTerrainLodRecordSize * tableCount)));
         int offset = 0;
-        int childOffset = 400;
+        int childOffset = kTerrainLodRecordSize;
         int firstChild = 1;
         for (int record = 0; record < tableCount; ++record)
         {
             unsigned char* const table = lodTables + offset;
-            unsigned char** const children = reinterpret_cast<unsigned char**>(table + 384);
+            unsigned char** const children = reinterpret_cast<TerrainLodRecord*>(table)->children;   // +384
             if (firstChild >= tableCount)
             {
                 children[3] = 0; children[2] = 0; children[1] = 0; children[0] = 0;
@@ -203,9 +232,9 @@ int QuadPatchDetailLayer::load(TerrainRawReader& reader)
             else
             {
                 children[0] = lodTables + childOffset;
-                children[1] = lodTables + childOffset + 400;
-                children[2] = lodTables + childOffset + 800;
-                children[3] = lodTables + childOffset + 1200;
+                children[1] = lodTables + childOffset + kTerrainLodRecordSize;
+                children[2] = lodTables + childOffset + 2 * kTerrainLodRecordSize;
+                children[3] = lodTables + childOffset + 3 * kTerrainLodRecordSize;
             }
             unsigned char* row = table;
             for (int r = 0; r < 3; ++r)
@@ -214,8 +243,8 @@ int QuadPatchDetailLayer::load(TerrainRawReader& reader)
                 reader.readU32(row + 192);
                 row += 64;
             }
-            offset += 400;
-            childOffset += 1600;
+            offset += kTerrainLodRecordSize;
+            childOffset += 4 * kTerrainLodRecordSize;
             firstChild += 4;
         }
         indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(indexCount, 8u, 101u);
@@ -230,14 +259,13 @@ int QuadPatchDetailLayer::load(TerrainRawReader& reader)
     // count, the legacy table builder, then the upload. 1.50 content never comes here.
     legacyIndices = ::renddx9abi::engineAlloc(2u * indexCount);
     reader.read(legacyIndices, 2u * indexCount);
-    void* const storage = ::renddx9abi::engineAlloc(0x190);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainLodRecord));        // 0x190
     if (storage)
-        ::memset(storage, 0, 0x190u);
+        ::memset(storage, 0, sizeof(TerrainLodRecord));
     lodTables = static_cast<unsigned char*>(storage);
-    ::memset(lodTables, 0, 0x190u);                                               // a second, unguarded clear, as shipped
+    ::memset(lodTables, 0, sizeof(TerrainLodRecord));                             // a second, unguarded clear, as shipped
     *reinterpret_cast<unsigned int*>(lodTables + 192) = indexCount;
-    RD9_FRONTIER_AT("dice::hfe::geom::QuadPatchDetailLayer::load (sub_101BB490 - the pre-0x18 LOD "
-                    "table builder)", this, 0x00);
+    buildLodTableTree(lodTables, 0, t->m_patchSize, 0, 0);
     indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(indexCount, 8u, 101u);
     void* const bits = dx9rend::indexBufferLock(indexBuffer, 0, 0, 0);
     if (bits)
@@ -245,6 +273,66 @@ int QuadPatchDetailLayer::load(TerrainRawReader& reader)
     dx9rend::indexBufferUnlock(indexBuffer);
     ::renddx9abi::engineFree(legacyIndices);
     return detailIndex;
+}
+
+// PE 0x101BB490. The quadrant argument is passed on recursively but never read.
+void QuadPatchDetailLayer::buildLodTableTree(unsigned char* tableBytes, int quadrant,
+                                            int size, int x, int z)
+{
+    (void)quadrant;
+    size >>= 1;
+    const int stride = terrain->m_patchSize + 1;
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve the retained FILD/FMUL value before the native comparison.
+    if (bf2x87::greater(bf2x87::wide(terrain->m_culler->param10),
+                       bf2x87::mul(bf2x87::wide(size), bf2x87::wide(terrain->m_primaryWorldScale.x))))
+#else
+    if (static_cast<double>(terrain->m_culler->param10) >
+        static_cast<double>(size) * terrain->m_primaryWorldScale.x)
+#endif
+        return;
+
+    TerrainLodRecord* const table = reinterpret_cast<TerrainLodRecord*>(tableBytes);
+    unsigned short* next = static_cast<unsigned short*>(legacyIndices) + table->starts[0][0];
+    unsigned int precedingCount = 0;
+    for (int childIndex = 0; childIndex < 4; ++childIndex)
+    {
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainLodRecord));
+        if (storage)
+            ::memset(storage, 0, sizeof(TerrainLodRecord));
+        TerrainLodRecord* const child = static_cast<TerrainLodRecord*>(storage);
+        // The second clear is unguarded in the shipped body.
+        ::memset(child, 0, sizeof(TerrainLodRecord));
+        table->children[childIndex] = static_cast<unsigned char*>(storage);
+        const int childX = (childIndex % 2) * size + x;
+        const int childZ = (childIndex / 2) * size + z;
+        unsigned int count = 0;
+        for (unsigned short* triangle = next;
+             triangle < static_cast<unsigned short*>(legacyIndices) +
+                            table->starts[0][0] + table->counts[0][0];
+             triangle += 3)
+        {
+            const int x0 = triangle[0] % stride, z0 = triangle[0] / stride;
+            if (x0 < childX || x0 > childX + size || z0 < childZ || z0 > childZ + size)
+                continue;
+            const int x1 = triangle[1] % stride, z1 = triangle[1] / stride;
+            if (x1 < childX || x1 > childX + size || z1 < childZ || z1 > childZ + size)
+                continue;
+            const int x2 = triangle[2] % stride, z2 = triangle[2] / stride;
+            if (x2 < childX || x2 > childX + size || z2 < childZ || z2 > childZ + size)
+                continue;
+
+            const unsigned short a = triangle[0], b = triangle[1], c = triangle[2];
+            triangle[0] = next[0]; triangle[1] = next[1]; triangle[2] = next[2];
+            next[0] = a; next[1] = b; next[2] = c;
+            next += 3;
+            count += 3;
+        }
+        child->starts[0][0] = table->starts[0][0] + precedingCount;
+        precedingCount += count;
+        child->counts[0][0] = count;
+        buildLodTableTree(table->children[childIndex], childIndex, size, childX, childZ);
+    }
 }
 
 // 0x101BB750, read in full. The layer's index buffer loses the layer's
@@ -268,14 +356,14 @@ QuadPatchDetailLayer::~QuadPatchDetailLayer()
         freeLodTableTree(lodTables);
 }
 
-// sub_101BB6B0 - the pre-0x18 layer records are separate 400-byte blocks (built by sub_101BB490, a
-// [FRONTIER] of load()) linked through +0x180..+0x18C: the four children's subtrees when the first
+// sub_101BB6B0 - the pre-0x18 layer records are separate blocks built by buildLodTableTree,
+// linked through +0x180..+0x18C: the four children's subtrees when the first
 // link is set (only it is tested; each recursion tests its own argument), then the record.
 void QuadPatchDetailLayer::freeLodTableTree(unsigned char* table)
 {
     if (!table)
         return;
-    unsigned char* const* const children = reinterpret_cast<unsigned char* const*>(table + 0x180);
+    unsigned char* const* const children = reinterpret_cast<TerrainLodRecord*>(table)->children;   // +0x180
     if (children[0])
     {
         freeLodTableTree(children[0]);
@@ -289,15 +377,15 @@ void QuadPatchDetailLayer::freeLodTableTree(unsigned char* table)
 
 // QuadPatch
 
+// PE 0x1018A0E0
 QuadPatch::QuadPatch(Terrain* owner)
 {
     terrain = owner;
-    detailLayers.first = 0; detailLayers.last = 0; detailLayers.end = 0;
     center.x = 0.0f; center.y = 0.0f; center.z = 0.0f;
     vertexBuffer24 = 0;
     unresolved28 = 0;
     legacyVertexTable = 0;
-    lastDrawnFrame = 0; unresolved3C = 0;
+    lastDrawnFrame = 0; lastPreloadedFrame = 0;
     lowDetailmap = 0;
     colormap = 0;
     lightmap = 0;
@@ -319,40 +407,13 @@ QuadPatch::QuadPatch(Terrain* owner)
     detailMap[0] = 0; detailMap[1] = 0;
 }
 
-namespace {
-
-// dword_1026743C - the RaQuadPatchAdapter server (0x3CC bytes, Geom\RaQuadPatchAdapter.cpp). Its
-// only creators (sub_101BBE20 / sub_101BBEB0, and the uncalled sub_101BBDD0) are reached from
-// QuadPatch::drawWater's Ra submit, which stops before building it (see drawWater below) - so on the
-// rebuilt client nothing ever sets this, and it is kept only so the teardown below has the
-// shipped shape (the server is on RW-150's open list with the rest of the Ra water submit).
-void* g_raQuadPatchAdapterServer = 0;
-
-// sub_101BBD70, called by every QuadPatch destructor (0x1018A36D): destroy the server if there is
-// one - the first patch destroyed finds it, the others find null - and clear the global either way.
-// The non-null arm is read, not written: the server object is not modelled (its embedded adapter's
-// lighting block at +0x278 goes through sub_10044120 (raLightingParametersDestroy), its object
-// block at +0x3C through sub_1004D900, the pool through sub_101BC8B0, then the +0x04 block and the
-// server are freed).
-void raQuadPatchAdapterServerDestroy()
-{
-    if (g_raQuadPatchAdapterServer)
-    {
-        RD9_FRONTIER_AT("dice::hfe::geom::RaQuadPatchAdapter server teardown (sub_101BBD70's non-null "
-                        "arm: sub_10044120 on +0x278, sub_1004D900 on +0x3C, sub_101BC8B0, the frees) - "
-                        "the server is never built on this client", g_raQuadPatchAdapterServer, 0x00);
-    }
-    g_raQuadPatchAdapterServer = 0;
-}
-
-} // anonymous namespace
-
 // Releases detail layers, textures, vertex buffers, adapter state, then the layer vector.
 // The legacy vertex table was freed during load and must not be freed again.
+// PE 0x1018A220
 QuadPatch::~QuadPatch()
 {
-    for (QuadPatchDetailLayer** it = reinterpret_cast<QuadPatchDetailLayer**>(detailLayers.first);
-         it != reinterpret_cast<QuadPatchDetailLayer**>(detailLayers.last); ++it)
+    for (std::vector<QuadPatchDetailLayer*>::iterator it = detailLayers.begin();
+         it != detailLayers.end(); ++it)
     {
         QuadPatchDetailLayer* const layer = *it;
         if (layer)
@@ -374,16 +435,12 @@ QuadPatch::~QuadPatch()
     if (vertexBuffer)   dx9rend::vertexBufferRelease(vertexBuffer);               // +0x60
 
     raQuadPatchAdapterServerDestroy();
-
-    if (detailLayers.first)                                                       // ~vector: _Tidy
-        ::renddx9abi::engineFree(detailLayers.first);
-    detailLayers.first = 0;
-    detailLayers.last  = 0;
-    detailLayers.end   = 0;
+    // detailLayers' own destructor frees the vector after this body.
 }
 
 // the patch's file record: six header fields, the placement, the vertex buffer, the
 // detail layers, the per-patch textures.
+// PE 0x1018A5B0.
 void QuadPatch::load(TerrainRawReader& reader)
 {
     reader.readU32(&gridX);
@@ -452,7 +509,7 @@ void QuadPatch::load(TerrainRawReader& reader)
     }
     else
     {
-        // The pre-0x18 arm: the packed xz table pairs with the terrain's legacy base grid, two
+        // The pre-0x18 arm: the height samples pair with the terrain's legacy base grid, two
         // discarded vec4s, then per-vertex 16-byte records and a normal table packed by
         // sub_10049E80. 1.50 content never comes here.
         vertexBuffer = dx9rend::bufferManagerCreateVertexBuffer(
@@ -502,8 +559,14 @@ void QuadPatch::load(TerrainRawReader& reader)
         reader.read(normals, static_cast<unsigned int>(12 * side * side));
         if (bits)
         {
-            RD9_FRONTIER("dice::hfe::geom::QuadPatch::load (sub_10049E80 - the pre-0x18 normal packer "
-                         "into vertex +20)", 0x00);
+            unsigned int* out = reinterpret_cast<unsigned int*>(bits + 20);
+            const float* normal = normals;
+            for (int i = 0; i < (t->m_patchSize + 1) * (t->m_patchSize + 1); ++i)
+            {
+                *out = packVertexNormalColor(normal);
+                normal += 3;
+                out += 6;
+            }
         }
         ::renddx9abi::engineFree(normals);
     }
@@ -515,25 +578,25 @@ void QuadPatch::load(TerrainRawReader& reader)
     const int half = t->m_patchCount / 2;
     const int nameX = half + gridX;
     const int nameZ = half + gridZ;
-    vc71::string name;
-    formatString(name, "%02ix%02i", nameX, nameZ, 0);
+    std::string name;
+    name = formatString("%02ix%02i", nameX, nameZ);
     patchIndex = nameX + nameZ * t->m_patchCount;
 
     if (!hasNoDetailLayers)
     {
         const int savedClass = dx9rend::textureManagerSwapDefaultMipClass(2);
         {
-            vc71::string colormapName(t->m_colormapBaseName.c_str());
+            std::string colormapName(t->m_colormapBaseName.c_str());
             colormapName += name;
             colormap = dx9rend::textureManagerGetTexture(colormapName);
         }
         if (!t->m_lowQuality)
             loadDetailMaps();
         dx9rend::textureManagerSwapDefaultMipClass(4);                            // the answer is discarded
-        vc71::string lowName(t->m_lowDetailmapBaseName.c_str());
+        std::string lowName(t->m_lowDetailmapBaseName.c_str());
         lowName += name;
         {
-            vc71::string dds(lowName.c_str());
+            std::string dds(lowName.c_str());
             dds += ".dds";
             if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(dds)))
                 lowDetailmap = dx9rend::textureManagerGetTexture(lowName);
@@ -542,13 +605,46 @@ void QuadPatch::load(TerrainRawReader& reader)
     }
     const int savedClass7 = dx9rend::textureManagerSwapDefaultMipClass(7);
     {
-        vc71::string lightmapName(t->m_lightmapBaseName.c_str());
+        std::string lightmapName(t->m_lightmapBaseName.c_str());
         lightmapName += name;
         lightmap = dx9rend::textureManagerGetTexture(lightmapName);
     }
     dx9rend::textureManagerSwapDefaultMipClass(savedClass7);
 }
 
+// PE 0x1018A4F0.
+void QuadPatch::reloadDetailLayers(TerrainRawReader& reader)
+{
+    if (!terrain->m_lowQuality)
+    {
+        reader.seek(0, fileEndOffset);
+        // Shipped defect: loadDetailLayers appends slots and replaces old pointers without
+        // destroying the previous layers. Preserve the same reload operation.
+        loadDetailLayers(reader);
+        loadDetailMaps();
+        return;
+    }
+
+    for (std::vector<QuadPatchDetailLayer*>::iterator it = detailLayers.begin();
+         it != detailLayers.end(); ++it)
+    {
+        QuadPatchDetailLayer* const layer = *it;
+        if (layer)
+        {
+            layer->~QuadPatchDetailLayer();
+            ::renddx9abi::engineFree(layer);
+        }
+    }
+    detailLayers.clear();
+    for (int i = 0; i < 2; ++i)
+    {
+        terrainReleaseTexture(detailMap[i]);
+        dx9rend::textureManagerEvictFromCache(detailMap[i]);
+        detailMap[i] = 0;
+    }
+}
+
+// PE 0x1018A3A0
 // the detail layers: detailTextureCount + 1 null slots, then layer records until a
 // -1 marker. The record's own detail index says which slot it fills; the low-quality arm parses
 // each record on the stack and keeps nothing.
@@ -558,7 +654,7 @@ void QuadPatch::loadDetailLayers(TerrainRawReader& reader)
     for (int i = 0; i < t->m_detailTextureCount + 1; ++i)
     {
         QuadPatchDetailLayer* const null = 0;
-        vc71::vectorPushBackIn(detailLayers, 4u, &null);
+        detailLayers.push_back(null);
     }
     maxDetailLayerIndex = -1;
     int marker = 0;
@@ -573,10 +669,10 @@ void QuadPatch::loadDetailLayers(TerrainRawReader& reader)
         }
         else
         {
-            void* const storage = ::renddx9abi::engineAlloc(0x3C);
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(QuadPatchDetailLayer));
             QuadPatchDetailLayer* const layer = storage ? new (storage) QuadPatchDetailLayer(t) : 0;
             detailIndex = layer->load(reader);                                    // unguarded, as shipped
-            reinterpret_cast<QuadPatchDetailLayer**>(detailLayers.first)[detailIndex] = layer;
+            detailLayers.data()[detailIndex] = layer;                             // unchecked index, as shipped
         }
         if (detailIndex < t->m_detailTextureCount)
         {
@@ -590,6 +686,7 @@ void QuadPatch::loadDetailLayers(TerrainRawReader& reader)
         hasNoDetailLayers = 1;
 }
 
+// PE 0x10188CA0
 // the two packed detail maps "<detailmapBase>%02ix%02i_1" / "_2", under mip class 6,
 // each only when a layer index reaches its three-channel block.
 void QuadPatch::loadDetailMaps()
@@ -600,11 +697,11 @@ void QuadPatch::loadDetailMaps()
     {
         Terrain* const t = terrain;
         const int half = t->m_patchCount / 2;
-        vc71::string name;
-        formatString(name, "%02ix%02i_%i", half + gridX, half + gridZ, k + 1);
+        std::string name;
+        name = formatString("%02ix%02i_%i", half + gridX, half + gridZ, k + 1);
         if (!detailMap[k] && threshold <= maxDetailLayerIndex)
         {
-            vc71::string full(t->m_detailmapBaseName.c_str());
+            std::string full(t->m_detailmapBaseName.c_str());
             full += name;
             detailMap[k] = dx9rend::textureManagerGetTexture(full);
         }
@@ -630,38 +727,47 @@ inline ::dice::hfe::world::IHeightmapCluster* heightmapCluster()
     return static_cast< ::dice::hfe::world::IHeightmapCluster*>(static_cast<void*>(found));
 }
 
-// PE 0x100777A0 (135 B), read in full - the engine's in-place normalise: |v|^2 = (x*x + y*y) + z*z
-// kept as a float; within FLT_EPSILON (flt_10208958) of 1 the vector is left alone; below
-// FLT_EPSILON it is zeroed and -20001 (0xFFFFB1DF) answered; otherwise each component is scaled by
-// 1 / sqrt(|v|^2) (flt_101DDDE4 = 1.0f). An unordered |v|^2 fails both tests and takes the scale.
-// Every caller here drops the answer. (The same body is transcribed beside its other users:
-// Overgrowth/OverGrowthCellRender.cpp, StaticMeshMaterial.cpp, the particle and nametag TUs.)
-int normalizeInPlace(Vec3& v)
-{
-    const float lengthSquared = v.x * v.x + v.y * v.y + v.z * v.z;
-    if (std::fabs(lengthSquared - 1.0f) < FLT_EPSILON)
-        return 0;
-    if (std::fabs(lengthSquared) < FLT_EPSILON)
-    {
-        v.x = 0.0f;
-        v.y = 0.0f;
-        v.z = 0.0f;
-        return -20001;
-    }
-    const float inverse = 1.0f / std::sqrt(lengthSquared);
-    v.x = inverse * v.x;
-    v.y = inverse * v.y;
-    v.z = inverse * v.z;
-    return 0;
-}
-
 } // anonymous namespace
+
+// PE 0x10188590 (also 0x10014920, 0x10014610). The texture and vertex-buffer helpers at 0x10014920 / 0x10014610 are the
+// same guarded PreLoad call (vtable slot +0x24 of the held D3D object), inlined below.
+void QuadPatch::preloadResources()
+{
+    if (lowDetailmap)
+    {
+        IDirect3DBaseTexture9* const texture =
+            static_cast<dx9rend::EngineTexture*>(lowDetailmap)->baseTexture;
+        if (texture)
+            texture->PreLoad();
+    }
+    if (colormap)
+    {
+        IDirect3DBaseTexture9* const texture =
+            static_cast<dx9rend::EngineTexture*>(colormap)->baseTexture;
+        if (texture)
+            texture->PreLoad();
+    }
+    if (lightmap)
+    {
+        IDirect3DBaseTexture9* const texture =
+            static_cast<dx9rend::EngineTexture*>(lightmap)->baseTexture;
+        if (texture)
+            texture->PreLoad();
+    }
+    if (vertexBuffer)
+    {
+        IDirect3DVertexBuffer9* const buffer = dx9rend::vertexBufferD3D(vertexBuffer);
+        if (buffer)
+            buffer->PreLoad();
+    }
+    lastPreloadedFrame = dx9rend::rendererFrameOrdinal();
+}
 
 // 0x10188660, 29 B (`retn 4`) - Frustum::inside(centre, radius) (0x10079A60) on the patch's bounding
 // sphere: `push [ecx+0ACh]; add ecx, 0A0h; push ecx; mov ecx, [ebp+8]`. The answer is the byte in al.
 bool QuadPatch::isVisible(const Frustum* frustum)
 {
-    return frustum->inside(sphereCentre, sphereRadius);
+    return rendmath::frustumInside(*frustum, sphereCentre, sphereRadius);
 }
 
 // 0x10188BE0, 47 B (`retn 4`) - the squared distance from `position` to the patch centre (+0x18):
@@ -674,6 +780,26 @@ float QuadPatch::getSquaredDistance(const Vec3& position)
     const float dy = position.y - center.y;
     const float dz = position.z - center.z;
     return dx * dx + dz * dz + dy * dy;
+}
+
+// PE 0x10188C10: the distance from the render view's camera position (view matrix translation
+// m[12..14]) to the patch centre, recomputed once per frame ordinal and cached at +0x30/+0x34; the
+// squares are added z, x, y. [INFERRED] name and owner (the QuadPatch layout and its twin
+// SurroundingPatch::getCameraDistance); unreachable in 1.50: no code or data references. The
+// constructor leaves both cache words untouched, as shipped.
+float QuadPatch::getCameraDistance()
+{
+    if (cachedDistanceFrame != dx9rend::rendererFrameOrdinal())                              // base +0x54
+    {
+        dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();                // base +0x48
+        const float* const m = view->getViewMatrixPtr()->m;                                  // view +0x64
+        const float dx = center.x - m[12];
+        const float dy = center.y - m[13];
+        const float dz = center.z - m[14];
+        cachedCameraDistance = std::sqrt(dz * dz + dx * dx + dy * dy);
+        cachedDistanceFrame = dx9rend::rendererFrameOrdinal();
+    }
+    return cachedCameraDistance;
 }
 
 
@@ -737,12 +863,12 @@ void QuadPatch::buildNormalVertexBuffer()
             alongZ.x = fx - fx;
             alongZ.y = h2 - h0Again;
             alongZ.z = fz1 - fz;
-            normalizeInPlace(alongX);
-            normalizeInPlace(alongZ);
+            rendmath::normalize(alongX);
+            rendmath::normalize(alongZ);
             sample->x = alongZ.y * alongX.z - alongZ.z * alongX.y;
             sample->y = alongZ.z * alongX.x - alongX.z * alongZ.x;
             sample->z = alongX.y * alongZ.x - alongZ.y * alongX.x;
-            normalizeInPlace(*sample);
+            rendmath::normalize(*sample);
             ++sample;
         }
     }
@@ -771,19 +897,19 @@ void QuadPatch::buildNormalVertexBuffer()
                 average.x = average.x * 0.25f;
                 average.y = average.y * 0.25f;
                 average.z = average.z * 0.25f;
-                normalizeInPlace(average);
+                rendmath::normalize(average);
                 unsigned short half = 0;
                 float value = average.x;
-                D3DXFloat32To16Array(&half, &value, 1);
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(&half), &value, 1);
                 *out++ = half;
                 value = average.y;
-                D3DXFloat32To16Array(&half, &value, 1);
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(&half), &value, 1);
                 *out++ = half;
                 value = average.z;
-                D3DXFloat32To16Array(&half, &value, 1);
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(&half), &value, 1);
                 *out++ = half;
                 value = 0.0f;
-                D3DXFloat32To16Array(&half, &value, 1);
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(&half), &value, 1);
                 *out++ = half;
             }
         }
@@ -811,7 +937,7 @@ void QuadPatch::buildNormalVertexBuffer()
                 average.x = average.x * 0.25f;
                 average.y = average.y * 0.25f;
                 average.z = average.z * 0.25f;
-                normalizeInPlace(average);
+                rendmath::normalize(average);
                 out[0] = average.x;
                 out[1] = average.y;
                 out[2] = average.z;
@@ -827,11 +953,11 @@ void QuadPatch::buildNormalVertexBuffer()
 
 // TerrainCullerNode / TerrainCuller
 
+// PE 0x100E3C00
 TerrainCullerNode::TerrainCullerNode()
 {
     patch = 0;
     lodTable = 0;
-    layerLodTables.first = 0; layerLodTables.last = 0; layerLodTables.end = 0;
     occlusionQuery = 0;
     bounds.min.x = 0.0f; bounds.min.y = 0.0f; bounds.min.z = 0.0f;
     bounds.max.x = 0.0f; bounds.max.y = 0.0f; bounds.max.z = 0.0f;
@@ -847,12 +973,13 @@ TerrainCullerNode::TerrainCullerNode()
     visible = 0;
     cameraInside = 0;
     crackMask = 0;
-    unresolved10C = 0;
+    legacyParent = 0;
     lod = 2;
-    unresolved104 = -1;
+    legacyGridIndex = -1;
     child[0] = 0; child[1] = 0; child[2] = 0; child[3] = 0;
 }
 
+// PE 0x100E3AE0
 TerrainCuller::TerrainCuller()
 {
     terrain = 0;
@@ -869,8 +996,6 @@ TerrainCuller::TerrainCuller()
     lodFactor28 = 2.0f;
     lodFactor2C = 2.7f;
     lodFactor30 = 3.0f;
-    visible.first = 0; visible.last = 0; visible.end = 0;
-    gathered.first = 0; gathered.last = 0; gathered.end = 0;
     frustum = 0;
     cameraPosition = 0;
     gatherCentre = 0;
@@ -883,6 +1008,7 @@ TerrainCuller::TerrainCuller()
     versionFlag78 = 0;
 }
 
+// PE 0x100E2D60
 void TerrainCuller::init(Terrain* owner, int a, int b)
 {
     terrain = owner;
@@ -896,15 +1022,12 @@ TerrainCullerNode::~TerrainCullerNode()
 {
     if (occlusionQuery)
         dx9rend::queryReleaseRef(occlusionQuery);                                 // --ref; sub_10003FA0 + free at zero
-    if (layerLodTables.first)                                                     // ~vector: _Tidy
-        ::renddx9abi::engineFree(layerLodTables.first);
-    layerLodTables.first = 0;
-    layerLodTables.last  = 0;
-    layerLodTables.end   = 0;
+    // layerLodTables' own destructor frees the vector after this body.
 }
 
 // Destroys array nodes for modern terrain files or recursively frees legacy nodes.
 // Requires terrain ownership and completed node initialization; then frees gather/visible lists.
+// PE 0x100E6800
 TerrainCuller::~TerrainCuller()
 {
     Terrain* const t = terrain;
@@ -912,10 +1035,12 @@ TerrainCuller::~TerrainCuller()
     {
         if (nodes)
         {
-            unsigned int* const block = reinterpret_cast<unsigned int*>(nodes) - 1;
-            const int count = static_cast<int>(*block);
-            for (int i = count - 1; i >= 0; --i)                                  // `sub ecx,1 / js` - signed
-                nodes[i].~TerrainCullerNode();
+            TerrainCullerNode* const array = nodes;
+            unsigned char* const block = reinterpret_cast<unsigned char*>(array) - kNodeCountHeader;
+            const int count = static_cast<int>(*reinterpret_cast<unsigned int*>(block));
+            for (int i = static_cast<int>(static_cast<unsigned int>(count) - 1u);
+                 i >= 0; --i)                                                  // `sub ecx,1 / js` - signed
+                array[i].~TerrainCullerNode();
             ::renddx9abi::engineFree(block);
         }
     }
@@ -932,17 +1057,7 @@ TerrainCuller::~TerrainCuller()
         root->~TerrainCullerNode();
         ::renddx9abi::engineFree(root);
     }
-
-    if (gathered.first)                                                           // ~vector (+0x44): _Tidy
-        ::renddx9abi::engineFree(gathered.first);
-    gathered.first = 0;
-    gathered.last  = 0;
-    gathered.end   = 0;
-    if (visible.first)                                                            // ~vector (+0x34): _Tidy
-        ::renddx9abi::engineFree(visible.first);
-    visible.first = 0;
-    visible.last  = 0;
-    visible.end   = 0;
+    // gathered (+0x44) and visible (+0x34) are destroyed after this body, in that order.
 }
 
 // sub_100E3D10 - the pre-0x18 tree, one node at a time: the four subtrees when the first child is
@@ -962,6 +1077,7 @@ void TerrainCuller::deleteNodeTree(TerrainCullerNode* node)
 
 // one node's file record: eight u16 neighbour indices, the bounds, three bytes and
 // the patch index. Written in the shipped read order.
+// PE 0x100E2FF0
 void TerrainCuller::loadNode(TerrainRawReader& reader, TerrainCullerNode* node)
 {
     float minMax[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
@@ -973,7 +1089,7 @@ void TerrainCuller::loadNode(TerrainRawReader& reader, TerrainCullerNode* node)
     reader.readByte(&node->fileByteEC);
     reader.readByte(&node->hasPatchList);
     reader.readByte(&node->fileByteEE);
-    unsigned char patchIndex = 0;
+    unsigned char patchIndex;
     reader.readByte(&patchIndex);
 
     node->allNeighbours = 1;
@@ -1000,6 +1116,7 @@ void TerrainCuller::loadNode(TerrainRawReader& reader, TerrainCullerNode* node)
 // the node array (a count word ahead of it), then per node: the four children by
 // position, the record, and the LOD tables - the terrain's own for a leaf (plus each detail
 // layer's table), the parent's child tables for an inner node that asks for them.
+// PE 0x100E3FF0
 void TerrainCuller::load(TerrainRawReader& reader)
 {
     Terrain* const t = terrain;
@@ -1007,25 +1124,27 @@ void TerrainCuller::load(TerrainRawReader& reader)
         versionFlag78 = 1;
     reader.readU32(&nodeCount);
     const int count = nodeCount;
-    unsigned int* const storage = static_cast<unsigned int*>(
-        ::renddx9abi::engineAlloc(static_cast<unsigned int>(272 * count + 4)));
+    unsigned char* const storage = static_cast<unsigned char*>(::renddx9abi::engineAlloc(
+        static_cast<unsigned int>(sizeof(TerrainCullerNode) * count + kNodeCountHeader)));
     TerrainCullerNode* first = 0;
     if (storage)
     {
-        *storage = static_cast<unsigned int>(count);
-        first = reinterpret_cast<TerrainCullerNode*>(storage + 1);
-        for (int i = 0; i < count; ++i)
-            new (first + i) TerrainCullerNode();
+        *reinterpret_cast<unsigned int*>(storage) = static_cast<unsigned int>(count);
+        first = reinterpret_cast<TerrainCullerNode*>(storage + kNodeCountHeader);
+        if (static_cast<int>(static_cast<unsigned int>(count) - 1u) >= 0)
+        {
+            TerrainCullerNode* next = first;
+            for (unsigned int remaining = static_cast<unsigned int>(count); remaining; --remaining)
+                new (next++) TerrainCullerNode();
+        }
     }
     nodes = first;
-    if (count <= 0)
-        return;
 
-    for (int k = 0; k < count; ++k)
+    for (int k = 0; k < nodeCount; ++k)
     {
         TerrainCullerNode* const node = nodes + k;
-        const int firstChild = 1 + 4 * k;
-        if (firstChild >= count)
+        const int firstChild = static_cast<int>(1u + 4u * static_cast<unsigned int>(k));
+        if (firstChild >= nodeCount)
         {
             node->child[3] = 0; node->child[2] = 0; node->child[1] = 0; node->child[0] = 0;
         }
@@ -1041,15 +1160,18 @@ void TerrainCuller::load(TerrainRawReader& reader)
         node->lod = 0;
         if (node->hasPatchList)
         {
-            node->lodTable = t->m_lodTables;
-            QuadPatch* const patch = node->patch;                                 // unguarded, as shipped
-            const unsigned int layers = layerCount(patch->detailLayers);
-            for (unsigned int i = 0; i < layers; ++i)
+            node->lodTable = terrain->m_lodTables;
+            for (unsigned int i = 0;
+                 i < static_cast<unsigned int>(node->patch->detailLayers.size()); ++i)
             {
-                QuadPatchDetailLayer* const layer =
-                    reinterpret_cast<QuadPatchDetailLayer**>(patch->detailLayers.first)[i];
-                unsigned char* const table = layer ? layer->lodTables : 0;
-                vc71::vectorPushBackIn(node->layerLodTables, 4u, &table);
+                QuadPatchDetailLayer* const layer = node->patch->detailLayers[i];
+                if (layer)
+                    node->layerLodTables.push_back(layer->lodTables);
+                else
+                {
+                    unsigned char* const table = 0;
+                    node->layerLodTables.push_back(table);
+                }
             }
         }
         else if (!node->fileByteEC)
@@ -1060,20 +1182,57 @@ void TerrainCuller::load(TerrainRawReader& reader)
         {
             TerrainCullerNode* const parent = nodes + (k - 1) / 4;
             const int which = (k - 1) % 4;
-            node->lodTable = *reinterpret_cast<unsigned char**>(parent->lodTable + 384 + 4 * which);
-            const unsigned int layers = layerCount(node->patch->detailLayers);    // unguarded, as shipped
-            for (unsigned int i = 0; i < layers; ++i)
+            node->lodTable = reinterpret_cast<TerrainLodRecord*>(parent->lodTable)->children[which];   // +384 + 4 * which
+            for (unsigned int i = 0;
+                 i < static_cast<unsigned int>(node->patch->detailLayers.size()); ++i)
             {
-                unsigned char* const parentTable =
-                    reinterpret_cast<unsigned char**>(parent->layerLodTables.first)[i];
-                unsigned char* const table =
-                    parentTable ? *reinterpret_cast<unsigned char**>(parentTable + 384 + 4 * which) : 0;
-                vc71::vectorPushBackIn(node->layerLodTables, 4u, &table);
+                unsigned char* const parentTable = parent->layerLodTables.data()[i];   // unchecked, as shipped
+                if (parentTable)
+                    node->layerLodTables.push_back(
+                        reinterpret_cast<TerrainLodRecord*>(parentTable)->children[which]);
+                else
+                {
+                    unsigned char* const table = 0;
+                    node->layerLodTables.push_back(table);
+                }
             }
         }
     }
 }
 
+
+// PE 0x100E3D60. [INFERRED] Placement with the existing TerrainCuller implementation.
+void TerrainCuller::reloadDetailLayers()
+{
+    for (int index = 0; index < nodeCount; ++index)
+    {
+        TerrainCullerNode& node = nodes[index];
+        node.layerLodTables.clear();
+        if (node.hasPatchList)
+        {
+            for (unsigned int layerIndex = 0;
+                 layerIndex < static_cast<unsigned int>(node.patch->detailLayers.size());
+                 ++layerIndex)
+            {
+                QuadPatchDetailLayer* const layer = node.patch->detailLayers[layerIndex];
+                node.layerLodTables.push_back(layer ? layer->lodTables : 0);
+            }
+        }
+        else if (node.fileByteEC)
+        {
+            TerrainCullerNode& parent = nodes[(index - 1) / 4];
+            const int childIndex = (index - 1) % 4;
+            for (unsigned int layerIndex = 0;
+                 layerIndex < static_cast<unsigned int>(node.patch->detailLayers.size());
+                 ++layerIndex)
+            {
+                unsigned char* const table = parent.layerLodTables[layerIndex];
+                node.layerLodTables.push_back(table
+                    ? reinterpret_cast<TerrainLodRecord*>(table)->children[childIndex] : 0);
+            }
+        }
+    }
+}
 
 // TerrainAabb - sub_100E7180 / sub_101C5EB0.
 
@@ -1143,8 +1302,7 @@ void TerrainAabb::refresh()
 // the zoom (floored at param14), the root walk, the crack fixup.
 void TerrainCuller::update()
 {
-    if (visible.first)                                                            // sub_100E7520(0, 0)
-        visible.last = visible.first;
+    visible.clear();                                                              // sub_100E7520(0, 0)
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();                   // base +0x48
     frustum = view->getFrustumPtr();                                              // +0x74
     cameraPosition = view->getViewMatrixPtr()->m + 12;                            // +0x64, row 3
@@ -1165,7 +1323,8 @@ void TerrainCuller::update()
 
 // the root: the bounding sphere against the frustum, the camera's xz against the box
 // (flag71), else the eight corners against every plane; then the mode dispatch.
-void TerrainCuller::walkRoot(TerrainCullerNode* node)
+// PE 0x100E6D50. Every return explicitly materializes EAX = 1, including rejection paths.
+int TerrainCuller::walkRoot(TerrainCullerNode* node)
 {
     const unsigned char cameraTest = flag71;
     TerrainAabb& box = node->bounds;
@@ -1174,14 +1333,17 @@ void TerrainCuller::walkRoot(TerrainCullerNode* node)
     const float radius = box.radius;
     if (box.dirty)
         box.refresh();
-    node->visible = frustum->inside(box.centre, radius) ? 1 : 0;
+    node->visible = rendmath::frustumInside(*frustum, box.centre, radius) ? 1 : 0;
     if (!node->visible)
-        return;
+        return 1;
     bool dispatch = false;
     if (cameraTest)
     {
         const float* const cam = cameraPosition;
-        if (cam[0] >= box.min.x && cam[0] <= box.max.x && cam[2] >= box.min.z && cam[2] <= box.max.z)
+        if (cullerWalkLessEqual(CullerWalkReal(box.min.x), CullerWalkReal(cam[0])) &&
+            cullerWalkLessEqual(CullerWalkReal(cam[0]), CullerWalkReal(box.max.x)) &&
+            cullerWalkLessEqual(CullerWalkReal(box.min.z), CullerWalkReal(cam[2])) &&
+            cullerWalkLessEqual(CullerWalkReal(cam[2]), CullerWalkReal(box.max.z)))
         {
             node->visible = 1;
             node->cameraInside = 1;
@@ -1191,15 +1353,24 @@ void TerrainCuller::walkRoot(TerrainCullerNode* node)
     if (!dispatch)
     {
         node->cameraInside = 0;
-        const float* plane = reinterpret_cast<const float*>(frustum);
         int inside = 0;
-        for (int i = 0; i < 6; ++i, plane += 4)
+        for (int i = 0; i < 6; ++i)
         {
-            const int n = cornersInFront(box, plane);
+            const Plane3& plane = frustum->m_planes[i];
+            int n = 0;
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const CullerWalkReal x = (corner & 4) ? box.max.x : box.min.x;
+                const CullerWalkReal y = (corner & 2) ? box.max.y : box.min.y;
+                const CullerWalkReal z = (corner & 1) ? box.max.z : box.min.z;
+                const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                const CullerWalkReal dot = (y * ny + x * nx) + z * nz + CullerWalkReal(plane.d);
+                n += cullerWalkGreater(dot, CullerWalkReal(0));
+            }
             if (n == 8)
             {
                 node->visible = 0;
-                return;
+                return 1;
             }
             if (n)
             {
@@ -1213,22 +1384,33 @@ void TerrainCuller::walkRoot(TerrainCullerNode* node)
         {
             node->visible = (inside == 6) ? 1 : 0;
             if (inside != 6)
-                return;
+                return 1;
         }
     }
     switch (param6C)
     {
+    case 1:
+        walkMode1(node);
+        break;
+    case 2:
+        walkMode2(node);
+        break;
     case 3:
         walkMode3(node);
         break;
-    case 1: case 2: case 4: case 5: case 6:
-        RD9_FRONTIER("dice::hfe::geom::TerrainCuller::walkRoot (modes 1/2/4/5/6 - sub_100E4F10 / "
-                     "sub_100E53A0 / sub_100E5DD0 / sub_100E6270 / sub_100E6640, unread; the shipped "
-                     "mode is 3)", 0x28);
+    case 4:
+        walkMode4(node);
+        break;
+    case 5:
+        walkMode5(node);
+        break;
+    case 6:
+        walkMode6(node);
         break;
     default:
         break;
     }
+    return 1;
 }
 
 // mode 3, per child: the sphere, the camera's xz when the parent held it, else the
@@ -1247,7 +1429,7 @@ void TerrainCuller::walkMode3(TerrainCullerNode* parent)
         const float radius = box.radius;
         if (box.dirty)
             box.refresh();
-        const bool inSphere = frustum->inside(box.centre, radius);
+        const bool inSphere = rendmath::frustumInside(*frustum, box.centre, radius);
         child->visible = inSphere ? 1 : 0;
         if (!inSphere)
             continue;
@@ -1329,11 +1511,530 @@ void TerrainCuller::walkMode3(TerrainCullerNode* parent)
             child->lod = 0;
         }
         if (child->fileByteEE)
-            vc71::vectorPushBackIn(visible, 4u, &child);
+            visible.push_back(child);
         else
             walkMode3(child);
         ++parent->childrenWalked;
     }
+}
+
+// PE 0x100E4F10. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::walkMode1(TerrainCullerNode* parent)
+{
+    parent->childrenWalked = 0;
+    TerrainCullerNode* candidates[4];
+    float distances[4];
+    for (int childIndex = 0; childIndex < 4; ++childIndex)
+    {
+        TerrainCullerNode* const child = parent->child[childIndex];
+        TerrainAabb& bounds = child->bounds;
+        if (bounds.dirty)
+            bounds.refresh();
+        const float radius = bounds.radius;
+        if (bounds.dirty)
+            bounds.refresh();
+        child->visible = rendmath::frustumInside(*frustum, bounds.centre, radius) ? 1 : 0;
+        if (!child->visible)
+        {
+            candidates[childIndex] = 0;
+            continue;
+        }
+        child->cameraInside = 0;
+        int inside = 0;
+        for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
+        {
+            const Plane3& plane = frustum->m_planes[planeIndex];
+            int inFront = 0;
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const CullerWalkReal x = (corner & 4) ? bounds.max.x : bounds.min.x;
+                const CullerWalkReal y = (corner & 2) ? bounds.max.y : bounds.min.y;
+                const CullerWalkReal z = (corner & 1) ? bounds.max.z : bounds.min.z;
+                const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                CullerWalkReal dot;
+                if (corner == 0)
+                    dot = (x * nx + y * ny) + z * nz + CullerWalkReal(plane.d);
+                else if (corner < 4)
+                    dot = (y * ny + z * nz) + x * nx + CullerWalkReal(plane.d);
+                else
+                    dot = (y * ny + x * nx) + z * nz + CullerWalkReal(plane.d);
+                inFront += cullerWalkGreater(dot, CullerWalkReal(0));
+            }
+            if (inFront == 8)
+            {
+                child->visible = 0;
+                break;
+            }
+            if (inFront)
+            {
+                child->visible = 1;
+                break;
+            }
+            ++inside;
+        }
+        if (inside == 6)
+            child->visible = 1;
+        if (!child->visible)
+        {
+            candidates[childIndex] = 0;
+            continue;
+        }
+        candidates[childIndex] = parent->child[childIndex];
+        TerrainCullerNode* const lodNode = parent->child[childIndex];
+        const TerrainAabb& lodBounds = lodNode->bounds;
+        const float* const camera = cameraPosition;
+        CullerWalkReal dx = CullerWalkReal(0), dz = CullerWalkReal(0);
+        if (cullerWalkLess(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.min.x)))
+            dx = CullerWalkReal(camera[0]) - CullerWalkReal(lodBounds.min.x);
+        else if (cullerWalkGreater(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.max.x)))
+            dx = CullerWalkReal(lodBounds.max.x) - CullerWalkReal(camera[0]);
+        if (cullerWalkLess(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.min.z)))
+            dz = CullerWalkReal(camera[2]) - CullerWalkReal(lodBounds.min.z);
+        else if (cullerWalkGreater(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.max.z)))
+            dz = CullerWalkReal(lodBounds.max.z) - CullerWalkReal(camera[2]);
+        const CullerWalkReal distance = cullerWalkSqrt(dz * dz + dx * dx)
+            + CullerWalkReal(terrain->m_cameraHeightAboveTerrain);
+        const CullerWalkReal limit = CullerWalkReal(lodDistance);
+        if (!cullerWalkLessEqual(distance, limit))
+        {
+            setLod(lodNode, !cullerWalkLessEqual(distance, limit * CullerWalkReal(lodFactor30)) ? 2 : 1);
+            distances[childIndex] = static_cast<float>(distance);
+        }
+        else
+        {
+            if (lodNode->child[0])
+                for (int grandchild = 0; grandchild < 4; ++grandchild)
+                    if (lodNode->child[grandchild]->visible)
+                        setLod(lodNode->child[grandchild], 0);
+            distances[childIndex] = static_cast<float>(distance);
+            lodNode->lod = 0;
+        }
+        ++parent->childrenWalked;
+    }
+    if (!parent->childrenWalked)
+        return;
+    for (;;)
+    {
+        int selected = -1;
+        for (int index = 0; index < 4; ++index)
+            if (candidates[index])
+            {
+                selected = index;
+                break;
+            }
+        if (selected < 0)
+            break;
+        for (int index = selected + 1; index < 4; ++index)
+            if (candidates[index] &&
+                cullerWalkLess(CullerWalkReal(distances[index]), CullerWalkReal(distances[selected])))
+                selected = index;
+        if (candidates[selected]->fileByteEE)
+            visible.push_back(candidates[selected]);
+        else
+            walkMode1(candidates[selected]);
+        candidates[selected] = 0;
+    }
+}
+
+// PE 0x100E53A0. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::walkMode2(TerrainCullerNode* parent)
+{
+    for (;;)
+    {
+        parent->childrenWalked = 0;
+        TerrainCullerNode* candidates[4];
+        for (int childIndex = 0; childIndex < 4; ++childIndex)
+        {
+            TerrainCullerNode* const child = parent->child[childIndex];
+            TerrainAabb& bounds = child->bounds;
+            if (bounds.dirty)
+                bounds.refresh();
+            const float radius = bounds.radius;
+            if (bounds.dirty)
+                bounds.refresh();
+            child->visible = rendmath::frustumInside(*frustum, bounds.centre, radius) ? 1 : 0;
+            if (!child->visible)
+            {
+                candidates[childIndex] = 0;
+                continue;
+            }
+            child->cameraInside = 0;
+            int inside = 0;
+            for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
+            {
+                const Plane3& plane = frustum->m_planes[planeIndex];
+                int inFront = 0;
+                for (int corner = 0; corner < 8; ++corner)
+                {
+                    const CullerWalkReal x = (corner & 4) ? bounds.max.x : bounds.min.x;
+                    const CullerWalkReal y = (corner & 2) ? bounds.max.y : bounds.min.y;
+                    const CullerWalkReal z = (corner & 1) ? bounds.max.z : bounds.min.z;
+                    const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                    CullerWalkReal dot;
+                    if (corner < 4)
+                        dot = (y * ny + z * nz) + x * nx + CullerWalkReal(plane.d);
+                    else if (corner < 7)
+                        dot = (y * ny + x * nx) + z * nz + CullerWalkReal(plane.d);
+                    else
+                        dot = (z * nz + x * nx) + y * ny + CullerWalkReal(plane.d);
+                    inFront += cullerWalkGreater(dot, CullerWalkReal(0));
+                }
+                if (inFront == 8)
+                {
+                    child->visible = 0;
+                    break;
+                }
+                if (inFront)
+                {
+                    child->visible = 1;
+                    break;
+                }
+                ++inside;
+            }
+            if (inside == 6)
+                child->visible = 1;
+            if (!child->visible)
+            {
+                candidates[childIndex] = 0;
+                continue;
+            }
+            candidates[childIndex] = parent->child[childIndex];
+            TerrainCullerNode* const lodNode = parent->child[childIndex];
+            const TerrainAabb& lodBounds = lodNode->bounds;
+            const float* const camera = cameraPosition;
+            CullerWalkReal dx = CullerWalkReal(0), dz = CullerWalkReal(0);
+            if (cullerWalkLess(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.min.x)))
+                dx = CullerWalkReal(camera[0]) - CullerWalkReal(lodBounds.min.x);
+            else if (cullerWalkGreater(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.max.x)))
+                dx = CullerWalkReal(lodBounds.max.x) - CullerWalkReal(camera[0]);
+            if (cullerWalkLess(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.min.z)))
+                dz = CullerWalkReal(camera[2]) - CullerWalkReal(lodBounds.min.z);
+            else if (cullerWalkGreater(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.max.z)))
+                dz = CullerWalkReal(lodBounds.max.z) - CullerWalkReal(camera[2]);
+            const CullerWalkReal distance = cullerWalkSqrt(dx * dx + dz * dz)
+                + CullerWalkReal(terrain->m_cameraHeightAboveTerrain);
+            const CullerWalkReal limit = CullerWalkReal(lodDistance);
+            if (!cullerWalkLessEqual(distance, limit))
+            {
+                setLod(lodNode, !cullerWalkLessEqual(distance, limit * CullerWalkReal(lodFactor30)) ? 2 : 1);
+            }
+            else
+            {
+                if (lodNode->child[0])
+                    for (int grandchild = 0; grandchild < 4; ++grandchild)
+                        if (lodNode->child[grandchild]->visible)
+                            setLod(lodNode->child[grandchild], 0);
+                lodNode->lod = 0;
+            }
+            ++parent->childrenWalked;
+        }
+        // Shipped defect: three accepted children select all four original child slots.
+        const bool useAllChildren = parent->childrenWalked > 2;
+        if (!useAllChildren && !parent->childrenWalked)
+            return;
+        for (int index = 0; index < 3; ++index)
+        {
+            TerrainCullerNode* const selected = useAllChildren ? parent->child[index] : candidates[index];
+            if (!useAllChildren && !selected)
+                continue;
+            if (selected->fileByteEE)
+                visible.push_back(selected);
+            else
+                walkMode2(selected);
+        }
+        TerrainCullerNode* const last = useAllChildren ? parent->child[3] : candidates[3];
+        if (!useAllChildren && !last)
+            return;
+        if (last->fileByteEE)
+        {
+            visible.push_back(last);
+            return;
+        }
+        parent = last; // The fourth-child descent is a tail loop in the image.
+    }
+}
+
+// PE 0x100E5DD0. [INFERRED] Placement with the existing TerrainCuller bodies.
+int TerrainCuller::walkMode4(TerrainCullerNode* parent)
+{
+    parent->childrenWalked = 0;
+    TerrainCullerNode* candidates[4];
+    bool childComplete[4];
+    bool allComplete = true;
+    for (int childIndex = 0; childIndex < 4; ++childIndex)
+    {
+        TerrainCullerNode* const child = parent->child[childIndex];
+        TerrainAabb& bounds = child->bounds;
+        if (bounds.dirty)
+            bounds.refresh();
+        const float radius = bounds.radius;
+        if (bounds.dirty)
+            bounds.refresh();
+        child->visible = rendmath::frustumInside(*frustum, bounds.centre, radius) ? 1 : 0;
+        if (!child->visible)
+        {
+            allComplete = false;
+            candidates[childIndex] = 0;
+            continue;
+        }
+        child->cameraInside = 0;
+        int inside = 0;
+        for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
+        {
+            const Plane3& plane = frustum->m_planes[planeIndex];
+            int inFront = 0;
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const CullerWalkReal x = (corner & 4) ? bounds.max.x : bounds.min.x;
+                const CullerWalkReal y = (corner & 2) ? bounds.max.y : bounds.min.y;
+                const CullerWalkReal z = (corner & 1) ? bounds.max.z : bounds.min.z;
+                const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                CullerWalkReal dot;
+                if (corner < 3)
+                    dot = (z * nz + x * nx) + y * ny + CullerWalkReal(plane.d);
+                else if (corner < 5)
+                    dot = (x * nx + z * nz) + y * ny + CullerWalkReal(plane.d);
+                else
+                    dot = (z * nz + y * ny) + x * nx + CullerWalkReal(plane.d);
+                inFront += cullerWalkGreater(dot, CullerWalkReal(0));
+            }
+            if (inFront == 8)
+            {
+                child->visible = 0;
+                break;
+            }
+            if (inFront)
+            {
+                child->visible = 1;
+                break;
+            }
+            ++inside;
+        }
+        if (inside == 6)
+            child->visible = 1;
+        if (!child->visible)
+        {
+            allComplete = false;
+            candidates[childIndex] = 0;
+            continue;
+        }
+        TerrainCullerNode* const lodNode = parent->child[childIndex];
+        const TerrainAabb& lodBounds = lodNode->bounds;
+        const float* const camera = cameraPosition;
+        CullerWalkReal dx = CullerWalkReal(0), dz = CullerWalkReal(0);
+        if (cullerWalkLess(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.min.x)))
+            dx = CullerWalkReal(camera[0]) - CullerWalkReal(lodBounds.min.x);
+        else if (cullerWalkGreater(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.max.x)))
+            dx = CullerWalkReal(lodBounds.max.x) - CullerWalkReal(camera[0]);
+        if (cullerWalkLess(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.min.z)))
+            dz = CullerWalkReal(camera[2]) - CullerWalkReal(lodBounds.min.z);
+        else if (cullerWalkGreater(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.max.z)))
+            dz = CullerWalkReal(lodBounds.max.z) - CullerWalkReal(camera[2]);
+        const CullerWalkReal distance = cullerWalkSqrt(dz * dz + dx * dx)
+            + CullerWalkReal(terrain->m_cameraHeightAboveTerrain);
+        const CullerWalkReal limit = CullerWalkReal(lodDistance);
+        if (!cullerWalkLessEqual(distance, limit))
+        {
+            setLod(lodNode, !cullerWalkLessEqual(distance, limit * CullerWalkReal(lodFactor30)) ? 2 : 1);
+        }
+        else
+        {
+            if (lodNode->child[0])
+                for (int grandchild = 0; grandchild < 4; ++grandchild)
+                    if (lodNode->child[grandchild]->visible)
+                        setLod(lodNode->child[grandchild], 0);
+            lodNode->lod = 0;
+        }
+        TerrainCullerNode* const selected = parent->child[childIndex];
+        if (!selected->fileByteEE)
+        {
+            const bool complete = walkMode4(selected) != 0;
+            allComplete = allComplete & complete;
+            childComplete[childIndex] = complete;
+        }
+        else
+            childComplete[childIndex] = true;
+        ++parent->childrenWalked;
+        candidates[childIndex] = parent->child[childIndex];
+    }
+    if (!parent->patch)
+        return 0;
+    if (!allComplete)
+    {
+        for (int index = 0; index < 4; ++index)
+            if (candidates[index] && childComplete[index])
+                visible.push_back(candidates[index]);
+        return 0;
+    }
+    if (!parent->hasPatchList)
+        return 1;
+    visible.push_back(parent);
+    return 0;
+}
+
+
+// PE 0x100E6270. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::walkMode5(TerrainCullerNode* parent)
+{
+    parent->childrenWalked = 0;
+    for (int childIndex = 0; childIndex < 4; ++childIndex)
+    {
+        TerrainCullerNode* const child = parent->child[childIndex];
+        TerrainAabb& bounds = child->bounds;
+        if (bounds.dirty)
+            bounds.refresh();
+        const float radius = bounds.radius;
+        if (bounds.dirty)
+            bounds.refresh();
+        child->visible = rendmath::frustumInside(*frustum, bounds.centre, radius) ? 1 : 0;
+        if (!child->visible)
+            continue;
+
+        child->cameraInside = 0;
+        int inside = 0;
+        for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
+        {
+            const Plane3& plane = frustum->m_planes[planeIndex];
+            int inFront = 0;
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const CullerWalkReal x = (corner & 4) ? bounds.max.x : bounds.min.x;
+                const CullerWalkReal y = (corner & 2) ? bounds.max.y : bounds.min.y;
+                const CullerWalkReal z = (corner & 1) ? bounds.max.z : bounds.min.z;
+                const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                // The first three corners sum y/z/x; the remaining five sum y/x/z.
+                const CullerWalkReal dot = corner < 3
+                    ? (y * ny + z * nz) + x * nx + CullerWalkReal(plane.d)
+                    : (y * ny + x * nx) + z * nz + CullerWalkReal(plane.d);
+                inFront += cullerWalkGreater(dot, CullerWalkReal(0));
+            }
+            if (inFront == 8)
+            {
+                child->visible = 0;
+                break;
+            }
+            if (inFront)
+            {
+                child->visible = 1;
+                break;
+            }
+            ++inside;
+        }
+        if (inside == 6)
+            child->visible = 1;
+        if (!child->visible)
+            continue;
+
+        TerrainCullerNode* const lodNode = parent->child[childIndex];
+        const TerrainAabb& lodBounds = lodNode->bounds;
+        const float* const camera = cameraPosition;
+        CullerWalkReal dx = CullerWalkReal(0), dz = CullerWalkReal(0);
+        if (cullerWalkLess(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.min.x)))
+            dx = CullerWalkReal(camera[0]) - CullerWalkReal(lodBounds.min.x);
+        else if (cullerWalkGreater(CullerWalkReal(camera[0]), CullerWalkReal(lodBounds.max.x)))
+            dx = CullerWalkReal(lodBounds.max.x) - CullerWalkReal(camera[0]);
+        if (cullerWalkLess(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.min.z)))
+            dz = CullerWalkReal(camera[2]) - CullerWalkReal(lodBounds.min.z);
+        else if (cullerWalkGreater(CullerWalkReal(camera[2]), CullerWalkReal(lodBounds.max.z)))
+            dz = CullerWalkReal(lodBounds.max.z) - CullerWalkReal(camera[2]);
+
+        const CullerWalkReal distance = cullerWalkSqrt(dz * dz + dx * dx)
+            + CullerWalkReal(terrain->m_cameraHeightAboveTerrain);
+        const CullerWalkReal limit = CullerWalkReal(lodDistance);
+        if (!cullerWalkLessEqual(distance, limit))
+            setLod(lodNode, !cullerWalkLessEqual(distance, limit * CullerWalkReal(lodFactor30)) ? 2 : 1);
+        else
+        {
+            if (lodNode->child[0])
+                for (int grandchild = 0; grandchild < 4; ++grandchild)
+                    if (lodNode->child[grandchild]->visible)
+                        setLod(lodNode->child[grandchild], 0);
+            lodNode->lod = 0;
+        }
+        TerrainCullerNode* const selected = parent->child[childIndex];
+        if (selected->fileByteEE)
+            visible.push_back(selected);
+        else
+            walkMode5(selected);
+        ++parent->childrenWalked;
+    }
+}
+
+// PE 0x100E6640. [INFERRED] Placement with the existing TerrainCuller bodies.
+int TerrainCuller::walkMode6(TerrainCullerNode* node)
+{
+    node->childrenWalked = 0;
+    TerrainAabb& bounds = node->bounds;
+    if (bounds.dirty)
+        bounds.refresh();
+    const float radius = bounds.radius;
+    if (bounds.dirty)
+        bounds.refresh();
+    node->visible = rendmath::frustumInside(*frustum, bounds.centre, radius) ? 1 : 0;
+    bool accepted = node->visible != 0;
+    if (accepted && node->lod == 0)
+    {
+        // PE 0x101C6A90, the pure eight-corner test at 0x100E66AC.
+        for (int planeIndex = 0; planeIndex < 6; ++planeIndex)
+        {
+            const Plane3& plane = frustum->m_planes[planeIndex];
+            int inFront = 0;
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const CullerWalkReal x = node->corners[3 * corner];
+                const CullerWalkReal y = node->corners[3 * corner + 1];
+                const CullerWalkReal z = node->corners[3 * corner + 2];
+                const CullerWalkReal nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+                const CullerWalkReal dot = corner == 0
+                    ? (z * nz + x * nx) + y * ny + CullerWalkReal(plane.d)
+                    : (y * ny + z * nz) + x * nx + CullerWalkReal(plane.d);
+                inFront += cullerWalkGreater(dot, CullerWalkReal(0));
+            }
+            if (inFront == 8)
+            {
+                accepted = false;
+                break;
+            }
+        }
+    }
+    node->visible = accepted ? 1 : 0;
+    if (!node->visible)
+        return static_cast<int>(node->visible);
+
+    if (node->child[0])
+        for (int child = 0; child < 4; ++child)
+            if (walkMode6(node->child[child]))
+                ++node->childrenWalked;
+    if (!node->patch && !node->childrenWalked)
+    {
+        node->visible = 0;
+        return 0;
+    }
+    if (node->fileByteEE)
+    {
+        const float* const camera = cameraPosition;
+        CullerWalkReal dx = CullerWalkReal(0), dz = CullerWalkReal(0);
+        if (cullerWalkLess(CullerWalkReal(camera[0]), CullerWalkReal(bounds.min.x)))
+            dx = CullerWalkReal(camera[0]) - CullerWalkReal(bounds.min.x);
+        else if (cullerWalkGreater(CullerWalkReal(camera[0]), CullerWalkReal(bounds.max.x)))
+            dx = CullerWalkReal(bounds.max.x) - CullerWalkReal(camera[0]);
+        if (cullerWalkLess(CullerWalkReal(camera[2]), CullerWalkReal(bounds.min.z)))
+            dz = CullerWalkReal(camera[2]) - CullerWalkReal(bounds.min.z);
+        else if (cullerWalkGreater(CullerWalkReal(camera[2]), CullerWalkReal(bounds.max.z)))
+            dz = CullerWalkReal(bounds.max.z) - CullerWalkReal(camera[2]);
+        const CullerWalkReal distance = cullerWalkSqrt(dz * dz + dx * dx)
+            + CullerWalkReal(terrain->m_cameraHeightAboveTerrain);
+        if (cullerWalkLessEqual(distance, CullerWalkReal(lodDistance)))
+            setLod(node, 0);
+        else
+        {
+            // The image's LEA triples the signed integer threshold with 32-bit wrap.
+            const int farLimit = static_cast<int>(3u * static_cast<unsigned int>(lodDistance));
+            setLod(node, cullerWalkLessEqual(distance, CullerWalkReal(farLimit)) ? 1 : 2);
+        }
+        visible.push_back(node);
+    }
+    return static_cast<int>(node->visible);
 }
 
 // the node's visible children first, then the node; 3 and above clamp to 2.
@@ -1356,8 +2057,8 @@ void TerrainCuller::setLod(TerrainCullerNode* node, int lod)
 // drops to LOD 1 and the mask stays 0.
 void TerrainCuller::fixCracks()
 {
-    TerrainCullerNode** const first = reinterpret_cast<TerrainCullerNode**>(visible.first);
-    TerrainCullerNode** const last  = reinterpret_cast<TerrainCullerNode**>(visible.last);
+    TerrainCullerNode** const first = visible.data();
+    TerrainCullerNode** const last  = first + visible.size();
     if (versionFlag78)
     {
         for (TerrainCullerNode** it = first; it != last; ++it)
@@ -1516,8 +2217,7 @@ void TerrainCuller::fixCracks()
 // clear the gathered list, take the centre and radius, walk from the root.
 void TerrainCuller::gatherSphere(const float* centre, float radius)
 {
-    if (gathered.first)                                                           // sub_100E7520(0, 0)
-        gathered.last = gathered.first;
+    gathered.clear();                                                             // sub_100E7520(0, 0)
     gatherRadius = radius;
     gatherRadiusSq = radius * radius;
     gatherCentre = centre;
@@ -1544,15 +2244,14 @@ void TerrainCuller::gatherNode(TerrainCullerNode* node)
     if (static_cast<double>(radius) + gatherRadius > std::sqrt(dz * dz + dx * dx + dy * dy))
     {
         if (node->patch)
-            vc71::vectorPushBackIn(gathered, 4u, &node);
+            gathered.push_back(node);
     }
 }
 
 // Gathers sphere-overlapping patches from this frame's visible terrain tree.
 void TerrainCuller::gatherVisibleSphere(const float* centre, float radius)
 {
-    if (gathered.first)                                                           // sub_100E7520(0, 0)
-        gathered.last = gathered.first;
+    gathered.clear();                                                             // sub_100E7520(0, 0)
     gatherCentre = centre;
     gatherRadiusSq = radius * radius;
     gatherRadius = radius;
@@ -1586,9 +2285,439 @@ void TerrainCuller::gatherVisibleNode(TerrainCullerNode* node)
     const float distance = std::sqrt(dz * dz + dx * dx + dy * dy);          // the float overload
     const float reach = radius + gatherRadius;
     if (reach > distance && node->patch)
-        vc71::vectorPushBackIn(gathered, 4u, &node);
+        gathered.push_back(node);
 }
 
+
+// PE 0x100E2D80. [INFERRED] Name and placement with the existing TerrainCuller bodies.
+void TerrainCuller::assignLegacyGridIndices(TerrainCullerNode* node, int x, int z)
+{
+    for (;;)
+    {
+        if (node != nodes)
+        {
+            const int exponent = static_cast<int>(static_cast<unsigned int>(node->legacyLevel) - 1u);
+            unsigned int offset = 1;
+            for (int level = 1; level < exponent; ++level)
+            {
+                const unsigned int width = 1u << (static_cast<unsigned int>(level) & 31u);
+                offset += width * width;
+            }
+            const unsigned int width = 1u << (static_cast<unsigned int>(exponent) & 31u);
+            node->legacyGridIndex = static_cast<int>(width * static_cast<unsigned int>(z) + offset
+                                                   + static_cast<unsigned int>(x));
+        }
+        if (!node->child[0])
+            return;
+        const int x0 = static_cast<int>(2u * static_cast<unsigned int>(x));
+        const int z0 = static_cast<int>(2u * static_cast<unsigned int>(z));
+        const int x1 = static_cast<int>(static_cast<unsigned int>(x0) + 1u);
+        const int z1 = static_cast<int>(static_cast<unsigned int>(z0) + 1u);
+        assignLegacyGridIndices(node->child[0], x0, z0);
+        assignLegacyGridIndices(node->child[1], x1, z0);
+        assignLegacyGridIndices(node->child[2], x0, z1);
+        node = node->child[3];
+        x = x1;
+        z = z1;
+    }
+}
+
+namespace {
+
+    // [CHOSEN, not recovered] Native extended expressions preserve the PE's explicit stores.
+#if defined(__APPLE__)
+typedef bf2x87::Real LegacyTerrainReal;
+inline LegacyTerrainReal legacyWide(float value) { return bf2x87::wide(value); }
+inline LegacyTerrainReal legacyInteger(int value) { return bf2x87::wide(value); }
+inline float legacyStore(LegacyTerrainReal value) { return bf2x87::store(value); }
+inline int legacyTruncate(LegacyTerrainReal value) { return bf2x87::toIntTruncate(value); }
+
+LegacyTerrainReal legacyRemainder(LegacyTerrainReal value, float divisor)
+{
+#if defined(__aarch64__) || defined(BF2_TEST_SOFT_EXTENDED)
+    // The denominator is the stored integer patch size. Binary long division keeps the
+    // remainder exact without reducing an extended numerator to binary64 for libm.
+    const LegacyTerrainReal zero = bf2x87::wide(0);
+    const LegacyTerrainReal two = bf2x87::wide(2);
+    if (!bf2x87::isFinite(value) || divisor == 0.0f || !std::isfinite(divisor))
+        return bf2x87::wide(std::fmod(bf2x87::storeDouble(value), static_cast<double>(divisor)));
+    if (value == zero)
+        return value;
+    const bool negative = value < zero;
+    LegacyTerrainReal remainder = negative ? -value : value;
+    const LegacyTerrainReal unit = bf2x87::wide(std::fabs(divisor));
+    LegacyTerrainReal scaled = unit;
+    while (scaled <= remainder / two)
+        scaled = scaled * two;
+    while (scaled >= unit)
+    {
+        if (remainder >= scaled)
+            remainder = remainder - scaled;
+        scaled = scaled / two;
+    }
+    if (remainder == zero)
+        remainder = zero;                                                       // fmod keeps the dividend's sign
+    return negative ? -remainder : remainder;
+#else
+    return std::fmod(value, static_cast<long double>(divisor));
+#endif
+}
+#else
+typedef double LegacyTerrainReal;
+inline LegacyTerrainReal legacyWide(float value) { return value; }
+inline LegacyTerrainReal legacyInteger(int value) { return value; }
+inline float legacyStore(LegacyTerrainReal value) { return static_cast<float>(value); }
+inline int legacyTruncate(LegacyTerrainReal value) { return static_cast<int>(value); }
+inline LegacyTerrainReal legacyRemainder(LegacyTerrainReal value, float divisor)
+{
+    return std::fmod(value, static_cast<double>(divisor));
+}
+#endif
+
+// Shared patch-level sequence in PE 0x100E68B0 / 0x100E4690.
+void bindLegacyPatch(Terrain* terrain, TerrainCullerNode* node, bool storedSize)
+{
+    const LegacyTerrainReal inverseScale = legacyWide(1.0f) / legacyWide(terrain->m_primaryWorldScale.x);
+    float x = legacyStore(legacyWide(node->bounds.min.x) * inverseScale);
+    const LegacyTerrainReal z = inverseScale * legacyWide(node->bounds.min.z);
+    const LegacyTerrainReal denominator = storedSize
+        ? legacyWide(legacyStore(legacyInteger(terrain->m_patchSize)))
+        : legacyInteger(terrain->m_patchSize);
+    const LegacyTerrainReal inverseSize = legacyWide(1.0f) / denominator;
+    x = legacyStore(legacyWide(x) * inverseSize);
+    const int half = terrain->m_patchCount / 2;
+    const unsigned int row = static_cast<unsigned int>(legacyTruncate(z * inverseSize))
+                             + static_cast<unsigned int>(half);
+    const unsigned int index = static_cast<unsigned int>(legacyTruncate(legacyWide(x)))
+        + row * static_cast<unsigned int>(terrain->m_patchCount) + static_cast<unsigned int>(half);
+    node->patch = terrain->m_patches[index];
+    node->lodTable = terrain->m_lodTables;
+    node->bounds.min.y = node->patch->minHeight;
+    node->bounds.max.y = node->patch->maxHeight;
+    for (unsigned int i = 0; i < node->patch->detailLayers.size(); ++i)
+    {
+        QuadPatchDetailLayer* const layer = node->patch->detailLayers[i];
+        node->layerLodTables.push_back(layer ? layer->lodTables : 0);
+    }
+}
+
+} // namespace
+
+// PE 0x100E68B0. [INFERRED] Name and placement with the existing TerrainCuller bodies.
+void TerrainCuller::buildLegacyTree()
+{
+    world::IHeightmap* const heightmap = heightmapCluster()->getPrimaryHeightmap();
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainCullerNode));
+    nodes = storage ? new (storage) TerrainCullerNode() : 0;
+    int size;
+    heightmap->getSize(size, size);                                                // shipped aliasing
+    const int scale = legacyTruncate(legacyWide(heightmap->getScale().x));
+    const unsigned int spanBits = (static_cast<unsigned int>(size) - 1u)
+                                  * static_cast<unsigned int>(scale);
+    const int span = static_cast<int>(spanBits);
+    nodes->legacyGridIndex = 0;
+    nodes->legacyLevel = 1;
+    const float lower = legacyStore(legacyInteger(static_cast<int>(0u - spanBits)) * legacyWide(0.5f));
+    const float upper = legacyStore(legacyInteger(span) * legacyWide(0.5f));
+    nodes->bounds.min = { lower, terrain->m_minHeight, lower };
+    nodes->bounds.max = { upper, terrain->m_maxHeight, upper };
+    nodes->bounds.dirty = 1;
+    aabbCorners(nodes->corners, &nodes->bounds.min.x);
+    nodes->fileByteEC = 0;
+    nodes->lodTable = 0;
+    nodes->patch = 0;
+    nodes->childrenWalked = 0;
+    nodes->legacyParent = 0;
+    for (int i = 0; i < 4; ++i) nodes->child[i] = 0;
+    for (int i = 0; i < 8; ++i) nodes->neighbour[i] = 0;
+    if (nodes->bounds.dirty)
+        nodes->bounds.refresh();
+    if (legacyWide(nodes->bounds.extent.x)
+        == legacyInteger(terrain->m_patchSize) * legacyWide(terrain->m_primaryWorldScale.x))
+    {
+        nodes->hasPatchList = 1;
+        bindLegacyPatch(terrain, nodes, true);
+    }
+    for (int quadrant = 0; quadrant < 4; ++quadrant)
+        buildLegacyChild(nodes, quadrant, 0);
+    assignLegacyGridIndices(nodes, 0, 0);
+    if (nodes->child[0])
+        for (int quadrant = 0; quadrant < 4; ++quadrant)
+            if (nodes->child[quadrant]->visible)
+                setLod(nodes->child[quadrant], 0);
+    nodes->lod = 0;
+    linkLegacyNeighbours(nodes);
+}
+
+// PE 0x100E4690, retn 0x0C; its third stack word is unused at every recursive call.
+// [INFERRED] Name and placement with the existing TerrainCuller bodies.
+void TerrainCuller::buildLegacyChild(TerrainCullerNode* parent, int quadrant, int /*unused*/)
+{
+    for (;;)
+    {
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainCullerNode));
+        TerrainCullerNode* const node = storage ? new (storage) TerrainCullerNode() : 0;
+        node->legacyLevel = static_cast<int>(static_cast<unsigned int>(parent->legacyLevel) + 1u);
+        TerrainAabb& source = parent->bounds;
+        Vec3 lower = source.min;
+        if (source.dirty) source.refresh();
+        const float xPart = legacyStore(legacyInteger(quadrant % 2));
+        lower.x = legacyStore(legacyWide(xPart) * legacyWide(source.extent.x)
+                              * legacyWide(0.5f) + legacyWide(lower.x));
+        if (source.dirty) source.refresh();
+        const float zPart = legacyStore(legacyInteger(quadrant / 2));
+        lower.z = legacyStore(legacyWide(zPart) * legacyWide(source.extent.z)
+                              * legacyWide(0.5f) + legacyWide(lower.z));
+        if (source.dirty) source.refresh();
+        Vec3 upper = { source.centre.x, source.max.y, source.centre.z };
+        if (source.dirty) source.refresh();
+        upper.x = legacyStore(legacyWide(xPart) * legacyWide(source.extent.x)
+                              * legacyWide(0.5f) + legacyWide(upper.x));
+        if (source.dirty) source.refresh();
+        upper.z = legacyStore(legacyWide(zPart) * legacyWide(source.extent.z)
+                              * legacyWide(0.5f) + legacyWide(upper.z));
+        node->bounds.min = lower;
+        node->bounds.max = upper;
+        node->bounds.dirty = 1;
+        node->legacyParent = parent;
+        for (int i = 0; i < 4; ++i) node->child[i] = 0;
+        parent->child[quadrant] = node;
+        for (int i = 0; i < 8; ++i) node->neighbour[i] = 0;
+        node->childrenWalked = 0;
+        TerrainAabb& bounds = node->bounds;
+        if (bounds.dirty) bounds.refresh();
+        node->fileByteEC = legacyInteger(terrain->m_patchSize) * legacyWide(terrain->m_primaryWorldScale.x)
+                           > legacyWide(bounds.extent.x);
+        if (bounds.dirty) bounds.refresh();
+        node->fileByteEE = legacyWide(bounds.extent.x) == legacyInteger(param14);
+        if (bounds.dirty) bounds.refresh();
+        if (legacyWide(bounds.extent.x)
+            == legacyInteger(terrain->m_patchSize) * legacyWide(terrain->m_primaryWorldScale.x))
+        {
+            node->hasPatchList = 1;
+            bindLegacyPatch(terrain, node, false);
+        }
+        if (node->fileByteEC)
+        {
+            node->patch = parent->patch;
+            node->lodTable = reinterpret_cast<TerrainLodRecord*>(parent->lodTable)->children[quadrant];
+            const LegacyTerrainReal inverse = legacyWide(1.0f) / legacyWide(terrain->m_primaryWorldScale.x);
+            const float maxX = legacyStore(legacyWide(bounds.max.x) * inverse);
+            const float maxZ = legacyStore(legacyWide(bounds.max.z) * inverse);
+            const float storedInverse = legacyStore(inverse);
+            const float minX = legacyStore(legacyWide(bounds.min.x) * legacyWide(storedInverse));
+            const float minZ = legacyStore(legacyWide(bounds.min.z) * legacyWide(storedInverse));
+            const float size = legacyStore(legacyInteger(terrain->m_patchSize));
+            const int startX = legacyTruncate(legacyRemainder(
+                legacyInteger(terrain->m_patchSize) * legacyWide(20.0f) + legacyWide(minX), size));
+            const int startZ = legacyTruncate(legacyRemainder(
+                legacyInteger(terrain->m_patchSize) * legacyWide(20.0f) + legacyWide(minZ), size));
+            bounds.min.y = FLT_MAX;
+            bounds.max.y = FLT_MIN;                                               // shipped positive seed
+            const int endZ = static_cast<int>(static_cast<unsigned int>(startZ)
+                + static_cast<unsigned int>(legacyTruncate(legacyWide(maxZ) - legacyWide(minZ))));
+            const int endX = static_cast<int>(static_cast<unsigned int>(startX)
+                + static_cast<unsigned int>(legacyTruncate(legacyWide(maxX) - legacyWide(minX))));
+            for (int z = startZ; z < endZ; ++z)
+                for (int x = startX; x < endX; ++x)
+                {
+                    const unsigned int index = (static_cast<unsigned int>(terrain->m_patchSize) + 1u)
+                        * static_cast<unsigned int>(z) + static_cast<unsigned int>(x);
+                    const float height = legacyStore(
+                        legacyWide(static_cast<float*>(node->patch->legacyVertexTable)[index])
+                        * legacyWide(terrain->m_primaryWorldScale.y));
+                    bounds.min.y = bounds.min.y < height ? bounds.min.y : height;
+                    bounds.max.y = bounds.max.y < height ? height : bounds.max.y;
+                }
+            for (unsigned int i = 0; i < node->patch->detailLayers.size(); ++i)
+            {
+                unsigned char* const table = parent->layerLodTables[i];
+                node->layerLodTables.push_back(table
+                    ? reinterpret_cast<TerrainLodRecord*>(table)->children[quadrant] : 0);
+            }
+            // shipped defect: the cached bounds remain clean after changing min/max Y.
+        }
+        if (bounds.dirty) bounds.refresh();
+        if (legacyWide(bounds.extent.x)
+                == legacyInteger(terrain->m_patchSize) * legacyWide(terrain->m_primaryWorldScale.x)
+            || node->fileByteEC)
+            node->occlusionQuery = dx9rend::queryManagerCreateQuery(9);
+        aabbCorners(node->corners, &bounds.min.x);
+        if (bounds.dirty) bounds.refresh();
+        if (!(legacyInteger(param10) < legacyWide(bounds.extent.x)))
+            return;
+        buildLegacyChild(node, 0, 0);
+        buildLegacyChild(node, 1, 0);
+        buildLegacyChild(node, 2, 0);
+        parent = node;
+        quadrant = 3;
+    }
+}
+
+// PE 0x100E2E50. [INFERRED] Name and placement with the existing TerrainCuller bodies.
+TerrainCullerNode* TerrainCuller::findLegacyNode(int index, TerrainCullerNode* node)
+{
+    if (!node)
+        return 0;
+    if (node->legacyGridIndex == index)
+        return node;
+    if (node->child[0])
+        for (int child = 0; child < 4; ++child)
+        {
+            TerrainCullerNode* const found = findLegacyNode(index, node->child[child]);
+            if (found)
+                return found;
+        }
+    return 0;
+}
+
+// PE 0x100E3250. [INFERRED] Name and placement with the existing TerrainCuller bodies.
+void TerrainCuller::linkLegacyNeighbours(TerrainCullerNode* node)
+{
+    for (;;)
+    {
+        const int index = node->legacyGridIndex;
+        if (index != 0)
+        {
+            const int exponent = static_cast<int>(static_cast<unsigned int>(node->legacyLevel) - 1u);
+            const unsigned int widthBits = 1u << (static_cast<unsigned int>(exponent) & 31u);
+            const int width = static_cast<int>(widthBits);
+            unsigned int offset = 0;
+            for (int level = 1; level < exponent; ++level)
+            {
+                const unsigned int side = 1u << (static_cast<unsigned int>(level) & 31u);
+                offset += side * side;
+            }
+            const unsigned int bits = static_cast<unsigned int>(index);
+            const int relative = static_cast<int>(bits - offset);
+            const int firstBelow = static_cast<int>(offset + widthBits + 1u);
+            const int lastAbove = static_cast<int>((widthBits - 1u) * widthBits + offset);
+            const int rightRemainder = relative % width;
+            const int leftRemainder = static_cast<int>(bits - offset - 1u) % width;
+            if (leftRemainder != 0)
+            {
+                if (index >= firstBelow)
+                    node->neighbour[0] = findLegacyNode(static_cast<int>(bits - widthBits - 1u), nodes);
+                node->neighbour[3] = findLegacyNode(static_cast<int>(bits - 1u), nodes);
+                if (index <= lastAbove)
+                    node->neighbour[5] = findLegacyNode(static_cast<int>(bits + widthBits - 1u), nodes);
+            }
+            if (index >= firstBelow)
+                node->neighbour[1] = findLegacyNode(static_cast<int>(bits - widthBits), nodes);
+            if (index <= lastAbove)
+                node->neighbour[6] = findLegacyNode(static_cast<int>(bits + widthBits), nodes);
+            if (rightRemainder != 0)
+            {
+                if (index >= firstBelow)
+                    node->neighbour[2] = findLegacyNode(static_cast<int>(bits - widthBits + 1u), nodes);
+                node->neighbour[4] = findLegacyNode(static_cast<int>(bits + 1u), nodes);
+                if (index <= lastAbove)
+                    node->neighbour[7] = findLegacyNode(static_cast<int>(bits + widthBits + 1u), nodes);
+            }
+        }
+        if (!node->child[0])
+            return;
+        linkLegacyNeighbours(node->child[0]);
+        linkLegacyNeighbours(node->child[1]);
+        linkLegacyNeighbours(node->child[2]);
+        node = node->child[3];
+    }
+}
+
+// PE 0x100E3B60. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::filterOccluded()
+{
+    std::vector<TerrainCullerNode*>::iterator it = visible.begin();
+    while (it != visible.end())
+    {
+        TerrainCullerNode* const node = *it;
+        void* const query = node->occlusionQuery;
+        const int samples = readRendererOcclusionQuery(query);
+        const unsigned int current =
+            static_cast<dx9rend::IRenderer*>(dx9rend::g_rendererBase)->getFrameOrdinal();
+        const unsigned int resultFrame = rendererOcclusionQueryFrame(query);
+        const int age = static_cast<int>(current - resultFrame);
+#if defined(_MSC_VER) && defined(_M_IX86)
+        const int maxFrames = *reinterpret_cast<const int*>(
+            static_cast<const unsigned char*>(dx9rend::g_rendererBase) + 0x3EC);
+#else
+        // [CHOSEN, not recovered] Named access for the native renderer layout.
+        // [RETIRE-WHEN: terrain-occlusion-age-limit] The current accessor stops on unmapped
+        // +0x3EC. Its owner must expose occlusionTerrainMaxFrames, initialize it to 1
+        // (PE 0x1000BA72), retain the setter's upper-only clamp to 10 (0x10053523), and
+        // validate zero/nonzero samples, signed ages and erase/reload before retiring this note.
+        const int maxFrames = dx9rend::rendererTailInt(0x3EC);
+#endif
+        if (age > maxFrames || samples != 0)
+            ++it;
+        else
+        {
+            node->visible = 0;
+            it = visible.erase(it);
+        }
+    }
+}
+
+// PE 0x100E6CB0. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::gatherVisibleFrustum(Frustum* source)
+{
+    gathered.clear();
+    frustum = source;
+    if (nodes->visible)
+        gatherVisibleFrustumNode(nodes);
+}
+
+// PE 0x100E4460. [INFERRED] Placement with the existing TerrainCuller bodies.
+void TerrainCuller::gatherVisibleFrustumNode(TerrainCullerNode* node)
+{
+    if (node->childrenWalked)
+    {
+        for (int child = 0; child < 4; ++child)
+            if (node->child[child]->visible)
+                gatherVisibleFrustumNode(node->child[child]);
+        return;
+    }
+    TerrainAabb& bounds = node->bounds;
+    if (bounds.dirty)
+        bounds.refresh();
+    const float radius = bounds.radius;
+    if (bounds.dirty)
+        bounds.refresh();
+    if (rendmath::frustumInside(*frustum, bounds.centre, radius) && node->patch)
+        gathered.push_back(node);
+}
+
+// PE 0x100E6CE0. Unreachable in 1.50: no code or data references. [INFERRED] Placement with the
+// existing TerrainCuller bodies.
+void TerrainCuller::gatherShadowFrustum(Frustum* source, Frustum* fitNearPlane, int unused)
+{
+    gathered.clear();                                                             // sub_100E7520(0, 0)
+    frustum = source;
+    gatherShadowFrustumNode(nodes, fitNearPlane, unused);
+}
+
+// PE 0x100E4500. Unreachable in 1.50: no code or data references. Children first; leaves (no
+// children) return before any test, as in gatherNode. An inner node whose box meets the frustum
+// and that has the file's push flag (+0xEE) is gathered, and its box is fitted into `fitNearPlane`.
+void TerrainCuller::gatherShadowFrustumNode(TerrainCullerNode* node, Frustum* fitNearPlane, int unused)
+{
+    if (!node->child[0])
+        return;
+    for (int c = 0; c < 4; ++c)
+        gatherShadowFrustumNode(node->child[c], fitNearPlane, unused);
+    TerrainAabb& bounds = node->bounds;
+    if (bounds.dirty)
+        bounds.refresh();
+    const float radius = bounds.radius;
+    if (bounds.dirty)
+        bounds.refresh();
+    if (rendmath::frustumInside(*frustum, bounds.centre, radius) && node->fileByteEE)
+    {
+        gathered.push_back(node);
+        if (fitNearPlane)
+            fitShadowFrustumNearPlaneToBounds(*fitNearPlane, bounds.min, bounds.max);
+    }
+}
 
 // QuadPatch - the draws.
 
@@ -1618,7 +2747,178 @@ inline void drawPatchRange(Terrain* t, unsigned int primCount, unsigned int vert
                                           0, 0u, vertexCount, start);
 }
 
+// Morph constants in PE 0x1018991B..0x10189C39. The batched draw uses a distinct component
+// arrangement from drawTechniquePass; each adder row fetches the height scale again.
+void setShadowBatchMorph(Terrain* t, int lod)
+{
+    t->m_currentLod = lod;
+    float selector[4] = { static_cast<float>(lod == 0), static_cast<float>(lod == 1),
+                          static_cast<float>(lod == 2), static_cast<float>(lod == 3) };
+    const float height = t->m_primaryWorldScale.y;
+    for (int i = 0; i != 4; ++i)
+        selector[i] *= height;
+    param(t->m_hMorphDeltaSelector)->setValue(selector, 0);
+    param(t->m_hNearFarMorphLimits)->setValue(&t->m_morphLimits[2 * lod], 0);
+    float adder[12] = {};
+    if (t->m_rawHasVersion >= 1u && t->m_rawVersion >= 0x1Au)
+    {
+        const int component[3][3] = { { 2, 2, 2 }, { 1, 0, 2 }, { 1, 2, 1 } };
+        for (int row = 0; row != 3; ++row)
+        {
+            const float scale = t->m_primaryWorldScale.y;
+            for (int i = 0; i != 4; ++i)
+                adder[4 * row + i] = static_cast<float>(i == component[lod][row]) * scale;
+        }
+    }
+    param(t->m_hMorphDeltaAdder)->setValue(adder, 0);
+}
+
 } // anonymous namespace
+
+// PE 0x10188B80. Tangency and unordered distances both refuse the sphere.
+bool QuadPatch::intersectsLightSphere(const Vec3& position, float radius) const
+{
+#if defined(__APPLE__)
+    const bf2x87::Real x = bf2x87::sub(bf2x87::wide(sphereCentre.x), bf2x87::wide(position.x));
+    const bf2x87::Real y = bf2x87::sub(bf2x87::wide(sphereCentre.y), bf2x87::wide(position.y));
+    const bf2x87::Real z = bf2x87::sub(bf2x87::wide(sphereCentre.z), bf2x87::wide(position.z));
+    const bf2x87::Real r = bf2x87::add(bf2x87::wide(radius), bf2x87::wide(sphereRadius));
+    const bf2x87::Real distance = bf2x87::add(bf2x87::add(bf2x87::mul(x, x), bf2x87::mul(z, z)),
+                                           bf2x87::mul(y, y));
+    return bf2x87::greater(bf2x87::mul(r, r), distance);
+#else
+    const float x = sphereCentre.x - position.x;
+    const float y = sphereCentre.y - position.y;
+    const float z = sphereCentre.z - position.z;
+    const float r = radius + sphereRadius;
+    return r * r > (x * x + z * z) + y * y;
+#endif
+}
+
+// PE 0x101885E0. [INFERRED] Method name.
+void QuadPatch::drawDepthComplexity(TerrainCullerNode**& it, int pass)
+{
+    (void)it;
+    (void)pass;
+    Debug(DebugTypeError,
+          "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\QuadPatch.cpp", 1671, "")
+        << "TBM: not used any more!";
+}
+
+// PE 0x10188D80. [INFERRED] Method name.
+void QuadPatch::drawTechniquePass(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list)
+{
+    static unsigned int once = 0;                 // dword_10261A04
+    static unsigned int vertexCount = 0;          // dword_10261A00
+    Terrain* const t = terrain;
+    if ((once & 1u) == 0)
+    {
+        once |= 1u;
+        const int side = t->m_patchSize + 1;
+        vertexCount = static_cast<unsigned int>(side * side);
+    }
+    beginPatchDraw(this);
+    while (it != list->data() + list->size())
+    {
+        TerrainCullerNode* const node = *it;
+        if (node->patch != this)
+            return;
+        const int lod = node->lod;
+        if (t->m_currentLod != lod)
+        {
+            t->m_currentLod = lod;
+            float selector[4] = { static_cast<float>(lod == 0), static_cast<float>(lod == 1),
+                                  static_cast<float>(lod == 2), static_cast<float>(lod == 3) };
+            const float scaleY = t->m_primaryWorldScale.y;
+            for (int i = 0; i < 4; ++i)
+                selector[i] *= scaleY;
+            param(t->m_hMorphDeltaSelector)->setValue(selector, 0);
+            param(t->m_hNearFarMorphLimits)->setValue(&t->m_morphLimits[2 * lod], 0);
+            float adder[12] = {};
+            if (t->m_rawHasVersion >= 1u && t->m_rawVersion >= 0x1Au)
+            {
+                const float y0 = t->m_primaryWorldScale.y;
+                const float zero0 = 0.0f * y0;
+                adder[0] = zero0; adder[1] = zero0; adder[2] = y0; adder[3] = zero0;
+                const float y1 = t->m_primaryWorldScale.y;
+                const float zero1 = (lod == 1) ? y1 * 0.0f : 0.0f * y1;
+                if (lod == 1)
+                {
+                    adder[4] = y1; adder[5] = zero1; adder[6] = zero1; adder[7] = zero1;
+                }
+                else
+                {
+                    adder[4] = zero1; adder[5] = zero1; adder[6] = y1; adder[7] = zero1;
+                }
+                const float y2 = t->m_primaryWorldScale.y;
+                const float zero2 = 0.0f * y2;
+                if (lod == 0 || lod == 1)
+                {
+                    adder[8] = zero2; adder[9] = zero2; adder[10] = y2; adder[11] = zero2;
+                }
+                else
+                {
+                    adder[8] = zero2; adder[9] = y2; adder[10] = zero2; adder[11] = zero2;
+                }
+            }
+            param(t->m_hMorphDeltaAdder)->setValue(adder, 0);
+        }
+        param(t->m_hTexLayer[0])->setValue(lightmap, 0);
+        const TerrainLodRecord* const table = reinterpret_cast<const TerrainLodRecord*>(node->lodTable);
+        const int primitives = static_cast<int>(table->counts[node->lod][0]) / 3;
+        drawPatchRange(t, static_cast<unsigned int>(primitives), vertexCount, table->starts[node->lod][0]);
+        terrainRendererStat(624) += static_cast<unsigned int>(primitives);
+        ++it;
+    }
+}
+
+// PE 0x10189720. The image's mode word 0x10261A10 is zero and has no writer or pointer-table
+// reference; its per-range arm is unreachable. The default arm issues one draw per LOD, even
+// when no range of that LOD contributes an index.
+void QuadPatch::drawShadowBatch(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* visible,
+                                const std::vector<TerrainShadowRange>& ranges)
+{
+    static unsigned int once = 0;        // PE 0x10261A18
+    static unsigned int vertexCount = 0; // PE 0x10261A14
+    if ((once & 1u) == 0)
+    {
+        once |= 1u;
+        const int side = terrain->m_patchSize + 1;
+        vertexCount = static_cast<unsigned int>(side * side);
+    }
+    beginPatchDraw(this);
+    if (ranges.empty())
+        return;
+    if (ranges.front().patchIndex == -1 && ranges.front().count == 0)
+    {
+        drawTechniquePass(it, visible);
+        return;
+    }
+    for (int lod = 0; lod != 3; ++lod)
+    {
+        unsigned int first = ranges.front().start;
+        unsigned int count = 0;
+        for (std::size_t i = 0; i < ranges.size(); ++i)
+        {
+            const TerrainShadowRange& range = ranges[i];
+            if (range.node->lod == lod && range.patchIndex == patchIndex)
+            {
+                count += range.count;
+                if (first >= range.start)
+                    first = range.start;
+            }
+        }
+        if (terrain->m_indexBufferCount >= first + count)
+        {
+            param(terrain->m_hTexLayer[0])->setValue(lightmap, 0);
+            if (terrain->m_currentLod != lod)
+                setShadowBatchMorph(terrain, lod);
+            const unsigned int triangles = count / 3u;
+            drawPatchRange(terrain, triangles, vertexCount, first);
+            terrainRendererStat(0x270) += triangles;
+        }
+    }
+}
 
 // pass 0: every visible node of this patch, by its LOD range; the "TerrainLightmap"
 // arm merges contiguous ranges of one LOD, the "TerrainMorphing" arm draws them one by one.
@@ -1634,8 +2934,8 @@ void QuadPatch::draw(TerrainCullerNode**& it)
         s_vertexCount = static_cast<unsigned int>((n + 1) * (n + 1));
     }
     beginPatchDraw(this);
-    vc71::vector_layout* const list = t->m_culler->visiblePatches();
-    TerrainCullerNode** const end = reinterpret_cast<TerrainCullerNode**>(list->last);
+    std::vector<TerrainCullerNode*>* const list = t->m_culler->visiblePatches();
+    TerrainCullerNode** const end = list->data() + list->size();
     if (t->m_mergeDrawRanges == 0)
     {
         while (it != end)
@@ -1695,7 +2995,7 @@ void QuadPatch::draw(TerrainCullerNode**& it)
 
 // Draws gathered nodes while advancing it, switching passes and morph constants as needed.
 // The default mode uses uncracked index ranges. Counts primitives, without merging ranges.
-void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* list,
+void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list,
                                   int passLod0, int passOther)
 {
     static unsigned int s_once = 0;                                               // dword_10261A0C
@@ -1709,7 +3009,7 @@ void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* 
         s_vertexCount = static_cast<unsigned int>((n + 1) * (n + 1));
     }
     beginPatchDraw(this);
-    if (it == reinterpret_cast<TerrainCullerNode**>(list->last))
+    if (it == list->data() + list->size())
         return;
     do
     {
@@ -1729,6 +3029,8 @@ void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* 
         unsigned int count = lodCount(node);                                      //   loaded first
         if (kRangeMode == 1)
         {
+            // 0x10189697: MaxPrimitiveCount is read here and its result discarded, as shipped.
+            (void)dx9rend::deviceCapsMaxPrimitiveCount();
             const unsigned int* const table = reinterpret_cast<const unsigned int*>(node->lodTable);
             start = table[16 * lod];
             count = table[16 * (lod + 3)];
@@ -1737,7 +3039,7 @@ void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* 
         drawPatchRange(t, static_cast<unsigned int>(prims), s_vertexCount, start);
         terrainRendererStat(0x270) += static_cast<unsigned int>(prims);           // Renderer +0x6C, then +0x270
         ++it;
-    } while (it != reinterpret_cast<TerrainCullerNode**>(list->last));
+    } while (it != list->data() + list->size());
 }
 
 // (132 B) - "TerrainPointLight": this patch's run of the culler's gathered list (the
@@ -1745,11 +3047,160 @@ void QuadPatch::drawGatheredNodes(TerrainCullerNode**& it, vc71::vector_layout* 
 // and pass 1 above it. Terrain::drawMaskLights is the live caller (the ShaderVersion-1 detail pass,
 // dead on stock shaders, is the other). The once-registered profiler timer (0x10262168,
 // "TerrainPointLight") and its begin/end (sub_10046EE0 / sub_10046EF0) are stat-only scaffolding
-// this tree does not reproduce. Its sibling 0x1018C880 ("TerrainSpotLight", passes 12 / 1) has only
-// the dead detail pass as a caller and is not written.
+// this tree does not reproduce.
 void QuadPatch::drawPointLight(TerrainCullerNode**& it)
 {
     drawGatheredNodes(it, terrain->m_culler->gatheredPatches(), 13, 1);
+}
+
+// PE 0x1018C880. The profiler is registered on first use and destroyed at exit.
+void QuadPatch::drawSpotLight(TerrainCullerNode**& it)
+{
+    static dx9rend::QueueProfiler profiler(std::string("TerrainSpotLight")); // PE 0x102623D8
+    profiler.begin();
+    drawGatheredNodes(it, terrain->m_culler->gatheredPatches(), 12, 1);
+    dx9rend::QueueProfiler::end();
+}
+
+// PE 0x1018BB70, "TerrainOccluderShadows": this patch's run of the culler's gathered list drawn from
+// the index ranges of one fixed LOD row, the light manager's terrain shadow LOD (slot +0x278), not
+// the node's own LOD. With the terrain's merge flag set, the first node binds the scale/translate
+// constant and the vertex stream, and contiguous ranges (the next range starting where the run
+// ends, or ending where it starts) are merged into one draw; a run that cannot be merged is drawn
+// without the empty-count test. Without the flag every node is drawn on its own and nothing is
+// bound. [INFERRED] name (the profiler string and the sibling drawPointLight / drawSpotLight);
+// unreachable in 1.50: no code or data references.
+void QuadPatch::drawOccluderShadows(TerrainCullerNode**& it)
+{
+    static unsigned int s_once = 0;                                               // dword_10261C8C bit 0
+    static unsigned int s_vertexCount = 0;                                        // dword_10261C88
+    Terrain* const t = terrain;
+    if ((s_once & 1u) == 0)
+    {
+        const int n = t->m_patchSize;
+        s_once |= 1u;
+        s_vertexCount = static_cast<unsigned int>((n + 1) * (n + 1));
+    }
+    static dx9rend::QueueProfiler profiler(std::string("TerrainOccluderShadows")); // PE 0x10261A20
+    profiler.begin();
+    const int lod = g_LightManager->getTerrainShadowLod();
+    std::vector<TerrainCullerNode*>* const list = t->m_culler->gatheredPatches();
+    TerrainCullerNode** const end = list->data() + list->size();
+    if (t->m_mergeDrawRanges)
+    {
+        bool bound = false;
+        while (it != end)
+        {
+            TerrainCullerNode* const node = *it;
+            if (node->patch != this)
+                break;
+            const unsigned int* const table = reinterpret_cast<const unsigned int*>(node->lodTable);
+            int start = static_cast<int>(table[16 * lod]);
+            int count = static_cast<int>(table[16 * (lod + 3)]);
+            if (!bound)
+            {
+                float scaleTrans[4];
+                scaleTrans[0] = static_cast<float>(t->m_primaryWorldScale.x * 255.0);
+                scaleTrans[1] = static_cast<float>(t->m_primaryWorldScale.z * 255.0);
+                scaleTrans[2] = worldXf;
+                scaleTrans[3] = worldZf;
+                bound = true;
+                param(t->m_hScaleTransXZ)->setValue(scaleTrans, 0);
+                dx9rend::vertexBufferBindStream(vertexBuffer, t->m_compactVertices ? 1u : 0u);
+            }
+            ++it;
+            bool drawnUnmerged = false;
+            while (it != end)
+            {
+                TerrainCullerNode* const next = *it;
+                if (next->patch != this)
+                    break;
+                const unsigned int* const nextTable = reinterpret_cast<const unsigned int*>(next->lodTable);
+                const int nextStart = static_cast<int>(nextTable[16 * lod]);
+                const int nextCount = static_cast<int>(nextTable[16 * (lod + 3)]);
+                if (nextStart != start + count)
+                {
+                    if (nextStart + nextCount != start)
+                    {
+                        drawPatchRange(t, static_cast<unsigned int>(count / 3), s_vertexCount,
+                                       static_cast<unsigned int>(start));
+                        drawnUnmerged = true;
+                        break;
+                    }
+                    start -= nextCount;
+                }
+                count += nextCount;
+                ++it;
+            }
+            if (!drawnUnmerged && count > 0)
+                drawPatchRange(t, static_cast<unsigned int>(count / 3), s_vertexCount,
+                               static_cast<unsigned int>(start));
+        }
+    }
+    else
+    {
+        while (it != end)
+        {
+            TerrainCullerNode* const node = *it;
+            if (node->patch != this)
+                break;
+            const unsigned int* const table = reinterpret_cast<const unsigned int*>(node->lodTable);
+            const int count = static_cast<int>(table[16 * (lod + 3)]);
+            drawPatchRange(t, static_cast<unsigned int>(count / 3), s_vertexCount, table[16 * lod]);
+            ++it;
+        }
+    }
+    dx9rend::QueueProfiler::end();
+}
+
+// PE 0x1018D5D0, "TerrainMakeDynamicLightMap": when the light manager's shadow updates are enabled and
+// the patch has a lightmap, binds the scale/translate and base-UV constants and the vertex stream,
+// then for each of the three LODs draws the gathered shadow ranges of this patch whose node has that
+// LOD and whose camera distance does not exceed the undergrowth system's view distance, with the
+// light view-projection of the range's shadow record (+0x3B8). Returns without ending the profiler
+// when the guard fails, as shipped. [INFERRED] name (the profiler string); unreachable in 1.50: no code
+// or data references.
+void QuadPatch::drawDynamicLightMap()
+{
+    static unsigned int s_once = 0;                                               // dword_10262D90 bit 1
+    static unsigned int s_vertexCount = 0;                                        // dword_10262B20
+    static dx9rend::QueueProfiler profiler(std::string("TerrainMakeDynamicLightMap")); // PE 0x10262B28
+    profiler.begin();
+    if (!g_LightManager->getShadowUpdatesEnabled())                               // slot +0x128
+        return;
+    if (!lightmap)
+        return;
+    Terrain* const t = terrain;
+    float scaleTrans[4];
+    scaleTrans[0] = static_cast<float>(t->m_primaryWorldScale.x * 255.0);
+    scaleTrans[1] = static_cast<float>(t->m_primaryWorldScale.z * 255.0);
+    scaleTrans[2] = worldXf;
+    scaleTrans[3] = worldZf;
+    param(t->m_hScaleTransXZ)->setValue(scaleTrans, 0);
+    param(t->m_hScaleBaseUV)->setFloat(static_cast<float>(255.0 / static_cast<double>(t->m_patchSize)));
+    dx9rend::vertexBufferBindStream(vertexBuffer, t->m_compactVertices ? 1u : 0u);
+    if ((s_once & 2u) == 0)
+    {
+        s_once |= 2u;
+        const int n = t->m_patchSize;
+        s_vertexCount = static_cast<unsigned int>((n + 1) * (n + 1));
+    }
+    const float viewDistance = static_cast<UndergrowthSystem*>(g_UndergrowthSystem)->getViewDistance();
+    for (int lod = 0; lod < 3; ++lod)
+    {
+        for (unsigned int k = 0; k < t->m_shadowRanges.size(); ++k)
+        {
+            const TerrainShadowRange& record = t->m_shadowRanges[k];
+            if (record.node->lod != lod || !(record.cameraDistance <= viewDistance)
+                || record.patchIndex != patchIndex)
+                continue;
+            param(t->m_hLightViewProj)->setValue(record.shadowRecord + 952, 0);
+            const unsigned int prims = record.count / 3;
+            drawPatchRange(t, prims, s_vertexCount, record.start);
+            terrainRendererStat(0x270) += prims;
+        }
+    }
+    dx9rend::QueueProfiler::end();
 }
 
 // the diffuse passes. "TerrainDiffusePassLod0": per detail layer (the cached layer
@@ -1771,8 +3222,8 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
     }
     beginPatchDraw(this);
     TerrainCullerNode** const begin = it;
-    vc71::vector_layout* const list = t->m_culler->visiblePatches();
-    TerrainCullerNode** const end = reinterpret_cast<TerrainCullerNode**>(list->last);
+    std::vector<TerrainCullerNode*>* const list = t->m_culler->visiblePatches();
+    TerrainCullerNode** const end = list->data() + list->size();
     currentDetailMap = -1;
     int previous = -2;
     if (!t->m_lowQualityB)
@@ -1792,8 +3243,7 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
             }
             if (t->m_hiddenDetailLayer != -1 && t->m_hiddenDetailLayer == layer)
                 continue;
-            QuadPatchDetailLayer* const detailLayer =
-                reinterpret_cast<QuadPatchDetailLayer**>(detailLayers.first)[layer];
+            QuadPatchDetailLayer* const detailLayer = detailLayers.data()[layer];   // unchecked, as shipped
             if (!detailLayer)
                 continue;
             it = begin;
@@ -1811,7 +3261,7 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                 if (!bound)
                 {
                     TerrainDetailTexture* const record =
-                        reinterpret_cast<TerrainDetailTexture**>(t->m_detailTextures.first)[detailLayer->detailIndex];
+                        t->m_detailTextures.data()[detailLayer->detailIndex];
                     if (t->m_currentLod != 0)
                         t->setMorphConstants(0);
                     dx9rend::indexBufferBind(detailLayer->indexBuffer);
@@ -1826,9 +3276,10 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                             currentDetailMap = map;
                             param(t->m_hTexLayer[2])->setValue(detailMap[map], 0);
                         }
-                        // The real EnvMapManager now owns the borrowed texture at +64.
+                        // The real EnvMapManager now owns the borrowed texture (retail +0x64).
                         void* envTexture = record->planeMap ? 0 :
-                            *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(terrainEnvMapManager()) + 0x64);
+                            static_cast<void*>(static_cast<Rend::EnvMapManager*>(
+                                terrainEnvMapManager())->m_currentTexture);
                         if (layer == t->m_currentDetailLayer)
                         {
                             if (record->planeMap)
@@ -1871,7 +3322,7 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                     bound = true;
                 }
                 const unsigned int* const table =
-                    reinterpret_cast<unsigned int**>(node->layerLodTables.first)[layer];
+                    reinterpret_cast<const unsigned int*>(node->layerLodTables.data()[layer]);
                 const unsigned int count = table[48];
                 if (!count)
                 {
@@ -2006,75 +3457,405 @@ void QuadPatch::drawShadow()
     {
         for (unsigned int k = 0; ; ++k)
         {
-            const vc71::vector_layout& ranges = t->m_shadowRanges;
-            if (!ranges.first || k >= static_cast<unsigned int>((ranges.last - ranges.first) / 24))
+            const std::vector<TerrainShadowRange>& ranges = t->m_shadowRanges;
+            if (k >= ranges.size())
                 break;
-            const unsigned int* const record = reinterpret_cast<const unsigned int*>(ranges.first + 24 * k);
-            const TerrainCullerNode* const node = reinterpret_cast<const TerrainCullerNode*>(record[3]);
-            const unsigned char* const shadow = reinterpret_cast<const unsigned char*>(record[2]);
-            if (node->lod == lod && static_cast<int>(record[5]) == patchIndex)
+            const TerrainShadowRange& record = ranges[k];
+            const TerrainCullerNode* const node = record.node;
+            const unsigned char* const shadow = record.shadowRecord;
+            if (node->lod == lod && record.patchIndex == patchIndex)
             {
                 param(t->m_hLightViewProj)->setValue(shadow + 952, 0);
                 param(t->m_hLightViewProjOrtho)->setValue(shadow + 760, 0);
                 param(t->m_hTexLayer[0])->setValue(lightmap, 0);
                 if (t->m_currentLod != lod)
                     t->setMorphConstants(lod);
-                const unsigned int prims = record[1] / 3;
-                drawPatchRange(t, prims, s_vertexCount, record[0]);
+                const unsigned int prims = record.count / 3;
+                drawPatchRange(t, prims, s_vertexCount, record.start);
                 terrainRendererStat(624) += prims;
             }
         }
     }
 }
 
-// one call of sub_1018AC00 per dynamic-shadow record of the LightManager; answers
-// whether any range was written. The record vector stays empty while no template carries flag
-// 0x800 (the directional casters' test, XpLightManager.cpp ~1159), so the loop body - unread - is
-// not entered today. objectManager's `castsDynamicShadow` row sets that flag on about 100 stock
-// templates and is held for this reason (RW-261): with it and dynamic shadows on, this stops.
+namespace {
+
+template<class A, class B> bool shadowRangeLess(A a, B b)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain FILD precision and FCOM's invalid exception.
+    return bf2x87::less(bf2x87::wide(a), bf2x87::wide(b));
+#else
+    return a < b;
+#endif
+}
+
+template<class T> int shadowRangeInt(T value)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Masked invalid FISTP produces the integer indefinite.
+    return bf2x87::toIntTruncate(bf2x87::wide(value));
+#else
+    return static_cast<int>(value);
+#endif
+}
+
+int shadowRangeScaleInt(float value)
+{
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] _ftol2 leaves its low word in EAX, including overflow.
+    return bf2x87::lowWord(bf2x87::toInt64Truncate(bf2x87::wide(value)));
+#else
+    return static_cast<int>(static_cast<long long>(value));
+#endif
+}
+
+// PE 0x10030C60/0x10030C80. Equal and unordered arguments select different sides.
+float shadowRangeMin(float a, float b) { return shadowRangeLess(a, b) ? a : b; }
+float shadowRangeMax(float a, float b) { return shadowRangeLess(a, b) ? b : a; }
+
+} // anonymous namespace
+
+// PE 0x1018AC00.
+void QuadPatch::gatherShadowRecord(unsigned short* indices, int* cursor, LightShadowRecord* shadow,
+                                   std::vector<TerrainShadowRange>& ranges, float extrusionScale,
+                                   unsigned char* any)
+{
+    const unsigned int capacity = terrain->m_indexBufferCount;
+    const float scaleX = terrain->m_primaryWorldScale.x;
+    const float scaleZ = terrain->m_primaryWorldScale.z;
+    if (shadow->flags448[0])
+        return;
+
+    Frustum frustum(shadow->frustum);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The argument is explicitly stored before setFarDist.
+    rendmath::frustumSetFarDist(frustum, bf2x87::store(bf2x87::mul(
+        bf2x87::wide(frustum.getFarDist()), bf2x87::wide(extrusionScale))));
+#else
+    rendmath::frustumSetFarDist(frustum, frustum.getFarDist() * extrusionScale);
+#endif
+    float minX = FLT_MAX, maxX = -FLT_MAX, minZ = FLT_MAX, maxZ = -FLT_MAX;
+    for (int i = 0; i < 8; ++i)
+    {
+        const Vec3& corner = frustum.m_corners[i];
+        if (shadowRangeLess(corner.x, minX)) minX = corner.x;
+        if (!shadowRangeLess(corner.x, maxX)) maxX = corner.x;
+        if (shadowRangeLess(corner.z, minZ)) minZ = corner.z;
+        if (!shadowRangeLess(corner.z, maxZ)) maxZ = corner.z;
+    }
+    if (!shadowRangeLess(minX, scaledXEnd) || !shadowRangeLess(scaledX, maxX) ||
+        !shadowRangeLess(minZ, scaledZEnd) || !shadowRangeLess(scaledZ, maxZ))
+        return;
+
+    for (int lod = 0; lod < 3; ++lod)
+    {
+        std::vector<TerrainCullerNode*>& nodes = *terrain->m_culler->visiblePatches();
+        for (std::vector<TerrainCullerNode*>::iterator it = nodes.begin(); it != nodes.end(); ++it)
+        {
+            TerrainCullerNode* const node = *it;
+            if (node->patch != this || node->lod != lod ||
+                !shadowRangeLess(minX, node->bounds.max.x) ||
+                !shadowRangeLess(node->bounds.min.x, maxX) ||
+                !shadowRangeLess(minZ, node->bounds.max.z) ||
+                !shadowRangeLess(node->bounds.min.z, maxZ))
+                continue;
+
+            int x0 = shadowRangeInt(std::floor(static_cast<double>(
+                shadowRangeMax(minX, node->bounds.min.x)))) - scaledX;
+            int x1 = shadowRangeInt(std::ceil(static_cast<double>(
+                shadowRangeMin(maxX, node->bounds.max.x)))) - scaledX;
+            int z0 = shadowRangeInt(std::floor(static_cast<double>(
+                shadowRangeMax(minZ, node->bounds.min.z)))) - scaledZ;
+            int z1 = shadowRangeInt(std::ceil(static_cast<double>(
+                shadowRangeMin(maxZ, node->bounds.max.z)))) - scaledZ;
+            const int alignment = 2 << lod;
+            x0 -= std::abs(x0 % alignment);
+            const int xRemainder = std::abs(x1 % alignment);
+            if (xRemainder) x1 += alignment - xRemainder;
+            z0 -= std::abs(z0 % alignment);
+            const int zRemainder = std::abs(z1 % alignment);
+            if (zRemainder) z1 += alignment - zRemainder;
+            const int divisorX = shadowRangeScaleInt(scaleX);
+            x0 /= divisorX;
+            x1 /= divisorX;
+            const int divisorZ = shadowRangeScaleInt(scaleZ);
+            z0 /= divisorZ;
+            z1 /= divisorZ;
+            const int stride = terrain->m_patchSize + 1;
+            if (!indices)
+                terrain->lockDynamicIndexBuffer();
+            // Shipped defect: locking updates Terrain's pointer, but never refreshes indices.
+            if (any)
+                *any = 1;
+            const int start = *cursor;
+            const int step = 1 << lod;
+            int edgeX0 = 0, edgeZ0 = 0, edgeX1 = 0, edgeZ1 = 0;
+            const bool cracked = node->crackMask != 0;
+            if (cracked)
+            {
+                edgeX0 = (shadowRangeInt(node->bounds.min.x) - scaledX) / divisorX;
+                edgeZ0 = (shadowRangeInt(node->bounds.min.z) - scaledZ) / divisorZ;
+                edgeX1 = (shadowRangeInt(node->bounds.max.x) - scaledX) / divisorX - step;
+                edgeZ1 = (shadowRangeInt(node->bounds.max.z) - scaledZ) / divisorZ - step;
+            }
+
+            const auto vertex = [stride](int x, int z) -> unsigned short {
+                return static_cast<unsigned short>(static_cast<unsigned int>(stride) *
+                    static_cast<unsigned int>(z) + static_cast<unsigned int>(x));
+            };
+            const auto triangle = [indices, cursor](unsigned short a, unsigned short b,
+                                                     unsigned short c) {
+                indices[*cursor] = a; ++*cursor;
+                indices[*cursor] = b; ++*cursor;
+                indices[*cursor] = c; ++*cursor;
+            };
+            for (int z = z0; z < z1; z += step)
+            {
+                for (int x = x0; x < x1; x += step)
+                {
+                    if (capacity < static_cast<unsigned int>(*cursor) + (cracked ? 12u : 6u))
+                        goto rangeComplete;
+                    const int crackMask = node->crackMask;
+                    const unsigned short a = vertex(x, z);
+                    const unsigned short b = vertex(x + step, z);
+                    const unsigned short c = vertex(x, z + step);
+                    const unsigned short d = vertex(x + step, z + step);
+                    const unsigned short e = vertex(x + step / 2, z);
+                    const unsigned short f = vertex(x, z + step / 2);
+                    const unsigned short g = vertex(x + step, z + step / 2);
+                    const unsigned short h = vertex(x + step / 2, z + step);
+                    if (!cracked)
+                    {
+                        triangle(a, b, c); triangle(c, b, d);
+                    }
+                    else if (z == edgeZ0 && x == edgeX0 && (crackMask & 5) == 5)
+                    {
+                        triangle(a, e, f); triangle(e, b, c);
+                        triangle(f, e, c); triangle(c, b, d);
+                    }
+                    else if (z == edgeZ0 && x == edgeX1 && (crackMask & 9) == 9)
+                    {
+                        triangle(a, e, c); triangle(e, b, c);
+                        triangle(c, b, g); triangle(c, g, d);
+                    }
+                    else if (z == edgeZ1 && x == edgeX0 && (crackMask & 6) == 6)
+                    {
+                        triangle(a, b, f); triangle(f, b, c);
+                        triangle(c, b, h); triangle(h, b, d);
+                    }
+                    else if (z == edgeZ1 && x == edgeX1 && (crackMask & 10) == 10)
+                    {
+                        triangle(a, b, c); triangle(h, g, d);
+                        triangle(c, b, h); triangle(h, b, g);
+                    }
+                    else if (z == edgeZ0 && (crackMask & 1))
+                    {
+                        triangle(a, e, c); triangle(e, b, c); triangle(c, b, d);
+                    }
+                    else if (z == edgeZ1 && (crackMask & 2))
+                    {
+                        triangle(a, b, c); triangle(c, b, h); triangle(h, b, d);
+                    }
+                    else if (x == edgeX0 && (crackMask & 4))
+                    {
+                        triangle(a, b, f); triangle(f, b, c); triangle(c, b, d);
+                    }
+                    else if (x == edgeX1 && (crackMask & 8))
+                    {
+                        triangle(a, b, c); triangle(c, b, g); triangle(c, g, d);
+                    }
+                    else
+                    {
+                        triangle(a, b, c); triangle(c, b, d);
+                    }
+                }
+            }
+rangeComplete:
+            TerrainShadowRange range;
+            range.start = static_cast<unsigned int>(start);
+            range.count = static_cast<unsigned int>(*cursor - start);
+            range.shadowRecord = reinterpret_cast<const unsigned char*>(shadow);
+            range.node = node;
+            const Mat4* const camera = dx9rend::rendererGetRenderViewDup()->getViewMatrixPtr();
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Keep both distances through FSQRT until the record store.
+            bf2x87::Real dx = bf2x87::wide(0.0f), dz = bf2x87::wide(0.0f);
+            if (shadowRangeLess(camera->m[12], minX))
+                dx = bf2x87::sub(bf2x87::wide(minX), bf2x87::wide(camera->m[12]));
+            else if (shadowRangeLess(maxX, camera->m[12]))
+                dx = bf2x87::sub(bf2x87::wide(camera->m[12]), bf2x87::wide(maxX));
+            if (shadowRangeLess(camera->m[14], minZ))
+                dz = bf2x87::sub(bf2x87::wide(minZ), bf2x87::wide(camera->m[14]));
+            else if (shadowRangeLess(maxZ, camera->m[14]))
+                dz = bf2x87::sub(bf2x87::wide(camera->m[14]), bf2x87::wide(maxZ));
+            range.cameraDistance = bf2x87::store(bf2x87::squareRoot(bf2x87::add(
+                bf2x87::mul(dx, dx), bf2x87::mul(dz, dz))));
+#else
+            float dx = 0.0f, dz = 0.0f;
+            if (camera->m[12] < minX) dx = minX - camera->m[12];
+            else if (camera->m[12] > maxX) dx = camera->m[12] - maxX;
+            if (camera->m[14] < minZ) dz = minZ - camera->m[14];
+            else if (camera->m[14] > maxZ) dz = camera->m[14] - maxZ;
+            range.cameraDistance = std::sqrt(dx * dx + dz * dz);
+#endif
+            range.patchIndex = patchIndex;
+            ranges.push_back(range);
+        }
+    }
+}
+
+// PE 0x1018BAE0. Refresh the vector's current begin/end for every record.
 bool QuadPatch::gatherShadowRanges(void** lockedIndices, int* cursor)
 {
     unsigned char any = 0;
-    const vc71::vector_layout& records = terrainShadowRecords();
+    std::vector<LightShadowRecord>& records = terrainShadowRecords();
     for (unsigned int i = 0; ; ++i)
     {
-        if (!records.first || i >= static_cast<unsigned int>((records.last - records.first) / 1176))
+        if (i >= records.size())
             break;
-        (void)lockedIndices;
-        (void)cursor;
-        RD9_FRONTIER("dice::hfe::geom::QuadPatch::gatherShadowRanges (sub_1018AC00 - the shadow "
-                     "record vs patch range gather into Terrain +0x36C; unread, 3.8 KB)", 0x00);
+        gatherShadowRecord(static_cast<unsigned short*>(*lockedIndices), cursor, &records[i],
+                           terrain->m_shadowRanges, terrain->m_shadowExtrusionScale, &any);
     }
     return any != 0;
 }
 
-// the Ra water submit: an RaQuadPatchAdapter over this patch's streams, a lighting
-// block with this patch's lightmap, the sky light into the light record, the cell's transform,
-// then one pooled submit per merged LOD range into RSMTWater through the adapter server
-// (dword_1026743C: sub_101BBE20 binds the settings, sub_101BBEB0 takes a pooled adapter and
-// queues the entry). All of it is read; none of it is written, because no shipped shader defines
-// the "ShaderVersion" that selects this arm (see TerrainDraw.cpp) - it stops at the adapter.
-void QuadPatch::drawWater(TerrainCullerNode**& it, vc71::vector_layout* list,
+// PE 0x1018D800. Builds the patch's water streams, lightmap, lighting record and transform.
+void QuadPatch::drawWater(TerrainCullerNode**& it, std::vector<TerrainCullerNode*>* list,
                           void* materialParameters, void* objectParameters)
 {
     static unsigned int s_once = 0;                                               // dword_1026326C
     static unsigned int s_vertexCount = 0;                                        // dword_10263268
-    (void)materialParameters;
-    (void)objectParameters;
     if ((s_once & 1u) == 0)
     {
         const int n = terrain->m_patchSize;
         s_once |= 1u;
         s_vertexCount = static_cast<unsigned int>((n + 1) * (n + 1));
     }
-    RD9_FRONTIER("dice::hfe::geom::QuadPatch::drawWater (sub_1018D800 - the RaQuadPatchAdapter "
-                 "(sub_101BBCB0) and its pooled server dword_1026743C (sub_101BBE20 / sub_101BBEB0 / "
-                 "sub_101BC7C0), read but unwritten; reachable only when a water RaShader defines "
-                 "ShaderVersion == 1)", 0x00);
-    // Continue mode only: skip this patch's entries so the caller's loop can end. Not recovered.
-    TerrainCullerNode** const end = reinterpret_cast<TerrainCullerNode**>(list->last);
-    while (it != end && (*it)->patch == this)
-        ++it;
+    RaQuadPatchAdapter adapter(terrain->m_compactVertices ? terrain->m_baseGridVertexBuffer : 0,
+                               vertexBuffer, terrain->m_lodIndexBuffer, terrain->m_vertexDeclaration);
+    dx9rend::Ra::RaLightingParameters lighting;
+    lighting.lightMapOffset.value[0] = 1.0f;
+    lighting.lightMapOffset.value[1] = 1.0f;
+    lighting.lightMapOffset.value[2] = 0.0f;
+    lighting.lightMapOffset.value[3] = 0.0f;
+    IUnknown* const lightTexture = static_cast<dx9rend::EngineTexture*>(lightmap)->baseTexture;
+    IUnknown*& storedTexture = *reinterpret_cast<IUnknown**>(&lighting.lightMap.value);
+    if (storedTexture != lightTexture)
+    {
+        if (storedTexture)
+            storedTexture->Release();
+        storedTexture = lightTexture;
+        if (lightTexture)
+            lightTexture->AddRef();
+    }
+    if (world::LightSource* const sky = g_LightManager->getSkyLight())
+    {
+        const float* direction = terrainSkyLightDirection(sky);
+        lightRecord[4] = direction[1];
+        lightRecord[3] = direction[0];
+        lightRecord[5] = direction[2];
+        const float* color = terrainSkyLightColor(sky);
+        lightRecord[6] = color[0];
+        lightRecord[7] = color[1];
+        lightRecord[8] = color[2];
+    }
+    RaMaterialParameters& material = *static_cast<RaMaterialParameters*>(materialParameters);
+#if defined(__APPLE__)
+    const bf2x87::Real unpackX = bf2x87::mul(
+        bf2x87::wide(terrain->m_primaryWorldScale.x), bf2x87::wide(255.0f));
+    const bf2x87::Real unpackZ = bf2x87::mul(
+        bf2x87::wide(terrain->m_primaryWorldScale.z), bf2x87::wide(255.0f));
+    material.posUnpack.value[2] = 0.0f;
+    material.posUnpack.value[0] = bf2x87::store(unpackX);
+    material.posUnpack.value[3] = 0.0f;
+    material.posUnpack.value[1] = bf2x87::store(unpackZ);
+#else
+    material.posUnpack.value[2] = 0.0f;
+    material.posUnpack.value[0] = terrain->m_primaryWorldScale.x * 255.0f;
+    material.posUnpack.value[3] = 0.0f;
+    material.posUnpack.value[1] = terrain->m_primaryWorldScale.z * 255.0f;
+#endif
+    material.normalUnpack.value[0] = terrain->m_primaryWorldScale.y;
+    material.normalUnpack.value[1] = 1.0f;
+#if defined(__APPLE__)
+    material.texUnpack.value = bf2x87::store(bf2x87::div(
+        bf2x87::wide(255.0f), bf2x87::wide(terrain->m_patchSize)));
+#else
+    material.texUnpack.value = 255.0f / terrain->m_patchSize;
+#endif
+    dx9rend::Ra::RaObjectParameters& object = *static_cast<dx9rend::Ra::RaObjectParameters*>(objectParameters);
+    for (int i = 0; i != 16; ++i)
+        object.world.value[i] = i % 5 == 0 ? 1.0f : 0.0f;
+    object.world.value[12] += worldXf;
+    object.world.value[14] += worldZf;
+    RaQuadPatchQueue* target = static_cast<RaQuadPatchQueue*>(
+        static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues)->slots[9]);
+    raQuadPatchAdapterCheckWaterQueue(target);
+    // The queue is read again after the assertion, as in PE 0x1018DA09.
+    target = static_cast<RaQuadPatchQueue*>(
+        static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues)->slots[9]);
+    raQuadPatchAdapterSetSettings(target, adapter, &material, &object, lighting,
+        *reinterpret_cast<const dx9rend::Ra::RaLightRecord*>(lightRecord));
+    if (terrain->m_mergeDrawRanges)
+    {
+        static dx9rend::QueueProfiler profiler(std::string("Water2")); // PE 0x10263000, guard bit 2
+        profiler.begin();
+        while (it != list->data() + list->size())
+        {
+            TerrainCullerNode* const node = *it;
+            if (node->patch != this)
+                break;
+            unsigned int start = lodStart(node);
+            unsigned int count = lodCount(node);
+            ++it;
+            bool flushed = false;
+            while (it != list->data() + list->size())
+            {
+                TerrainCullerNode* const next = *it;
+                if (next->patch != this)
+                    break;
+                const unsigned int nextStart = lodStart(next);
+                const unsigned int nextCount = lodCount(next);
+                if (node->lod != next->lod || start + count != nextStart)
+                {
+                    if (node->lod != next->lod || nextStart + nextCount != start)
+                    {
+                        // Shipped behavior: a discontinuity submits even a nonpositive count.
+                        raQuadPatchAdapterSubmit(static_cast<int>(count) / 3, s_vertexCount,
+                            terrain->m_primitiveType, 0, 0, start);
+                        flushed = true;
+                        break;
+                    }
+                    start -= nextCount;
+                }
+                count += nextCount;
+                ++it;
+            }
+            if (!flushed && static_cast<int>(count) > 0)
+                raQuadPatchAdapterSubmit(static_cast<int>(count) / 3, s_vertexCount,
+                    terrain->m_primitiveType, 0, 0, start);
+        }
+        dx9rend::QueueProfiler::end();
+    }
+    else
+    {
+        static dx9rend::QueueProfiler profiler(std::string("Water2")); // PE 0x10262D98, guard bit 4
+        profiler.begin();
+        while (it != list->data() + list->size())
+        {
+            TerrainCullerNode* const node = *it;
+            if (node->patch != this)
+                break;
+            const int primitives = static_cast<int>(lodCount(node)) / 3;
+            const unsigned int start = lodStart(node);
+            raQuadPatchAdapterSubmit(primitives, s_vertexCount, terrain->m_primitiveType, 0, 0, start);
+            ++terrainRendererStat(0x268);
+            terrainRendererStat(0x26C) += primitives;
+            ++it;
+        }
+        dx9rend::QueueProfiler::end();
+    }
 }
 
 } // namespace geom

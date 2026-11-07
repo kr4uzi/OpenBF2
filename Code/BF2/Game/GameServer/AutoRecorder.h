@@ -6,6 +6,9 @@
 #define GAME_GAMESERVER_AUTORECORDER_H
 
 #include <string>
+#if !defined(_WIN32)
+#include <atomic>
+#endif
 
 #include "../IEventListener.h"
 #include "../../Core/Mutex.h"
@@ -41,7 +44,12 @@ private:
     /* +0x10 */ std::string  m_hookCommand;    // sv.autoDemoHook, copied by init
     /* +0x14 */ AutoRecorder* m_owner;         // hookCompleted's receiver
     /* +0x18 */ Mutex*       m_mutex;          // the owner'S mutex, not one of its own
+#if defined(_WIN32)
     /* +0x1C */ bool         m_quit;           // set by ~AutoRecorder before Thread::stop
+#else
+    // [CHOSEN, not recovered] POSIX: run also reads this flag while the owner mutex is unlocked.
+    std::atomic<bool> m_quit;
+#endif
 };
 
 // AutoRecorder - ELF ctor 0x809FD20 (C1, 298 B), dtor 0x809FF90 (D1) / 0x80A00D0 (D0),

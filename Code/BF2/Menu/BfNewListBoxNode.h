@@ -16,7 +16,7 @@ public:
     ~BfNewListBoxNode() override;
     TypeDescriptor* getType() override;
     unsigned int getObjectSize() override;
-    bool streamProperties(System*, Stream*) override; // 7C33E0 [FRONTIER]
+    bool streamProperties(System*, Stream*) override; // 7C33E0
     bool updateSelf(System*, const NodeState*, const Rect*, float) override;
     void paintSelf(System*, const NodeState*, const Rect*, const Rect*, RenderContext*) override;
     bool onEvent1(System*, const Rect*, const NodeState*, int, int, int) override; // 7C40A0 [FRONTIER]
@@ -42,8 +42,8 @@ protected:
     BfListBoxData* m_data;                            // +14, borrowed
     float m_rowHeight, m_spacing, m_borderWidth, m_scrollWidth; // +18..24
     float m_field028, m_field02c, m_field030;
-    int m_fonts[5];                                  // +34..44
-    union { Action* m_selectAction; int m_font048; }; // +48: both streamed here in retail
+    FontHandle m_fonts[5];                           // +34..44
+    union { Action* m_selectAction; FontHandle m_font048; }; // +48: both streamed here in retail
     // Actions invoked on release inside the list and on a press elsewhere. [UNRESOLVED] Role names.
     Action* m_field04c;                               // +4C, run by onEvent1 on release
     Action* m_focusAction;                            // +50

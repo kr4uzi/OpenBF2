@@ -172,15 +172,16 @@ public:
                                 int& hitPart, const Vec3& from, const Vec3& direction,
                                 ObjectPredicator* pred, bool b1, bool b2, bool b3,
                                 bool b4, unsigned int u);                       // +0x68
-    // The capsule test - the soldier hit volume.
+    // Sweeps a sphere along a direction delta; returns whether candidates existed.
     virtual bool  intersectPill(std::vector<Vec3>& hitPoints, std::vector<Vec3>& hitNormals,
-                                const Vec3& from, const Vec3& to, float radius,
+                                const Vec3& from, const Vec3& direction, float radius,
                                 ObjectPredicator* pred, bool b);                // +0x6C
     virtual bool  intersectLineWithSpheres(IObject*& hitObject, Vec3& hitPoint,
                                 Vec3& hitNormal, int& hitPart, const Vec3& from,
-                                const Vec3& to, ObjectPredicator* pred,
-                                ObjectPredicator* pred2, float radius);         // +0x70
-    virtual IObject* raycast(const Vec3& from, const Vec3& to, ObjectPredicator* pred,
+                                const Vec3& direction, ObjectPredicator* pred,
+                                ObjectPredicator* pred2, float probabilityScale); // +0x70
+    // PE 0x00727850 / ELF 0x08318940 return a Boolean; outPart is unused.
+    virtual bool raycast(const Vec3& from, const Vec3& direction, ObjectPredicator* pred,
                                 ObjectPredicator* pred2, unsigned int* outPart); // +0x74
 
     // [PLATFORM] Keep the shared source order for render-culling overloads. GCC preserves
@@ -358,6 +359,12 @@ private:
                                     ObjectPredicator* predicator,
                                     bool frustumTestEachObject,
                                     float unused, float fadeStep);
+
+    void getObjectsFromGridNoCullConstInternal(bool collisionObjects, const Frustum& frustum,
+                                               std::vector<IObject*>& out,
+                                               ObjectPredicator* predicator,
+                                               bool frustumTestEachObject,
+                                               float unused, float unusedFadeStep);
 
     // Fades one object, adds it, and recurses into its children.
     void cullAndAddObjectHierarchy(IObject* object, std::vector<IObject*>& out,

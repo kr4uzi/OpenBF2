@@ -11,6 +11,10 @@
 #ifdef BF2_IMAGE_SWIFFPLAYER
 
 #include "../../../../RendDX9Abi/HfeAbi.h"
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native callbacks use the host's pointer-sized event arguments.
+#include "../../../Game/IEventListener.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -19,9 +23,21 @@ namespace ui {
 // The one-slot event interface, the same shape RendDX9's ModuleGeom carries (PluginModules.h): the
 // EventManager pushes four dwords, the handler tests the first two - (category, id). A local copy
 // rather than a shared one so the SwiffPlayer image does not depend on the RendDX9 module headers.
+#if !defined(_MSC_VER)
+class ECCoreEventHandler : public ::dice::hfe::IEventListener
+#else
 class ECCoreEventHandler
+#endif
 {
 public:
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Both module bodies inspect only category and id.
+    // Preserve their recovered helper while publishing the actual host callback.
+    void handleEvent(EventCategory category, unsigned int id, EventNode*, void*) override
+    {
+        handleCoreModuleEvent(static_cast<int>(category), static_cast<int>(id), 0, 0);
+    }
+#endif
     virtual void handleCoreModuleEvent(int category, int id, int a3, int a4) = 0;   // +0x00
 
 protected:

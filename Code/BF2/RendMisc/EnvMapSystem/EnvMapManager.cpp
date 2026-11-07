@@ -9,28 +9,24 @@
 #include "../../RendDX9/Texture.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../Math/Mat4.h"
+#include "../../../RendDX9Abi/BfMemory.h"
 #include "../../../RendDX9Abi/EngineFile.h"
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h"
+#endif
+#if defined(_WIN32)
+#include <dxerr9.h>
+#pragma comment(lib, "dxerr9.lib")
+#endif
 #include <cmath>
 #include <cstdio>
 #include <map>
 #include <new>
 #include <sstream>
 #include <string>
-
-// d3dx9_25 exports undecorated names; the decorated references resolve at link time (the Effect.cpp
-// /alternatename convention, D3dx9_25.def's header). Both are real static imports of the shipped
-// image (IAT 0x101DB4C4 and 0x101DB4A8).
-extern "C" HRESULT WINAPI D3DXLoadSurfaceFromSurface(
-    IDirect3DSurface9* destination, const PALETTEENTRY* destinationPalette,
-    const RECT* destinationRect, IDirect3DSurface9* source,
-    const PALETTEENTRY* sourcePalette, const RECT* sourceRect,
-    DWORD filter, D3DCOLOR colourKey);
-extern "C" HRESULT WINAPI D3DXFilterTexture(
-    IDirect3DBaseTexture9* baseTexture, const PALETTEENTRY* palette, UINT sourceLevel, DWORD filter);
-#pragma comment(linker, "/alternatename:_D3DXLoadSurfaceFromSurface@32=_D3DXLoadSurfaceFromSurface")
-#pragma comment(linker, "/alternatename:_D3DXFilterTexture@16=_D3DXFilterTexture")
 
 namespace dice { namespace hfe {
 namespace dx9rend {
@@ -40,27 +36,6 @@ bool rendererRenderEnvMapFace(unsigned int size,EngineTexture* cube,int face,con
 }
 namespace Rend {
 namespace {
-void freeVector(vc71::vector_layout& value)
-{
-    if(value.first)::renddx9abi::engineFree(value.first);
-    value.first=value.last=value.end=0;
-}
-// Container operations stay source-level; VC7.1 bridge allocation/growth is tracked by RW-74.
-void clearStringMap(vc71::map_layout& map)
-{ while(vc71::map_node* n=vc71::mapFirst(map))vc71::mapErase(map,n); }
-void freePlainTree(vc71::map_node* n,vc71::map_node* head)
-{
-    if(n==head)return;
-    freePlainTree(n->right,head);
-    freePlainTree(n->left,head);
-    ::renddx9abi::engineFree(n);
-}
-void clearPlainMap(vc71::map_layout& map)
-{
-    freePlainTree(map.head->parent,map.head);
-    map.head->left=map.head->right=map.head->parent=map.head;
-    map.size=0;
-}
 void releaseTexture(dx9rend::EngineTexture* texture)
 {
     if(texture && --texture->refCount==0)
@@ -68,123 +43,164 @@ void releaseTexture(dx9rend::EngineTexture* texture)
 }
 }
 
+// PE 0x101BF0F0 (three zero words, byte +0xC, texture +0x10; the record is shared with the Terrain water envmap record)
 EnvMapEntry::EnvMapEntry() : flag(false),texture(0)
 { position.x=position.y=position.z=0; } // padding untouched
+// PE 0x101C0990
 EnvMapManager::EnvMapManager() : m_refCount(1)
 {
-    m_objects.first=m_objects.last=m_objects.end=0;
-    m_templates.construct(48);
-    m_pendingRemoval.first=m_pendingRemoval.last=m_pendingRemoval.end=0;
-    m_map34.construct(24); m_map40.construct(24); m_maps.construct(48);
     m_currentTexture=0; m_templateCount=0; m_enabled=true; m_perPixelEnabled=true;
 }
+// PE 0x101C0770
 EnvMapManager::~EnvMapManager()
 {
-    // 101C0770 preserves cleanup order; the object's no-dtor vtable stays installed.
+    // 101C0770 preserves cleanup order; the object's no-dtor vtable stays installed. The member
+    // destructors then release the containers in 101C0770's order (reverse declaration order):
+    // m_maps, m_map40, m_map34, m_pendingRemoval, m_templates, m_objects.
     flushRemovals(); clearObjects(); clearMaps();
-    clearStringMap(m_maps); ::renddx9abi::engineFree(m_maps.head); m_maps.head=0; m_maps.size=0;
-    clearPlainMap(m_map40); ::renddx9abi::engineFree(m_map40.head); m_map40.head=0; m_map40.size=0;
-    clearPlainMap(m_map34); ::renddx9abi::engineFree(m_map34.head); m_map34.head=0; m_map34.size=0;
-    freeVector(m_pendingRemoval);
-    clearStringMap(m_templates); ::renddx9abi::engineFree(m_templates.head); m_templates.head=0; m_templates.size=0;
-    freeVector(m_objects);
 }
 void EnvMapManager::addRef() { ++m_refCount; }
 int EnvMapManager::getRef() { return m_refCount; }
+// PE 0x101C1F70
 int EnvMapManager::release()
 {
     const int result=--m_refCount;
     if(!result){ this->~EnvMapManager(); ::renddx9abi::engineFree(this); }
     return result;
 }
+// PE 0x101C1F00
 void* EnvMapManager::queryInterface(unsigned int iid) const
 { return iid==1u || iid==820202u ? const_cast<EnvMapManager*>(this):0; }
 void EnvMapManager::reset()
 { m_currentTexture=0; m_templateCount=0; m_perPixelEnabled=true; }
+// PE 0x101BFA10
 EnvMapObject* EnvMapManager::createObject(EnvMapObjectTemplate* objectTemplate)
 {
-    void* storage=::renddx9abi::engineAlloc(0x1C);
+    void* storage=::renddx9abi::engineAlloc(sizeof(EnvMapObject));
     EnvMapObject* object=storage ? new(storage) EnvMapObject(objectTemplate):0;
-    vc71::vectorPushBackIn(m_objects,4,&object);
+    m_objects.push_back(object);
     return object;
 }
+// PE 0x101BFA90
 void EnvMapManager::queueRemoval(EnvMapObject* object)
-{ vc71::vectorPushBackIn(m_pendingRemoval,4,&object); }
-EnvMapObjectTemplate* EnvMapManager::getTemplate(const vc71::string& name)
+{ m_pendingRemoval.push_back(object); }
+EnvMapObjectTemplate* EnvMapManager::getTemplate(const std::string& name)
 {
-    if(vc71::map_node* n=vc71::mapFindInsensitive(m_templates,name))
-        return static_cast<EnvMapObjectTemplate*>(vc71::mapNodeValue(n));
+    const auto found=m_templates.find(name);
+    if(found!=m_templates.end())
+        return found->second;
     if(m_templateCount>=256)
         ::renddx9abi::logf("RendMisc/EnvMapSystem/EnvMapManager.cpp:120 To many EnvMapManager templates");
-    void* storage=::renddx9abi::engineAlloc(0x28);
+    void* storage=::renddx9abi::engineAlloc(sizeof(EnvMapObjectTemplate));
     EnvMapObjectTemplate* value=storage ? new(storage) EnvMapObjectTemplate(name):0;
-    vc71::mapNodeValueRef(vc71::mapInsertInsensitive(m_templates,48,name))=value;
+    m_templates[name]=value;
     ++m_templateCount;
     return value;
 }
 void EnvMapManager::removeTemplate(EnvMapObjectTemplate*) {} // exactly RET4
+// PE 0x101C1F30
 void EnvMapManager::setEnabled(bool value) { m_enabled=value; }
 bool EnvMapManager::getEnabled() const { return m_enabled; }
 void EnvMapManager::setPerPixelEnabled(bool value) { m_perPixelEnabled=value; }
 bool EnvMapManager::getPerPixelEnabled() const { return m_perPixelEnabled; }
+// PE 0x101BFC40
 void EnvMapManager::clear()
 {
     m_currentTexture=0; m_templateCount=0;
     flushRemovals(); clearObjects(); clearMaps();
 }
+// PE 0x101BFAF0
 void EnvMapManager::flushRemovals()
 {
-    for(EnvMapObject** item=reinterpret_cast<EnvMapObject**>(m_pendingRemoval.first);
-        item!=reinterpret_cast<EnvMapObject**>(m_pendingRemoval.last);++item)
+    for(auto item=m_pendingRemoval.begin();item!=m_pendingRemoval.end();++item)
     {
-        EnvMapObject** begin=reinterpret_cast<EnvMapObject**>(m_objects.first);
-        EnvMapObject** end=reinterpret_cast<EnvMapObject**>(m_objects.last);
-        EnvMapObject** found=begin;
+        const auto end=m_objects.end();
+        auto found=m_objects.begin();
         while(found!=end && *found!=*item)++found;
         if(found!=end)
         {
             *found=*(end-1);
-            if(begin && end!=begin)m_objects.last-=4;
+            if(!m_objects.empty())m_objects.pop_back();
             if(*item)delete *item;
         }
     }
-    m_pendingRemoval.last=m_pendingRemoval.first;
+    m_pendingRemoval.clear();
 }
+// PE 0x101BF8E0
 void EnvMapManager::clearObjects()
 {
-    for(vc71::map_node* n=vc71::mapFirst(m_templates);n;n=vc71::mapNext(m_templates,n))
-        if(void* value=vc71::mapNodeValue(n))delete static_cast<EnvMapObjectTemplate*>(value);
-    for(void** item=reinterpret_cast<void**>(m_objects.first);item!=reinterpret_cast<void**>(m_objects.last);++item)
-        if(*item)delete static_cast<EnvMapObject*>(*item);
-    m_pendingRemoval.last=m_pendingRemoval.first;
-    clearStringMap(m_templates);
-    clearPlainMap(m_map34);
-    freeVector(m_objects); m_templateCount=0;
+    const auto templatesEnd=m_templates.end();
+    for(auto n=m_templates.begin();n!=templatesEnd;++n)
+        if(EnvMapObjectTemplate* value=n->second)delete value;
+    const auto objectsEnd=m_objects.end();
+    for(auto item=m_objects.begin();item!=objectsEnd;++item)
+        if(*item)delete *item;
+    m_pendingRemoval.clear();
+    m_templates.clear();
+    m_map34.clear();
+    m_objects.clear(); m_templateCount=0;
 }
+// PE 0x101BFB70
 void EnvMapManager::clearMaps()
 {
-    for(vc71::map_node* n=vc71::mapFirst(m_maps);n;n=vc71::mapNext(m_maps,n))
+    for(auto n=m_maps.begin();n!=m_maps.end();++n)
     {
-        EnvMapEntry* value=static_cast<EnvMapEntry*>(vc71::mapNodeValue(n));
+        EnvMapEntry* value=n->second;
         releaseTexture(value->texture);
         // Separate cache eviction after our reference decrement, even if it deleted the wrapper.
         dx9rend::textureManagerEvictFromCache(value->texture);
         ::renddx9abi::engineFree(value);
     }
-    clearStringMap(m_maps);
+    m_maps.clear();
 }
+// PE 0x101BF860
 void EnvMapManager::removeEntry(EnvMapEntry* value)
 {
     // owns neither the entry nor cache eviction; only texture reference and map node.
-    if(!m_maps.size)return;
-    for(vc71::map_node* n=vc71::mapFirst(m_maps);n;n=vc71::mapNext(m_maps,n))
-        if(vc71::mapNodeValue(n)==value)
-        { releaseTexture(value->texture); vc71::mapErase(m_maps,n); return; }
+    if(m_maps.empty())return;
+    for(auto n=m_maps.begin();n!=m_maps.end();++n)
+        if(n->second==value)
+        { releaseTexture(value->texture); m_maps.erase(n); return; }
 }
-bool EnvMapManager::loadInfo(const vc71::string& path)
+// PE 0x101BFD40: unreachable in 1.50: no code or data references. [INFERRED] name.
+// Returns the record of the first map entry whose position is within FLT_EPSILON of the argument on
+// every axis (walked in key order). Otherwise it builds a zeroed record at the argument position and
+// files it under the "=%i=%i=%i" key of the truncated coordinates; a key that already exists keeps its
+// node and the previous record is dropped without being freed (m_maps[key] = entry, as in retail).
+EnvMapEntry* EnvMapManager::findOrCreateMapEntry(const Vec3* position)
+{
+    for(auto n=m_maps.begin();n!=m_maps.end();++n)
+    {
+        const EnvMapEntry* const candidate=n->second;
+        const float epsilon=1.1920929e-07f;     // 0x34000000, .rdata 0x101E05A0
+        if(std::fabs(static_cast<double>(candidate->position.x)-position->x)<=epsilon &&
+           std::fabs(static_cast<double>(candidate->position.y)-position->y)<=epsilon &&
+           std::fabs(static_cast<double>(candidate->position.z)-position->z)<=epsilon)
+            return n->second;
+    }
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Preserve FISTP's integer-indefinite result on the native port.
+    const int z=bf2x87::toIntTruncate(bf2x87::wide(position->z));
+    const int y=bf2x87::toIntTruncate(bf2x87::wide(position->y));
+    const int x=bf2x87::toIntTruncate(bf2x87::wide(position->x));
+#else
+    const int z=static_cast<int>(position->z);
+    const int y=static_cast<int>(position->y);
+    const int x=static_cast<int>(position->x);
+#endif
+    char key[256];
+    sprintf(key,"=%i=%i=%i",x,y,z);
+    void* storage=::renddx9abi::engineAlloc(sizeof(EnvMapEntry));
+    EnvMapEntry* entry=storage ? new(storage) EnvMapEntry:0;
+    entry->position=*position;
+    m_maps[key]=entry;
+    return entry;
+}
+// PE 0x101BFF50
+bool EnvMapManager::loadInfo(const std::string& path)
 {
     ::renddx9abi::EngineStream file;
-    if(!file.open(path))
+    if(!file.open(path, 2, 0, 0))
     {
         ::renddx9abi::logf("RendMisc/EnvMapSystem/EnvMapManager.cpp:308 Couldn't open EMI file \"%s\"",path.c_str());
         return false;
@@ -206,13 +222,14 @@ bool EnvMapManager::loadInfo(const vc71::string& path)
             return false;
         }
         bytes[size]='\n'; bytes[size+1]=0;
+        std::string line;
         std::istringstream input{std::string(bytes)};
         char buffer[1024];
         input.getline(buffer,1023);
         // The retail loop tests eofbit only, including its long-line failure behaviour.
         while(!input.eof())
         {
-            std::string line(buffer);
+            line=buffer;
             if(!line.empty() && line.back()=='\r')line.erase(line.size()-1);
             if(!line.empty())
             {
@@ -226,13 +243,13 @@ bool EnvMapManager::loadInfo(const vc71::string& path)
                     bool flag;
                     record>>x; record.get(delimiter); record>>y; record.get(delimiter);
                     record>>z; record.get(delimiter); record>>flag;
-                    void* storage=::renddx9abi::engineAlloc(0x14);
+                    void* storage=::renddx9abi::engineAlloc(sizeof(EnvMapEntry));
                     EnvMapEntry* entry=storage ? new(storage) EnvMapEntry:0;
                     entry->position.x=x; entry->position.y=y; entry->position.z=z; entry->flag=flag;
                     const std::string texturePath=directory+name+".dds";
-                    entry->texture=static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerGetTexture(vc71::string(texturePath.c_str())));
+                    entry->texture=static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerGetTexture(texturePath));
                     // Duplicate keys replace the pointer without freeing the old record (retail).
-                    vc71::mapNodeValueRef(vc71::mapInsert(m_maps,48,name.c_str()))=entry;
+                    m_maps[name]=entry;
                 }
             }
             input.getline(buffer,1023);
@@ -242,13 +259,16 @@ bool EnvMapManager::loadInfo(const vc71::string& path)
     file.close();
     return true;
 }
+// PE 0x101BF110
 void EnvMapManager::onPostLoad()
 {
-    if(m_maps.size || !m_enabled)return;
-    vc71::string level,directory;
+    if(!m_maps.empty() || !m_enabled)return;
+    std::string level,directory;
     dx9rend::readStringSettingDefault("GSLoadLevel","lightsPlease",level);
     dx9rend::readStringSettingDefault("GSLevelDirectory","",directory);
-    const vc71::string path((std::string(directory.c_str())+level.c_str()+"/Envmaps/EnvironmentMapInfo.emi").c_str());
+    const std::string levelPath(directory+level);
+    const std::string envmapDirectory(levelPath+"/Envmaps/");
+    const std::string path(envmapDirectory+"EnvironmentMapInfo.emi");
     if(::renddx9abi::engineFileExists(path))loadInfo(path);
 }
 
@@ -261,20 +281,20 @@ namespace {
 // byte_1023B39C: file-backed 1, read by save alone and written by nothing. [INFERRED] name.
 const unsigned char kEnvironmentMapInfoMinorVersion=1;
 }
+// PE 0x101BF2A0
 bool EnvMapManager::save()
 {
-    if(!m_objects.first)return false;
-    if(!((m_objects.last-m_objects.first)>>2))return false;
-    vc71::string level,directory;
+    if(m_objects.empty())return false;
+    std::string level,directory;
     dx9rend::readStringSettingDefault("GSLoadLevel","lightsPlease",level);
     dx9rend::readStringSettingDefault("GSLevelDirectory","",directory);
-    vc71::string levelPath(directory); levelPath+=level;
-    vc71::string envmapDirectory(levelPath); envmapDirectory+="/Envmaps/";
-    vc71::string infoPath(envmapDirectory); infoPath+="EnvironmentMapInfo.emi";
-    vc71::string savePath;
+    std::string levelPath(directory); levelPath+=level;
+    std::string envmapDirectory(levelPath); envmapDirectory+="/Envmaps/";
+    std::string infoPath(envmapDirectory); infoPath+="EnvironmentMapInfo.emi";
+    std::string savePath;
     dx9rend::readStringSettingDefault("Editor_LevelSavePath"," ERROR ",savePath);
 
-    vc71::string fullPath(savePath); fullPath+="/"; fullPath+=infoPath;
+    std::string fullPath(savePath); fullPath+="/"; fullPath+=infoPath;
     renddx9abi::HostStream* const stream=::dice::hfe::fileManager->open(
         ::renddx9abi::makeHostString(fullPath),static_cast<renddx9abi::HostFileMode>(0),
         static_cast<renddx9abi::HostFileAccess>(2),0);
@@ -285,8 +305,7 @@ bool EnvMapManager::save()
     out<<"# Version 0."<<kEnvironmentMapInfoMinorVersion<<" "<<"May 26 2009"<<" "<<std::endl;
     out<<"# "<<std::endl;
     int index=0;
-    for(EnvMapObject** item=reinterpret_cast<EnvMapObject**>(m_objects.first);
-        item!=reinterpret_cast<EnvMapObject**>(m_objects.last);++item)
+    for(auto item=m_objects.begin();item!=m_objects.end();++item)
     {
         EnvMapObject* const object=*item;
         EnvMapEntry* const entry=object->m_entry;
@@ -299,7 +318,7 @@ bool EnvMapManager::save()
         sprintf(name,"EnvMap%i",index);
         out<<name<<" "<<entry->position.x<<","<<entry->position.y<<","<<entry->position.z<<","
            <<object->m_entry->flag<<" "<<std::endl;
-        vc71::string texturePath(savePath); texturePath+="/"; texturePath+=envmapDirectory; texturePath+=name;
+        std::string texturePath(savePath); texturePath+="/"; texturePath+=envmapDirectory; texturePath+=name;
         dx9rend::textureManagerSaveTexture(object->m_entry->texture,texturePath);
         ++index;
     }
@@ -313,12 +332,11 @@ bool EnvMapManager::save()
 // Captures six faces per environment-map entry, filters mipmaps and rebuilds position keys.
 // Requires every object to have an entry. Filter failure logs and continues; no objects returns false.
 
+// PE 0x101C0410
 bool EnvMapManager::generateEnvMaps()
 {
-    if(!m_objects.first)return false;
-    if(!((m_objects.last-m_objects.first)>>2))return false;
-    for(EnvMapObject** item=reinterpret_cast<EnvMapObject**>(m_objects.first);
-        item!=reinterpret_cast<EnvMapObject**>(m_objects.last);++item)
+    if(m_objects.empty())return false;
+    for(auto item=m_objects.begin();item!=m_objects.end();++item)
     {
         EnvMapObject* const object=*item;
         int savedManaged=dx9rend::textureManagerSwapManaged(0);
@@ -335,49 +353,70 @@ bool EnvMapManager::generateEnvMaps()
             IDirect3DSurface9* const destination=
                 dx9rend::textureGetLevelSurface(object->m_entry->texture,0u,face);
             IDirect3DSurface9* const source=dx9rend::textureGetLevelSurface(target,0u,face);
-            D3DXLoadSurfaceFromSurface(destination,0,0,source,0,0,0xFFFFFFFFu,0);
+            D3DXLoadSurfaceFromSurface(destination,0,0,source,0,0,D3DX_DEFAULT,0); // IAT 0x101DB4C4
             destination->Release();
             source->Release();
         }
         if(target && --target->refCount==0)
         { dx9rend::textureDtor(target); ::renddx9abi::engineFree(target); }
-        const HRESULT hr=D3DXFilterTexture(object->m_entry->texture->baseTexture,0,0,0xFFFFFFFFu);
+        const HRESULT hr=D3DXFilterTexture(object->m_entry->texture->baseTexture,0,0,D3DX_DEFAULT); // IAT 0x101DB4A8
         if(hr)
+#if defined(_WIN32)
+            ::renddx9abi::logf("RendMisc/EnvMapSystem/EnvMapManager.cpp:452 Could not generate mip maps on "
+                               "envmap cube texture %s",::DXGetErrorDescription9A(hr));
+#else
+            // [CHOSEN, not recovered] DXErr9 is a Windows SDK library; retain the native HRESULT diagnostic.
             ::renddx9abi::logf("RendMisc/EnvMapSystem/EnvMapManager.cpp:452 Could not generate mip maps on "
                                "envmap cube texture (hr=0x%08X)",static_cast<unsigned int>(hr));
+#endif
     }
-    clearStringMap(m_maps);
-    for(EnvMapObject** item=reinterpret_cast<EnvMapObject**>(m_objects.first);
-        item!=reinterpret_cast<EnvMapObject**>(m_objects.last);++item)
+    m_maps.clear();
+    for(auto item=m_objects.begin();item!=m_objects.end();++item)
     {
         EnvMapObject* const object=*item;
         const Vec3& position=object->m_entry->position;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Preserve FISTP's integer-indefinite result on the native port.
+        const int z=bf2x87::toIntTruncate(bf2x87::wide(position.z));
+        const int y=bf2x87::toIntTruncate(bf2x87::wide(position.y));
+        const int x=bf2x87::toIntTruncate(bf2x87::wide(position.x));
+#else
         const int z=static_cast<int>(position.z);
         const int y=static_cast<int>(position.y);
         const int x=static_cast<int>(position.x);
+#endif
         char key[64];
         sprintf(key,"=%i=%i=%i",x,y,z);
-        vc71::mapNodeValueRef(vc71::mapInsert(m_maps,48,key))=object->m_entry;
+        m_maps[key]=object->m_entry;
     }
     return true;
 }
+// PE 0x101C0870
 void EnvMapManager::update(float)
 {
     flushRemovals();
-    if(!m_maps.size)return;
-    if(m_maps.size==1)
-    { m_currentTexture=static_cast<EnvMapEntry*>(vc71::mapNodeValue(m_maps.head->left))->texture; return; }
+    if(m_maps.empty())return;
+    if(m_maps.size()==1)
+    { m_currentTexture=m_maps.begin()->second->texture; return; }
     dx9rend::IRenderView* view=static_cast<dx9rend::IRenderer*>(dx9rend::g_rendererBase)->getRenderView();
     const Mat4* transform=view->getViewMatrixPtr();
     // Keep the shipped multimap operation and duplicate-distance order; no nearest-only shortcut.
     std::multimap<float,EnvMapEntry*> distances;
-    for(vc71::map_node* n=vc71::mapFirst(m_maps);n;n=vc71::mapNext(m_maps,n))
+    for(auto n=m_maps.begin();n!=m_maps.end();++n)
     {
-        EnvMapEntry* value=static_cast<EnvMapEntry*>(vc71::mapNodeValue(n));
+        EnvMapEntry* value=n->second;
         const float x=transform->m[12]-value->position.x;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Only x spills before the x87 distance expression.
+        using namespace bf2x87;
+        const Real y=sub(wide(transform->m[13]),wide(value->position.y));
+        const Real z=sub(wide(transform->m[14]),wide(value->position.z));
+        const float distance=store(squareRoot(add(add(mul(z,z),mul(y,y)),mul(wide(x),wide(x)))));
+#else
         const double y=static_cast<double>(transform->m[13])-value->position.y;
         const double z=static_cast<double>(transform->m[14])-value->position.z;
         const float distance=static_cast<float>(std::sqrt(z*z+y*y+static_cast<double>(x)*x));
+#endif
         distances.insert(std::make_pair(distance,value));
     }
     EnvMapEntry* closest=distances.begin()->second;
@@ -386,7 +425,7 @@ void EnvMapManager::update(float)
 IBase* __fastcall createEnvMapManager(unsigned int iid,IBase* outer)
 {
     if(outer)return 0;
-    void* storage=::renddx9abi::engineAlloc(0x6C);
+    void* storage=::renddx9abi::engineAlloc(sizeof(EnvMapManager));
     EnvMapManager* instance=storage ? new(storage) EnvMapManager:0;
     IBase* result=static_cast<IBase*>(instance->queryInterface(iid));
     if(!result)instance->release();

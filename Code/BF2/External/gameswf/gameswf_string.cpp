@@ -9,6 +9,9 @@
 #include "base/tu_config.h"
 #include "gameswf_string.h"
 #include "gameswf_log.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
+#endif
 #include "base/smart_ptr.h"
 
 
@@ -52,7 +55,12 @@ namespace gameswf
 
 			for (int i = 0; i < fn.nargs; i++)
 			{
+#if defined(__APPLE__)
+				// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+				uint32 c = bf2x87::lowUInt32(fn.arg(i).to_number());
+#else
 				uint32 c = (uint32) fn.arg(i).to_number();
+#endif
 				result.append_wide_char(c);
 			}
 
@@ -261,7 +269,14 @@ namespace gameswf
 		// built from wide text keeps its narrow copy EMPTY (the shipped Locale.getString never fills
 		// it), so string contexts see "" for a translation - a shipped quirk, preserved.
 		virtual const char*	get_text_value() const { return m_string.c_str(); }
-		virtual const Uint16*	get_wide_text_value() const { return m_wide.size() > 1 ? &m_wide[0] : 0; }
+		// [#38] Never null for a String object: the shipped text setter (sub_10089440, 0x10089553)
+		// takes the object's std::wstring c_str(), which MSVC never returns null, so a String object
+		// always goes through the wide setter (vslot +0x110), an empty one included.
+		virtual const Uint16*	get_wide_text_value() const
+		{
+			static const Uint16	s_empty = 0;
+			return m_wide.size() > 1 ? &m_wide[0] : &s_empty;
+		}
 	};
 
 	// [DICE-MOD SwiffPlayer #31] the forwarders for the methods the shipped String object registers.

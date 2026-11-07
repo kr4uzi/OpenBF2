@@ -6,6 +6,8 @@ rem own vtable; the `nullchild` run must stop at the emitter's NAMED stop (an un
 rem the manager fixture's frontier trap reports as UNEXPECTED with exit 87.
 if not defined BF2_BUILD_OUT exit /b 2
 call "%~dp0..\Build\vsdevcmd.cmd" x86
+call "%~dp0..\Build\dxsdk.cmd" x86
+if errorlevel 1 exit /b 1
 set "TASK_ROOT=%~dp0..\.."
 if not defined BF2_TEST_OPT set "BF2_TEST_OPT=/O2"
 for %%A in (1) do (
@@ -15,7 +17,7 @@ for %%A in (1) do (
    /DDEDICATED=0 /DBF2_IMAGE_RENDDX9 /DBF2_PLUGIN_ABI_NATIVE=%%A /D_ITERATOR_DEBUG_LEVEL=0 ^
    /FI"%TASK_ROOT%\Code\BF2\Core\BuildConfig.h" /Fo"!OUT!\\" ^
    /Fe"!OUT!\particle_instance_type3_runtime.exe" ^
-   "%~dp0particle_instance_type3_runtime.cpp" "%TASK_ROOT%\Code\RendDX9Abi\Vc71String.cpp" ^
+   "%~dp0particle_instance_type3_runtime.cpp" ^
    "%TASK_ROOT%\Code\BF2\Math\Mat4.cpp" "%TASK_ROOT%\Code\BF2\Math\Frustum.cpp" ^
    "%TASK_ROOT%\Code\BF2\Math\Mat4Inverse.cpp" "%TASK_ROOT%\Code\BF2\Math\Vec3.cpp" ^
    "%TASK_ROOT%\Code\BF2\Math\Plane3.cpp" ^

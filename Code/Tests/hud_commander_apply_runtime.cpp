@@ -130,7 +130,7 @@ struct MouseMaps : IControlMapManager {
     void deleteControlMap(const IControlMap*) override {actionUnsupported("maps delete");}
     void setActive(const std::string&) override {actionUnsupported("maps activate");}
     void setActive(const IControlMap*) override {actionUnsupported("maps activate");}
-    bool mapNextInput(IControlMap*,int,bool,bool,bool,bool,std::string&) override {actionUnsupported("maps next");}
+    int mapNextInput(IControlMap*,int,bool,bool,bool,bool,std::string&) override {actionUnsupported("maps next");}
     float getRepeatRate(int,bool) override {actionUnsupported("maps repeat");}
     void applyActive() override {actionUnsupported("maps apply");}
 };

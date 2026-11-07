@@ -1,19 +1,21 @@
 // Path: attested by RendDX9.dll __FILE__ at 0x10219E48 (lines 772 and 3313).
 // Terrain creation, loading, water setup and teardown, recovered from RendDX9.dll 1.50.
 // Per-frame drawing lives in TerrainDraw.cpp. Memory belongs to the engine heap.
-// [FRONTIER] legacy load helpers remain: pre-0x1A sub_100D87B0 and pre-0x18 sub_100E68B0.
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
-#include "../../RendDX9Abi/Vc71Map.h"
+#include <string>
+#include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "Terrain.h"
 #include "QuadPatch.h"
+#include "../Math/Mat4.h"
 #include "XpLightManager.h"
 #include "../Core/EventManager.h"
 #include "../Physics/HeightmapCluster.h"
@@ -25,26 +27,14 @@
 #include "../RendDX9/Ra/RaShader.h"
 #include "../RendDX9/Ra/RaStreamDataEditable.h"
 #include "../IO/Tokenizer.h"
+#include "../RendMisc/IRenderView.h"
 
+#include <cfloat>
+#include <cmath>
 #include <new>
 #include <cstdlib>
 #include <cstring>
-
-// The three D3DX calls optimizeLodIndices (sub_100DC0E0) makes - static imports of the shipped image
-// (IAT 0x101DB47C D3DXCreateMeshFVF, 0x101DB450 D3DXCreateMesh, 0x101DB41C D3DXCreateBuffer). The
-// decorated-to-undecorated bridge is the one Terrain.h documents for D3DXFloat32To16Array;
-// Code/RendDX9Abi/D3dx9_25.def lists them for the no-SDK build. The out-parameters are void
-// because the build carries no D3DX headers (the interfaces are declared by offset below).
-#pragma comment(linker, "/alternatename:_D3DXCreateMeshFVF@24=_D3DXCreateMeshFVF")
-#pragma comment(linker, "/alternatename:_D3DXCreateMesh@24=_D3DXCreateMesh")
-#pragma comment(linker, "/alternatename:_D3DXCreateBuffer@8=_D3DXCreateBuffer")
-extern "C" long __stdcall D3DXCreateMeshFVF(unsigned long numFaces, unsigned long numVertices,
-                                           unsigned long options, unsigned long fvf,
-                                           IDirect3DDevice9* device, void** mesh);
-extern "C" long __stdcall D3DXCreateMesh(unsigned long numFaces, unsigned long numVertices,
-                                        unsigned long options, const D3DVERTEXELEMENT9* declaration,
-                                        IDirect3DDevice9* device, void** mesh);
-extern "C" long __stdcall D3DXCreateBuffer(unsigned int NumBytes, void** ppBuffer);
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -130,12 +120,54 @@ inline float bits(unsigned int u)
     return f;
 }
 
-// sub_10031180 - the refcounted assignment every Ra texture holder uses: drop the old texture
-// (destroying it on the last reference), take the new one and add a reference to it.
-void holderSetTexture(void* holder, dx9rend::EngineTexture* texture)
+inline dx9rend::Ra::RaShaderTable* raShaderTable()
 {
-    dx9rend::EngineTexture** const field = reinterpret_cast<dx9rend::EngineTexture**>(
-        static_cast<unsigned char*>(holder) + 4);
+    return static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues);
+}
+
+inline dx9rend::Ra::RaShader* raShaderNamed(const char* name)
+{
+    return dx9rend::Ra::getShader(raShaderTable(), std::string(name), false);
+}
+
+inline ::dice::hfe::world::IHeightmapCluster* heightmapCluster()
+{
+    IBase* const found = ::dice::hfe::classManager->getSingleton(
+        ::renddx9abi::HostString("HeightmapCluster"));
+    return static_cast< ::dice::hfe::world::IHeightmapCluster*>(static_cast<void*>(found));
+}
+
+void releaseDetailTextureSlot(void*& slot)
+{
+    dx9rend::EngineTexture* const texture = static_cast<dx9rend::EngineTexture*>(slot);
+    if (texture && !--texture->refCount)
+    {
+        dx9rend::textureDtor(texture);
+        ::renddx9abi::engineFree(texture);
+    }
+    dx9rend::textureManagerEvictFromCache(slot);
+}
+
+bool detailTextureCompanionExists(const std::string& name, const char* suffix)
+{
+    const std::string path(std::string(name).append(suffix));
+    return ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(path));
+}
+
+// sub_100E11B0's guarded file static (dword_1025926C..74, guard bit 0 of dword_10259278).
+unsigned int g_originScratchGuard = 0;
+Vec3         g_originScratch;
+
+} // anonymous namespace
+
+// PE 0x10031180 - the refcounted assignment every Ra texture holder uses (one shared copy, called
+// from Renderer::renderScene, the Terrain water/UV paths, StaticMesh and the material binder): drop
+// the old texture (destroying it on the last reference), take the new one and add a reference to
+// it. The value sits behind the holder's binder table pointer (+4 in retail). Retail also returns
+// the holder in eax; no caller reads it.
+void holderSetTexture(RaMaterialParameters::Texture& holder, dx9rend::EngineTexture* texture)
+{
+    dx9rend::EngineTexture** const field = reinterpret_cast<dx9rend::EngineTexture**>(&holder.value);
     dx9rend::EngineTexture* const old = *field;
     if (old != texture)
     {
@@ -150,28 +182,14 @@ void holderSetTexture(void* holder, dx9rend::EngineTexture* texture)
     }
 }
 
-inline dx9rend::Ra::RaShaderTable* raShaderTable()
+// [CHOSEN, not recovered] Borrow one of the four shadow-array handles read by PE 0x100E1110.
+// The ordinal is in [0, 4); each read observes the owner's current handle, including teardown.
+void* terrainShadowArrayParameter(unsigned int ordinal)
 {
-    return static_cast<dx9rend::Ra::RaShaderTable*>(dx9rend::g_renderQueues);
+    void** const handles[] = { &g_terrainShadowViewProjArray, &g_terrainShadowPosArray,
+                              &g_terrainShadowSizeArray, &g_terrainShadowCount };
+    return *handles[ordinal];
 }
-
-inline dx9rend::Ra::RaShader* raShaderNamed(const char* name)
-{
-    return dx9rend::Ra::getShader(raShaderTable(), vc71::string(name), false);
-}
-
-inline ::dice::hfe::world::IHeightmapCluster* heightmapCluster()
-{
-    IBase* const found = ::dice::hfe::classManager->getSingleton(
-        ::renddx9abi::HostString("HeightmapCluster"));
-    return static_cast< ::dice::hfe::world::IHeightmapCluster*>(static_cast<void*>(found));
-}
-
-// sub_100E11B0's guarded file static (dword_1025926C..74, guard bit 0 of dword_10259278).
-unsigned int g_originScratchGuard = 0;
-Vec3         g_originScratch;
-
-} // anonymous namespace
 
 unsigned char& terrainWaterQualityLatched()
 {
@@ -198,7 +216,8 @@ const Vec3* terrainOriginScratch(const Vec3& in)
 
 // TerrainRawReader - the sub_10075DE0..sub_100763A0 family over the host stream.
 
-void TerrainRawReader::open(const vc71::string& path, int mode, int access, int /*unusedFourth*/)
+// PE 0x100763A0 (the shipped body answers the reader pointer in eax; no caller reads it)
+void TerrainRawReader::open(const std::string& path, int mode, int access, int /*unusedFourth*/)
 {
     // sub_100763A0 (`retn 10h`). The fourth argument is popped and never read: FileManager +0x18
     // receives a literal 0 (0x100763A8) whatever the caller passed.
@@ -217,8 +236,7 @@ void TerrainRawReader::open(const vc71::string& path, int mode, int access, int 
 
 void TerrainRawReader::close()
 {
-    // sub_10075E00. (The destructor, sub_10075DE0, releases again through the already-nulled
-    // slot and so does nothing.)
+    // sub_10075E00. Explicit close clears the slot after release; destruction only releases it.
     if (m_stream)
     {
         m_stream->release();
@@ -231,7 +249,7 @@ unsigned int TerrainRawReader::read(void* dst, unsigned int n)
     return m_stream->read(dst, n);                                    // +0x10, unguarded as shipped
 }
 
-bool TerrainRawReader::readLine(vc71::string& out, char delimiter)
+bool TerrainRawReader::readLine(std::string& out, char delimiter)
 {
     // sub_10076000: one byte at a time into a 0x1000-byte stack buffer until the delimiter or a
     // short read; an empty line answers false without touching `out`.
@@ -250,6 +268,14 @@ bool TerrainRawReader::readLine(vc71::string& out, char delimiter)
         return false;
     out = buffer;
     return true;
+}
+
+// PE 0x10075E80 / ELF 0x84352F0: str() into a temporary, then stream +0x14 write(data, size); the
+// count is the result. Unguarded as shipped. Unreachable in 1.50: no code or data references.
+unsigned int TerrainRawReader::write(std::ostringstream& stream)
+{
+    const std::string text = stream.str();
+    return m_stream->write(text.c_str(), static_cast<unsigned int>(text.size()));
 }
 
 int TerrainRawReader::tell()
@@ -287,21 +313,14 @@ TerrainDetailTexture::TerrainDetailTexture()
     envMap = 0;
 }
 
+// PE 0x100D8C80
 TerrainDetailTexture::~TerrainDetailTexture()
 {
-    // sub_100D8C80: each of the four textures is released (destroyed on the last reference) and
-    // then handed - the same pointer value, released or not - to the cache eviction.
-    void* const slots[4] = { texture, normalTexture, sideTexture, sideNormalTexture };
-    for (int i = 0; i < 4; ++i)
-    {
-        dx9rend::EngineTexture* const t = static_cast<dx9rend::EngineTexture*>(slots[i]);
-        if (t && !--t->refCount)
-        {
-            dx9rend::textureDtor(t);
-            ::renddx9abi::engineFree(t);
-        }
-        dx9rend::textureManagerEvictFromCache(t);
-    }
+    // Release each current handle, then reread its slot for cache eviction; slots stay unmodified.
+    releaseDetailTextureSlot(texture);
+    releaseDetailTextureSlot(normalTexture);
+    releaseDetailTextureSlot(sideTexture);
+    releaseDetailTextureSlot(sideNormalTexture);
 }
 
 // The 22 accessor slots, The five "TBM" bodies each build the debug-stream
@@ -309,44 +328,50 @@ TerrainDetailTexture::~TerrainDetailTexture()
 // flush it (sub_10074690) before they build their answer - kept as one log line, as every recovered
 // diagnostic in this image is. They are the shipped bodies of the plain record, not stubs of this
 // tree: only the editable record (0x1021B780, package R1) stores the fields they refuse.
-void TerrainDetailTexture::setName(vc71::string) {}                                      // +0x04 (`ret 1Ch`)
+void TerrainDetailTexture::setName(std::string) {}                                      // +0x04 (`ret 1Ch`)
 
-vc71::string TerrainDetailTexture::getName()                                             // +0x08
+std::string TerrainDetailTexture::getName()                                             // +0x08 PE 0x100E1210
 {
     ::renddx9abi::logf("[Terrain.h:144] TBM: ONLY FOR TERRAINEDITABLE!");
-    return vc71::string("");
+    return std::string("");
 }
 
-void TerrainDetailTexture::setColorTextureName(vc71::string) {}                          // +0x0C 0x100E1200 again
+void TerrainDetailTexture::setColorTextureName(std::string) {}                          // +0x0C 0x100E1200 again
 
-vc71::string TerrainDetailTexture::getColorTextureName()                                 // +0x10
+std::string TerrainDetailTexture::getColorTextureName()                                 // +0x10 PE 0x100E12A0
 {
     ::renddx9abi::logf("[Terrain.h:147] TBM: ONLY FOR TERRAINEDITABLE!");
-    return vc71::string("");
+    return std::string("");
 }
 
 void TerrainDetailTexture::setEditableInt68(int) {}                                      // +0x14 0x100E13B0 nullsub (`ret 4`)
 
-int TerrainDetailTexture::getEditableInt68()                                             // +0x18
+int TerrainDetailTexture::getEditableInt68()                                             // +0x18 PE 0x100E1330
 {
     ::renddx9abi::logf("[Terrain.h:150] TBM: ONLY FOR TERRAINEDITABLE!");
     return 0;                                                                // `xor eax, eax`
 }
 
+// PE 0x100E1440
 void TerrainDetailTexture::setMaterialId(unsigned char id) { materialId = id; }          // +0x1C
 unsigned char TerrainDetailTexture::getMaterialId() { return materialId; }               // +0x20 (ICF)
+// PE 0x100E1450
 void TerrainDetailTexture::setPlaneMap(unsigned char value) { planeMap = value; }        // +0x24
 unsigned char TerrainDetailTexture::getPlaneMap() { return planeMap; }                   // +0x28
+// PE 0x100E1470
 void TerrainDetailTexture::setTopTiling(float tiling) { topTiling = tiling; }            // +0x2C
 float TerrainDetailTexture::getTopTiling() { return topTiling; }                         // +0x30 (ICF)
+// PE 0x100E14B0
 void TerrainDetailTexture::setSideTiling(Vec2 tiling) { sideTiling = tiling; }           // +0x34 (`ret 8`)
+// PE 0x100E14D0
 Vec2 TerrainDetailTexture::getSideTiling() { return sideTiling; }                        // +0x38 (hidden pointer)
+// PE 0x101AFB50
 void TerrainDetailTexture::setYOffset(float offset) { yOffset = offset; }                // +0x3C (ICF)
 float TerrainDetailTexture::getYOffset() { return yOffset; }                             // +0x40 (ICF)
 
 void TerrainDetailTexture::setColorTextureTiling(Vec2) {}                                // +0x44 0x100E1480 nullsub (`ret 8`)
 
-Vec2 TerrainDetailTexture::getColorTextureTiling()                                       // +0x48
+Vec2 TerrainDetailTexture::getColorTextureTiling()                                       // +0x48 PE 0x100E14F0
 {
     ::renddx9abi::logf("[Terrain.h:171] TBM: ONLY FOR TERRAINEDITABLE!");
     Vec2 zero;                                                               // both words stored 0
@@ -357,7 +382,7 @@ Vec2 TerrainDetailTexture::getColorTextureTiling()                              
 
 void TerrainDetailTexture::setLowDetailType(int) {}                                      // +0x4C 0x100E13B0 nullsub (`ret 4`)
 
-int TerrainDetailTexture::getLowDetailType()                                             // +0x50
+int TerrainDetailTexture::getLowDetailType()                                             // +0x50 PE 0x100E13C0
 {
     ::renddx9abi::logf("[Terrain.h:153] TBM: ONLY FOR TERRAINEDITABLE!");
     return 0;                                                                // `xor eax, eax`
@@ -368,12 +393,13 @@ int TerrainDetailTexture::getLowDetailType()                                    
 // operator<<(bool)); the field stays the file's raw byte, so this getter differs from the shipped
 // raw move only for a stored byte other than 0 or 1 (it answers 1). No 1.50 body calls slot +0x58:
 // the draw and the TerrainEditable writer read the field.
+// PE 0x100E1490
 void TerrainDetailTexture::setEnvMap(bool value) { envMap = value; }
 bool TerrainDetailTexture::getEnvMap() { return envMap != 0; }
 
 
-// Construction - 0x100DF160, 0x798 B. Every store in the shipped order.
-
+// Construction, 0x798 B. Every store in the shipped order.
+// PE 0x100DF160
 Terrain::Terrain()
 {
     m_refCount = 1;
@@ -419,10 +445,7 @@ Terrain::Terrain()
     m_surroundingFullDeclaration = 0;
     m_flag2AC = 1;
     m_flag2AD = 1;
-    // sub_100E1760 x3: each map gets its 0x18-byte head node, marked nil and self-linked, size 0.
-    m_map2B0.construct(0x18);
-    m_map2BC.construct(0x18);
-    m_map2C8.construct(0x18);
+    // sub_100E1760 x3: the three maps (+0x2B0, +0x2BC, +0x2C8) are constructed empty, as members.
     m_lowDetailTexture = 0;
     m_heightmapCluster = 0;
     m_cameraHeightAboveTerrain = 0.0f;
@@ -430,9 +453,10 @@ Terrain::Terrain()
     // Default GI color: 0.4, 0.35, 0.3. Loading replaces these values.
     m_giColor.x = bits(0x3ECCCCCDu); m_giColor.y = bits(0x3EB33333u); m_giColor.z = bits(0x3E99999Au);
     m_ambientColor.x = 0.0f; m_ambientColor.y = 0.0f; m_ambientColor.z = 0.0f;
-    for (int i = 0; i < 6; ++i) m_unresolved308[i] = 0;
+    m_giColorHigh.x = 0.0f; m_giColorHigh.y = 0.0f; m_giColorHigh.z = 0.0f;
+    m_giColorLow.x = 0.0f; m_giColorLow.y = 0.0f; m_giColorLow.z = 0.0f;
     m_farSideTiling.x = 0.0f; m_farSideTiling.y = 0.0f;
-    m_detailTextures.first = 0; m_detailTextures.last = 0; m_detailTextures.end = 0;
+    // m_detailTextures (+0x338) default-constructs empty
     m_currentPass = 0;
     m_primaryHeightmap = 0;
     m_heightmapSizeX = 0;
@@ -448,7 +472,7 @@ Terrain::Terrain()
     m_drawDebugFlags = 0;
     m_flag364 = 0;
     m_indexBuffer = 0;
-    m_shadowRanges.first = 0; m_shadowRanges.last = 0; m_shadowRanges.end = 0;
+    // m_shadowRanges (+0x36C) default-constructs empty
     m_patches = 0;
     m_renderStyle = 2;
     m_halfFloatSurrounding = 0;
@@ -460,19 +484,19 @@ Terrain::Terrain()
     for (int i = 0; i < 16; ++i) m_viewProj[i] = 0.0f;
     m_viewProj[15] = 1.0f; m_viewProj[10] = 1.0f; m_viewProj[5] = 1.0f; m_viewProj[0] = 1.0f;
     for (int i = 0; i < 4; ++i) m_cameraPosition[i] = 0.0f;
-    m_deviceResetPending = 0;
+    m_streamedPatchCount = 0;
     m_lightingDirty = 1;
     m_currentDetailLayer = -1;
     m_currentLod = -1;
     for (int i = 0; i < 6; ++i) m_morphLimits[i] = 0.0f;
     m_unresolved440 = -1.0f;
-    m_shadowPatches.first = 0; m_shadowPatches.last = 0; m_shadowPatches.end = 0;
+    // m_shadowPatches (+0x448) default-constructs empty
     m_indexBufferCount = 49152u;
     m_shadowGatherThreshold = 4.0f;
     m_shadowExtrusionScale = 4.0f;
     m_unresolved464 = 512;
     m_unresolved46C = 0;
-    m_lodBlockIndices.first = 0; m_lodBlockIndices.last = 0; m_lodBlockIndices.end = 0;
+    // m_lodBlockIndices (+0x470) default-constructs empty
     m_indexBufferLocked = 0;
     m_indexBufferBits = 0;
     m_flag489 = 0;
@@ -513,19 +537,20 @@ Terrain::Terrain()
     m_sideIndexBuffer = 0;
     m_sideVertexBuffer2 = 0;
     // The 0x150-byte Ra material block, engine heap, constructed in place; two defaults the body
-    // then patches: the +0x70..+0x7C vec4 to (1,1,1,1) and the +0x84 float to 64.0f. Neither
-    // store tests the pointer, as shipped.
+    // then patches: the +0x70..+0x7C vec4 (SpecularColor) to (1,1,1,1) and the +0x84 float
+    // (SpecularPower) to 65.0f (0x42820000 at 0x100DF7E1). Neither store tests the pointer, as shipped.
     {
-        void* const storage = ::renddx9abi::engineAlloc(0x150);
-        float* block = 0;
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(RaMaterialParameters));   // 0x150
+        RaMaterialParameters* block = 0;
         if (storage)
         {
             dx9rend::Ra::raMaterialParametersConstruct(storage);
-            block = static_cast<float*>(storage);
+            block = static_cast<RaMaterialParameters*>(storage);
         }
         m_materialParameters = block;
-        block[28] = 1.0f; block[29] = 1.0f; block[30] = 1.0f; block[31] = 1.0f;
-        *reinterpret_cast<float*>(static_cast<unsigned char*>(m_materialParameters) + 132) = 64.0f;
+        block->specularColor.value[0] = 1.0f; block->specularColor.value[1] = 1.0f;
+        block->specularColor.value[2] = 1.0f; block->specularColor.value[3] = 1.0f;
+        static_cast<RaMaterialParameters*>(m_materialParameters)->specularPower.value = 65.0f;
     }
     m_waterTechniqueMargin = 40.0f;
     m_waterTechnique            = raShaderNamed("Water2D");
@@ -536,16 +561,15 @@ Terrain::Terrain()
     m_waterQualityApplied = 0;
     m_water3D = 0;
     {
-        // sub_1018F8A0 - the seven-float water record (1, 1, 1, 0.8, 0.5, 0.5, 0.5). The shipped
-        // exchange frees the previous record whenever it differs from the new one - including the
-        // initial null, which the engine free accepts.
-        float* const record = static_cast<float*>(::renddx9abi::engineAlloc(0x1C));
+        // TerrainWaterRecord() (PE 0x1018F8A0, inlined here) - the seven-float water record (1, 1, 1,
+        // 0.8, 0.5, 0.5, 0.5). The shipped exchange frees the previous record whenever it differs from
+        // the new one - including the initial null, which the engine free accepts.
+        TerrainWaterRecord* const record = static_cast<TerrainWaterRecord*>(::renddx9abi::engineAlloc(0x1C));
         float* value = 0;
         if (record)
         {
-            record[0] = 1.0f; record[1] = 1.0f; record[2] = 1.0f; record[3] = bits(0x3F4CCCCDu);
-            record[4] = 0.5f; record[5] = 0.5f; record[6] = 0.5f;
-            value = record;
+            new (record) TerrainWaterRecord();
+            value = &record->color[0];
         }
         if (value != m_waterRecord)
             ::renddx9abi::engineFree(m_waterRecord);
@@ -596,13 +620,13 @@ void* Terrain::getPatchColormap(int index) { return m_patches[index]->colormap; 
 void* Terrain::getPatchLightmap(int index) { return m_patches[index]->lightmap; }
 bool  Terrain::getPatchHasNoDetail(int index) { return m_patches[index]->hasNoDetailLayers != 0; }
 void  Terrain::setFarSideTiling(float x, float y) { m_farSideTiling.x = x; m_farSideTiling.y = y; }
-Vec2* Terrain::getFarSideTiling(Vec2* out) { *out = m_farSideTiling; return out; }
-void  Terrain::setFarTopTilingHi(float v)  { m_farTopTilingHi = v; }
-float Terrain::getFarTopTilingHi()         { return m_farTopTilingHi; }
-void  Terrain::setFarTopTilingLow(float v) { m_farTopTilingLow = v; }
-float Terrain::getFarTopTilingLow()        { return m_farTopTilingLow; }
-void  Terrain::setFarYOffset(float v)      { m_farYOffset = v; }
-float Terrain::getFarYOffset()             { return m_farYOffset; }
+Vec2* Terrain::getFarSideTiling(Vec2* out) { *out = m_farSideTiling; return out; } // PE 0x100E28D0
+void  Terrain::setFarTopTilingHi(float v)  { m_farTopTilingHi = v; }   // PE 0x100E2790
+float Terrain::getFarTopTilingHi()         { return m_farTopTilingHi; }  // PE 0x100E27A0
+void  Terrain::setFarTopTilingLow(float v) { m_farTopTilingLow = v; }  // PE 0x100E2770
+float Terrain::getFarTopTilingLow()        { return m_farTopTilingLow; } // PE 0x100E2780
+void  Terrain::setFarYOffset(float v)      { m_farYOffset = v; }       // PE 0x100E27B0
+float Terrain::getFarYOffset()             { return m_farYOffset; }    // PE 0x100E27C0
 
 // 0x100DADC0 - `terrain.sunColor r/g/b`: stored at a quarter, then each component pinned to 1
 // when >= 1 and to 0 when below 0 or unordered (the FPU C0|C2 test), and the lighting goes dirty.
@@ -656,14 +680,14 @@ Vec3* Terrain::getGIColorRaw(Vec3* out) { *out = m_giColor; return out; }
 Vec2* Terrain::getWaterScroll(Vec2* out) { *out = m_waterScroll; return out; }
 void  Terrain::setWaterScroll(float x, float y) { m_waterScroll.x = x; m_waterScroll.y = y; }
 float Terrain::getWaterAnimSpeed()        { return m_waterAnimSpeed; }
-void  Terrain::setWaterAnimSpeed(float v) { m_waterAnimSpeed = v; }
+void  Terrain::setWaterAnimSpeed(float v) { m_waterAnimSpeed = v; } // PE 0x100D8610
 
-vc71::string Terrain::getWaterNormalMap()
+std::string Terrain::getWaterNormalMap()
 {
-    return vc71::string(m_waterVolumeName.c_str(), m_waterVolumeName.size());
+    return std::string(m_waterVolumeName.c_str(), m_waterVolumeName.size());
 }
 
-void Terrain::setWaterNormalMap(vc71::string name)
+void Terrain::setWaterNormalMap(std::string name)
 {
     m_waterVolumeName = name;
     setupWater();                                                                 // vslot +0xD4
@@ -671,32 +695,27 @@ void Terrain::setWaterNormalMap(vc71::string name)
 
 Vec4* Terrain::getWaterSpecularColor(Vec4* out)                                   // material +0x70
 {
-    const float* const v = reinterpret_cast<const float*>(static_cast<unsigned char*>(m_materialParameters) + 112);
+    const float* const v = static_cast<RaMaterialParameters*>(m_materialParameters)->specularColor.value;
     out->x = v[0]; out->y = v[1]; out->z = v[2]; out->w = v[3];
     return out;
 }
 
 void Terrain::setWaterSpecularColor(float r, float g, float b, float a)
 {
-    float* const v = reinterpret_cast<float*>(static_cast<unsigned char*>(m_materialParameters) + 112);
+    float* const v = static_cast<RaMaterialParameters*>(m_materialParameters)->specularColor.value;   // +0x70
     v[0] = r; v[1] = g; v[2] = b; v[3] = a;
 }
 
 float Terrain::getWaterSpecularPower()
 {
-    return *reinterpret_cast<const float*>(static_cast<unsigned char*>(m_materialParameters) + 132);
+    return static_cast<RaMaterialParameters*>(m_materialParameters)->specularPower.value;           // +0x84
 }
 
 void Terrain::setWaterSpecularPower(float v)
 {
-    *reinterpret_cast<float*>(static_cast<unsigned char*>(m_materialParameters) + 132) = v;
+    static_cast<RaMaterialParameters*>(m_materialParameters)->specularPower.value = v;              // +0x84
 }
 
-// The unread bodies. Known signatures, so each names itself and stops (the client startup
-// exception: a diagnostic-and-abort body at actual use, never a fabricated result). Neither is
-// reached by the teardown (sub_100DD6C0 calls no slot but +0xDC).
-void Terrain::drawDepthComplexity(int)  { RD9_FRONTIER("dice::hfe::geom::Terrain::drawDepthComplexity (0x100DB2F0, read - not written)", 0xB4); }
-void Terrain::slot48_unread_100DB810(int, int, int) { RD9_FRONTIER("dice::hfe::geom::Terrain::slot48 (0x100DB810, the technique chooser)", 0xC0); }
 void Terrain::slot49_noop(int) {}
 // Device listeners; per-frame rendering is implemented in TerrainDraw.cpp.
 void Terrain::onDeviceLost() {}
@@ -713,7 +732,7 @@ void Terrain::onRenderPathNotification(int)
     ::renddx9abi::logf("[Terrain.cpp:3313] TBM: Dont use this!");
 }
 int  Terrain::getCurrentRenderPath() const      { return m_renderPath; }
-vc71::string Terrain::getRenderPathListenerName() const { return vc71::string("Terrain"); }
+std::string Terrain::getRenderPathListenerName() const { return std::string("Terrain"); }
 
 
 // init - 0x100D7920, 3,063 B. Console `terrain.init` and load()'s first call.
@@ -733,7 +752,7 @@ void Terrain::init()
     m_effect = dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "Shaders/TerrainShader");
 
     dx9rend::Effect* const fx = static_cast<dx9rend::Effect*>(m_effect);
-#define TERRAIN_PARAM(member, name) member = dx9rend::effectGetShaderParameter(fx, vc71::string(name))
+#define TERRAIN_PARAM(member, name) member = dx9rend::effectGetShaderParameter(fx, std::string(name))
     TERRAIN_PARAM(m_hScaleBaseUV,               "SCALEBASEUV");
     TERRAIN_PARAM(m_hScaleTransXZ,              "SCALETRANSXZ");
     TERRAIN_PARAM(m_hScaleTransY,               "SCALETRANSY");
@@ -814,8 +833,8 @@ void Terrain::init()
     }
     m_surroundingFullDeclaration = dx9rend::vertexDeclarationCreate(kDeclSurroundingFull);
 
-    // The culler, 0x7C bytes on the engine heap.
-    void* const storage = ::renddx9abi::engineAlloc(0x7C);
+    // The culler (retail 0x7C bytes) on the engine heap.
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainCuller));
     if (storage)
         m_culler = new (storage) TerrainCuller();
     else
@@ -825,7 +844,7 @@ void Terrain::init()
 
 // load - 0x100DE070, 1,332 B. Console `terrain.load <path>`.
 
-void Terrain::load(const vc71::string& path)
+void Terrain::load(const std::string& path)
 {
     // The resource manager's default texture priority is forced to 10 for the duration.
     const int savedPriority = dx9rend::resourceManagerSwapDefaultPriority(10);
@@ -907,11 +926,11 @@ void Terrain::load(const vc71::string& path)
         // The pre-0x1A arm: one 400-byte LOD record whose three 64-byte rows are seeded from the
         // LOD range starts (+0x104) and index counts (+0x110) and built by sub_100D87B0. 1.50
         // content never comes here.
-        void* const storage = ::renddx9abi::engineAlloc(0x190);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainLodRecord));      // 0x190
         unsigned char* table = 0;
         if (storage)
         {
-            ::memset(storage, 0, 0x190u);
+            ::memset(storage, 0, sizeof(TerrainLodRecord));
             table = static_cast<unsigned char*>(storage);
         }
         m_lodTables = table;
@@ -919,7 +938,7 @@ void Terrain::load(const vc71::string& path)
         {
             *reinterpret_cast<int*>(m_lodTables + 64 * row)       = m_lodRangeStart[row];
             *reinterpret_cast<int*>(m_lodTables + 64 * row + 192) = m_lodRangeIndexCount[row];
-            RD9_FRONTIER("dice::hfe::geom::Terrain::load (sub_100D87B0 - the pre-0x1A LOD record builder)", 0x18);
+            buildLodTableTree(m_lodTables, row, 0);
         }
         m_lodTablesFromFile = 0;
     }
@@ -931,7 +950,7 @@ void Terrain::load(const vc71::string& path)
     if (m_rawHasVersion && m_rawVersion >= 0x18u)
         m_culler->load(reader);
     else
-        RD9_FRONTIER_AT("dice::hfe::geom::Terrain::load (sub_100E68B0 - the pre-0x18 culler builder)", m_culler, 0x18);
+        m_culler->buildLegacyTree();                                            // PE 0x100E68B0
 
     if (!m_rawHasVersion || m_rawVersion < 0x18u)
     {
@@ -962,12 +981,106 @@ void Terrain::load(const vc71::string& path)
 }
 
 
+// PE 0x100D8D60.
+void Terrain::geometryStreamTick(const Frustum* scanFrustum)
+{
+    const Frustum* const viewFrustum = dx9rend::rendererGetRenderViewDup()->getFrustumPtr();
+    float bounds[8] = { FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX,
+                        FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX };
+    const Frustum* const frusta[2] = { scanFrustum, viewFrustum };
+    for (int f = 0; f < 2; ++f)
+    {
+        float* const b = bounds + 4 * f;
+        for (int i = 0; i < 8; ++i)
+        {
+            const Vec3& corner = frusta[f]->m_corners[i];
+#if defined(__APPLE__)
+            // [CHOSEN, not recovered] Keep FCOM's unordered outcome and invalid exception.
+            if (bf2x87::less(corner.x, b[0])) b[0] = corner.x;
+            if (bf2x87::notLess(corner.x, b[1])) b[1] = corner.x;
+            if (bf2x87::less(corner.z, b[2])) b[2] = corner.z;
+            if (bf2x87::notLess(corner.z, b[3])) b[3] = corner.z;
+#else
+            if (corner.x < b[0]) b[0] = corner.x;
+            if (!(corner.x < b[1])) b[1] = corner.x;
+            if (corner.z < b[2]) b[2] = corner.z;
+            if (!(corner.z < b[3])) b[3] = corner.z;
+#endif
+        }
+    }
+
+    const int halfCount = m_patchCount / 2;
+    int grid[8];
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The PE stores inverseX and the converted patch size as floats;
+    // inverseZ stays on the x87 stack. Convert by FISTP with truncation, including invalid input.
+    const bf2x87::Real halfX = bf2x87::mul(bf2x87::wide(m_primaryWorldScale.x), bf2x87::wide(0.5f));
+    const bf2x87::Real halfZ = bf2x87::mul(bf2x87::wide(m_primaryWorldScale.z), bf2x87::wide(0.5f));
+    const float inverseX = bf2x87::store(bf2x87::div(bf2x87::wide(1.0f), halfX));
+    const float patchSize = bf2x87::store(bf2x87::wide(m_patchSize));
+    grid[0] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(inverseX), bf2x87::wide(bounds[0])), bf2x87::wide(patchSize)));
+    grid[1] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(inverseX), bf2x87::wide(bounds[1])), bf2x87::wide(patchSize)));
+    const bf2x87::Real inverseZ = bf2x87::div(bf2x87::wide(1.0f), halfZ);
+    grid[2] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(bounds[2]), inverseZ), bf2x87::wide(patchSize)));
+    grid[3] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(bounds[3]), inverseZ), bf2x87::wide(patchSize)));
+    grid[4] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(inverseX), bf2x87::wide(bounds[4])), bf2x87::wide(patchSize)));
+    grid[5] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(inverseX), bf2x87::wide(bounds[5])), bf2x87::wide(patchSize)));
+    grid[6] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(bounds[6]), inverseZ), bf2x87::wide(patchSize)));
+    grid[7] = bf2x87::toIntTruncate(bf2x87::div(
+        bf2x87::mul(bf2x87::wide(bounds[7]), inverseZ), bf2x87::wide(patchSize)));
+#else
+    const float inverseX = 1.0f / (m_primaryWorldScale.x * 0.5f);
+    const float patchSize = static_cast<float>(m_patchSize);
+    grid[0] = static_cast<int>((inverseX * bounds[0]) / patchSize);
+    grid[1] = static_cast<int>((inverseX * bounds[1]) / patchSize);
+    const float inverseZ = 1.0f / (m_primaryWorldScale.z * 0.5f);
+    grid[2] = static_cast<int>((bounds[2] * inverseZ) / patchSize);
+    grid[3] = static_cast<int>((bounds[3] * inverseZ) / patchSize);
+    grid[4] = static_cast<int>((inverseX * bounds[4]) / patchSize);
+    grid[5] = static_cast<int>((inverseX * bounds[5]) / patchSize);
+    grid[6] = static_cast<int>((bounds[6] * inverseZ) / patchSize);
+    grid[7] = static_cast<int>((bounds[7] * inverseZ) / patchSize);
+#endif
+    for (int i = 0; i < 8; ++i)
+    {
+        if (-halfCount > grid[i]) grid[i] = -halfCount;
+        else if (halfCount < grid[i]) grid[i] = halfCount;
+        grid[i] += halfCount;
+    }
+
+    const unsigned int ageLimit = static_cast<unsigned int>(dx9rend::rendererTailInt(0x748));
+    const unsigned int frame = dx9rend::rendererFrameOrdinal();
+    m_streamedPatchCount = 0;
+    for (int z = grid[2]; z < grid[3]; ++z)
+    {
+        for (int x = grid[0]; x < grid[1]; ++x)
+        {
+            // The view rectangle includes its maximum edges; the scan loop excludes them.
+            if (x >= grid[4] && x <= grid[5] && z >= grid[6] && z <= grid[7])
+                continue;
+            QuadPatch* const patch = m_patches[m_patchCount * z + x];
+            if (patch->lastDrawnFrame + ageLimit >= frame)
+                continue;
+            if (patch->lastPreloadedFrame + ageLimit >= frame)
+                continue;
+            patch->preloadResources();
+            ++m_streamedPatchCount;
+        }
+    }
+}
+
 // sub_100DB100 - the level-wide low-detail texture: <GLGameLevelPath>lowdetailtexture{low,hi}.dds,
 // then lowdetailtexture.dds, then common/terrain/textures/Default.dds. Mode 1/2/3/4 records which.
-
 void Terrain::loadLowDetailTexture()
 {
-    vc71::string levelPath;
+    std::string levelPath;
     dx9rend::readStringSettingDefault("GLGameLevelPath", " FEEEEL ", levelPath);
 
     int mode;
@@ -986,7 +1099,7 @@ void Terrain::loadLowDetailTexture()
             return;
         suffix = "lowdetailtexturehi.dds";
     }
-    vc71::string name(levelPath.c_str());
+    std::string name(levelPath.c_str());
     name += suffix;
     if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(name)))
     {
@@ -998,7 +1111,7 @@ void Terrain::loadLowDetailTexture()
     }
     if (!m_lowDetailTexture && m_lowDetailTextureMode != 3)
     {
-        vc71::string fallback(levelPath.c_str());
+        std::string fallback(levelPath.c_str());
         fallback += "lowdetailtexture.dds";
         void* texture;
         if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(fallback)))
@@ -1027,6 +1140,7 @@ void Terrain::loadLowDetailTexture()
 // _sideNormal companions; then five file fields. The low-quality arm parses the same fields into
 // a stack record and loads nothing.
 
+// PE 0x100DD280
 void Terrain::loadDetailTextures(TerrainRawReader& reader)
 {
     if (m_lowQuality == 0)
@@ -1034,27 +1148,27 @@ void Terrain::loadDetailTextures(TerrainRawReader& reader)
         for (int n = 0; n < m_detailTextureCount; ++n)
         {
             TerrainDetailTexture* record = 0;
-            void* const storage = ::renddx9abi::engineAlloc(0x2C);
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainDetailTexture));
             if (storage)
                 record = new (storage) TerrainDetailTexture();
-            vc71::vectorPushBackIn(m_detailTextures, 4u, &record);              // the +0x338 vector
+            m_detailTextures.push_back(record);                                   // the +0x338 vector
 
-            vc71::string name;
+            std::string name;
             reader.readLine(name, 10);
             if (name.size())
             {
                 const int savedClass = dx9rend::textureManagerSwapDefaultMipClass(5);
                 record->texture = dx9rend::textureManagerGetTexture(name);
-                vc71::string normal(name.c_str()); normal += "_normal";
-                if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(normal)))
-                    record->normalTexture = dx9rend::textureManagerGetTexture(normal);
-                vc71::string side(name.c_str()); side += "_side";
-                if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(side)))
+                if (detailTextureCompanionExists(name, "_normal"))
+                    record->normalTexture = dx9rend::textureManagerGetTexture(
+                        std::string(name).append("_normal"));
+                if (detailTextureCompanionExists(name, "_side"))
                 {
-                    record->sideTexture = dx9rend::textureManagerGetTexture(side);
-                    vc71::string sideNormal(name.c_str()); sideNormal += "_sideNormal";
-                    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(sideNormal)))
-                        record->sideNormalTexture = dx9rend::textureManagerGetTexture(sideNormal);
+                    record->sideTexture = dx9rend::textureManagerGetTexture(
+                        std::string(name).append("_side"));
+                    if (detailTextureCompanionExists(name, "_sideNormal"))
+                        record->sideNormalTexture = dx9rend::textureManagerGetTexture(
+                            std::string(name).append("_sideNormal"));
                 }
                 else
                 {
@@ -1078,7 +1192,7 @@ void Terrain::loadDetailTextures(TerrainRawReader& reader)
     else
     {
         TerrainDetailTexture record;
-        vc71::string name;
+        std::string name;
         for (int n = 0; n < m_detailTextureCount; ++n)
         {
             reader.readLine(name, 10);
@@ -1093,28 +1207,33 @@ void Terrain::loadDetailTextures(TerrainRawReader& reader)
 }
 
 
-// sub_100DA9C0 - the LOD tables, the LOD index buffer and the base grid.
-
+// the LOD tables, the LOD index buffer and the base grid.
+// PE 0x100DA9C0
 void Terrain::loadLodTablesAndBaseGrid(TerrainRawReader& reader)
 {
     if (m_rawHasVersion && m_rawVersion >= 0x1Au)
     {
-        // 85 records of 400 bytes. The first 21 link to four children each (records 1+4i..4+4i)
-        // and read their three 64-byte rows as u32 pairs in the shipped interleaving; records 21..84
-        // are read as plain (row, row+192) pairs.
-        m_lodTables = static_cast<unsigned char*>(::renddx9abi::engineAlloc(34000));
+        // 85 records (34000 bytes in retail). The first 21 link to four children each (records
+        // 1+4i..4+4i) and read their three 64-byte rows as u32 pairs in the shipped interleaving;
+        // records 21..84 are read as plain (row, row+192) pairs. The links are stored as pointers
+        // (TerrainLodRecord::children, retail table[96..99]).
+        m_lodTables = static_cast<unsigned char*>(::renddx9abi::engineAlloc(85 * kTerrainLodRecordSize));
         int record = 0;
         int offset = 0;
-        for (int child = 400; child < 34000; child += 1600)
+        for (int child = kTerrainLodRecordSize; child < 85 * kTerrainLodRecordSize;
+             child += 4 * kTerrainLodRecordSize)
         {
             unsigned int* const table = reinterpret_cast<unsigned int*>(m_lodTables + offset);
-            ::memset(table, 0, 0x190u);
+            ::memset(table, 0, sizeof(TerrainLodRecord));
             if (record < 21)
             {
-                table[96] = reinterpret_cast<unsigned int>(m_lodTables + child);
-                table[97] = reinterpret_cast<unsigned int>(m_lodTables + child + 400);
-                table[98] = reinterpret_cast<unsigned int>(m_lodTables + child + 800);
-                table[99] = reinterpret_cast<unsigned int>(m_lodTables + child + 1200);
+                reinterpret_cast<TerrainLodRecord*>(table)->children[0] = m_lodTables + child;
+                reinterpret_cast<TerrainLodRecord*>(table)->children[1] =
+                    m_lodTables + child + kTerrainLodRecordSize;
+                reinterpret_cast<TerrainLodRecord*>(table)->children[2] =
+                    m_lodTables + child + 2 * kTerrainLodRecordSize;
+                reinterpret_cast<TerrainLodRecord*>(table)->children[3] =
+                    m_lodTables + child + 3 * kTerrainLodRecordSize;
             }
             unsigned int* row = table + 1;
             for (int r = 0; r < 3; ++r)
@@ -1135,14 +1254,15 @@ void Terrain::loadLodTablesAndBaseGrid(TerrainRawReader& reader)
                 row += 16;
             }
             ++record;
-            offset += 400;
+            offset += kTerrainLodRecordSize;
         }
         if (record < 85)
         {
-            for (int o = 400 * record; o < 34000; o += 400)
+            for (int o = kTerrainLodRecordSize * record; o < 85 * kTerrainLodRecordSize;
+                 o += kTerrainLodRecordSize)
             {
                 unsigned char* const table = m_lodTables + o;
-                ::memset(table, 0, 0x190u);
+                ::memset(table, 0, sizeof(TerrainLodRecord));
                 unsigned char* row = table;
                 for (int r = 0; r < 3; ++r)
                 {
@@ -1224,6 +1344,7 @@ void Terrain::loadLodTablesAndBaseGrid(TerrainRawReader& reader)
 // (slot +0xD0) - the pre-0x18 base grid table: the same border coding as above into a
 // host array at +0xD4.
 
+// PE 0x100D8700
 void Terrain::buildLegacyBaseGridVertexTable()
 {
     const int n = m_patchSize;
@@ -1258,61 +1379,6 @@ void Terrain::buildLegacyBaseGridVertexTable()
 // Legacy terrain LOD-index construction requires the base-grid table at +0xD4.
 // TerrainEditable builds a different grid and leaves this table null; its path must
 // avoid this optimizer until editor-only handling supplies a compatible route.
-
-namespace {
-
-// ID3DXBuffer and ID3DXMesh in their documented COM order (d3dx9mesh.h of the April 2005 SDK - D3DX
-// 25, the library the shipped image imports), declared here because the build carries no D3DX
-// headers (RendDX9Init.cpp declares ID3DXBuffer the same way). Every slot optimizeLodIndices calls
-// sits at the offset its call site uses: mesh +0x08 Release, +0x10 GetNumFaces, +0x3C / +0x40
-// Lock / UnlockVertexBuffer, +0x44 / +0x48 Lock / UnlockIndexBuffer, +0x58 GenerateAdjacency, +0x6C
-// OptimizeInplace; buffer +0x08 Release, +0x0C GetBufferPointer.
-struct LodD3DXBuffer : public IUnknown
-{
-    virtual void* STDMETHODCALLTYPE GetBufferPointer() = 0;                                  // +0x0C
-    virtual DWORD STDMETHODCALLTYPE GetBufferSize() = 0;                                     // +0x10
-};
-
-struct LodD3DXMesh : public IUnknown
-{
-    // ID3DXBaseMesh
-    virtual HRESULT STDMETHODCALLTYPE DrawSubset(DWORD attribId) = 0;                        // +0x0C
-    virtual DWORD   STDMETHODCALLTYPE GetNumFaces() = 0;                                     // +0x10
-    virtual DWORD   STDMETHODCALLTYPE GetNumVertices() = 0;                                  // +0x14
-    virtual DWORD   STDMETHODCALLTYPE GetFVF() = 0;                                          // +0x18
-    virtual HRESULT STDMETHODCALLTYPE GetDeclaration(D3DVERTEXELEMENT9* declaration) = 0;    // +0x1C
-    virtual DWORD   STDMETHODCALLTYPE GetNumBytesPerVertex() = 0;                            // +0x20
-    virtual DWORD   STDMETHODCALLTYPE GetOptions() = 0;                                      // +0x24
-    virtual HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9** device) = 0;              // +0x28
-    virtual HRESULT STDMETHODCALLTYPE CloneMeshFVF(DWORD options, DWORD fvf,
-                                                   IDirect3DDevice9* device, void** clone) = 0;         // +0x2C
-    virtual HRESULT STDMETHODCALLTYPE CloneMesh(DWORD options, const D3DVERTEXELEMENT9* declaration,
-                                                IDirect3DDevice9* device, void** clone) = 0;            // +0x30
-    virtual HRESULT STDMETHODCALLTYPE GetVertexBuffer(IDirect3DVertexBuffer9** vertexBuffer) = 0;       // +0x34
-    virtual HRESULT STDMETHODCALLTYPE GetIndexBuffer(IDirect3DIndexBuffer9** indexBuffer) = 0;          // +0x38
-    virtual HRESULT STDMETHODCALLTYPE LockVertexBuffer(DWORD flags, void** data) = 0;        // +0x3C
-    virtual HRESULT STDMETHODCALLTYPE UnlockVertexBuffer() = 0;                              // +0x40
-    virtual HRESULT STDMETHODCALLTYPE LockIndexBuffer(DWORD flags, void** data) = 0;         // +0x44
-    virtual HRESULT STDMETHODCALLTYPE UnlockIndexBuffer() = 0;                               // +0x48
-    virtual HRESULT STDMETHODCALLTYPE GetAttributeTable(void* attributeTable, DWORD* size) = 0;         // +0x4C
-    virtual HRESULT STDMETHODCALLTYPE ConvertPointRepsToAdjacency(const DWORD* pointReps,
-                                                                  DWORD* adjacency) = 0;     // +0x50
-    virtual HRESULT STDMETHODCALLTYPE ConvertAdjacencyToPointReps(const DWORD* adjacency,
-                                                                  DWORD* pointReps) = 0;     // +0x54
-    virtual HRESULT STDMETHODCALLTYPE GenerateAdjacency(FLOAT epsilon, DWORD* adjacency) = 0; // +0x58
-    virtual HRESULT STDMETHODCALLTYPE UpdateSemantics(D3DVERTEXELEMENT9* declaration) = 0;   // +0x5C
-    // ID3DXMesh
-    virtual HRESULT STDMETHODCALLTYPE LockAttributeBuffer(DWORD flags, DWORD** data) = 0;    // +0x60
-    virtual HRESULT STDMETHODCALLTYPE UnlockAttributeBuffer() = 0;                           // +0x64
-    virtual HRESULT STDMETHODCALLTYPE Optimize(DWORD flags, const DWORD* adjacencyIn,
-                                               DWORD* adjacencyOut, DWORD* faceRemap,
-                                               void** vertexRemap, void** optimizedMesh) = 0;  // +0x68
-    virtual HRESULT STDMETHODCALLTYPE OptimizeInplace(DWORD flags, const DWORD* adjacencyIn,
-                                                      DWORD* adjacencyOut, DWORD* faceRemap,
-                                                      void** vertexRemap) = 0;               // +0x6C
-};
-
-} // anonymous namespace
 
 
 // Replaces the INDEX16 buffer with three optimized LOD ranges.
@@ -1365,8 +1431,7 @@ void Terrain::createLodIndices(unsigned short*& cursor, int lod, int x, int z, i
 
     const int stride = m_patchSize + 1;
     const int step = m_patchSize / (m_patchSize >> lod);
-    if (m_lodBlockIndices.first)                                                  // resize(0) - sub_100D20A0(0, 0)
-        m_lodBlockIndices.last = m_lodBlockIndices.first;
+    m_lodBlockIndices.clear();                                                    // resize(0) - sub_100D20A0(0, 0)
     for (int row = z; row < z + size; row += step)
     {
         for (int col = x; col < x + size; col += step)
@@ -1375,36 +1440,38 @@ void Terrain::createLodIndices(unsigned short*& cursor, int lod, int x, int z, i
             const unsigned short b = static_cast<unsigned short>(row * stride + step + col);
             const unsigned short c = static_cast<unsigned short>((row + step) * stride + col);
             const unsigned short d = static_cast<unsigned short>((row + step) * stride + step + col);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &a);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &b);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &c);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &c);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &b);
-            vc71::vectorPushBackIn(m_lodBlockIndices, 2u, &d);
+            m_lodBlockIndices.push_back(a);
+            m_lodBlockIndices.push_back(b);
+            m_lodBlockIndices.push_back(c);
+            m_lodBlockIndices.push_back(c);
+            m_lodBlockIndices.push_back(b);
+            m_lodBlockIndices.push_back(d);
         }
     }
     optimizeLodIndices(m_lodBlockIndices);
-    const unsigned int count = vc71::vectorSizeIn(m_lodBlockIndices, 2u);
-    ::memcpy(cursor, m_lodBlockIndices.first, 2u * count);                       // rep movsd / movsb
-    cursor += vc71::vectorSizeIn(m_lodBlockIndices, 2u);
+    const unsigned int count = static_cast<unsigned int>(m_lodBlockIndices.size());
+    ::memcpy(cursor, m_lodBlockIndices.data(), 2u * count);                      // rep movsd / movsb
+    cursor += m_lodBlockIndices.size();
 }
 
 
 // Reorders one leaf's indices in place for the vertex cache through D3DX meshes.
 // Requires the legacy base grid and successful device allocations; HRESULTs are unchecked.
+// D3DXCreateMeshFVF, D3DXCreateMesh and D3DXCreateBuffer are static imports of the shipped image
+// (IAT 0x101DB47C, 0x101DB450, 0x101DB41C).
 
-void Terrain::optimizeLodIndices(vc71::vector_layout& indices)
+void Terrain::optimizeLodIndices(std::vector<unsigned short>& indices)
 {
-    LodD3DXMesh* mesh = 0;
+    ID3DXMesh* mesh = 0;
     {
         IDirect3DDevice9* const device = static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->device;
         const int side = m_patchSize + 1;
-        D3DXCreateMeshFVF(vc71::vectorSizeIn(indices, 2u) / 3u, static_cast<unsigned long>(side * side),
-                          0x110u, 2u, device, reinterpret_cast<void**>(&mesh));
+        D3DXCreateMeshFVF(static_cast<unsigned long>(indices.size() / 3u), static_cast<unsigned long>(side * side),
+                          0x110u, 2u, device, &mesh);
     }
     void* data = 0;
     mesh->LockIndexBuffer(0, &data);
-    ::memcpy(data, indices.first, 2u * vc71::vectorSizeIn(indices, 2u));
+    ::memcpy(data, indices.data(), 2u * indices.size());
     mesh->UnlockIndexBuffer();
 
     float* position = 0;
@@ -1418,8 +1485,8 @@ void Terrain::optimizeLodIndices(vc71::vector_layout& indices)
     }
     mesh->UnlockVertexBuffer();
 
-    LodD3DXBuffer* adjacency = 0;
-    D3DXCreateBuffer(12u * mesh->GetNumFaces(), reinterpret_cast<void**>(&adjacency));
+    ID3DXBuffer* adjacency = 0;
+    D3DXCreateBuffer(12u * mesh->GetNumFaces(), &adjacency);
     mesh->GenerateAdjacency(0.1f, static_cast<DWORD*>(adjacency->GetBufferPointer()));
     mesh->Release();
 
@@ -1427,19 +1494,19 @@ void Terrain::optimizeLodIndices(vc71::vector_layout& indices)
     {
         IDirect3DDevice9* const device = static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->device;
         const int side = m_patchSize + 1;
-        D3DXCreateMesh(vc71::vectorSizeIn(indices, 2u) / 3u, static_cast<unsigned long>(side * side),
-                       0x110u, kDeclPatchSingle, device, reinterpret_cast<void**>(&mesh));
+        D3DXCreateMesh(static_cast<unsigned long>(indices.size() / 3u), static_cast<unsigned long>(side * side),
+                       0x110u, kDeclPatchSingle, device, &mesh);
     }
     data = 0;
     mesh->LockIndexBuffer(0, &data);
-    ::memcpy(data, indices.first, 2u * vc71::vectorSizeIn(indices, 2u));
+    ::memcpy(data, indices.data(), 2u * indices.size());
     mesh->UnlockIndexBuffer();
     mesh->OptimizeInplace(0x14400000u, static_cast<const DWORD*>(adjacency->GetBufferPointer()), 0, 0, 0);
     adjacency->Release();
 
     const DWORD indexCount = 3u * mesh->GetNumFaces();
     mesh->LockIndexBuffer(0, &data);
-    ::memcpy(indices.first, data, 2u * indexCount);
+    ::memcpy(indices.data(), data, 2u * indexCount);
     mesh->UnlockIndexBuffer();
     mesh->Release();
 }
@@ -1448,13 +1515,14 @@ void Terrain::optimizeLodIndices(vc71::vector_layout& indices)
 // sub_100D8B20 - the patch grid: patchCount^2 QuadPatches, each constructed then loaded.
 // A failed allocation leaves a null in the table and the body still calls load on it, as shipped.
 
+// PE 0x100D8B20
 void Terrain::loadPatches(TerrainRawReader& reader)
 {
-    m_patches = static_cast<QuadPatch**>(
-        ::renddx9abi::engineAlloc(static_cast<unsigned int>(4 * m_patchCount * m_patchCount)));
+    m_patches = static_cast<QuadPatch**>(::renddx9abi::engineAlloc(static_cast<unsigned int>(
+        static_cast<int>(sizeof(QuadPatch*)) * m_patchCount * m_patchCount)));   // 4 * n^2 in retail
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
     {
-        void* const storage = ::renddx9abi::engineAlloc(0x120);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(QuadPatch));         // retail 0x120
         QuadPatch* const patch = storage ? new (storage) QuadPatch(this) : 0;
         m_patches[i] = patch;
         patch->load(reader);
@@ -1462,9 +1530,185 @@ void Terrain::loadPatches(TerrainRawReader& reader)
 }
 
 
+// Unreachable setters and forwarders (no code or data references in 1.50); each body follows its
+// listing, the names are [INFERRED].
+
+// PE 0x100D89F0. Unreachable in 1.50: no code or data references.
+void Terrain::setFlag364(unsigned char value)
+{
+    m_flag364 = value;
+}
+
+// PE 0x100D8A10. Unreachable in 1.50: no code or data references.
+void Terrain::setUnresolved464(int value)
+{
+    if (value == 0x400 || value == 0x200 || value == 0x100 || value == 0x80)
+    {
+        if (m_unresolved464 != value)
+            m_unresolved464 = value;
+    }
+}
+
+// PE 0x100D8A50. Unreachable in 1.50: no code or data references.
+void Terrain::reportObsolete()
+{
+    // sub_10074300(6, __FILE__, 4095, "") << "obsolete" - dice's debug stream, kept as one line
+    // like the neighbouring obsolete-path reports.
+    ::renddx9abi::logf("[Terrain.cpp:4095] obsolete");
+}
+
+// PE 0x100D8AD0. Unreachable in 1.50: no code or data references (its only caller is
+// setIndexBufferCount).
+void Terrain::allocateIndexBuffer()
+{
+    if (!m_indexBuffer)
+    {
+        const int savedPool = dx9rend::bufferManagerSwapPool(0);
+        m_indexBuffer = dx9rend::bufferManagerCreateIndexBuffer(m_indexBufferCount, 520u, 101u);   // dynamic|writeonly, INDEX16
+        dx9rend::bufferManagerSwapPool(savedPool);
+    }
+}
+
+// PE 0x100DB060. Unreachable in 1.50: no code or data references. A count below 1000 drops the
+// buffer and zeroes the count; otherwise the buffer is rebuilt for the new count.
+void Terrain::setIndexBufferCount(unsigned int count)
+{
+    if (m_indexBufferCount == count)
+        return;
+    void* const buffer = m_indexBuffer;
+    if (count < 0x3E8u)
+    {
+        m_indexBufferCount = 0;
+        if (buffer)
+            dx9rend::indexBufferRelease(buffer);                                  // --ref, sub_10014300 + free at zero
+        m_indexBuffer = 0;
+        return;
+    }
+    m_indexBufferCount = count;
+    if (buffer)
+        dx9rend::indexBufferRelease(buffer);
+    m_indexBuffer = 0;
+    allocateIndexBuffer();
+}
+
+// PE 0x100DD210. Unreachable in 1.50: no code or data references.
+void Terrain::setFlag3B8(unsigned char value)
+{
+    if (m_flag3B8 != value)
+    {
+        m_flag3B8 = value;
+        buildLegacyBaseGridVertexTable();                                         // vslot +0xD0
+        createLodIndexBuffer();
+    }
+}
+
+// PE 0x100DD240. Unreachable in 1.50: no code or data references.
+void Terrain::setFlag2AD(unsigned char value)
+{
+    m_flag2AD = value;
+    createLodIndexBuffer();
+}
+
+// PE 0x100DD260. Unreachable in 1.50: no code or data references.
+void Terrain::setFlag2AC(unsigned char value)
+{
+    m_flag2AC = value;
+    createLodIndexBuffer();
+}
+
+// PE 0x100DF130. The terrain-quality setter; VideoOptions' three terrain-quality arms
+// (0x1000FEE4, 0x1000FF54, 0x1000FFC3) call it after setting the culler's LOD switch distance.
+void Terrain::setLowQuality(unsigned char value)
+{
+    if (m_lowQuality != value)
+    {
+        m_lowQuality = value;
+        m_lowQualityB = value;
+        reloadForLowQuality();
+    }
+}
+
+// PE 0x100DC340. Unreachable in 1.50: no code or data references.
+void Terrain::setDetailPlaneMap(int index, unsigned char value)
+{
+    m_detailTextures[static_cast<unsigned int>(index)]->setPlaneMap(value);       // slot +0x24, index unchecked
+}
+
+// PE 0x100DC360. Unreachable in 1.50: no code or data references.
+void Terrain::setDetailSideTiling(int index, Vec2 tiling)
+{
+    m_detailTextures[static_cast<unsigned int>(index)]->setSideTiling(tiling);    // slot +0x34
+}
+
+// PE 0x100DC390. Unreachable in 1.50: no code or data references.
+void Terrain::setDetailTopTiling(int index, float tiling)
+{
+    m_detailTextures[static_cast<unsigned int>(index)]->setTopTiling(tiling);     // slot +0x2C
+}
+
+// PE 0x100DC3B0. Unreachable in 1.50: no code or data references.
+void Terrain::setDetailYOffset(int index, float offset)
+{
+    m_detailTextures[static_cast<unsigned int>(index)]->setYOffset(offset);       // slot +0x3C
+}
+
+// PE 0x100DC3D0. Unreachable in 1.50: no code or data references.
+void Terrain::setDetailEnvMap(int index, bool envMap)
+{
+    m_detailTextures[static_cast<unsigned int>(index)]->setEnvMap(envMap);        // slot +0x54
+}
+
+
+// PE 0x100D9FC0 (also 0x100FB4B0): the StaticMesh copy differs from this body only in register
+// allocation. Unreachable in 1.50: no code or data references; the retail body takes the
+// output in ecx and the plane array in edx. D3DXPlaneNormalize and D3DXPlaneTransform are d3dx9_25
+// imports there; [CHOSEN, not recovered] the documented D3DX arithmetic stands in for them here
+// (D3DXMatrixInverse and D3DXMatrixTranspose are the shared D3DX entries).
+void terrainViewClipPlane(float* out, const float* planes, int index)
+{
+    Mat4 product = Mat4::getIdentity();
+    dx9rend::IRenderView* const view = dx9rend::rendererGetRenderViewDup();
+    const Mat4* const projection = view->getProjectionMatrixPtr();                // vslot +0x6C
+    const Mat4* const inverseView = view->getInverseViewMatrixPtr();              // vslot +0x68
+    product.fullMult(*inverseView, *projection);                                  // sub_10077A30
+
+    float plane[4] = { planes[index * 4], planes[index * 4 + 1], planes[index * 4 + 2], planes[index * 4 + 3] };
+    {
+        // D3DXPlaneNormalize(&plane, &plane)
+        const float norm = std::sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
+        if (norm != 0.0f)
+        {
+            plane[0] /= norm; plane[1] /= norm; plane[2] /= norm; plane[3] /= norm;
+        }
+        else
+        {
+            plane[0] = plane[1] = plane[2] = plane[3] = 0.0f;
+        }
+    }
+    plane[0] = plane[0] * -1.0f;
+    plane[1] = plane[1] * -1.0f;
+    plane[2] = plane[2] * -1.0f;
+    plane[3] = plane[3] * -1.0f;
+
+    Mat4 matrix = Mat4::getZero();      // retail leaves the stack slot unwritten when the product is singular
+    D3DXMatrixInverse(reinterpret_cast<D3DXMATRIX*>(&matrix), 0, reinterpret_cast<const D3DXMATRIX*>(&product));
+    D3DXMatrixTranspose(reinterpret_cast<D3DXMATRIX*>(&matrix), reinterpret_cast<const D3DXMATRIX*>(&matrix));
+    {
+        // D3DXPlaneTransform(&plane, &plane, &matrix)
+        const float* const m = matrix.m;
+        const float a = plane[0], b = plane[1], c = plane[2], d = plane[3];
+        plane[0] = a * m[0] + b * m[4] + c * m[8] + d * m[12];
+        plane[1] = a * m[1] + b * m[5] + c * m[9] + d * m[13];
+        plane[2] = a * m[2] + b * m[6] + c * m[10] + d * m[14];
+        plane[3] = a * m[3] + b * m[7] + c * m[11] + d * m[15];
+    }
+    out[0] = plane[0]; out[1] = plane[1]; out[2] = plane[2]; out[3] = plane[3];
+}
+
+
 // sub_100D8BA0 - the surrounding ring: slot indices until -1, the ring geometry built once
 // (slot +0xCC) before the first one.
-
+// PE 0x100D8BA0
 void Terrain::loadSurroundingPatches(TerrainRawReader& reader)
 {
     int slot = 0;
@@ -1476,7 +1720,7 @@ void Terrain::loadSurroundingPatches(TerrainRawReader& reader)
             buildSurroundingGeometry();                                           // vslot +0xCC
             m_surroundingBuilt = 1;
         }
-        void* const storage = ::renddx9abi::engineAlloc(0x168);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(SurroundingPatch));  // retail 0x168
         SurroundingPatch* const patch = storage ? new (storage) SurroundingPatch(this) : 0;
         m_surrounding[slot] = patch;
         patch->load(slot, reader);
@@ -1490,11 +1734,16 @@ void Terrain::loadSurroundingPatches(TerrainRawReader& reader)
 // into `indices`, offset by the vertices already present.
 
 void Terrain::generateSurroundingGrid(int x0, int z0, int x1, int z1, int stepX, int stepZ,
-                                      vc71::vector_layout& indices, vc71::vector_layout& vertices)
+                                      std::vector<int>& indices,
+                                      std::vector<TerrainSurroundingVertex>& vertices)
 {
+#if defined(__APPLE__)
+    const int   spanInt = bf2x87::toIntTruncate(m_primaryWorldScale.x) * (m_heightmapSizeX - 1);
+#else
     const int   spanInt = static_cast<int>(m_primaryWorldScale.x) * (m_heightmapSizeX - 1);
+#endif
     const float span    = static_cast<float>(spanInt);
-    const unsigned int firstVertex = vc71::vectorSizeIn(vertices, 16u);
+    const unsigned int firstVertex = static_cast<unsigned int>(vertices.size());
 
     for (int z = z0; z < z1 + 1; z += stepZ)
     {
@@ -1502,12 +1751,12 @@ void Terrain::generateSurroundingGrid(int x0, int z0, int x1, int z1, int stepX,
         for (int x = x0; x < x1 + 1; x += stepX)
         {
             const float xf = static_cast<float>(x);
-            float v[4];
-            v[0] = xf;
-            v[1] = zf;
-            v[2] = static_cast<float>(static_cast<double>(xf) * m_secondaryWorldScale.x / span);
-            v[3] = static_cast<float>(static_cast<double>(zf) * m_secondaryWorldScale.z / span);
-            vc71::vectorPushBackIn(vertices, 16u, v);
+            TerrainSurroundingVertex v;
+            v.x = xf;
+            v.z = zf;
+            v.u = static_cast<float>(static_cast<double>(xf) * m_secondaryWorldScale.x / span);
+            v.v = static_cast<float>(static_cast<double>(zf) * m_secondaryWorldScale.z / span);
+            vertices.push_back(v);
         }
     }
 
@@ -1523,12 +1772,12 @@ void Terrain::generateSurroundingGrid(int x0, int z0, int x1, int z1, int stepX,
             const int b = current + cols;
             const int c = current - 1;
             const int d = nextRow;
-            vc71::vectorPushBackIn(indices, 4u, &a);
-            vc71::vectorPushBackIn(indices, 4u, &b);
-            vc71::vectorPushBackIn(indices, 4u, &c);
-            vc71::vectorPushBackIn(indices, 4u, &a);
-            vc71::vectorPushBackIn(indices, 4u, &d);
-            vc71::vectorPushBackIn(indices, 4u, &b);
+            indices.push_back(a);
+            indices.push_back(b);
+            indices.push_back(c);
+            indices.push_back(a);
+            indices.push_back(d);
+            indices.push_back(b);
             ++nextRow;
             ++current;
         }
@@ -1548,37 +1797,40 @@ void Terrain::buildSurroundingGeometry()
     if (m_sideIndexBuffer)    { dx9rend::indexBufferRelease(m_sideIndexBuffer);     m_sideIndexBuffer = 0; }
     if (m_cornerIndexBuffer)  { dx9rend::indexBufferRelease(m_cornerIndexBuffer);   m_cornerIndexBuffer = 0; }
 
+#if defined(__APPLE__)
+    const int span = bf2x87::toIntTruncate(
+        static_cast<double>(m_heightmapSizeX - 1) * m_primaryWorldScale.x / m_secondaryWorldScale.x);
+#else
     const int span = static_cast<int>(
         static_cast<double>(m_heightmapSizeX - 1) * m_primaryWorldScale.x / m_secondaryWorldScale.x);
+#endif
     const int quarter = span / 4;
     const int half    = span / 2;
 
-    vc71::vector_layout vertices = { 0, 0, 0, 0 };
-    vc71::vector_layout indices  = { 0, 0, 0, 0 };
+    std::vector<TerrainSurroundingVertex> vertices;
+    std::vector<int> indices;
     generateSurroundingGrid(0, 0,       span, quarter, 1, 1, indices, vertices);
     generateSurroundingGrid(0, quarter, span, half,    2, 2, indices, vertices);
     generateSurroundingGrid(0, half,    span, span,    4, 4, indices, vertices);
 
-    unsigned int vertexCount = vc71::vectorSizeIn(vertices, 16u);
+    unsigned int vertexCount = static_cast<unsigned int>(vertices.size());
     m_sideVertexBuffer = dx9rend::bufferManagerCreateVertexBuffer(
         vertexCount, m_halfFloatSurrounding ? 8u : 12u, 8u, "Terrain_Surrounding");
     uploadSurroundingVertices(m_sideVertexBuffer, vertices);
-    m_sideVertexCount = vc71::vectorSizeIn(vertices, 16u);
+    m_sideVertexCount = static_cast<unsigned int>(vertices.size());
 
-    unsigned int indexCount = vc71::vectorSizeIn(indices, 4u);
+    unsigned int indexCount = static_cast<unsigned int>(indices.size());
     m_sideIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(indexCount, 8u, 101u);
     uploadSurroundingIndices(m_sideIndexBuffer, indices);
-    m_sideIndexCount = vc71::vectorSizeIn(indices, 4u);
+    m_sideIndexCount = static_cast<unsigned int>(indices.size());
 
     // The third buffer: created from the same count, never uploaded.
-    vertexCount = vc71::vectorSizeIn(vertices, 16u);
+    vertexCount = static_cast<unsigned int>(vertices.size());
     m_sideVertexBuffer2 = dx9rend::bufferManagerCreateVertexBuffer(
         vertexCount, m_halfFloatSurrounding ? 8u : 16u, 8u, "Terrain_Surrounding");
 
-    if (vertices.first) ::renddx9abi::engineFree(vertices.first);
-    vertices.first = 0; vertices.last = 0; vertices.end = 0;
-    if (indices.first) ::renddx9abi::engineFree(indices.first);
-    indices.first = 0; indices.last = 0; indices.end = 0;
+    vertices.clear();                                                             // the side grid is done
+    indices.clear();
 
     generateSurroundingGrid(0,       0,       quarter, quarter, 1, 1, indices, vertices);
     generateSurroundingGrid(quarter, 0,       half,    quarter, 2, 2, indices, vertices);
@@ -1586,46 +1838,49 @@ void Terrain::buildSurroundingGeometry()
     generateSurroundingGrid(half,    0,       span,    half,    4, 4, indices, vertices);
     generateSurroundingGrid(0,       half,    span,    span,    4, 4, indices, vertices);
 
-    vertexCount = vc71::vectorSizeIn(vertices, 16u);
+    vertexCount = static_cast<unsigned int>(vertices.size());
     m_cornerVertexBuffer = dx9rend::bufferManagerCreateVertexBuffer(
         vertexCount, m_halfFloatSurrounding ? 8u : 12u, 8u, "TerrainEditable");
     uploadSurroundingVertices(m_cornerVertexBuffer, vertices);
-    m_cornerVertexCount = vc71::vectorSizeIn(vertices, 16u);
+    m_cornerVertexCount = static_cast<unsigned int>(vertices.size());
 
-    indexCount = vc71::vectorSizeIn(indices, 4u);
+    indexCount = static_cast<unsigned int>(indices.size());
     m_cornerIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(indexCount, 8u, 101u);
     uploadSurroundingIndices(m_cornerIndexBuffer, indices);
-    m_cornerIndexCount = vc71::vectorSizeIn(indices, 4u);
-
-    if (indices.first)  ::renddx9abi::engineFree(indices.first);
-    if (vertices.first) ::renddx9abi::engineFree(vertices.first);
+    m_cornerIndexCount = static_cast<unsigned int>(indices.size());
 }
 
 // The two upload loops 0x100DEAB0 runs twice: x and z as shorts (SHORT2), then u and v as halves
 // (+0x3A8 set) or floats; indices as the low halves of the u32 records.
-void Terrain::uploadSurroundingVertices(void* vertexBuffer, const vc71::vector_layout& vertices)
+void Terrain::uploadSurroundingVertices(void* vertexBuffer,
+                                        const std::vector<TerrainSurroundingVertex>& vertices)
 {
     unsigned char* dst = static_cast<unsigned char*>(dx9rend::vertexBufferLock(vertexBuffer, 0, 0, 0));
     if (dst)
     {
-        const unsigned int count = vc71::vectorSizeIn(vertices, 16u);
-        const float* src = reinterpret_cast<const float*>(vertices.first);
-        for (unsigned int i = 0; i < count; ++i, src += 4)
+        const unsigned int count = static_cast<unsigned int>(vertices.size());
+        for (unsigned int i = 0; i < count; ++i)
         {
-            reinterpret_cast<short*>(dst)[0] = static_cast<short>(static_cast<long long>(src[0]));
-            reinterpret_cast<short*>(dst)[1] = static_cast<short>(static_cast<long long>(src[1]));
+            const TerrainSurroundingVertex& src = vertices[i];
+#if defined(__APPLE__)
+            reinterpret_cast<short*>(dst)[0] = static_cast<short>(bf2x87::toInt64Truncate(src.x));
+            reinterpret_cast<short*>(dst)[1] = static_cast<short>(bf2x87::toInt64Truncate(src.z));
+#else
+            reinterpret_cast<short*>(dst)[0] = static_cast<short>(static_cast<long long>(src.x));
+            reinterpret_cast<short*>(dst)[1] = static_cast<short>(static_cast<long long>(src.z));
+#endif
             if (m_halfFloatSurrounding)
             {
-                float u = src[2];
-                float v = src[3];
-                D3DXFloat32To16Array(dst + 4, &u, 1);
-                D3DXFloat32To16Array(dst + 6, &v, 1);
+                float u = src.u;
+                float v = src.v;
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst + 4), &u, 1);
+                D3DXFloat32To16Array(reinterpret_cast<D3DXFLOAT16*>(dst + 6), &v, 1);
                 dst += 8;
             }
             else
             {
-                reinterpret_cast<float*>(dst)[1] = src[2];
-                reinterpret_cast<float*>(dst)[2] = src[3];
+                reinterpret_cast<float*>(dst)[1] = src.u;
+                reinterpret_cast<float*>(dst)[2] = src.v;
                 dst += 12;
             }
         }
@@ -1633,15 +1888,14 @@ void Terrain::uploadSurroundingVertices(void* vertexBuffer, const vc71::vector_l
     dx9rend::vertexBufferUnlock(vertexBuffer);
 }
 
-void Terrain::uploadSurroundingIndices(void* indexBuffer, const vc71::vector_layout& indices)
+void Terrain::uploadSurroundingIndices(void* indexBuffer, const std::vector<int>& indices)
 {
     unsigned short* const dst = static_cast<unsigned short*>(dx9rend::indexBufferLock(indexBuffer, 0, 0, 0));
     if (dst)
     {
-        const unsigned int count = vc71::vectorSizeIn(indices, 4u);
-        const unsigned short* src = reinterpret_cast<const unsigned short*>(indices.first);
+        const unsigned int count = static_cast<unsigned int>(indices.size());
         for (unsigned int i = 0; i < count; ++i)
-            dst[i] = src[2 * i];
+            dst[i] = static_cast<unsigned short>(indices[i]);                    // the record's low half
     }
     dx9rend::indexBufferUnlock(indexBuffer);
 }
@@ -1695,15 +1949,15 @@ void Terrain::setupWater()
     dx9rend::raShaderConstantsSetUvLevel(
         -lowX, static_cast<float>(1.0 / (highX - lowX)), lowZ, static_cast<float>(1.0 / (highZ - lowZ)));
 
-    // The material block's +0x24 vec4 to (1, 0, 0, 1).
-    float* const materialVec = reinterpret_cast<float*>(static_cast<unsigned char*>(m_materialParameters) + 36);
+    // The material block's +0x24 vec4 (DiffuseColor) to (1, 0, 0, 1).
+    float* const materialVec = static_cast<RaMaterialParameters*>(m_materialParameters)->diffuseColor.value;
     materialVec[0] = 1.0f; materialVec[1] = 0.0f; materialVec[2] = 0.0f; materialVec[3] = 1.0f;
 
     if (m_water3D)
     {
         if (!dx9rend::raShaderConstantsGetEngineTexture(0x1A0))               // the WaterMap holder
         {
-            vc71::string name("common/textures/");
+            std::string name("common/textures/");
             name += m_waterVolumeName;
             dx9rend::EngineTexture* const volume =
                 static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerGetTexture(name));
@@ -1717,11 +1971,11 @@ void Terrain::setupWater()
             // the 2D water's animated normal-map frames, listed in
             // "common/textures/<volume>.txt" (stock: watervolume.txt, eight Waterbump frames).
             // The member is stored before the name is built (0x100DA61E), as shipped.
-            void* const storage = ::renddx9abi::engineAlloc(0x48);
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainWaterFrameList));   // retail 0x48
             m_waterTextureList = storage ? new (storage) TerrainWaterFrameList() : 0;
             // `std::string("common/textures/") + m_waterVolumeName + ".txt"`: the two inlined
             // operator+ (0x100DA632..0x100DA67E; copy, +=, copy) - the carrier has no operator+.
-            vc71::string name("common/textures/");
+            std::string name("common/textures/");
             name += m_waterVolumeName;
             name += ".txt";
             // The list is not null-tested after the allocation (0x100DA687 reloads the member
@@ -1733,22 +1987,22 @@ void Terrain::setupWater()
 
     // "Water" on the expansion pack (Renderer +0xAC), else "WaterBase", into the material's +0x14C.
     {
-        vc71::string shaderName(dx9rend::rendererIsExpansionPack() ? "Water" : "WaterBase");
-        *reinterpret_cast<dx9rend::Ra::RaShader**>(static_cast<unsigned char*>(m_materialParameters) + 332) =
-            dx9rend::Ra::getShader(raShaderTable(), shaderName, false);
+        std::string shaderName(dx9rend::rendererIsExpansionPack() ? "Water" : "WaterBase");
+        raMaterialShaderSlot(*static_cast<RaMaterialParameters*>(m_materialParameters)) =
+            dx9rend::Ra::getShader(raShaderTable(), shaderName, false);                       // +0x14C
     }
 
     // <GSLevelDirectory><GSLoadLevel> - the level directory the envmap sits under.
-    vc71::string loadLevel;
-    vc71::string levelDir;
+    std::string loadLevel;
+    std::string levelDir;
     dx9rend::readStringSetting("GSLoadLevel", loadLevel);
     dx9rend::readStringSetting("GSLevelDirectory", levelDir);
-    vc71::string levelPath(levelDir.c_str());
+    std::string levelPath(levelDir.c_str());
     levelPath += loadLevel;
 
     if (!m_waterEnvMap)
     {
-        void* const storage = ::renddx9abi::engineAlloc(0x14);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainEnvMapRecord));   // retail 0x14
         TerrainEnvMapRecord* record = 0;
         if (storage)
         {
@@ -1758,18 +2012,18 @@ void Terrain::setupWater()
         }
         m_waterEnvMap = record;
         record->isDefaultEnvMap = 0;                                              // unguarded, as shipped
-        vc71::string envmapDds(levelPath.c_str()); envmapDds += "/Water/envmap.dds";
+        std::string envmapDds(levelPath.c_str()); envmapDds += "/Water/envmap.dds";
         if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(envmapDds)))
         {
-            vc71::string envmap(levelPath.c_str()); envmap += "/Water/envmap";
+            std::string envmap(levelPath.c_str()); envmap += "/Water/envmap";
             m_waterEnvMap->texture = dx9rend::textureManagerGetTexture(envmap);
         }
         else
         {
-            vc71::string envmap0Dds(levelPath.c_str()); envmap0Dds += "/Envmaps/EnvMap0.dds";
+            std::string envmap0Dds(levelPath.c_str()); envmap0Dds += "/Envmaps/EnvMap0.dds";
             if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(envmap0Dds)))
             {
-                vc71::string envmap0(levelPath.c_str()); envmap0 += "/Envmaps/EnvMap0";
+                std::string envmap0(levelPath.c_str()); envmap0 += "/Envmaps/EnvMap0";
                 m_waterEnvMap->texture = dx9rend::textureManagerGetTexture(envmap0);
                 m_waterEnvMap->isDefaultEnvMap = 1;
             }
@@ -1784,20 +2038,47 @@ void Terrain::setupWater()
             m_waterEnvMap = 0;
         }
         // The cube map: the level's envmap, or LightManager's at +0x248 (the cube its constructor
-        // builds; XpLightManager.cpp writes that field and publishes no getter) [UNRESOLVED member].
+        // builds).
         dx9rend::EngineTexture* const cube = m_waterEnvMap
             ? static_cast<dx9rend::EngineTexture*>(m_waterEnvMap->texture)
-            : *reinterpret_cast<dx9rend::EngineTexture**>(reinterpret_cast<unsigned char*>(g_LightManager) + 0x248);
-        holderSetTexture(static_cast<unsigned char*>(m_materialParameters) + 0x11C, cube);   // CubeMap
+            : lightManagerBlackCubeTexture(g_LightManager);
+        holderSetTexture(static_cast<RaMaterialParameters*>(m_materialParameters)->cubeMap, cube);   // +0x11C
         if (g_terrainWaterUsesRendererTexture)
         {
             // Dead in the shipped image (nothing writes dword_102592A0): Renderer +0x7B4 into the
-            // material's DiffuseMap holder. [UNRESOLVED] both the global and the renderer field.
-            holderSetTexture(static_cast<unsigned char*>(m_materialParameters) + 0xB8,
-                             *reinterpret_cast<dx9rend::EngineTexture**>(
-                                 static_cast<unsigned char*>(dx9rend::g_rendererBase) + 0x7B4));
+            // material's DiffuseMap holder (+0xB8). [UNRESOLVED] both the global and the renderer field.
+            holderSetTexture(static_cast<RaMaterialParameters*>(m_materialParameters)->diffuseMap,
+                             dx9rend::rendererPathTarget(0x7B4));
         }
     }
+}
+
+
+// PE 0x1018F8A0: the default water record (WaterColor 1,1,1; transparency 0.8; reflectivity 0.5;
+// the below-water pair 0.5, 0.5). Terrain's constructor carries the same stores inline.
+TerrainWaterRecord::TerrainWaterRecord()
+{
+    color[0] = 1.0f; color[1] = 1.0f; color[2] = 1.0f;
+    transparency = bits(0x3F4CCCCDu);
+    reflectivity = 0.5f; transparencyUnder = 0.5f; reflectivityUnder = 0.5f;
+}
+
+// PE 0x1018F940: out[0..2] = the colour times 255 (z, y, x loaded in that order, stored x, y, z).
+// Unreachable in 1.50: no code or data references.
+void TerrainWaterRecord::getColorBytes(float* out) const
+{
+    const float z = color[2] * 255.0f;
+    const float y = color[1] * 255.0f;
+    const float x = color[0] * 255.0f;
+    out[0] = x; out[1] = y; out[2] = z;
+}
+
+// PE 0x1018F970: the colour = the arguments times 1/255 (0x3B808081). Unreachable in 1.50: no
+// code or data references.
+void TerrainWaterRecord::setColorBytes(float r, float g, float b)
+{
+    const float scale = bits(0x3B808081u);
+    color[0] = r * scale; color[1] = g * scale; color[2] = b * scale;
 }
 
 
@@ -1813,7 +2094,7 @@ TerrainWaterFrameList::TerrainWaterFrameList()
 // Returns false if the file cannot be opened, leaving existing frames unchanged.
 // Requires an initialized texture manager and at most 16 frames; storage is unchecked.
 
-bool TerrainWaterFrameList::load(vc71::string path)
+bool TerrainWaterFrameList::load(std::string path)
 {
     Tokenizer tokenizer;
     if (!tokenizer.init(path.c_str()))
@@ -1823,8 +2104,8 @@ bool TerrainWaterFrameList::load(vc71::string path)
     Token token = tokenizer.token(0);                                          // the first token, copied
     while (token != tokenizer.token(tokenizer.count()))                        // line and column only
     {
-        vc71::string name;
-        dx9rend::pathStripExtension(name, vc71::string(token.text.c_str()));
+        std::string name;
+        dx9rend::pathStripExtension(name, std::string(token.text.c_str()));
         frames[frameCount] = static_cast<dx9rend::EngineTexture*>(
             dx9rend::textureManagerGetTexture(name));
         ++frameCount;                                                          // unbounded
@@ -1841,7 +2122,11 @@ bool TerrainWaterFrameList::load(vc71::string path)
 dx9rend::EngineTexture* TerrainWaterFrameList::currentFrame() const
 {
     const float scaled = static_cast<float>(frameCount) * phase;               // fild, fmul
+#if defined(__APPLE__)
+    return frames[bf2x87::toIntTruncate(scaled)];
+#else
     return frames[static_cast<int>(scaled)];
+#endif
 }
 
 // sub_10014EF0, 58 B. The count is read once (0x10014EF7) and is both the fild source and the
@@ -1850,7 +2135,11 @@ dx9rend::EngineTexture* TerrainWaterFrameList::nextFrame() const
 {
     const int count = frameCount;
     const float scaled = static_cast<float>(count) * phase;                    // fild, fmul
+#if defined(__APPLE__)
+    return frames[(bf2x87::toIntTruncate(scaled) + 1) % count];
+#else
     return frames[(static_cast<int>(scaled) + 1) % count];
+#endif
 }
 
 // sub_10014F30, 49 B. `fld st(0)` keeps the product, the truncation is fisub'd from it (one more
@@ -1859,7 +2148,11 @@ dx9rend::EngineTexture* TerrainWaterFrameList::nextFrame() const
 float TerrainWaterFrameList::frameBlend() const
 {
     const float scaled = static_cast<float>(frameCount) * phase;               // fild, fmul
+#if defined(__APPLE__)
+    return scaled - static_cast<float>(bf2x87::toIntTruncate(scaled));              // fistp (chop), fisub
+#else
     return scaled - static_cast<float>(static_cast<int>(scaled));              // fistp (chop), fisub
+#endif
 }
 
 
@@ -1874,8 +2167,7 @@ namespace {
 // re-reads the global.
 inline dx9rend::EngineTexture*& raWaterMapTexture()
 {
-    return *reinterpret_cast<dx9rend::EngineTexture**>(
-        static_cast<unsigned char*>(dx9rend::g_raShaderConstants) + 0x1A4);
+    return *reinterpret_cast<dx9rend::EngineTexture**>(dx9rend::raShaderConstantsAt(0x1A4));
 }
 
 // A parameter handle's release: vslot +0x08 of the ShaderParameter init() took a reference on
@@ -1884,48 +2176,6 @@ inline void releaseParameter(void* handle)
 {
     if (handle)
         static_cast<dx9rend::ShaderParameter*>(handle)->release();
-}
-
-// The _Tidy every VC7.1 vector member gets from its destructor - and from vector::clear(), which
-// IS _Tidy in VC7.1: free the storage when there is any, then zero the three words.
-inline void tidyVector(vc71::vector_layout& v)
-{
-    if (v.first)
-        ::renddx9abi::engineFree(v.first);
-    v.first = 0;
-    v.last  = 0;
-    v.end   = 0;
-}
-
-// sub_100E1800 - VC7.1 _Tree::_Erase over the 0x18-byte nodes of the maps at +0x2B0: the right
-// subtree (recursively), then the left child - read before the node is freed - becomes the next
-// node. The 4-byte values need no destructor. _Isnil is the byte at +0x15.
-void eraseMapSubtree(unsigned char* node)
-{
-    while (node[0x15] == 0)
-    {
-        eraseMapSubtree(*reinterpret_cast<unsigned char**>(node + 8));         // _Right
-        unsigned char* const left = *reinterpret_cast<unsigned char**>(node);  // _Left
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-}
-
-// The inlined ~map (0x100DDF28..0x100DDF51): `erase(begin(), end())` - sub_100E1D10, called with
-// _Myhead->_Left and _Myhead, so it takes its whole-range arm: _Erase(root), the head relinked and
-// the size zeroed - then the head freed and both words zeroed. The iterator it answers is dropped.
-void destroyTerrainMap(vc71::map_layout& m)
-{
-    unsigned char* const head = reinterpret_cast<unsigned char*>(m.head);
-    unsigned char** const links = reinterpret_cast<unsigned char**>(head);
-    eraseMapSubtree(links[1]);                                                  // _Erase(_Myhead->_Parent)
-    links[1] = head;                                                            // _Parent   0x100E1D35
-    m.size   = 0;
-    links[0] = head;                                                            // _Left     0x100E1D42
-    links[2] = head;                                                            // _Right    0x100E1D47
-    ::renddx9abi::engineFree(m.head);                                           // 0x100DDF41, no null test
-    m.head = 0;
-    m.size = 0;
 }
 
 } // anonymous namespace
@@ -2011,9 +2261,43 @@ void Terrain::releaseWater()
 }
 
 
+// PE 0x100D87B0.
+void Terrain::buildLodTableTree(unsigned char* tableBytes, int row, int depth)
+{
+    ++depth;
+    TerrainLodRecord* const table = reinterpret_cast<TerrainLodRecord*>(tableBytes);
+    if (depth > 4)
+    {
+        table->children[0] = 0;
+        table->children[1] = 0;
+        table->children[2] = 0;
+        table->children[3] = 0;
+        return;
+    }
+
+    // The image divides the count as signed, with truncation toward zero.
+    const int childCount = static_cast<int>(table->counts[row][0]) / 4;
+    unsigned int offset = 0;
+    for (int childIndex = 0; childIndex < 4; ++childIndex)
+    {
+        if (!table->children[childIndex])
+        {
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainLodRecord));
+            if (storage)
+                ::memset(storage, 0, sizeof(TerrainLodRecord));
+            table->children[childIndex] = static_cast<unsigned char*>(storage);
+        }
+        TerrainLodRecord* const child =
+            reinterpret_cast<TerrainLodRecord*>(table->children[childIndex]);
+        child->starts[row][0] = table->starts[row][0] + offset;
+        child->counts[row][0] = static_cast<unsigned int>(childCount);
+        buildLodTableTree(table->children[childIndex], row, depth);
+        offset += static_cast<unsigned int>(childCount);
+    }
+}
+
 // sub_100D8890 (thiscall, recursive) - the destructor's pre-0x1A arm. The pre-0x1A LOD records are
-// separate 400-byte blocks linked through +0x180..+0x18C (their builder, sub_100D87B0, is a
-// [FRONTIER] of load()): the four children's subtrees first when the first link is set - only
+// separate blocks built by buildLodTableTree: the four children's subtrees first when the first link is set - only
 // that one is tested; each recursion tests its own argument - then the record itself. Dead on 1.50
 // content, whose flat 85-record array takes the array free instead.
 
@@ -2021,7 +2305,7 @@ void Terrain::freeLodTableTree(unsigned char* table)
 {
     if (!table)
         return;
-    unsigned char* const* const children = reinterpret_cast<unsigned char* const*>(table + 0x180);
+    unsigned char* const* const children = reinterpret_cast<TerrainLodRecord*>(table)->children;   // +0x180
     if (children[0])
     {
         freeLodTableTree(children[0]);
@@ -2061,10 +2345,11 @@ Terrain::~Terrain()
     // The member remains unchanged.
     if (m_waterObjectRing)
     {
-        unsigned char* const block = m_waterObjectRing - 4;
+        unsigned char* const block = m_waterObjectRing - kWaterObjectRingHeader;
         const int count = *reinterpret_cast<const int*>(block);
         for (int i = count - 1; i >= 0; --i)                                    // `sub eax,1 / js` - signed
-            dx9rend::Ra::raObjectParametersDestroy(m_waterObjectRing + 548 * i);
+            dx9rend::Ra::raObjectParametersDestroy(
+                m_waterObjectRing + sizeof(dx9rend::Ra::RaObjectParameters) * i);
         ::renddx9abi::engineFree(block);
     }
 
@@ -2124,24 +2409,23 @@ Terrain::~Terrain()
         ::renddx9abi::engineFree(m_patches);
     }
 
-    // (9) The detail-texture records - only when the vector holds any (VC7.1 empty(): a null
-    //     first or a zero size skips the loop AND the clear), then records [0, detailTextureCount)
-    //     through vslot 0 with 1 (0x100E1730), then vector::clear() - _Tidy in VC7.1.
+    // (9) The detail-texture records - only when the vector holds any (empty() skips the loop
+    //     AND the clear), then records [0, detailTextureCount) through vslot 0 with 1
+    //     (0x100E1730), then vector::clear().
     //     The bound is the file's count (+0x320), re-read every pass, not the vector's size: a
     //     high-quality reloadForLowQuality appends a second set whose records are never deleted.
-    if (vc71::vectorSizeIn(m_detailTextures, 4u) != 0)
+    if (!m_detailTextures.empty())
     {
         for (int i = 0; i < m_detailTextureCount; ++i)
         {
-            TerrainDetailTexture* const record =
-                reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[i];
+            TerrainDetailTexture* const record = m_detailTextures.data()[i];      // unchecked, as shipped
             if (record)
             {
                 record->~TerrainDetailTexture();                                // vslot 0: 0x100E1730
                 ::renddx9abi::engineFree(record);
             }
         }
-        tidyVector(m_detailTextures);
+        m_detailTextures.clear();
     }
 
     // (10) The eight ring patches, each through vslot 0 with 1 (0x1018F870) and its slot nulled.
@@ -2247,32 +2531,26 @@ Terrain::~Terrain()
         dx9rend::indexBufferRelease(m_indexBuffer);                             // +0x368
 
     // the members' own destructors (0x100DDE53..0x100DDF7D), in reverse declaration order
-    // +0x740 m_levelPath and +0x6D0 m_waterVolumeName: vc71::string - see the at the end.
+    // +0x740 m_levelPath and +0x6D0 m_waterVolumeName: strings - see the note at the end.
     ::renddx9abi::engineFree(m_waterRecord);                                    // +0x710: delete, no null test
     dx9rend::Ra::raObjectParametersDestroy(m_objectParameters);                 // +0x49C: sub_1004D900
-    tidyVector(m_lodBlockIndices);                                              // +0x470
-    tidyVector(m_shadowPatches);                                                // +0x448
-    tidyVector(m_shadowRanges);                                                 // +0x36C
-    tidyVector(m_detailTextures);                                               // +0x338 (already clear when (9) ran)
-    destroyTerrainMap(m_map2C8);                                                // +0x2C8
-    destroyTerrainMap(m_map2BC);                                                // +0x2BC
-    destroyTerrainMap(m_map2B0);                                                // +0x2B0
-    // The six vc71::string members are destroyed by the compiler after this body, in reverse
-    // declaration order: +0x740, +0x6D0, +0xA8, +0x8C, +0x70, +0x54 - the shipped order among
-    // themselves. The shipped teardown interleaves the first two with the lines above (+0x740,
-    // +0x710, +0x6D0, +0x49C, ...); every block involved is a separate allocation and nothing runs
-    // in between that could see the difference.
+    // The string, vector and map members are destroyed by the compiler after this body, in reverse
+    // declaration order: +0x740, +0x6D0, the vectors +0x470, +0x448, +0x36C, +0x338, the maps
+    // +0x2C8, +0x2BC, +0x2B0, then the strings +0xA8, +0x8C, +0x70, +0x54 - the shipped order among
+    // themselves. The shipped teardown interleaves the first two strings with the lines above
+    // (+0x740, +0x710, +0x6D0, +0x49C, ...); every block involved is a separate allocation and
+    // nothing runs in between that could see the difference.
 }
 
 
-// The reflection factory - RefFactory_geom_Terrain 0x100B0544: 0x768 bytes on the engine heap,
-// the constructor, then queryInterface(iid); a refused iid releases the object.
+// The reflection factory - RefFactory_geom_Terrain 0x100B0544: the object (retail 0x768 bytes) on
+// the engine heap, the constructor, then queryInterface(iid); a refused iid releases the object.
 
 IBase* __fastcall createTerrain(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
-    void* const storage = ::renddx9abi::engineAlloc(0x768);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(Terrain));
     Terrain* const self = storage ? new (storage) Terrain() : 0;
     void* const itf = self->queryInterface(iid);
     if (!itf)

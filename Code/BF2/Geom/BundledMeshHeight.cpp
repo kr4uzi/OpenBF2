@@ -6,20 +6,12 @@
 #include "BundledMeshTemplate.h"
 #include "StaticMesh.h"
 #include "XpLightManager.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#define CORE_IBASE_H
-#define CORE_CLASSMANAGER_H
-#endif
 #include "../Game/Objects/IObject.h"
 #include "../Game/Objects/IPlayer.h"
 #include "../Game/Objects/ObjectLayoutAccess.h"
 #include "../Scene/Object/ObjectManager.h"
 #include "../Scene/Object/ObjectPredicator.h"
 #include "../Scene/Object/PlayerManager.h"
-#if !BF2_PLUGIN_ABI_NATIVE
-#undef CORE_CLASSMANAGER_H
-#undef CORE_IBASE_H
-#endif
 
 namespace dice { namespace hfe {
 extern IBase* objectManager;
@@ -45,6 +37,7 @@ const Vec3& meshPosition(const BundledMesh* mesh)
 class BundledRootIgnorePredicator : public world::ObjectPredicator
 {
 public:
+    // PE 0x101069D0
     virtual bool predicate(world::IObject* object)
     { return staticMeshRootParent(object) != root; }
     virtual unsigned int getFlags() const { return 0; }
@@ -72,6 +65,7 @@ class BundledAdditivePredicator : public world::ObjectPredicator
 {
 public:
     // The owner rejection precedes root/player and geometry tests.
+    // PE 0x10106A20
     virtual bool predicate(world::IObject* object)
     {
         if (owner == object)
@@ -109,6 +103,7 @@ public:
 };
 } // anonymous namespace
 
+// PE 0x10104160: height over terrain, shadow-sun height and the under-roof probe.
 void BundledMesh::updateHeightOverTerrain()
 {
     if (!m_heightmapCluster || !m_ownerObject)

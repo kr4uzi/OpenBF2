@@ -25,7 +25,7 @@ struct Quad
     int state08, state0c, state10, state14;      // +08..+14
     unsigned char state18;                      // +18
     unsigned char padding19[3];                 // untouched
-    int texture2;                              // +1C, opaque texture handle
+    TextureHandle texture2;                     // +1C, texture handle; RendDX9 reads an IMemeTexture*
     std::uint32_t state20[8];                   // +20..+3C, all zeroed
     QuadCorner corners[4];                      // +40,+60,+80,+A0
 };
@@ -38,6 +38,17 @@ void rotateQuad(Quad*, const float center[2], float radians);
 void colorQuad(Quad*, const Color*);
 void translateQuad(Quad*, float dx, float dy, float dz);
 void setQuadBounds(Quad*, float x, float y, float width, float height);
+
+// RendDX9's own copies of further Quad / Rect / Color helpers (PE 0x101C4B30..0x101C5210). Every body
+// below is unreachable in 1.50: no code or data references. Names and placement are [INFERRED].
+
+void quadCenter(const Quad*, float out[3]);                 // PE 0x101C4E50
+void expandQuad(Quad*, const float margin[2]);              // PE 0x101C5060
+void flipQuadHorizontal(Quad*);                             // PE 0x101C50D0
+void flipQuadVertical(Quad*);                               // PE 0x101C5210
+bool clipRect(Rect* rect, const Rect* bounds);              // PE 0x101C4BE0
+bool streamColor(Color* color, Stream*);                    // PE 0x101C4B30
+bool streamRect(Rect* rect, Stream*);                       // PE 0x101C4CC0
 } }
 #endif
 #endif

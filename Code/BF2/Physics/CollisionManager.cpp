@@ -15,6 +15,7 @@
 #include "../Core/Debug.h"           // Debug, DEBUGTYPE_6 - the two constructor failure paths
 #include "../Core/EventManager.h"    // dice::hfe::eventManager, EventManager
 #include "../Core/Ids.h"             // IID_IBase, world::IID_ICollisionManager
+#include "../GeomMisc/DebugLineDrawer.h" // typed retail debug submissions
 #include "../Core/StringUtil.h"      // getFixPath / getLowerCase / goUpInPath - postLevelLoad's grouping
 #include "../Game/Objects/ICameraObject.h"      // debug camera transformation
 #include "../Game/Objects/IObject.h"            // recursive child walk
@@ -58,28 +59,6 @@ int   s_debugWaterValue     = 0;
 int*  s_debugWaterPtr       = &s_debugWaterValue;
 float s_debugLineWidthValue = 0.01f;
 float* s_debugLineWidthPtr  = &s_debugLineWidthValue;
-
-// [FRONTIER] [TEMP] [CHOSEN, not recovered]
-// [RETIRE-WHEN: collision-debug-line-drawer-interface]
-// Stop debug dispatch until the preceding IDebugLineDrawer overload has a confirmed
-// source-vector type and the required interface can be declared safely.
-void debugLineDrawerTriangleFrontier()
-{
-    std::fprintf(stderr,
-                 "[FRONTIER] dice::hfe::world::CollisionManager::drawDebugPrimitives "
-                 "(IDebugLineDrawer +0x2C dependency) reached\n");
-    std::fflush(stderr);
-    std::abort();
-}
-
-void debugLineDrawerLineListFrontier()
-{
-    std::fprintf(stderr,
-                 "[FRONTIER] dice::hfe::world::CollisionManager::drawDebugPrimitives "
-                 "(IDebugLineDrawer +0x34 dependency) reached\n");
-    std::fflush(stderr);
-    std::abort();
-}
 
 } // namespace
 
@@ -380,6 +359,7 @@ void debugWater(std::vector<Vec3>& out, int extent)
     out.push_back(maxMax);
 }
 
+// PE 0x006FD4E0 / ELF 0x0839B7F0.
 // Draws enabled debug streams, then clears all four member streams. Requires the renderer
 // singleton. Collision-face vectors are cleared by ResponsePhysicsManager instead.
 void CollisionManager::drawDebugPrimitives()
@@ -388,26 +368,27 @@ void CollisionManager::drawDebugPrimitives()
     std::vector<Vec3> heightmapVertices;
     std::vector<unsigned int> colors;
 
-    IBase* const drawer = classManager->getSingleton(std::string("DebugLineDrawer"));
-    (void)drawer;
+    geom::IDebugLineDrawer* const drawer = static_cast<geom::IDebugLineDrawer*>(
+        classManager->getSingleton(std::string("DebugLineDrawer")));
 
     if (m_drawTestedFaces == true)
     {
         colors.resize(0);
         colors.push_back(0xFF00FF00u);
-        debugLineDrawerTriangleFrontier();
+        drawer->drawTriangles(collisionTestedFaces, colors, true);
     }
 
     if (m_drawIntersectFaces == true)
     {
         colors.resize(0);
         colors.push_back(0xFFFF00FFu);
-        debugLineDrawerTriangleFrontier();
+        drawer->drawTriangles(collisionIntersectFaces, colors, true);
     }
 
     if (m_drawPrimitives == true)
     {
-        debugLineDrawerLineListFrontier();
+        drawer->drawLineList(m_lineVertices, m_lineColors, *s_debugLineWidthPtr, false);
+        drawer->drawTriangles(m_triangleVertices, m_triangleColors, false);
     }
 
     if (*s_debugHeightmapPtr > 0)
@@ -416,7 +397,7 @@ void CollisionManager::drawDebugPrimitives()
         heightmapVertices.resize(0);
         colors.push_back(0xFFFF00FFu);
         debugHeightmap(heightmapVertices, *s_debugHeightmapPtr);
-        debugLineDrawerLineListFrontier();
+        drawer->drawLineList(heightmapVertices, colors, 0.01f, false);
     }
 
     if (*s_debugWaterPtr > 0)
@@ -425,7 +406,7 @@ void CollisionManager::drawDebugPrimitives()
         waterVertices.resize(0);
         colors.push_back(0xFF0000FFu);
         debugWater(waterVertices, *s_debugWaterPtr);
-        debugLineDrawerTriangleFrontier();
+        drawer->drawTriangles(waterVertices, colors, true);
     }
 
     m_lineVertices.resize(0);

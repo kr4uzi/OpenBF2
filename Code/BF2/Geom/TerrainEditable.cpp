@@ -4,6 +4,11 @@
 #ifdef BF2_IMAGE_RENDDX9
 
 #include "TerrainEditable.h"
+#include "../RendDX9/RendDX9Math.h"   // rendmath::normalize (sub_100777A0)
+#include "../Core/StringUtil.h"         // formatString (sub_10074AB0)
+#if defined(__APPLE__)
+#include "../Platform/X87Compat.h"
+#endif
 #include "QuadPatchEditable.h"
 #include "SurroundingPatchEditable.h"
 #include "QuadPatch.h"
@@ -28,12 +33,9 @@
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/PluginAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"     // classManager, fileManager, eventManager
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 
-#if BF2_PLUGIN_ABI_NATIVE
 #include "HeightmapEventNode.h"               // the native host's event node
-#endif
 
 #include <cfloat>
 #include <cmath>
@@ -131,8 +133,8 @@ inline ::dice::hfe::world::IHeightmapCluster* heightmapClusterByName()
     return static_cast< ::dice::hfe::world::IHeightmapCluster*>(static_cast<void*>(found));
 }
 
-// std::operator!=(const std::string&, const std::string&) - vc71::string publishes no comparison.
-inline bool stringsDiffer(const vc71::string& a, const vc71::string& b)
+// std::operator!=(const std::string&, const std::string&) - std::string publishes no comparison.
+inline bool stringsDiffer(const std::string& a, const std::string& b)
 {
     return a.size() != b.size() || std::memcmp(a.c_str(), b.c_str(), a.size()) != 0;
 }
@@ -146,243 +148,17 @@ inline void releaseOwnerTexture(void* texture)
 
 
 // The +0x2B0 multimap<float, QuadPatchEditable*> update() sorts the visible patches into (the
-// constructor's first map, sub_100E1760, 0x18-byte nodes; Terrain.h). VC7.1 _Tree, transcribed from
-// TerrainEditable's own instantiation: insert 0x1010E550, _Insert 0x1010E3D0, _Buynode 0x1010E340 with
-// the node constructor 0x100492F0, and the image-shared rotations _Lrotate 0x100AE2F0 / _Rrotate
-// (both test _Isnil at +0x15, i.e. this node size). The red-black fixup is the shipped one.
-
-struct PatchQueueNode
-{
-    PatchQueueNode*    left;        // +0x00
-    PatchQueueNode*    parent;      // +0x04
-    PatchQueueNode*    right;       // +0x08
-    float              key;         // +0x0C  the squared camera distance
-    QuadPatchEditable* value;       // +0x10
-    unsigned char      color;       // +0x14  0 red, 1 black
-    unsigned char      isNil;       // +0x15
-    unsigned char      pad[2];
-};
-static_assert(sizeof(PatchQueueNode) == 0x18, "_Buynode (0x1010E340) allocates 0x18");
-
-inline PatchQueueNode* queueHead(const vc71::map_layout& map)
-{
-    return reinterpret_cast<PatchQueueNode*>(map.head);
-}
-
-// sub_100E1800 - _Erase: the right subtree recursively, then down the left spine, freeing nodes only.
-void eraseQueueSubtree(PatchQueueNode* node)
-{
-    while (!node->isNil)
-    {
-        eraseQueueSubtree(node->right);
-        PatchQueueNode* const left = node->left;
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-}
-
-// update()'s inlined clear (0x1010C67A..0x1010C6AE): _Erase(root), then the head relinked in the
-// shipped store order - _Parent, _Mysize, _Left, _Right.
-void clearPatchQueue(vc71::map_layout& map)
-{
-    PatchQueueNode* node = queueHead(map)->parent;
-    while (!node->isNil)
-    {
-        eraseQueueSubtree(node->right);
-        PatchQueueNode* const left = node->left;
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
-    PatchQueueNode* const head = queueHead(map);
-    head->parent = head;
-    map.size     = 0;
-    head->left   = head;
-    head->right  = head;
-}
-
-// 0x100AE2F0 - _Lrotate.
-void rotateLeft(vc71::map_layout& map, PatchQueueNode* where)
-{
-    PatchQueueNode* const pivot = where->right;
-    where->right = pivot->left;
-    if (!pivot->left->isNil)
-        pivot->left->parent = where;
-    pivot->parent = where->parent;
-    PatchQueueNode* const head = queueHead(map);
-    if (where == head->parent)
-        head->parent = pivot;
-    else if (where == where->parent->left)
-        where->parent->left = pivot;
-    else
-        where->parent->right = pivot;
-    pivot->left   = where;
-    where->parent = pivot;
-}
-
-// 0x1008A260 - _Rrotate.
-void rotateRight(vc71::map_layout& map, PatchQueueNode* where)
-{
-    PatchQueueNode* const pivot = where->left;
-    where->left = pivot->right;
-    if (!pivot->right->isNil)
-        pivot->right->parent = where;
-    pivot->parent = where->parent;
-    PatchQueueNode* const head = queueHead(map);
-    if (where == head->parent)
-        head->parent = pivot;
-    else if (where == where->parent->right)
-        where->parent->right = pivot;
-    else
-        where->parent->left = pivot;
-    pivot->right  = where;
-    where->parent = pivot;
-}
-
-// 0x1010E550 + multimap::insert. The descent goes left only when key < node key (the
+// constructor's first map, sub_100E1760; Terrain.h). Shipped instantiation: insert 0x1010E550,
+// _Insert 0x1010E3D0, _Buynode 0x1010E340. The insert descends left only when key < node key (the
 // listing's `fcomp; test ah, 5; jp right`): equal keys, larger keys and NaN go right, so ties keep
-// insertion order. The answered iterator pair is dropped by update().
-void insertPatchQueue(vc71::map_layout& map, float key, QuadPatchEditable* value)
-{
-    PatchQueueNode* const head = queueHead(map);
-    PatchQueueNode* where = head;
-    PatchQueueNode* cur   = head->parent;
-    bool addLeft = true;
-    while (!cur->isNil)
-    {
-        where = cur;
-        if (key < cur->key)
-        {
-            cur = cur->left;
-            addLeft = true;
-        }
-        else
-        {
-            cur = cur->right;
-            addLeft = false;
-        }
-    }
-
-    if (map.size >= 0x1FFFFFFEu)
-        throw std::length_error("map/set<T> too long");
-
-    // _Buynode: engine heap, then the node constructor - left = head, parent = where, right = head,
-    // the pair, red, not nil. A failed allocation is not tested: _Insert dereferences the null.
-    PatchQueueNode* const node = static_cast<PatchQueueNode*>(::renddx9abi::engineAlloc(0x18));
-    if (node)
-    {
-        node->left   = head;
-        node->right  = head;
-        node->parent = where;
-        node->key    = key;
-        node->value  = value;
-        node->color  = 0;
-        node->isNil  = 0;
-    }
-    ++map.size;
-
-    if (where == head)
-    {
-        head->parent = node;
-        head->left   = node;
-        head->right  = node;
-    }
-    else if (addLeft)
-    {
-        where->left = node;
-        if (where == head->left)
-            head->left = node;
-    }
-    else
-    {
-        where->right = node;
-        if (where == head->right)
-            head->right = node;
-    }
-
-    for (PatchQueueNode* p = node; p->parent->color == 0; )
-    {
-        PatchQueueNode* const parent = p->parent;
-        PatchQueueNode* const grand  = parent->parent;
-        if (parent == grand->left)
-        {
-            PatchQueueNode* const uncle = grand->right;
-            if (uncle->color == 0)
-            {
-                parent->color = 1;
-                uncle->color  = 1;
-                grand->color  = 0;
-                p = grand;
-            }
-            else
-            {
-                if (p == parent->right)
-                {
-                    p = parent;
-                    rotateLeft(map, p);
-                }
-                p->parent->color = 1;
-                p->parent->parent->color = 0;
-                rotateRight(map, p->parent->parent);
-            }
-        }
-        else
-        {
-            PatchQueueNode* const uncle = grand->left;
-            if (uncle->color == 0)
-            {
-                parent->color = 1;
-                uncle->color  = 1;
-                grand->color  = 0;
-                p = grand;
-            }
-            else
-            {
-                if (p == parent->left)
-                {
-                    p = parent;
-                    rotateRight(map, p);
-                }
-                p->parent->color = 1;
-                p->parent->parent->color = 0;
-                rotateLeft(map, p->parent->parent);
-            }
-        }
-    }
-    head->parent->color = 1;
-}
+// insertion order - std::multimap::insert's upper-bound placement.
 
 // The in-order walk drawPatches inlines three times (0x1010A3A0.. / 0x1010A44F.. / 0x1010A54E..):
-// each patch's slot +0x04 draw with 0, the iterator advanced by the VC7.1 _Inc, the end re-read from
-// the map every step.
-void drawPatchQueue(const vc71::map_layout& map)
+// each patch's slot +0x04 draw with 0, the end re-read from the map every step.
+void drawPatchQueue(const TerrainPatchQueue& queue)
 {
-    PatchQueueNode* node = queueHead(map)->left;
-    if (node == queueHead(map))
-        return;
-    do
-    {
-        node->value->draw(0);                                                  // QuadPatchEditable slot +0x04
-        if (!node->isNil)
-        {
-            if (node->right->isNil)
-            {
-                PatchQueueNode* p = node->parent;
-                while (!p->isNil && node == p->right)
-                {
-                    node = p;
-                    p = p->parent;
-                }
-                node = p;
-            }
-            else
-            {
-                node = node->right;
-                for (PatchQueueNode* l = node->left; !l->isNil; l = l->left)
-                    node = l;
-            }
-        }
-    }
-    while (node != queueHead(map));
+    for (TerrainPatchQueue::const_iterator it = queue.begin(); it != queue.end(); ++it)
+        it->second->draw(0);                                                   // QuadPatchEditable slot +0x04
 }
 
 // EventManager +0x34 registerEvent(category, id, name). The typed interface spells the native
@@ -391,16 +167,8 @@ void drawPatchQueue(const vc71::map_layout& map)
 // (RW-266). The answer is dropped, as init drops it.
 void registerHeightmapModifiedEvent()
 {
-#if BF2_PLUGIN_ABI_NATIVE
     ::dice::hfe::eventManager->registerEvent(ECEditor, kEventHeightmapModified,
                                              std::string("ECEditorEEHeightmapModified"));
-#else
-    typedef bool (__thiscall* RegisterEventFn)(void*, int, unsigned int, const vc71::string&);
-    void* const manager = ::dice::hfe::eventManager;
-    const vc71::string name("ECEditorEEHeightmapModified");
-    reinterpret_cast<RegisterEventFn>((*reinterpret_cast<void***>(manager))[0x34 / 4])(
-        manager, static_cast<int>(ECEditor), kEventHeightmapModified, name);
-#endif
 }
 
 // The changed rectangle (x0, z0, x1, z1) of a heightmap-modified event. handleEvent reads it from the
@@ -409,85 +177,23 @@ void registerHeightmapModifiedEvent()
 // native host posts the tree's geom::HeightmapEventNode, read through its accessor.
 inline const float* heightmapEventArea(void* data)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     const HeightmapEventNode* const node =
         static_cast<const HeightmapEventNode*>(static_cast<EventNode*>(data));
     return &node->getAffectedArea().x;
-#else
-    return reinterpret_cast<const float*>(static_cast<const unsigned char*>(data) + 0x30);
-#endif
 }
 
 // R2
 
 // The lightmap-generation pass's walk of the +0x2B0 queue (0x1010A765..0x1010A77E): each patch's
-// 0x1019E340 in key order, the iterator advanced by the image's out-of-line _Inc (sub_100A54F0 - the
+// drawForLightmapGeneration in key order, the iterator advanced by the image's out-of-line _Inc (the
 // same steps drawPatchQueue inlines), the end re-read every step.
-void drawPatchQueueForLightmapGeneration(const vc71::map_layout& map)
+void drawPatchQueueForLightmapGeneration(const TerrainPatchQueue& queue)
 {
-    PatchQueueNode* node = queueHead(map)->left;
-    if (node == queueHead(map))
-        return;
-    do
-    {
-        node->value->drawForLightmapGeneration();
-        if (!node->isNil)
-        {
-            if (node->right->isNil)
-            {
-                PatchQueueNode* p = node->parent;
-                while (!p->isNil && node == p->right)
-                {
-                    node = p;
-                    p = p->parent;
-                }
-                node = p;
-            }
-            else
-            {
-                node = node->right;
-                for (PatchQueueNode* l = node->left; !l->isNil; l = l->left)
-                    node = l;
-            }
-        }
-    }
-    while (node != queueHead(map));
+    // drawForLightmapGeneration is 0x1019E340; the out-of-line _Inc is sub_100A54F0.
+    for (TerrainPatchQueue::const_iterator it = queue.begin(); it != queue.end(); ++it)
+        it->second->drawForLightmapGeneration();
 }
 
-// sub_10074AB0 - the image's printf-into-a-std::string helper (QuadPatchEditable.cpp carries the same
-// transcription): _vsnprintf into a 0xFFF-byte window, the shipped warning when it does not fit.
-void formatString(vc71::string& out, const char* format, ...)
-{
-    char buffer[0x1000];
-    va_list args;
-    va_start(args, format);
-    const int written = _vsnprintf(buffer, 0xFFF, format, args);
-    va_end(args);
-    if (written < 0)
-        std::snprintf(buffer, sizeof(buffer), "%s",
-                      "WARNING: The original message was too long for formatString(). \n");
-    else
-        buffer[written] = 0;
-    out = buffer;
-}
-
-// sub_100751A0 -> everything before the path's last separator (the larger signed
-// rfind of '\\' and '/'), then `separator` appended; empty when there is none. The import slots call
-// it with '/' and never read the answer.
-vc71::string pathDirectoryOf(const vc71::string& path, char separator)
-{
-    int last = -1;
-    const char* const text = path.c_str();
-    for (unsigned int i = 0; i < path.size(); ++i)
-        if (text[i] == '\\' || text[i] == '/')
-            last = static_cast<int>(i);
-    if (last == -1)
-        return vc71::string();
-    vc71::string out(text, static_cast<unsigned int>(last));
-    const char tail[2] = { separator, 0 };
-    out += tail;
-    return out;
-}
 
 } // anonymous namespace
 
@@ -496,6 +202,8 @@ vc71::string pathDirectoryOf(const vc71::string& path, char separator)
 
 // The constructor TerrainEditable::init inlines (0x1010ADC6..0x1010ADF2): the plain record's
 // constructor (0x100D8C40), the two strings, then +0x64..+0x74 in order.
+// unreachable in 1.50: no code or data references (the out-of-line twin of the construction TerrainEditable::init inlines).
+// PE 0x101087F0
 TerrainDetailTextureEditable::TerrainDetailTextureEditable()
 {
     colorTexture = 0;                                                         // +0x64
@@ -507,6 +215,9 @@ TerrainDetailTextureEditable::TerrainDetailTextureEditable()
 
 // (the deleting form; the free is the caller's here). The colour texture's owner
 // reference only - no eviction, no store - then the strings and the plain record's destructor.
+// PE 0x1010E2B0: scalar deleting form.
+// The second address is the same body without the final free: unreachable in 1.50: no code or data references.
+// PE 0x10108830
 TerrainDetailTextureEditable::~TerrainDetailTextureEditable()
 {
     releaseOwnerTexture(colorTexture);
@@ -516,7 +227,8 @@ TerrainDetailTextureEditable::~TerrainDetailTextureEditable()
 // dropped (the normal / side / side-normal textures are overwritten without a release), the name
 // stored, the textures fetched again. The side pair falls back to the main pair - with NO added
 // reference - when "<name>_side" does not exist.
-void TerrainDetailTextureEditable::setName(vc71::string newName)
+// PE 0x10108880
+void TerrainDetailTextureEditable::setName(std::string newName)
 {
     if (!stringsDiffer(name, newName))
         return;
@@ -524,31 +236,30 @@ void TerrainDetailTextureEditable::setName(vc71::string newName)
     name = newName;
     texture = dx9rend::textureManagerGetTexture(newName);
 
-    vc71::string normal(newName);
-    normal += "_normal";
-    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(normal)))
+    bool normalExists;
     {
-        vc71::string again(newName);
-        again += "_normal";
-        normalTexture = dx9rend::textureManagerGetTexture(again);
+        const std::string normal(std::string(newName) += "_normal");
+        normalExists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(normal));
     }
+    if (normalExists)
+        normalTexture = dx9rend::textureManagerGetTexture(std::string(newName) += "_normal");
 
-    vc71::string side(newName);
-    side += "_side";
-    if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(side)))
+    bool sideExists;
     {
-        vc71::string again(newName);
-        again += "_side";
-        sideTexture = dx9rend::textureManagerGetTexture(again);
+        const std::string side(std::string(newName) += "_side");
+        sideExists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(side));
+    }
+    if (sideExists)
+    {
+        sideTexture = dx9rend::textureManagerGetTexture(std::string(newName) += "_side");
 
-        vc71::string sideNormal(newName);
-        sideNormal += "_sideNormal";
-        if (::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(sideNormal)))
+        bool sideNormalExists;
         {
-            vc71::string again2(newName);
-            again2 += "_sideNormal";
-            sideNormalTexture = dx9rend::textureManagerGetTexture(again2);
+            const std::string sideNormal(std::string(newName) += "_sideNormal");
+            sideNormalExists = ::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(sideNormal));
         }
+        if (sideNormalExists)
+            sideNormalTexture = dx9rend::textureManagerGetTexture(std::string(newName) += "_sideNormal");
     }
     else
     {
@@ -557,13 +268,15 @@ void TerrainDetailTextureEditable::setName(vc71::string newName)
     }
 }
 
-vc71::string TerrainDetailTextureEditable::getName()
+// PE 0x1010DB40
+std::string TerrainDetailTextureEditable::getName()
 {
     return name;
 }
 
 // the same shape over the colour texture (+0x48 / +0x64).
-void TerrainDetailTextureEditable::setColorTextureName(vc71::string newName)
+// PE 0x10108AB0
+void TerrainDetailTextureEditable::setColorTextureName(std::string newName)
 {
     if (!stringsDiffer(colorTextureName, newName))
         return;
@@ -572,15 +285,20 @@ void TerrainDetailTextureEditable::setColorTextureName(vc71::string newName)
     colorTexture = static_cast<dx9rend::EngineTexture*>(dx9rend::textureManagerGetTexture(newName));
 }
 
-vc71::string TerrainDetailTextureEditable::getColorTextureName()
+// PE 0x1010DB60
+std::string TerrainDetailTextureEditable::getColorTextureName()
 {
     return colorTextureName;
 }
 
+// PE 0x10186C00
 void TerrainDetailTextureEditable::setEditableInt68(int value) { editableInt68 = value; }
 int  TerrainDetailTextureEditable::getEditableInt68() { return editableInt68; }
+// PE 0x1010DBB0
 void TerrainDetailTextureEditable::setColorTextureTiling(Vec2 tiling) { colorTextureTiling = tiling; }
+// PE 0x1010DBD0
 Vec2 TerrainDetailTextureEditable::getColorTextureTiling() { return colorTextureTiling; }
+// PE 0x1010DB90
 void TerrainDetailTextureEditable::setLowDetailType(int type) { lowDetailType = type; }
 int  TerrainDetailTextureEditable::getLowDetailType() { return lowDetailType; }
 
@@ -591,6 +309,7 @@ int  TerrainDetailTextureEditable::getLowDetailType() { return lowDetailType; }
 // eight surrounding slots are zeroed in the body, after the strings, and the five nvdxt option
 // strings assigned last. +0x7B0 / +0x7B4 are not initialised (the frame constants compute them on
 // the first frame, because the +0x7A8 cache starts at 0 and the distance at 75).
+// PE 0x10108B30
 TerrainEditable::TerrainEditable()
     : m_gridTexture(0),
       m_grid3Texture(0),
@@ -615,6 +334,7 @@ TerrainEditable::TerrainEditable()
 
 // Releases grid textures and event registrations before base destruction.
 // The base may read uninitialized shader handles/detail counts; editable patches and records leak.
+// PE 0x10108CC0
 TerrainEditable::~TerrainEditable()
 {
     releaseOwnerTexture(m_grid3Texture);                                      // +0x77C
@@ -662,14 +382,14 @@ void* TerrainEditable::deletingDestructor(int flags)
 
 void TerrainEditable::init()
 {
-    // Six editable detail records into +0x338 (the push_back's fast path and _Insert_n 0x100E1940
-    // both append; vectorPushBackIn is the tree's growth policy, RW-74).
+    // Six editable detail records (retail 0x78 bytes each) into +0x338 (the push_back's fast path
+    // and _Insert_n 0x100E1940 both append).
     for (int count = 6; count != 0; --count)
     {
-        void* const storage = ::renddx9abi::engineAlloc(0x78);
+        void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainDetailTextureEditable));
         TerrainDetailTexture* const record =
             storage ? new (storage) TerrainDetailTextureEditable() : 0;
-        vc71::vectorPushBackIn(m_detailTextures, 4u, &record);
+        m_detailTextures.push_back(record);
     }
 
     ::dice::hfe::eventManager->registerEventHandler(ECEditor, static_cast<IEventListener*>(this), 0);   // +0x2C
@@ -678,7 +398,7 @@ void TerrainEditable::init()
     m_effect = dx9rend::shaderManagerGetEffect(dx9rend::g_shaderManager, "Shaders/TerrainEditorShader");
     // The effect is re-read for every lookup, as shipped.
 #define TE_PARAM(member, name) \
-    member = dx9rend::effectGetShaderParameter(static_cast<dx9rend::Effect*>(m_effect), vc71::string(name))
+    member = dx9rend::effectGetShaderParameter(static_cast<dx9rend::Effect*>(m_effect), std::string(name))
     TE_PARAM(m_hScaleTransXZ, "SCALETRANSXZ");                                // +0x1B8
     TE_PARAM(m_hScaleTransY,  "SCALETRANSY");                                 // +0x1BC
     TE_PARAM(m_hMatViewProj,  "matVIEWPROJ");                                 // +0x1D0
@@ -711,15 +431,15 @@ void TerrainEditable::init()
     m_hSpotLight          = 0;                                                // +0x268
 
     m_gridTexture  = static_cast<dx9rend::EngineTexture*>(
-        dx9rend::textureManagerGetTexture(vc71::string("BF2Editor/Content/Terrain/Grid")));
+        dx9rend::textureManagerGetTexture(std::string("BF2Editor/Content/Terrain/Grid")));
     m_grid3Texture = static_cast<dx9rend::EngineTexture*>(
-        dx9rend::textureManagerGetTexture(vc71::string("BF2Editor/Content/Terrain/Grid3")));
+        dx9rend::textureManagerGetTexture(std::string("BF2Editor/Content/Terrain/Grid3")));
 
     // The level's low-detail texture, else the common default (the settings default " FEEEEL " is
     // the shipped one).
-    vc71::string levelPath;
+    std::string levelPath;
     dx9rend::readStringSettingDefault("GLGameLevelPath", " FEEEEL ", levelPath);
-    vc71::string lowDetailPath(levelPath);
+    std::string lowDetailPath(levelPath);
     lowDetailPath += "/lowDetailTexture.dds";
     if (!::dice::hfe::fileManager->fileExists(::renddx9abi::makeHostString(lowDetailPath)))
         lowDetailPath = "common/terrain/textures/Default.dds";
@@ -738,14 +458,14 @@ void TerrainEditable::init()
     // truncates for an odd count (the last row and column are never built), and init runs on a failed
     // allocation's null (QuadPatchEditable::init is not guarded) - both as shipped.
     m_patchCount = m_heightmapSizeX / m_patchSize;
-    m_editablePatches = static_cast<QuadPatchEditable**>(
-        ::renddx9abi::engineAlloc(static_cast<unsigned int>(4 * m_patchCount * m_patchCount)));
+    m_editablePatches = static_cast<QuadPatchEditable**>(::renddx9abi::engineAlloc(static_cast<unsigned int>(
+        static_cast<int>(sizeof(QuadPatchEditable*)) * m_patchCount * m_patchCount)));   // 4 * n^2 in retail
     int next = 0;
     for (int z = m_patchCount / -2; z < m_patchCount / 2; ++z)
     {
         for (int x = m_patchCount / -2; x < m_patchCount / 2; ++x)
         {
-            void* const storage = ::renddx9abi::engineAlloc(0x32C);
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(QuadPatchEditable));   // retail 0x32C
             QuadPatchEditable* const patch = storage ? new (storage) QuadPatchEditable(this) : 0;
             patch->init(x, z);
             m_editablePatches[next] = patch;
@@ -794,7 +514,7 @@ void TerrainEditable::update()
         g_reloadLowDetailMapsPending = 0;
     }
 
-    clearPatchQueue(m_map2B0);
+    m_map2B0.clear();                                                         // inlined (0x1010C67A..0x1010C6AE)
 
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderView();      // Renderer +0x48
     Frustum* const frustum = view->getFrustumPtr();                           // +0x74
@@ -802,8 +522,8 @@ void TerrainEditable::update()
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
     {
         QuadPatchEditable* const patch = m_editablePatches[i];
-        if (patch->isVisible(frustum))
-            insertPatchQueue(m_map2B0, patch->getSquaredDistance(camera), patch);
+        if (patch->isVisible(frustum))                                        // multimap::insert, 0x1010E550
+            m_map2B0.insert(TerrainPatchQueue::value_type(patch->getSquaredDistance(camera), patch));
     }
     updateWaterConstants();                                                   // primary +0xE0
 }
@@ -825,6 +545,7 @@ void TerrainEditable::slot11_noop()
 
 // the per-frame shader constants. The morph limits are recomputed only when the LOD
 // switch distance changed (`fucompp; test ah, 44h; jnp`: a NaN distance recomputes every frame).
+// PE 0x1010DE70
 void TerrainEditable::applyEditorFrameConstants()
 {
     dx9rend::vertexDeclarationBind(m_surroundingDeclaration);                // +0x2A4
@@ -832,20 +553,29 @@ void TerrainEditable::applyEditorFrameConstants()
     if (m_lodSwitchDistanceCache != distance)
     {
         m_lodSwitchDistanceCache = m_lodSwitchDistance;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] The near limit spills; the far limit and reciprocal retain x87 width.
+        const bf2x87::Real far0 = bf2x87::add(bf2x87::mul(bf2x87::sub(bf2x87::mul(
+            bf2x87::Real(distance), bf2x87::Real(0.015625f)), bf2x87::Real(1)), bf2x87::Real(64)), bf2x87::Real(22.56f));
+        const float near0 = bf2x87::store(bf2x87::mul(bf2x87::Real(0.4f), far0));
+        const bf2x87::Real scale = bf2x87::div(bf2x87::Real(1), bf2x87::sub(far0, bf2x87::Real(near0)));
+        m_morphLimitScale = bf2x87::store(scale);
+        m_morphLimitOffset = bf2x87::store(bf2x87::mul(bf2x87::Real(near0), scale));
+#else
         const float far0  = (distance * 0.015625f - 1.0f) * 64.0f + 22.56f;  // flt_1021A14C / 101DDDE4 / 1021BB20 / 1021BB1C
         const float near0 = 0.4f * far0;                                      // flt_1021BB18, stored as a float
         const float scale = 1.0f / (far0 - near0);
         m_morphLimitScale  = scale;                                           // +0x7B0
         m_morphLimitOffset = near0 * scale;                                   // +0x7B4
+#endif
     }
-    dx9rend::Effect* const fx = static_cast<dx9rend::Effect*>(m_effect);
     {
         float limits[2] = { m_morphLimitScale, m_morphLimitOffset };
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("NEARFARMORPHLIMITS"))->setValue(limits, 0);
+        const std::string name("NEARFARMORPHLIMITS");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(limits, 0);
     }
-    unsigned char* const constants = static_cast<unsigned char*>(dx9rend::g_raShaderConstants);
-    param(m_hFogRange)->setValue(constants + 0xA8, 0);                        // FogRange holder
-    param(m_hFogColor)->setValue(constants + 0xBC, 0);                        // FogColor holder
+    param(m_hFogRange)->setValue(dx9rend::raShaderConstantsAt(0xA8), 0);      // FogRange holder
+    param(m_hFogColor)->setValue(dx9rend::raShaderConstantsAt(0xBC), 0);      // FogColor holder
     param(m_hSunColor)->setValue(&m_sunColor, 0);                             // +0x2E4
     param(m_hGIColor)->setValue(&m_giColor, 0);                               // +0x2F0
 
@@ -875,7 +605,8 @@ void TerrainEditable::applyEditorFrameConstants()
     {
         const float* const packed = staticMeshPackVec4(&m_terrainWaterColor.x, 1.0f);
         float waterColor[4] = { packed[0], packed[1], packed[2], packed[3] };
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TerrainWaterColor"))->setValue(waterColor, 0);
+        const std::string name("TerrainWaterColor");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(waterColor, 0);
     }
 
     // camerapos: the camera row as a Vec4, w = 1, then w = |y - terrain height under the camera| when
@@ -898,26 +629,40 @@ void TerrainEditable::applyEditorFrameConstants()
         m_cameraHeightAboveTerrain = above;                                   // +0x2E0
         cameraPos[3] = above;
     }
-    dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("CAMERAPOS"))->setValue(cameraPos, 0);
+    {
+        const std::string name("CAMERAPOS");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(cameraPos, 0);
+    }
 }
 
 // the patch draw. The technique is re-read after the stream bind; technique 3 draws the
 // queue twice (as 7, "EditorDetailBasePass", then as 3 with the declaration re-bound).
+// PE 0x1010A1F0
 void TerrainEditable::drawPatches()
 {
     {
         float scaleTransY[4] = { m_primaryWorldScale.y, 1.0f, 0.0f, 0.0f };
         param(m_hScaleTransY)->setValue(scaleTransY, 0);                      // +0x1BC
     }
-    dx9rend::Effect* const fx = static_cast<dx9rend::Effect*>(m_effect);
     {
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] FILD divides before either reciprocal store.
+        const float invSize = bf2x87::store(bf2x87::div(bf2x87::Real(1), bf2x87::Real(m_patchSize)));
+#else
         const float invSize = 1.0f / static_cast<float>(m_patchSize);
+#endif
         float texScale[4];
         texScale[3] = 0.0f;
         texScale[0] = invSize;
+#if defined(__APPLE__)
+        texScale[1] = bf2x87::store(bf2x87::mul(bf2x87::mul(bf2x87::Real(m_primaryWorldScale.y),
+            bf2x87::Real(400.0f)), bf2x87::Real(1.5378700e-05f)));
+#else
         texScale[1] = m_primaryWorldScale.y * 400.0f * 1.5378700e-05f;        // flt_10219F94 / flt_10219F90
+#endif
         texScale[2] = invSize;
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TEXSCALE"))->setValue(texScale, 0);
+        const std::string name("TEXSCALE");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(texScale, 0);
     }
     {
         float farTiling[4];
@@ -925,26 +670,39 @@ void TerrainEditable::drawPatches()
         farTiling[1] = m_farSideTiling.y;
         farTiling[2] = m_lowQualityB ? m_farTopTilingLow : m_farTopTilingHi;
         farTiling[3] = m_farYOffset;
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("FARTEXTILING"))->setValue(farTiling, 0);
+        const std::string name("FARTEXTILING");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(farTiling, 0);
     }
     if (m_shaderTechnique == 1)
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TEXLAYER1"))->setValue(m_gridTexture, 0);
+    {
+        const std::string name("TEXLAYER1");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(m_gridTexture, 0);
+    }
     if (m_shaderTechnique == 2)
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TEXLAYER1"))->setValue(m_grid3Texture, 0);
+    {
+        const std::string name("TEXLAYER1");
+        dx9rend::effectGetShaderParameterBorrowedTyped(static_cast<dx9rend::Effect*>(m_effect), name)->setValue(m_grid3Texture, 0);
+    }
     dx9rend::vertexBufferBindStream(m_baseGridVertexBuffer, 0);              // +0xD0
 
     const int technique = m_shaderTechnique;
     if (technique == 3)
     {
         m_shaderTechnique = 7;
-        dx9rend::effectSetTechniqueByName(m_effect, vc71::string(kEditorTechniques[7]));
+        {
+            const std::string name(kEditorTechniques[7]);
+            dx9rend::effectSetTechniqueByName(m_effect, name);
+        }
         dx9rend::effectBegin(m_effect);
         dx9rend::effectBeginPass(m_effect, 0);
         drawPatchQueue(m_map2B0);
         dx9rend::effectEnd(m_effect);
         dx9rend::vertexDeclarationBind(m_surroundingDeclaration);            // +0x2A4
         m_shaderTechnique = 3;
-        dx9rend::effectSetTechniqueByName(m_effect, vc71::string(kEditorTechniques[3]));
+        {
+            const std::string name(kEditorTechniques[3]);
+            dx9rend::effectSetTechniqueByName(m_effect, name);
+        }
         dx9rend::effectBegin(m_effect);
         dx9rend::effectBeginPass(m_effect, 0);
         drawPatchQueue(m_map2B0);
@@ -952,7 +710,10 @@ void TerrainEditable::drawPatches()
     else
     {
         // No bound on the technique (see kEditorTechniques).
-        dx9rend::effectSetTechniqueByName(m_effect, vc71::string(kEditorTechniques[technique]));
+        {
+            const std::string name(kEditorTechniques[technique]);
+            dx9rend::effectSetTechniqueByName(m_effect, name);
+        }
         dx9rend::effectBegin(m_effect);
         // The pass by the renderer's render mode (sub_10009F00, asked up to twice).
         if (dx9rend::rendererGetHemiRenderMode() == 1)
@@ -967,7 +728,7 @@ void TerrainEditable::drawPatches()
 }
 
 // the surrounding ring under "SurroundingEditorTerrain". No beginPass here: the ring
-// patch's own draw (0x101A20F0, R2) is the one that opens a pass. In engine mode the corner slots
+// patch's own draw (SurroundingPatchEditable::draw, R2) is the one that opens a pass. In engine mode the corner slots
 // (0, 2, 4, 6) draw over the corner buffers and the side slots over the side buffers; otherwise all
 // eight over the side buffers.
 void TerrainEditable::drawEditorSurrounding()
@@ -983,7 +744,7 @@ void TerrainEditable::drawEditorSurrounding()
         texScale[0] = 1.0f / static_cast<float>(m_patchSize) / m_secondaryWorldScale.x;
         texScale[1] = m_secondaryWorldScale.y * 400.0f * 1.5378700e-05f;
         texScale[2] = texScale[0];
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TEXSCALE"))->setValue(texScale, 0);
+        dx9rend::effectGetShaderParameterBorrowedTyped(fx, std::string("TEXSCALE"))->setValue(texScale, 0);
     }
     {
         const float count = static_cast<float>(m_patchCount);
@@ -993,11 +754,11 @@ void TerrainEditable::drawEditorSurrounding()
         farTiling[0] = count * m_farSideTiling.x / quarter;
         farTiling[2] = (m_lowQualityB ? count * m_farTopTilingLow : count * m_farTopTilingHi) / quarter;
         farTiling[3] = m_farYOffset;
-        dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("FARTEXTILING"))->setValue(farTiling, 0);
+        dx9rend::effectGetShaderParameterBorrowedTyped(fx, std::string("FARTEXTILING"))->setValue(farTiling, 0);
     }
-    dx9rend::effectSetTechniqueByName(m_effect, vc71::string("SurroundingEditorTerrain"));
+    dx9rend::effectSetTechniqueByName(m_effect, std::string("SurroundingEditorTerrain"));
     dx9rend::effectBegin(m_effect);
-    dx9rend::effectGetShaderParameterBorrowedTyped(fx, vc71::string("TEXLAYER3"))->setValue(m_lowDetailTexture, 0);
+    dx9rend::effectGetShaderParameterBorrowedTyped(fx, std::string("TEXLAYER3"))->setValue(m_lowDetailTexture, 0);
     if (m_surroundingTerrainEngineMode)
     {
         if (m_cornerVertexBuffer && m_cornerIndexBuffer)                      // +0xE4 / +0xEC
@@ -1046,9 +807,9 @@ void TerrainEditable::drawEditorWater()
     TerrainCuller* const culler = terrain()->m_culler;                        // +0x3BC
     const float radius = view->getFrustumPtr()->getFarDist();                 // +0x74, sub_100797B0
     culler->gatherVisibleSphere(&viewMatrix->m[12], radius);
-    vc71::vector_layout* const list = terrain()->m_culler->gatheredPatches(); // re-read
-    TerrainCullerNode** it = reinterpret_cast<TerrainCullerNode**>(list->first);
-    while (it != reinterpret_cast<TerrainCullerNode**>(list->last))
+    std::vector<TerrainCullerNode*>* const list = terrain()->m_culler->gatheredPatches(); // re-read
+    TerrainCullerNode** it = list->data();
+    while (it != list->data() + list->size())
         (*it)->patch->drawWater(it, list, m_materialParameters, m_objectParameters);   // sub_1018D800, advances `it`
 }
 
@@ -1070,7 +831,7 @@ void TerrainEditable::onRenderPathNotification(int)
 // then every patch's low-detail map rebuilt.
 void TerrainEditable::reloadLowDetailMaps()
 {
-    const vc71::string unused(::renddx9abi::toVc71String(getColormapBaseName()));
+    const std::string unused(::renddx9abi::fromHostString(getColormapBaseName()));
     (void)unused;
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
         m_editablePatches[i]->rebuildLowDetailMap();
@@ -1090,6 +851,7 @@ bool  TerrainEditable::getPatchHasNoDetail(int index)
 
 // (primary slot +0xD0) - this class's base grid: (patchSize + 1)^2 vertices of (x, z, u, v)
 // floats into +0xD0, u = x / patchSize, v = z / patchSize. The lock is not tested.
+// PE 0x10107A10
 void TerrainEditable::buildLegacyBaseGridVertexTable()
 {
     const int side = m_patchSize + 1;
@@ -1144,8 +906,8 @@ void TerrainEditable::buildSurroundingGeometry()
 
     const int span = static_cast<int>(
         static_cast<float>(m_heightmapSizeX - 1) * m_primaryWorldScale.x / m_secondaryWorldScale.x);
-    vc71::vector_layout vertices = { 0, 0, 0, 0 };
-    vc71::vector_layout indices  = { 0, 0, 0, 0 };
+    std::vector<TerrainSurroundingVertex> vertices;
+    std::vector<int> indices;
     // The generator's ninth argument (-1 at every call here) is not modelled by the tree's
     // generateSurroundingGrid (Terrain.h); nothing in it reads that word.
     if (!m_surroundingTerrainEngineMode)
@@ -1160,32 +922,28 @@ void TerrainEditable::buildSurroundingGeometry()
     }
 
     m_sideVertexBuffer = dx9rend::bufferManagerCreateVertexBuffer(
-        vc71::vectorSizeIn(vertices, 16u), 16u, 8u, "TerrainEditable");
+        static_cast<unsigned int>(vertices.size()), 16u, 8u, "TerrainEditable");
     {
         unsigned char* const dst = static_cast<unsigned char*>(dx9rend::vertexBufferLock(m_sideVertexBuffer, 0, 0, 0));
-        for (unsigned int i = 0; vertices.first && i < vc71::vectorSizeIn(vertices, 16u); ++i)
-            std::memcpy(dst + 16 * i, vertices.first + 16 * i, 16);
+        for (unsigned int i = 0; i < vertices.size(); ++i)
+            std::memcpy(dst + 16 * i, &vertices[i], 16);
         dx9rend::vertexBufferUnlock(m_sideVertexBuffer);
     }
-    m_sideVertexCount = vc71::vectorSizeIn(vertices, 16u);                    // +0xFC
+    m_sideVertexCount = static_cast<unsigned int>(vertices.size());           // +0xFC
 
-    m_sideIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(vc71::vectorSizeIn(indices, 4u), 8u, 102u);
+    m_sideIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(static_cast<unsigned int>(indices.size()), 8u, 102u);
     {
         unsigned int* const dst = static_cast<unsigned int*>(dx9rend::indexBufferLock(m_sideIndexBuffer, 0, 0, 0));
-        for (unsigned int i = 0; indices.first && i < vc71::vectorSizeIn(indices, 4u); ++i)
-            dst[i] = reinterpret_cast<const unsigned int*>(indices.first)[i];
+        for (unsigned int i = 0; i < indices.size(); ++i)
+            dst[i] = static_cast<unsigned int>(indices[i]);
         dx9rend::indexBufferUnlock(m_sideIndexBuffer);
     }
-    m_sideIndexCount = vc71::vectorSizeIn(indices, 4u);                       // +0xF4
+    m_sideIndexCount = static_cast<unsigned int>(indices.size());              // +0xF4
 
     if (m_surroundingTerrainEngineMode)
     {
-        if (vertices.first)
-            ::renddx9abi::engineFree(vertices.first);
-        vertices.first = 0; vertices.last = 0; vertices.end = 0;
-        if (indices.first)
-            ::renddx9abi::engineFree(indices.first);
-        indices.first = 0; indices.last = 0; indices.end = 0;
+        vertices.clear();                                                     // the side grid is done
+        indices.clear();
 
         const int quarter = span / 4;
         const int half    = span / 2;
@@ -1196,30 +954,24 @@ void TerrainEditable::buildSurroundingGeometry()
         generateSurroundingGrid(0,       half,    span,    span,    4, 4, indices, vertices);
 
         m_cornerVertexBuffer = dx9rend::bufferManagerCreateVertexBuffer(
-            vc71::vectorSizeIn(vertices, 16u), 16u, 8u, "TerrainEditable");
+            static_cast<unsigned int>(vertices.size()), 16u, 8u, "TerrainEditable");
         {
             unsigned char* const dst = static_cast<unsigned char*>(dx9rend::vertexBufferLock(m_cornerVertexBuffer, 0, 0, 0));
-            for (unsigned int i = 0; vertices.first && i < vc71::vectorSizeIn(vertices, 16u); ++i)
-                std::memcpy(dst + 16 * i, vertices.first + 16 * i, 16);
+            for (unsigned int i = 0; i < vertices.size(); ++i)
+                std::memcpy(dst + 16 * i, &vertices[i], 16);
             dx9rend::vertexBufferUnlock(m_cornerVertexBuffer);
         }
-        m_cornerVertexCount = vc71::vectorSizeIn(vertices, 16u);              // +0x100
+        m_cornerVertexCount = static_cast<unsigned int>(vertices.size());     // +0x100
 
-        m_cornerIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(vc71::vectorSizeIn(indices, 4u), 8u, 102u);
+        m_cornerIndexBuffer = dx9rend::bufferManagerCreateIndexBuffer(static_cast<unsigned int>(indices.size()), 8u, 102u);
         {
             unsigned int* const dst = static_cast<unsigned int*>(dx9rend::indexBufferLock(m_cornerIndexBuffer, 0, 0, 0));
-            for (unsigned int i = 0; indices.first && i < vc71::vectorSizeIn(indices, 4u); ++i)
-                dst[i] = reinterpret_cast<const unsigned int*>(indices.first)[i];
+            for (unsigned int i = 0; i < indices.size(); ++i)
+                dst[i] = static_cast<unsigned int>(indices[i]);
             dx9rend::indexBufferUnlock(m_cornerIndexBuffer);
         }
-        m_cornerIndexCount = vc71::vectorSizeIn(indices, 4u);                 // +0xF8
+        m_cornerIndexCount = static_cast<unsigned int>(indices.size());        // +0xF8
     }
-
-    if (indices.first)
-        ::renddx9abi::engineFree(indices.first);
-    indices.first = 0; indices.last = 0; indices.end = 0;
-    if (vertices.first)
-        ::renddx9abi::engineFree(vertices.first);
 }
 
 
@@ -1230,6 +982,7 @@ void TerrainEditable::buildSurroundingGeometry()
 // (0x00800000), min with FLT_MAX. The compares are the listing's: `max < h` raises the maximum and
 // `!(min < h)` lowers the minimum, so a NaN height never moves the maximum but always lands in the
 // minimum.
+// PE 0x10109E30
 void TerrainEditable::handleEvent(EventCategory, unsigned int id, EventNode*, void* data)
 {
     if (id != kEventHeightmapModified)
@@ -1289,6 +1042,7 @@ void TerrainEditable::rebuildPatchesInRect(const float* rect)
 }
 
 // every ring patch with a corner of the rectangle strictly inside its placement.
+// PE 0x10107AE0
 void TerrainEditable::rebuildSurroundingInRect(const float* rect)
 {
     for (int slot = 0; slot < 8; ++slot)
@@ -1300,13 +1054,25 @@ void TerrainEditable::rebuildSurroundingInRect(const float* rect)
         const double maxX = static_cast<double>(patch->endX);
         const double minZ = static_cast<double>(patch->originZ);
         const double maxZ = static_cast<double>(patch->endZ);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] FCOM raises invalid for unordered inputs; only origin X spills.
+        const auto inside = [&](float x, float z) {
+            return bf2x87::greater(bf2x87::Real(x), bf2x87::Real(minX))
+                && bf2x87::greater(bf2x87::Real(maxX), bf2x87::Real(x))
+                && bf2x87::less(bf2x87::Real(minZ), bf2x87::Real(z))
+                && bf2x87::greater(bf2x87::Real(maxZ), bf2x87::Real(z));
+        };
+        if (inside(rect[0], rect[1]) || inside(rect[2], rect[1])
+            || inside(rect[0], rect[3]) || inside(rect[2], rect[3]))
+#else
         if ((rect[0] > minX && maxX > rect[0] && minZ < rect[1] && maxZ > rect[1])
             || (rect[2] > minX && maxX > rect[2] && minZ < rect[1] && maxZ > rect[1])
             || (rect[0] > minX && maxX > rect[0] && minZ < rect[3] && maxZ > rect[3])
             || (rect[2] > minX && maxX > rect[2] && minZ < rect[3] && maxZ > rect[3]))
+#endif
         {
             patch->computeBounds();                                           // (R2)
-            patch->buildVertexBuffers();                                      // (R2)
+            m_editableSurrounding[slot]->buildVertexBuffers();                 // (R2)
         }
     }
 }
@@ -1329,6 +1095,7 @@ void TerrainEditable::createUndergrowthOverlays()
             m_editablePatches[x + z * m_patchCount]->createUndergrowthOverlay();
 }
 
+// PE 0x10107F80
 void TerrainEditable::releaseUndergrowthOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1336,6 +1103,7 @@ void TerrainEditable::releaseUndergrowthOverlays()
             m_editablePatches[x + z * m_patchCount]->releaseUndergrowthOverlay();
 }
 
+// PE 0x10107FD0
 void TerrainEditable::createOvergrowthOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1343,6 +1111,7 @@ void TerrainEditable::createOvergrowthOverlays()
             m_editablePatches[x + z * m_patchCount]->createOvergrowthOverlay();
 }
 
+// PE 0x10108020
 void TerrainEditable::releaseOvergrowthOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1350,6 +1119,7 @@ void TerrainEditable::releaseOvergrowthOverlays()
             m_editablePatches[x + z * m_patchCount]->releaseOvergrowthOverlay();
 }
 
+// PE 0x10108070
 void TerrainEditable::createOvergrowthShadowOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1357,6 +1127,7 @@ void TerrainEditable::createOvergrowthShadowOverlays()
             m_editablePatches[x + z * m_patchCount]->createOvergrowthShadowOverlay();
 }
 
+// PE 0x101080C0
 void TerrainEditable::releaseOvergrowthShadowOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1371,6 +1142,7 @@ void TerrainEditable::createMaterialOverlays()
             m_editablePatches[x + z * m_patchCount]->createMaterialOverlay(); // (R2)
 }
 
+// PE 0x10108160
 void TerrainEditable::releaseMaterialOverlays()
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1382,40 +1154,46 @@ void TerrainEditable::releaseMaterialOverlays()
 // ITerrainEditable (+0x768) - the TerrainEditable.cpp bodies (the GetSets half is in
 // TerrainEditableGetSets.cpp)
 
+// PE 0x1010DC70
 void  TerrainEditable::setLodSwitchDistance(float distance) { m_lodSwitchDistance = distance; }
 float TerrainEditable::getLodSwitchDistance() const { return m_lodSwitchDistance; }
 
 // the level-wide low-detail texture: the old owner reference dropped (not nulled), the
 // named file when it exists, else the common default.
+// PE 0x101097B0
 void TerrainEditable::setLowDetailTexture(const TerrainEditableString& path)
 {
     releaseOwnerTexture(m_lowDetailTexture);
     if (::dice::hfe::fileManager->fileExists(path))
-        m_lowDetailTexture = dx9rend::textureManagerGetTexture(::renddx9abi::toVc71String(path));
+        m_lowDetailTexture = dx9rend::textureManagerGetTexture(::renddx9abi::fromHostString(path));
     else
-        m_lowDetailTexture = dx9rend::textureManagerGetTexture(vc71::string("common/terrain/textures/Default.dds"));
+        m_lowDetailTexture = dx9rend::textureManagerGetTexture(std::string("common/terrain/textures/Default.dds"));
 }
 
+// PE 0x1010DC90
 void TerrainEditable::setLowDetailmapSize(int size) { m_lowDetailmapSize = size; }
 int  TerrainEditable::getLowDetailmapSize() const { return m_lowDetailmapSize; }
 
 // Accepts layer 6 (`<= 6`), one past the six records - the shipped bound. Anything
 // larger logs and answers the first record.
+// PE 0x1010ACB0
 TerrainDetailTextureBase* TerrainEditable::getDetailTexture(unsigned int layer)
 {
     if (layer <= 6)
-        return reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[layer];
+        return m_detailTextures.data()[layer];
     ::renddx9abi::logf("[TerrainEditable.cpp:2041] TBM: layer index out of range!");
-    return reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[0];
+    return m_detailTextures.data()[0];
 }
 
 // (`retn 1Ch`) - the shipped body only logs (the binding still exists).
+// PE 0x10107CA0
 void TerrainEditable::importAllDetailLayers(TerrainEditableString)
 {
     ::renddx9abi::logf("[TerrainEditable.cpp:1843] TBM: dont use this functions!");
 }
 
 // every patch's debugTest, which is an empty body (nullsub_12) in 1.50.
+// PE 0x101081B0
 void TerrainEditable::debugTest(int value)
 {
     for (int z = 0; z < m_patchCount; ++z)
@@ -1423,20 +1201,25 @@ void TerrainEditable::debugTest(int value)
             m_editablePatches[m_patchCount * z + x]->debugTest(value);
 }
 
+// PE 0x1010DDA0
 void TerrainEditable::setDrawDetailLayerAsColor(int layer) { m_drawDetailLayerAsColor = layer; }
 
+// PE 0x10108430
 PatchDetailLayers* TerrainEditable::getPatchMergedDetailLayers(int patchIndex) const
 {
     return &m_editablePatches[patchIndex]->m_mergedLayers;
 }
+// PE 0x10108450
 void* TerrainEditable::getPatchUndergrowthOverlay(int patchIndex) const
 {
     return m_editablePatches[patchIndex]->m_undergrowthOverlay;
 }
+// PE 0x10108470
 void* TerrainEditable::getPatchOvergrowthOverlay(int patchIndex) const
 {
     return m_editablePatches[patchIndex]->m_overgrowthOverlay;
 }
+// PE 0x10108490
 void* TerrainEditable::getPatchOvergrowthShadowOverlay(int patchIndex) const
 {
     return m_editablePatches[patchIndex]->m_overgrowthShadowOverlay;
@@ -1451,6 +1234,7 @@ void TerrainEditable::burnColorMaps()
 }
 
 // the byte is written only when it changes.
+// PE 0x101086C0
 void TerrainEditable::setUseCompDetailMaps(bool use)
 {
     const unsigned char value = use ? 1 : 0;
@@ -1459,18 +1243,23 @@ void TerrainEditable::setUseCompDetailMaps(bool use)
 }
 bool TerrainEditable::getUseCompDetailMaps() const { return m_useCompDetailMaps != 0; }
 
+// PE 0x1010DE40
 void TerrainEditable::setTerrainWaterColor(const Vec3& colour) { m_terrainWaterColor = colour; }
 const Vec3& TerrainEditable::getTerrainWaterColor() const { return m_terrainWaterColor; }
 
 // The nvdxt option strings (0x1010DCC0 .. 0x1010DD90): by value in, a reference out.
 void TerrainEditable::setColormapSettings(TerrainEditableString value) { m_colormapSettings = value; }
 const TerrainEditableString& TerrainEditable::getColormapSettings() const { return m_colormapSettings; }
+// PE 0x1010DCF0
 void TerrainEditable::setLowDetailmapSettings(TerrainEditableString value) { m_lowDetailmapSettings = value; }
 const TerrainEditableString& TerrainEditable::getLowDetailmapSettings() const { return m_lowDetailmapSettings; }
+// PE 0x1010DD20
 void TerrainEditable::setDetailmapSettings(TerrainEditableString value) { m_detailmapSettings = value; }
 const TerrainEditableString& TerrainEditable::getDetailmapSettings() const { return m_detailmapSettings; }
+// PE 0x1010DD50
 void TerrainEditable::setSurroundingColormapSettings(TerrainEditableString value) { m_surroundingColormapSettings = value; }
 const TerrainEditableString& TerrainEditable::getSurroundingColormapSettings() const { return m_surroundingColormapSettings; }
+// PE 0x1010DD70
 void TerrainEditable::setSurroundingLowDetailmapSettings(TerrainEditableString value) { m_surroundingLowDetailmapSettings = value; }
 const TerrainEditableString& TerrainEditable::getSurroundingLowDetailmapSettings() const { return m_surroundingLowDetailmapSettings; }
 
@@ -1483,6 +1272,7 @@ bool TerrainEditable::isLightSampleable() { return true; }
 
 // release the sampler through its IBase slot +0x08 (the TerrainLightSampler's last block was written
 // by its storeResults).
+// PE 0x10107C80
 bool TerrainEditable::destroyLightSampler(ILightSampling* sampler)
 {
     if (!sampler)
@@ -1494,6 +1284,7 @@ bool TerrainEditable::destroyLightSampler(ILightSampling* sampler)
 
 // Paints inner detail weights and matching ring colors using a quartered radius.
 // Does nothing while compressed detail maps are active.
+// PE 0x1010A830
 void TerrainEditable::paintDetail(float x, float z, float radius, int strength, int layer)
 {
     const float reach = radius * 0.25f;
@@ -1501,7 +1292,7 @@ void TerrainEditable::paintDetail(float x, float z, float radius, int strength, 
         return;
     heightmapClusterByName()->getPrimaryHeightmap();                          // +0x40, answer dropped
     const int type = static_cast<TerrainDetailTextureEditable*>(
-        reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[layer])->lowDetailType;   // +0x74
+        m_detailTextures.data()[layer])->lowDetailType;   // +0x74
     unsigned int colour = 0xFFu;
     if (type == 1)
         colour = 0xFFu;
@@ -1534,13 +1325,14 @@ void TerrainEditable::paintColor(float x, float z, float radius, int strength, u
 // E+0xAC 0x1010A930 (`retn 14h`) - the same gate and quarter radius, then nothing unless the layer's
 // record has a colour texture (+0x64); no cluster lookup. Ring patches (0x101A5AB0), then patches
 
+// PE 0x1010A930
 void TerrainEditable::paintColorFromTexture(float x, float z, float radius, int strength, int layer)
 {
     const float reach = radius * 0.25f;
     if (m_useCompDetailMaps)
         return;
     const TerrainDetailTextureEditable* const record = static_cast<const TerrainDetailTextureEditable*>(
-        reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[layer]);
+        m_detailTextures.data()[layer]);
     if (!record->colorTexture)
         return;
     for (int slot = 0; slot < 8; ++slot)
@@ -1619,6 +1411,7 @@ void TerrainEditable::clearColorMapEdits()                                    //
             m_editablePatches[m_patchCount * z + x]->clearColormapEdits();
 }
 
+// PE 0x10107E20
 // E+0xD8 every patch's edit copy loaded back (0x1019EF80), then every ring patch's
 // alpha-weighted commit (0x101A4370).
 void TerrainEditable::commitColorMapEdits()
@@ -1653,14 +1446,14 @@ void TerrainEditable::revertDetailLayers()                                    //
 // every patch imports its tile (0x1019E480).
 void TerrainEditable::importBaseDetailLayers(TerrainEditableString tga)
 {
-    const vc71::string file(::renddx9abi::toVc71String(tga));
-    vc71::string directory;
+    const std::string file(::renddx9abi::fromHostString(tga));
+    std::string directory;
     dx9rend::pathStripExtension(directory, file);
-    const vc71::string unusedDirectory = pathDirectoryOf(file, '/');
+    const std::string unusedDirectory = extractFilePath(file, '/');
     (void)unusedDirectory;
     ::CreateDirectoryA(directory.c_str(), 0);
     {
-        vc71::string tileDirectory(directory);
+        std::string tileDirectory(directory);
         tileDirectory += "\\";
         tgasplit(file, tileDirectory);
     }
@@ -1671,16 +1464,17 @@ void TerrainEditable::importBaseDetailLayers(TerrainEditableString tga)
 
 // E+0xB8 0x1010AAD0 (`retn 20h`) - the same split, then every patch imports the layer from its tile
 
+// PE 0x1010AAD0
 void TerrainEditable::importDetailLayer(int layer, TerrainEditableString tga)
 {
-    const vc71::string file(::renddx9abi::toVc71String(tga));
-    vc71::string directory;
+    const std::string file(::renddx9abi::fromHostString(tga));
+    std::string directory;
     dx9rend::pathStripExtension(directory, file);
-    const vc71::string unusedDirectory = pathDirectoryOf(file, '/');
+    const std::string unusedDirectory = extractFilePath(file, '/');
     (void)unusedDirectory;
     ::CreateDirectoryA(directory.c_str(), 0);
     {
-        vc71::string tileDirectory(directory);
+        std::string tileDirectory(directory);
         tileDirectory += "\\";
         tgasplit(file, tileDirectory);
     }
@@ -1691,16 +1485,17 @@ void TerrainEditable::importDetailLayer(int layer, TerrainEditableString tga)
 
 // E+0xD0 0x1010ABC0 (`retn 1Ch`) - the same split, then every patch imports its colormap tile
 
+// PE 0x1010ABC0
 void TerrainEditable::importColorMap(TerrainEditableString tga)
 {
-    const vc71::string file(::renddx9abi::toVc71String(tga));
-    vc71::string directory;
+    const std::string file(::renddx9abi::fromHostString(tga));
+    std::string directory;
     dx9rend::pathStripExtension(directory, file);
-    const vc71::string unusedDirectory = pathDirectoryOf(file, '/');
+    const std::string unusedDirectory = extractFilePath(file, '/');
     (void)unusedDirectory;
     ::CreateDirectoryA(directory.c_str(), 0);
     {
-        vc71::string tileDirectory(directory);
+        std::string tileDirectory(directory);
         tileDirectory += "\\";
         tgasplit(file, tileDirectory);
     }
@@ -1715,15 +1510,20 @@ void TerrainEditable::importColorMap(TerrainEditableString tga)
 // the Esc key (GetAsyncKeyState(VK_ESCAPE), the sign bit) terminates it with 0x80000003, else a 5 ms
 // wait. Both handles are closed. On a failed start the error is formatted (FormatMessageA, else the
 // number) into an 80-byte buffer by sprintf - unbounded, as shipped - and never reported.
-void TerrainEditable::runTool(vc71::string executable, vc71::string arguments)
+void TerrainEditable::runTool(std::string executable, std::string arguments)
 {
+#if defined(__APPLE__)
+    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-terrain-tools]
+    // Requires native tgasplit/nvdxt execution, cancellation and output validation.
+    bf2MacRendererStop("dice::hfe::geom::TerrainEditable::runTool");
+#else
     STARTUPINFOA startup;
     std::memset(&startup, 0, sizeof(startup));
     PROCESS_INFORMATION process;
     std::memset(&process, 0, sizeof(process));
     startup.cb = 68;
-    vc71::string command;
-    formatString(command, "%s %s", executable.c_str(), arguments.c_str());
+    std::string command;
+    command = formatString("%s %s", executable.c_str(), arguments.c_str());
     if (::CreateProcessA(0, const_cast<char*>(command.c_str()), 0, 0, FALSE, 0x08000000u, 0, 0,
                          &startup, &process))
     {
@@ -1758,30 +1558,31 @@ void TerrainEditable::runTool(vc71::string executable, vc71::string arguments)
     {
         std::sprintf(message, "GetLastError returned %u\n", static_cast<unsigned int>(error));
     }
+#endif
 }
 
 // (`retn 38h`) - "tgasplit <tga> -w512 -h512 -b -s -R0 -G0 -B0 <outputDirectory> tx".
-void TerrainEditable::tgasplit(vc71::string tga, vc71::string outputDirectory)
+void TerrainEditable::tgasplit(std::string tga, std::string outputDirectory)
 {
-    vc71::string command;
-    formatString(command, "%s -w512 -h512 -b -s -R0 -G0 -B0 %s tx", tga.c_str(), outputDirectory.c_str());
-    runTool(vc71::string("tgasplit"), command);
+    std::string command;
+    command = formatString("%s -w512 -h512 -b -s -R0 -G0 -B0 %s tx", tga.c_str(), outputDirectory.c_str());
+    runTool(std::string("tgasplit"), command);
 }
 
 // E+0xF4 0x1010A130 (`retn 54h`) - "nvdxt -file <file> <options> -outdir <outputDirectory>".
 void TerrainEditable::runNvdxt(TerrainEditableString file, TerrainEditableString outputDirectory,
                                TerrainEditableString options)
 {
-    vc71::string command;
+    std::string command;
     {
-        vc71::string formatted;
-        formatString(formatted, "-file %s %s -outdir %s",
-                     ::renddx9abi::toVc71String(file).c_str(),
-                     ::renddx9abi::toVc71String(options).c_str(),
-                     ::renddx9abi::toVc71String(outputDirectory).c_str());
+        std::string formatted;
+        formatted = formatString("-file %s %s -outdir %s",
+                     ::renddx9abi::fromHostString(file).c_str(),
+                     ::renddx9abi::fromHostString(options).c_str(),
+                     ::renddx9abi::fromHostString(outputDirectory).c_str());
         command = formatted;
     }
-    runTool(vc71::string("nvdxt"), command);
+    runTool(std::string("nvdxt"), command);
 }
 
 // The converters (`retn 38h`): E+0xF4 (virtual) with the file, the directory and their option string.
@@ -1794,6 +1595,7 @@ void TerrainEditable::makeUncompDDS(TerrainEditableString file, TerrainEditableS
     runNvdxt(file, outputDirectory, TerrainEditableString("-u8888"));
 }
 // E+0x100 the slot 1.50 inserted: the same body as E+0xFC (the same "-u8888", 0x1021B76C).
+// PE 0x101082D0
 void TerrainEditable::makeUncompDDSAgain(TerrainEditableString file, TerrainEditableString outputDirectory)
 {
     runNvdxt(file, outputDirectory, TerrainEditableString("-u8888"));
@@ -1813,7 +1615,7 @@ void TerrainEditable::createSurroundingPatch(int slot)
     {
         if (!m_editableSurrounding[slot])
         {
-            void* const storage = ::renddx9abi::engineAlloc(0x2FC);
+            void* const storage = ::renddx9abi::engineAlloc(sizeof(SurroundingPatchEditable));   // retail 0x2FC
             SurroundingPatchEditable* const patch = storage ? new (storage) SurroundingPatchEditable(this) : 0;
             patch->init(slot);
             m_editableSurrounding[slot] = patch;
@@ -1875,6 +1677,7 @@ void TerrainEditable::setSurroundingTerrainEngineMode(bool engineMode)
     }
 }
 
+// PE 0x10108640
 // E+0x120 every patch's bounds, vertex buffers and lightmap (0x1019E160 / 0x1019DF30 /
 // 0x1019F350), then every ring patch's (0x101A4150 / 0x101A3D70 / 0x101A4520).
 void TerrainEditable::rebuildTerrain()
@@ -1896,6 +1699,7 @@ void TerrainEditable::rebuildTerrain()
     }
 }
 
+// PE 0x10109860
 // the material map and the road passes
 // E+0x20 every patch's material map (0x101A0F30), then the road masks at the patch size
 // again (each of which also writes the road materials and leaves its mask alive).
@@ -1922,7 +1726,7 @@ void TerrainEditable::burnRoadsInUndergrowth()
 
 // P+0xE8 the same, for the patches whose square (origin +0x78 / +0x7C, side
 // (int)(patchSize * scale.x)) contains the camera strictly (each compare NaN-rejecting). The camera is
-// the duplicate view's (Renderer +0x50) matrix row 3, packed with w = 1 (sub_1008DD80).
+// the duplicate view's (Renderer +0x50) matrix row 3, packed with w = 1 (staticMeshPackVec4).
 void TerrainEditable::burnRoadsInUndergrowthNeerest()
 {
     dx9rend::IRenderView* const view = dx9rend::rendererGetRenderViewDup();   // Renderer +0x50
@@ -1943,13 +1747,14 @@ void TerrainEditable::burnRoadsInUndergrowthNeerest()
 
 // Draws queued terrain and ring patches for lightmap generation in editor mode.
 // Requires an effect with the lightmapGeneration technique; restores the state block.
+// PE 0x1010A5F0
 void TerrainEditable::renderForLightmapGeneration()
 {
     if (m_surroundingTerrainEngineMode)
         return;
     update();                                                                 // primary +0x28
     dx9rend::stateManagerPush();
-    dx9rend::effectSetTechniqueByName(m_effect, vc71::string("lightmapGeneration"));
+    dx9rend::effectSetTechniqueByName(m_effect, std::string("lightmapGeneration"));
     dx9rend::effectBegin(m_effect);
     Mat4 viewProj = Mat4::getIdentity();
     {
@@ -1993,12 +1798,13 @@ void TerrainEditable::renderForLightmapGeneration()
 // folder, and only the Terrain.con write reports a failure.
 
 
+// PE 0x101074F0
 // E+0x14 every patch's colormap burnt (0x1019C630), then every ring patch's (0x101A5060),
 // each handed a copy of the colormap base name (E+0x6C) - which the burns read only on their
 // not-edited arm. burnColorMaps (E+0x124) jumps here.
 void TerrainEditable::burnAllColorMaps()
 {
-    const vc71::string colormapBase(::renddx9abi::toVc71String(getColormapBaseName()));   // E+0x6C
+    const std::string colormapBase(::renddx9abi::fromHostString(getColormapBaseName()));   // E+0x6C
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
         m_editablePatches[i]->burnColormap(colormapBase);
     for (int slot = 0; slot < 8; ++slot)
@@ -2006,6 +1812,7 @@ void TerrainEditable::burnAllColorMaps()
             m_editableSurrounding[slot]->burnColormap(colormapBase);
 }
 
+// PE 0x10107580
 // E+0x18 every patch's edited colormap committed and saved (0x1019FE30), then every ring
 // patch's (0x101A4CC0).
 void TerrainEditable::saveEditedColorMaps()
@@ -2017,11 +1824,12 @@ void TerrainEditable::saveEditedColorMaps()
             m_editableSurrounding[slot]->saveEditedColormap();
 }
 
+// PE 0x10107670
 // E+0x1C every patch's lightmap saved under the plain lightmap base (E+0x74, copied once;
 // 0x1019D210). The ring patches' lightmaps are not saved.
 void TerrainEditable::saveLightmaps()
 {
-    const vc71::string lightmapBase(::renddx9abi::toVc71String(getLightmapBaseName()));   // E+0x74
+    const std::string lightmapBase(::renddx9abi::fromHostString(getLightmapBaseName()));   // E+0x74
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
         m_editablePatches[i]->saveLightmap(lightmapBase);
 }
@@ -2034,6 +1842,7 @@ void TerrainEditable::makeCompDetailMaps()
         m_editablePatches[i]->makeCompDetailMaps();
 }
 
+// PE 0x10108720
 void TerrainEditable::removeCompDetailMaps()
 {
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
@@ -2044,11 +1853,11 @@ void TerrainEditable::removeCompDetailMaps()
 // suffix (0x1019D090, a fresh "" each time; the argument is never read), the material map rebuilt
 // (E+0x20 - it writes the primary heightmap's material grid), then every ring patch's low-detail
 // map saved (0x101A2A90).
-void TerrainEditable::saveEditorMaps(const vc71::string&)
+void TerrainEditable::saveEditorMaps(const std::string&)
 {
     for (int i = 0; i < m_patchCount * m_patchCount; ++i)
     {
-        const vc71::string empty("");
+        const std::string empty("");
         m_editablePatches[i]->saveDetailMaps(empty);
     }
     buildMaterialMap();                                                       // E+0x20 (virtual)
@@ -2061,10 +1870,11 @@ void TerrainEditable::saveEditorMaps(const vc71::string&)
 // zero selects all. Raw-data flag 0x10 controls burns; 0x20 is unused.
 // Returns false only for a short Terrain.con write. The destination folder must exist.
 // [CHOSEN] Native stream formatting may use two exponent digits; both forms are loadable.
+// PE 0x1010D3F0
 bool TerrainEditable::save(const TerrainEditableString& path, int flags)
 {
     bool written = true;
-    vc71::string folder(::renddx9abi::toVc71String(path));
+    std::string folder(::renddx9abi::fromHostString(path));
     if (folder.size())
     {
         const char last = folder.c_str()[folder.size() - 1];
@@ -2077,7 +1887,7 @@ bool TerrainEditable::save(const TerrainEditableString& path, int flags)
 
     if ((flags & 1) || !flags)
     {
-        vc71::string conPath(::renddx9abi::toVc71String(getLevelSavePath())); // E+0x90
+        std::string conPath(::renddx9abi::fromHostString(getLevelSavePath())); // E+0x90
         conPath += folder;
         conPath += "Terrain.con";
 
@@ -2153,7 +1963,7 @@ bool TerrainEditable::save(const TerrainEditableString& path, int flags)
 
     if ((flags & 2) || !flags)
     {
-        const vc71::string empty("");
+        const std::string empty("");
         saveEditorMaps(empty);
     }
     if ((flags & 8) || !flags)
@@ -2177,13 +1987,39 @@ void writeVertexBufferBytes(TerrainRawReader& raw, void* vertexBuffer)
 
 } // anonymous namespace
 
+// The three out-of-line copies of the vertex-buffer write above, each bound to one buffer field of
+// the object it is given. They have no code or data references in 1.50 and invent no callers; the
+// names are [INFERRED]. Retail takes the raw writer in the first stack word (also the receiver of
+// the write) and the owning object in the second; `ecx` is not read.
+
+// PE 0x101073A0: unreachable in 1.50: no code or data references
+// Writes a ring's FLOAT1 height buffer (+0x1C).
+void writeRingXzVertexBuffer(TerrainRawReader& raw, SurroundingPatchEditable* ring)
+{
+    writeVertexBufferBytes(raw, ring->xzVertexBuffer);
+}
+
+// PE 0x101073F0: unreachable in 1.50: no code or data references
+// Writes a ring's normal buffer (+0x20).
+void writeRingHeightVertexBuffer(TerrainRawReader& raw, SurroundingPatchEditable* ring)
+{
+    writeVertexBufferBytes(raw, ring->heightVertexBuffer);
+}
+
+// PE 0x10107440: unreachable in 1.50: no code or data references
+// Writes a patch's normal buffer (+0x5C).
+void writePatchNormalVertexBuffer(TerrainRawReader& raw, QuadPatchEditable* patch)
+{
+    writeVertexBufferBytes(raw, patch->normalVertexBuffer);
+}
+
 // Writes version-0x1A terraindata.raw beneath the level save path; logs open failures.
 // This compatibility writer omits blocks required by the 1.50 loader and its output
 // is not loadable by that reader. Ring patches temporarily switch to engine mode.
-void TerrainEditable::writeTerrainData(const vc71::string& folder, int flags)
+void TerrainEditable::writeTerrainData(const std::string& folder, int flags)
 {
     ITerrainEditable* const editable = static_cast<ITerrainEditable*>(this);   // the +0x768 subobject
-    vc71::string name(::renddx9abi::toVc71String(getLevelSavePath()));        // E+0x90
+    std::string name(::renddx9abi::fromHostString(getLevelSavePath()));        // E+0x90
     name += folder;
     name += "terraindata.raw";
     TerrainRawReader raw;
@@ -2222,22 +2058,22 @@ void TerrainEditable::writeTerrainData(const vc71::string& folder, int flags)
     raw.writeU32(static_cast<unsigned int>(m_patchDetailmapSize));            // +0x44
     raw.writeU32(static_cast<unsigned int>(m_patchColormapSize));             // +0x48
     {
-        vc71::string line(m_colormapBaseName);                                // +0x54
+        std::string line(m_colormapBaseName);                                // +0x54
         line += "\n";
         raw.writeString(line);
     }
     {
-        vc71::string line(m_detailmapBaseName);                               // +0x8C
+        std::string line(m_detailmapBaseName);                               // +0x8C
         line += "\n";
         raw.writeString(line);
     }
     {
-        vc71::string line(m_lowDetailmapBaseName);                            // +0xA8
+        std::string line(m_lowDetailmapBaseName);                            // +0xA8
         line += "\n";
         raw.writeString(line);
     }
     {
-        vc71::string line(m_lightmapBaseName);                                // +0x70
+        std::string line(m_lightmapBaseName);                                // +0x70
         line += "\n";
         raw.writeString(line);
     }
@@ -2264,8 +2100,8 @@ void TerrainEditable::writeTerrainData(const vc71::string& folder, int flags)
     for (int i = 0; i < 6; ++i)
     {
         const TerrainDetailTextureEditable* const record = static_cast<const TerrainDetailTextureEditable*>(
-            reinterpret_cast<TerrainDetailTexture**>(m_detailTextures.first)[i]);
-        vc71::string line(record->name);                                      // +0x2C
+            m_detailTextures.data()[i]);
+        std::string line(record->name);                                      // +0x2C
         line += "\n";
         raw.writeString(line);
         raw.writeByte(record->planeMap);                                      // +0x15, sub_100761C0
@@ -2403,6 +2239,121 @@ void TerrainEditable::writePatchHeights(TerrainRawReader& raw, QuadPatchEditable
     ::renddx9abi::engineFree(deltas);                                         // operator delete[] (sub_1005F370)
 }
 
+namespace {
+
+// The element constructor the array allocation runs (sub_10001000 over three sub_10030D20 Vec3
+// constructors, then the three diagonal stores): a 36-byte frame of three Vec3 rows set to the
+// identity.
+void constructBasisFrames(float* frames, int count)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        float* const frame = frames + 9 * i;
+        for (int k = 0; k < 9; ++k)
+            frame[k] = 0.0f;
+        frame[8] = 1.0f;                                                      // +0x20
+        frame[4] = 1.0f;                                                      // +0x10
+        frame[0] = 1.0f;                                                      // +0x00
+    }
+}
+
+} // anonymous namespace
+
+// Writes one patch's (patchSize + 1)^2 vertex frames, nine floats each (x tangent, z tangent, normal;
+// each a normalised row), into terraindata.raw. The frames come from the integer grid heights
+// (IHeightmapCluster slot +0x64, called afresh for every use) scaled by the primary scale's y, built over a
+// (patchSize + 2)^2 grid that starts one cell before the patch, then each vertex averages its four
+// neighbouring cells and re-normalises. [INFERRED] name.
+// Shipped defect: of the four cells summed, the second and fourth are the same cell (x, z); the cell at
+// (x - 1, z - 1) is never read. Neither allocation is checked.
+// unreachable in 1.50: no code or data references (writeTerrainData writes the patch's normal vertex buffer instead).
+// PE 0x101091A0
+void TerrainEditable::writePatchBasisFrames(TerrainRawReader& raw, QuadPatchEditable* patch)
+{
+    ::dice::hfe::world::IHeightmapCluster* const cluster = heightmapClusterByName();
+    const int cells = (m_patchSize + 2) * (m_patchSize + 2);
+    float* const frames = static_cast<float*>(::renddx9abi::engineAlloc(static_cast<unsigned int>(cells) * 36u));
+    if (frames)
+        constructBasisFrames(frames, cells);
+
+    for (int z = -1; z < m_patchSize + 1; ++z)
+    {
+        const float zf = static_cast<float>(z);
+        const float one = static_cast<float>(z + 1) - zf;
+        for (int x = -1; x < m_patchSize + 1; ++x)
+        {
+            const float xf = static_cast<float>(x);
+            const float h0 = static_cast<float>(cluster->getHeightFromGrid(patch->worldX + x, patch->worldZ + z));
+            const float hx = static_cast<float>(cluster->getHeightFromGrid(patch->worldX + x + 1, patch->worldZ + z));
+            float tangentX[3];
+            tangentX[0] = static_cast<float>(x + 1) - xf;
+            tangentX[1] = hx - h0;
+            tangentX[2] = zf - zf;
+            tangentX[1] = tangentX[1] * cluster->getPrimaryScale().y;         // slot +0x54
+
+            const float h0Again = static_cast<float>(cluster->getHeightFromGrid(patch->worldX + x, patch->worldZ + z));
+            const float hz = static_cast<float>(cluster->getHeightFromGrid(patch->worldX + x, patch->worldZ + z + 1));
+            float tangentZ[3];
+            tangentZ[0] = xf - xf;
+            tangentZ[1] = hz - h0Again;
+            tangentZ[2] = one;
+            tangentZ[1] = tangentZ[1] * cluster->getPrimaryScale().y;
+
+            rendmath::normalize(*reinterpret_cast<Vec3*>(tangentX));
+            rendmath::normalize(*reinterpret_cast<Vec3*>(tangentZ));
+            float normal[3];
+            normal[0] = tangentZ[1] * tangentX[2] - tangentZ[2] * tangentX[1];
+            normal[1] = tangentZ[2] * tangentX[0] - tangentX[2] * tangentZ[0];
+            normal[2] = tangentX[1] * tangentZ[0] - tangentZ[1] * tangentX[0];
+            rendmath::normalize(*reinterpret_cast<Vec3*>(normal));
+
+            float* const frame = frames + 9 * ((m_patchSize + 2) * (z + 1) + x + 1);
+            frame[0] = tangentX[0];
+            frame[1] = tangentX[1];
+            frame[2] = tangentX[2];
+            frame[3] = tangentZ[0];
+            frame[4] = tangentZ[1];
+            frame[5] = tangentZ[2];
+            frame[6] = normal[0];
+            frame[7] = normal[1];
+            frame[8] = normal[2];
+        }
+    }
+
+    const int side = m_patchSize + 1;
+    float* const vertices = static_cast<float*>(::renddx9abi::engineAlloc(static_cast<unsigned int>(side * side) * 36u));
+    if (vertices)
+        constructBasisFrames(vertices, side * side);
+
+    for (int z = 0; z < m_patchSize + 1; ++z)
+    {
+        for (int x = 0; x < m_patchSize + 1; ++x)
+        {
+            float* const vertex = vertices + 9 * ((m_patchSize + 1) * z + x);
+            const float* const left = frames + 9 * ((m_patchSize + 2) * (z + 1) + x);          // cell (x - 1, z)
+            const float* const here = frames + 9 * ((m_patchSize + 2) * (z + 1) + x + 1);      // cell (x, z)
+            const float* const above = frames + 9 * ((m_patchSize + 2) * z + x + 1);           // cell (x, z - 1)
+            for (int k = 0; k < 9; ++k)
+                vertex[k] = left[k];
+            for (int k = 0; k < 9; ++k)
+                vertex[k] = vertex[k] + here[k];
+            for (int k = 0; k < 9; ++k)
+                vertex[k] = vertex[k] + above[k];
+            for (int k = 0; k < 9; ++k)
+                vertex[k] = vertex[k] + here[k];                              // shipped: the same cell as the second term
+            for (int k = 0; k < 9; ++k)
+                vertex[k] = vertex[k] * 0.25f;                                // flt_101DD4EC
+            rendmath::normalize(*reinterpret_cast<Vec3*>(vertex));
+            rendmath::normalize(*reinterpret_cast<Vec3*>(vertex + 3));
+            rendmath::normalize(*reinterpret_cast<Vec3*>(vertex + 6));
+        }
+    }
+
+    raw.write(vertices, static_cast<unsigned int>(side * side) * 36u);
+    ::renddx9abi::engineFree(frames);                                         // operator delete[] (sub_1005F370)
+    ::renddx9abi::engineFree(vertices);
+}
+
 // Writes patch layer indices and compiles detail/low-detail textures.
 // Import/update layers first: empty layers delete compiled maps without replacing them.
 // Missing nvdxt is not detected by this compatibility path.
@@ -2509,16 +2460,16 @@ void TerrainEditable::writePatchLayersAndCompile(TerrainRawReader& raw, QuadPatc
     unsigned char hasNoDetail = 1;
     for (int map = 0; map < 2; ++map)
     {
-        vc71::string name;
-        formatString(name, "%02ix%02i_%i", fileX, fileZ, map + 1);
+        std::string name;
+        name = formatString("%02ix%02i_%i", fileX, fileZ, map + 1);
         {
-            const vc71::string empty("");
+            const std::string empty("");
             patch->saveDetailMaps(empty);
         }
         {
             TerrainEditableNameResult base = getDetailmapBaseName();          // E+0x7C
-            vc71::string compiled(::renddx9abi::toVc71String(getLevelSavePath()));
-            compiled += ::renddx9abi::toVc71String(base);
+            std::string compiled(::renddx9abi::fromHostString(getLevelSavePath()));
+            compiled += ::renddx9abi::fromHostString(base);
             compiled += name;
             compiled += ".dds";
             ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(compiled));   // +0x20
@@ -2529,35 +2480,35 @@ void TerrainEditable::writePatchLayersAndCompile(TerrainRawReader& raw, QuadPatc
         {
             // The argument blocks are built right to left: the options, the directory, the file.
             const TerrainEditableString options(m_detailmapSettings);         // +0x800
-            vc71::string outputDirectory;
+            std::string outputDirectory;
             {
-                const vc71::string directory = getDetailmapDirectory();       // P+0xF0
-                outputDirectory = ::renddx9abi::toVc71String(getLevelSavePath());
+                const std::string directory = getDetailmapDirectory();       // P+0xF0
+                outputDirectory = ::renddx9abi::fromHostString(getLevelSavePath());
                 outputDirectory += directory;
             }
-            vc71::string file;
+            std::string file;
             {
-                const vc71::string editorBase = getEditorDetailmapBaseName(); // P+0xF4
-                file = ::renddx9abi::toVc71String(getLevelSavePath());
+                const std::string editorBase = getEditorDetailmapBaseName(); // P+0xF4
+                file = ::renddx9abi::fromHostString(getLevelSavePath());
                 file += editorBase;
                 file += name;
                 file += ".dds";
             }
             runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(outputDirectory), options);   // E+0xF4
         }
-        vc71::string target;
+        std::string target;
         {
             TerrainEditableNameResult base = getDetailmapBaseName();          // E+0x7C
-            target = ::renddx9abi::toVc71String(getLevelSavePath());
-            target += ::renddx9abi::toVc71String(base);
+            target = ::renddx9abi::fromHostString(getLevelSavePath());
+            target += ::renddx9abi::fromHostString(base);
             target += name;
             target += ".dds";
         }
-        vc71::string source;
+        std::string source;
         {
             TerrainEditableNameResult base = getDetailmapBaseName();
-            source = ::renddx9abi::toVc71String(getLevelSavePath());
-            source += ::renddx9abi::toVc71String(base);
+            source = ::renddx9abi::fromHostString(getLevelSavePath());
+            source += ::renddx9abi::fromHostString(base);
             source += name;
             source += "_.dds";
         }
@@ -2565,28 +2516,28 @@ void TerrainEditable::writePatchLayersAndCompile(TerrainRawReader& raw, QuadPatc
                                            ::renddx9abi::makeHostString(target));   // +0x24
         {
             TerrainEditableNameResult base = getDetailmapBaseName();
-            vc71::string leftover(::renddx9abi::toVc71String(getLevelSavePath()));
-            leftover += ::renddx9abi::toVc71String(base);
+            std::string leftover(::renddx9abi::fromHostString(getLevelSavePath()));
+            leftover += ::renddx9abi::fromHostString(base);
             leftover += name;
             leftover += "_.dds";
             ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(leftover));
         }
     }
 
-    vc71::string lowName;
+    std::string lowName;
     {
         TerrainEditableNameResult lowBase = getLowDetailmapBaseName();        // E+0x84
         const TerrainEditableString savePath = getLevelSavePath();            // E+0x90
-        formatString(lowName, "%s%s%02ix%02i", savePath.c_str(), lowBase.c_str(), fileX, fileZ);
+        lowName = formatString("%s%s%02ix%02i", savePath.c_str(), lowBase.c_str(), fileX, fileZ);
     }
-    vc71::string lowOutputDirectory;
+    std::string lowOutputDirectory;
     {
-        const vc71::string directory = getLowDetailmapDirectory();
-        lowOutputDirectory = ::renddx9abi::toVc71String(getLevelSavePath());
+        const std::string directory = getLowDetailmapDirectory();
+        lowOutputDirectory = ::renddx9abi::fromHostString(getLevelSavePath());
         lowOutputDirectory += directory;
     }
     {
-        vc71::string dds(lowName);
+        std::string dds(lowName);
         dds += ".dds";
         ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(dds));
     }
@@ -2595,26 +2546,26 @@ void TerrainEditable::writePatchLayersAndCompile(TerrainRawReader& raw, QuadPatc
         dx9rend::textureManagerSaveTexture(static_cast<dx9rend::EngineTexture*>(patch->lowDetailmap), lowName);
         {
             const TerrainEditableString options(m_lowDetailmapSettings);      // +0x7E4
-            const vc71::string directory(lowOutputDirectory);
-            vc71::string file(lowName);
+            const std::string directory(lowOutputDirectory);
+            std::string file(lowName);
             file += ".dds";
             runNvdxt(::renddx9abi::toHostString(file), ::renddx9abi::toHostString(directory), options);   // E+0xF4
         }
         {
-            vc71::string input(lowName);
+            std::string input(lowName);
             input += ".dds";
             ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(input));
         }
         {
-            vc71::string target(lowName);
+            std::string target(lowName);
             target += ".dds";
-            vc71::string source(lowName);
+            std::string source(lowName);
             source += "_.dds";
             ::dice::hfe::fileManager->moveFile(::renddx9abi::makeHostString(source),
                                                ::renddx9abi::makeHostString(target));
         }
         {
-            vc71::string leftover(lowName);
+            std::string leftover(lowName);
             leftover += "_.dds";
             ::dice::hfe::fileManager->deleteFile(::renddx9abi::makeHostString(leftover));
         }
@@ -2627,6 +2578,7 @@ void TerrainEditable::writePatchLayersAndCompile(TerrainRawReader& raw, QuadPatc
 // engine heap over the primary object and its +0x1C takes the argument - the allocation is not
 // tested, as shipped. A failed init destroys and frees the sampler.
 
+// PE 0x10107C10
 ILightSampling* TerrainEditable::createLightSampler(float resolutionModifier)
 {
     setSurroundingTerrainEngineMode(false);                                   // E+0x118
@@ -2642,18 +2594,14 @@ ILightSampling* TerrainEditable::createLightSampler(float resolutionModifier)
 
 
 // The reflection factory - RefFactory_geom_TerrainEditable an outer object is refused,
-// 0x854 bytes on the engine heap, the constructor, then queryInterface(iid) (not guarded against a
-// failed allocation); a refused iid releases the object.
-
-#if BF2_PLUGIN_ABI_NATIVE
-static_assert(sizeof(TerrainEditable) <= 0x854, "the native layout must fit the shipped 0x854-byte allocation");
-#endif
+// the object (retail 0x854 bytes) on the engine heap, the constructor, then queryInterface(iid) (not
+// guarded against a failed allocation); a refused iid releases the object.
 
 IBase* __fastcall createTerrainEditable(unsigned int iid, IBase* outer)
 {
     if (outer)
         return 0;
-    void* const storage = ::renddx9abi::engineAlloc(0x854);
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(TerrainEditable));
     TerrainEditable* const self = storage ? new (storage) TerrainEditable() : 0;
     void* const itf = self->queryInterface(iid);
     if (!itf)

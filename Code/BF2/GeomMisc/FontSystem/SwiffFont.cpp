@@ -1,9 +1,12 @@
-// Font metrics, atlas storage and text rendering support.
-// [CHOSEN, not recovered] Internal containers and tokenization.
-// [RETIRE-WHEN: RW-80] Replace chosen storage, parsing and drawing with the validated font pipeline.
+// Font metrics, atlas storage and text rendering support. The FontRenderer batcher is the retail
+// one; the Swiff font wrapper uses native storage for recovered run and selection operations.
+// [CHOSEN, not recovered] Native STL and wrapper layout.
+// [RETIRE-WHEN: RW-80] Complete the emitter's precision boundaries and replace bounded text
+// storage and counted font ownership when their native contracts are validated with menu/HUD text.
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../../RendDX9Abi/ThunkAbi.h"
 #include "../../../RendDX9Abi/HfeAbi.h"
 #include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
@@ -11,10 +14,13 @@
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/EngineFile.h"
 #include "../../Core/EventManager.h" // FontSystem renderer-event registration.
+#include "../../Core/SettingsRepostitory.h" // GSLanguage for the lexicon character table.
+#include "../Debug.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../RendDX9/ShaderParameter.h"
+#include "../../RendDX9/Texture.h"             // EngineTexture
 
-#include "../../../RendDX9Abi/D3dxEffect.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -22,6 +28,10 @@
 #include <stdio.h>
 #include <math.h>
 #include <new>
+#include <list>
+#include <map>
+#include <sstream>
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -31,7 +41,7 @@ namespace dx9rend {
 extern void* g_shaderManager;
 void* shaderManagerGetEffect(void*, const char*);
 class Effect;
-void* effectGetShaderParameter(Effect*, const vc71::string&);
+void* effectGetShaderParameter(Effect*, const std::string&);
 void* effectFindTechniqueRecord(void* effect, const char* name);
 void  effectSetTechniqueRecord(void* effect, void* record);
 unsigned int effectBegin(void* effect);
@@ -64,16 +74,29 @@ struct DifGlyph
 {
     unsigned short code;     // the character
     float          bearingX; // f1 - left side bearing (drawn at pen + this)
-    float          advance;  // = f1 + f2 + f3 - the pen advance (computed in load)
-    float          bearingY; // = the int - the vertical Y-offset (top position, baseline-aligning)
     float          intField; // = f2 - the ink width (the layout adds it, sub_100A4BF0)
     float          rightBearing; // = f3 - the right side bearing (the layout adds it too)
-    short          x;        // atlas rect, texels
-    short          y;
-    short          x2;
-    short          y2;
+    unsigned short x;        // atlas rect, texels
+    unsigned short y;
+    unsigned short x2;
+    unsigned short y2;
+    float          bearingY; // = the int - the vertical Y-offset (top position, baseline-aligning)
     float          height;   // y2 - y, precomputed
 };
+static_assert(sizeof(DifGlyph) == 32, "DifFont glyph records contain only scalar fields");
+
+// [CHOSEN, not recovered] The 28 bytes DifFont::addGlyph copies behind the glyph code: DifGlyph's
+// fields from bearingX on. The source type is unobservable because addGlyph has no caller.
+struct DifGlyphMetrics
+{
+    float          bearingX;
+    float          intField;
+    float          rightBearing;
+    unsigned short x, y, x2, y2;
+    float          bearingY;
+    float          height;
+};
+static_assert(sizeof(DifGlyphMetrics) == 28, "addGlyph copies seven dwords");
 
 // One laid-out character: the 16-byte record sub_100A4BF0 pushes per character, in font units
 // (unscaled). `left` is where the glyph's quad starts, `right` the ceiling of where its pen ends,
@@ -88,6 +111,30 @@ struct GlyphCell
     float top;               // +12
 };
 
+// [CHOSEN, not recovered] Typed native view of the first ten attested Font slots.
+// Tables 0x1020D564 and 0x1021E0D0 share this order; there is no destructor slot.
+class NativeFontView
+{
+public:
+    virtual void getRun(unsigned int*, unsigned int*, float*) = 0;
+    virtual void getFirst(unsigned int*) = 0;
+    virtual void invalidate() = 0;
+    virtual bool wouldOverflow() = 0;
+    virtual void setText(const wchar_t*, int) = 0;
+    virtual void draw(const float*, unsigned int) = 0;
+    virtual const float* getColor() = 0;
+    virtual char measure(int, float*, float*) = 0;
+    virtual char hit(int*, float, float) = 0;
+    virtual const std::vector<GlyphCell>* getCells() = 0;
+};
+
+// PE 0x100A5490
+static double roundFontPosition(float value)
+{
+    // The addition is spilled as double before the CRT floor call.
+    return ::floor(static_cast<double>(value) + 0.5);
+}
+
 
 // Parsed font metrics, atlas and projection. Device-reset callbacks do not refresh the projection;
 // FontSystem reloads fonts when display resolution changes.
@@ -95,13 +142,17 @@ struct GlyphCell
 class DifFont : public dx9rend::DeviceLostResetListener
 {
 public:
-    DifFont() : m_glyphs(0), m_glyphCount(0), m_glyphCap(0),
-                m_kerns(0), m_kernCount(0), m_kernCap(0),
-                m_atlas(0), m_atlasW(0), m_atlasH(0), m_size(0.0f),
-                m_scaleX(1.0f), m_scaleY(1.0f), m_fontRenderer(0)
+    // PE 0x100A53B0. Native reference bookkeeping and pre-load zero initialization
+    // remain [CHOSEN, not recovered] safety behavior on failed loading paths.
+    DifFont(const std::string& directory, const std::string& key)
+              : m_refCount(1), m_key(), m_directory(),
+                m_atlas(0), m_atlasW(0), m_atlasH(0), m_version(0), m_size(0.0f),
+                m_scaleX(1.0f), m_scaleY(1.0f), m_fontRenderer(0), m_deviceDetached(false)
     {
         m_projVp[0] = m_projVp[1] = m_projVp[2] = m_projVp[3] = 0.0f;
         for (int i = 0; i < 16; ++i) m_projection[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+        m_directory = directory;
+        m_key = key;
     }
 
     // The three listener slots, 0x1020D5A4 - each shipped body is `ret` (see the class note).
@@ -112,19 +163,27 @@ public:
     // sub_100A4420 - open "<path>.dif", parse it, load "<path>.dds", build the projection, and
     // resolve the FontRenderer singleton. Returns false when the .dif is missing (the shipped
     // FontSystem.cpp:356 "Font X doesn't exist" diagnostic).
-    bool load(const char* path);
+    bool load();
 
-    // sub_100A57E0 - glyph by character (160 = nbsp folds to 32 = space, as the emitter does).
+    // Glyph lookup; native callers fold nonbreaking space as the original layout/emitter do.
     const DifGlyph* glyph(unsigned short ch) const;
-    // sub_100A5850 - kerning between two characters, 0 when absent.
+    // Kerning between two characters, zero when absent.
     float kerning(unsigned short a, unsigned short b) const;
     // sub_100A4BF0 (vtable +0x0C) - lay `len` characters of `text` out into `out[0..len)`.
     void layout(const wchar_t* text, unsigned int len, GlyphCell* out) const;
+    // sub_100A48C0 - the glyph under x (text-field caret placement); sub_100A4A00 - the glyph range
+    // a drag from (x1, y1) to (x2, y2) covers. RW-80.
+    bool hitTest(const wchar_t* text, unsigned int len, int* out, float x, float y,
+                 unsigned int first, unsigned int end) const;
+    bool selectRange(const wchar_t* text, unsigned int len, int* selStart, int* selEnd,
+                     float x1, float y1, float x2, float y2,
+                     unsigned int first, unsigned int end) const;
 
     // sub_100A3450 - the loader's last act on a fresh font: store the resolution scale in +136/+140.
     // measure() multiplies its answer by it and draw() puts it in the scaling matrix, so a font that
     // never receives it reports and renders at the atlas's own authored size.
-    void         setScale(float x, float y) { m_scaleX = x; m_scaleY = y; }
+    // It also selects the FontRenderer's technique for every font: RegularScaled above unit scale.
+    void         setScale(float x, float y);
 
     void*        atlas()      const { return m_atlas; }
     unsigned int atlasW()     const { return m_atlasW; }
@@ -135,159 +194,164 @@ public:
     float        scaleY()     const { return m_scaleY; }
     const float* projection() const { return m_projection; }
     void*        fontRenderer() const { return m_fontRenderer; }
+    void drawSelection(NativeFontView* font, const float* matrix, float width);
 
     void addRef() { ++m_refCount; }
     int  release();
 
+    // [CHOSEN, not recovered] The device half of the destructor (PE 0x100A5290: the listener
+    // unregistration and the atlas reference), run once. FontSystem's release calls it for a font
+    // a counted wrapper still holds, because the shipped FontSystem::clear (0x100A0B30) destroys
+    // every cached font there; release() runs it for the rest.
+    void detachDevice();
+
 private:
-    DifGlyph* insertGlyph(unsigned short code);
+    void readHeader(std::istream& input);
+    void readGlyphs(std::istream& input);
+    void readKerning(std::istream& input);
+    void addGlyph(unsigned short code, const DifGlyphMetrics* metrics);
+    void addKerning(unsigned short first, unsigned short second, float amount);
 
     int          m_refCount;
-    DifGlyph*    m_glyphs;      // sorted by code (binary search on lookup)
-    unsigned int m_glyphCount;
-    unsigned int m_glyphCap;
-    struct Kern { unsigned int key; float amount; };
-    Kern*        m_kerns;       // sorted by key = (a<<16)|b
-    unsigned int m_kernCount;
-    unsigned int m_kernCap;
+    std::map<unsigned short, DifGlyph*> m_glyphs;
+    std::map<unsigned int, float> m_kerns; // packed first character in the low word
+    std::string m_displayName;
+    std::string m_key;
+    std::string m_directory;
     void*        m_atlas;       // EngineTexture* from the manager
     unsigned int m_atlasW;
     unsigned int m_atlasH;
+    unsigned int m_version;
     float        m_size;
     float        m_scaleX;
     float        m_scaleY;
     float        m_projection[16];
     float        m_projVp[4];        // [TEMP] RW-89: the viewport the projection was built from
     void*        m_fontRenderer;
+    bool         m_deviceDetached;  // [CHOSEN] detachDevice has run
 };
 
-// dx9rend seams this file reaches across for.
-namespace {
-
-
-// A minimal whitespace tokenizer over an in-memory text buffer - [CHOSEN] in place of the shipped
-// std::istrstream. It yields the same tokens the shipped `operator>>` sequence consumes: runs of
-// non-whitespace separated by any run of spaces / tabs / CR / LF.
-
-class Tokenizer
+// PE 0x100A34D0
+void DifFont::readHeader(std::istream& input)
 {
-public:
-    Tokenizer(const char* data, unsigned int size) : m_p(data), m_end(data + size) {}
-
-    // Next whitespace-delimited token into `out` (NUL-terminated, capped). Returns false at EOF.
-    bool next(char* out, unsigned int cap)
-    {
-        while (m_p < m_end && isSpace(*m_p)) ++m_p;
-        if (m_p >= m_end)
-            return false;
-        unsigned int n = 0;
-        while (m_p < m_end && !isSpace(*m_p))
-        {
-            if (n + 1 < cap)
-                out[n++] = *m_p;
-            ++m_p;
-        }
-        out[n] = '\0';
-        return true;
-    }
-
-    int   nextInt()   { char t[64];  return next(t, sizeof(t)) ? ::atoi(t) : 0; }
-    float nextFloat() { char t[64];  return next(t, sizeof(t)) ? static_cast<float>(::atof(t)) : 0.0f; }
-    bool  nextToken(char* out, unsigned int cap) { return next(out, cap); }
-
-    // The header's font name occupies one complete line and may contain spaces. In particular the
-    // stock dynamicText_13.dif spells it "Helvetica LT CondensedBold". Treating that line as one
-    // whitespace token shifts `LT`/`CondensedBold` into the atlas dimensions, producing a 0x0 atlas
-    // and an authored size of 256; the right-aligned EOR Game Mode/Map Size text is then submitted
-    // but rasterized off-screen. The shipped reader consumes the name as a string line.
-    bool nextLine(char* out, unsigned int cap)
-    {
-        // nextInt() leaves the cursor on the separator after the version.  Some shipped DIFs pad
-        // that line with tabs before CR/LF, so consume the complete whitespace run; doing the two
-        // classes separately would stop on the CR and return an empty font name.
-        while (m_p < m_end && isSpace(*m_p)) ++m_p;
-        if (m_p >= m_end)
-        {
-            if (cap) out[0] = '\0';
-            return false;
-        }
-
-        unsigned int n = 0;
-        while (m_p < m_end && *m_p != '\r' && *m_p != '\n')
-        {
-            if (n + 1 < cap)
-                out[n++] = *m_p;
-            ++m_p;
-        }
-        while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) --n;
-        if (cap) out[n] = '\0';
-        return true;
-    }
-
-private:
-    static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-    const char* m_p;
-    const char* m_end;
-};
-
-int compareGlyph(const void* a, const void* b)
-{
-    unsigned short ca = static_cast<const DifGlyph*>(a)->code;
-    unsigned short cb = static_cast<const DifGlyph*>(b)->code;
-    return (ca < cb) ? -1 : (ca > cb) ? 1 : 0;
+    input >> m_version;
+    // [CHOSEN, not recovered] Preserve the prior parser's defined storage if
+    // truncated input would make the retail first-character read uninitialized.
+    char name[33] = {};
+    input >> name[0];
+    input.putback(name[0]);
+    input.getline(name, 33);
+    m_displayName += name;
+    input >> m_atlasW;
+    if (m_version > 1u)
+        input >> m_atlasH;
+    else
+        m_atlasH = m_atlasW;
+    input >> m_size;
 }
 
-} // anonymous namespace
-
-DifGlyph* DifFont::insertGlyph(unsigned short code)
+// PE 0x100A41B0
+void DifFont::readGlyphs(std::istream& input)
 {
-    if (m_glyphCount >= m_glyphCap)
+    // [CHOSEN, not recovered] Retain defined missing-token values rather than
+    // restoring the retail parser's first-row uninitialized reads.
+    unsigned int count = 0;
+    input >> count;
+    unsigned short code = 0;
+    float left = 0.0f, width = 0.0f, right = 0.0f;
+    int top = 0;
+    unsigned int x = 0, y = 0, x2 = 0, y2 = 0;
+    for (; count && !input.eof(); --count)
     {
-        const unsigned int cap = m_glyphCap ? m_glyphCap * 2 : 64;
-        DifGlyph* grown = static_cast<DifGlyph*>(::renddx9abi::engineAlloc(cap * sizeof(DifGlyph)));
-        if (!grown)
-            return 0;
-        for (unsigned int i = 0; i < m_glyphCount; ++i)
-            grown[i] = m_glyphs[i];
-        if (m_glyphs)
-            ::renddx9abi::engineFree(m_glyphs);
-        m_glyphs = grown;
-        m_glyphCap = cap;
+        input >> code >> left >> width >> right >> top;
+        input >> x >> y >> x2 >> y2;
+        DifGlyph* glyph = static_cast<DifGlyph*>(::renddx9abi::engineAlloc(sizeof(DifGlyph)));
+        if (glyph)
+        {
+            // Native padding keeps the prior defined initialization.
+            new (glyph) DifGlyph();
+            glyph->code = code;
+            glyph->bearingX = left;
+            glyph->intField = width;
+            glyph->rightBearing = right;
+            glyph->x = static_cast<unsigned short>(x);
+            glyph->y = static_cast<unsigned short>(y);
+            glyph->x2 = static_cast<unsigned short>(x2);
+            glyph->y2 = static_cast<unsigned short>(y2);
+            glyph->bearingY = static_cast<float>(top);
+            glyph->height = static_cast<float>(static_cast<int>(glyph->y2) - static_cast<int>(glyph->y));
+        }
+        // shipped defect: a duplicate retains the first glyph and leaks this allocation.
+        m_glyphs.insert(std::make_pair(code, glyph));
     }
-    DifGlyph* g = &m_glyphs[m_glyphCount++];
-    ::memset(g, 0, sizeof(*g));
-    g->code = code;
-    return g;
 }
 
+// PE 0x100A4120
+void DifFont::readKerning(std::istream& input)
+{
+    // [CHOSEN, not recovered] Keep the existing missing-token zero initialization.
+    unsigned int count = 0;
+    input >> count;
+    unsigned short a = 0, b = 0;
+    float amount = 0.0f;
+    for (; count && !input.eof(); --count)
+    {
+        input >> a >> b >> amount;
+        const unsigned int key = static_cast<unsigned int>(a) | (static_cast<unsigned int>(b) << 16);
+        m_kerns.insert(std::make_pair(key, amount));
+    }
+}
+
+// Allocates a glyph record for code with the given metrics and inserts it; an existing entry for
+// code is kept and the new record leaks, and a failed allocation inserts null.
+// PE 0x100A3D40. unreachable in 1.50: no code or data references. [INFERRED] Name.
+void DifFont::addGlyph(unsigned short code, const DifGlyphMetrics* metrics)
+{
+    DifGlyph* glyph = static_cast<DifGlyph*>(::renddx9abi::engineAlloc(sizeof(DifGlyph)));
+    if (glyph)
+    {
+        glyph->code = code;
+        glyph->bearingX = metrics->bearingX;
+        glyph->intField = metrics->intField;
+        glyph->rightBearing = metrics->rightBearing;
+        glyph->x = metrics->x;
+        glyph->y = metrics->y;
+        glyph->x2 = metrics->x2;
+        glyph->y2 = metrics->y2;
+        glyph->bearingY = metrics->bearingY;
+        glyph->height = metrics->height;
+    }
+    m_glyphs.insert(std::make_pair(code, glyph));
+}
+
+// Inserts the kerning amount for a character pair (first character in the key's low word); an
+// existing entry is kept.
+// PE 0x100A3DA0. unreachable in 1.50: no code or data references. [INFERRED] Name.
+void DifFont::addKerning(unsigned short first, unsigned short second, float amount)
+{
+    const unsigned int key = static_cast<unsigned int>(first) | (static_cast<unsigned int>(second) << 16);
+    m_kerns.insert(std::make_pair(key, amount));
+}
+
+// Finds the glyph of a character, folding nonbreaking space to space; null when absent.
+// PE 0x100A3850. unreachable in 1.50 as an out-of-line copy: no code or data references; the
+// layout and FontRenderer::reserve inline it.
 const DifGlyph* DifFont::glyph(unsigned short ch) const
 {
     if (ch == 160)          // nbsp -> space, exactly as sub_100A38D0 folds it
         ch = 32;
-    // binary search - the table was sorted after parsing
-    unsigned int lo = 0, hi = m_glyphCount;
-    while (lo < hi)
-    {
-        const unsigned int mid = (lo + hi) >> 1;
-        if (m_glyphs[mid].code < ch)      lo = mid + 1;
-        else if (m_glyphs[mid].code > ch) hi = mid;
-        else                              return &m_glyphs[mid];
-    }
-    return 0;
+    const auto found = m_glyphs.find(ch);
+    return found == m_glyphs.end() ? 0 : found->second;
 }
 
+// Kerning between two characters (first character in the key's low word), zero when absent.
+// PE 0x100A3890. unreachable in 1.50 as an out-of-line copy: no code or data references; the
+// layout inlines it.
 float DifFont::kerning(unsigned short a, unsigned short b) const
 {
-    const unsigned int key = (static_cast<unsigned int>(a) << 16) | b;
-    unsigned int lo = 0, hi = m_kernCount;
-    while (lo < hi)
-    {
-        const unsigned int mid = (lo + hi) >> 1;
-        if (m_kerns[mid].key < key)      lo = mid + 1;
-        else if (m_kerns[mid].key > key) hi = mid;
-        else                             return m_kerns[mid].amount;
-    }
-    return 0.0f;
+    const unsigned int key = static_cast<unsigned int>(a) | (static_cast<unsigned int>(b) << 16);
+    const auto found = m_kerns.find(key);
+    return found == m_kerns.end() ? 0.0f : found->second;
 }
 
 // Writes one glyph record per input character; the caller supplies enough output capacity.
@@ -319,6 +383,110 @@ void DifFont::layout(const wchar_t* text, unsigned int len, GlyphCell* out) cons
     }
 }
 
+// sub_100A48C0 (thiscall, ret 18h): no text answers false. x is divided by the X scale (+0x88; y is
+// not read); the text is laid out (vtable +0x0C into a vector of 16-byte cells). No cells: *out =
+// first, true. With s = min(first, n - 1) and e = min(end, n - 1): x < cells[s].cellLeft -> *out =
+// first, true; x >= cells[e].right -> *out = end, true; otherwise the first i from s (while i < n
+// and i <= e) with cellLeft <= x < right -> *out = i, true. None: false, *out left at the index the
+// walk stopped on. The comparisons are the x87 tests' ordered forms (fcomp/fnstsw: test ah,5 / jp,
+// test ah,1 / jne); a NaN x falls through every one of them to the final false.
+bool DifFont::hitTest(const wchar_t* text, unsigned int len, int* out, float x, float /*y*/,
+                      unsigned int first, unsigned int end) const
+{
+    if (!text)
+        return false;
+    const float px = x / m_scaleX;
+    GlyphCell cells[512];
+    if (len > 512) len = 512;          // [CHOSEN, not recovered] SwiffFontObject's own text cap
+    layout(text, len, cells);
+    const unsigned int n = len;
+    if (n == 0)
+    {
+        *out = static_cast<int>(first);
+        return true;
+    }
+    const unsigned int last = n - 1;
+    const unsigned int s = (last < first) ? last : first;
+    const unsigned int e = (last < end) ? last : end;
+    if (px < cells[s].cellLeft)
+    {
+        *out = static_cast<int>(first);
+        return true;
+    }
+    if (!(px < cells[e].right))
+    {
+        *out = static_cast<int>(end);
+        return true;
+    }
+    unsigned int i = s;
+    *out = static_cast<int>(i);
+    while (i < n)
+    {
+        if (i > e)
+            break;
+        if (!(px < cells[i].cellLeft) && px < cells[i].right)
+            return true;               // *out already holds i
+        ++i;
+        *out = static_cast<int>(i);
+    }
+    return false;
+}
+
+// sub_100A4A00 (thiscall, ret 24h): the four coordinates scaled and rounded, floor(v / scale + 0.5)
+// (+0x88 for x, +0x8C for y; the CRT's double floor). y2 < 0 or y1 above the authored size (+0x84,
+// the .dif header's float, 0x100A3544) refuses. No cells refuses. With s = min(first, n - 1) and
+// e = min(end, n - 1): x2 < cells[s].cellLeft or x1 >= cells[e].right refuses. Then from i = s,
+// while i < n and i <= e and not both found: the first cell holding x1 (cellLeft <= x1 < right)
+// gives *selStart, the first holding x2 gives *selEnd. A start not found is `first`, an end not
+// found is `end`. True.
+bool DifFont::selectRange(const wchar_t* text, unsigned int len, int* selStart, int* selEnd,
+                          float x1, float y1, float x2, float y2,
+                          unsigned int first, unsigned int end) const
+{
+    const float sx1 = static_cast<float>(::floor(static_cast<double>(x1 / m_scaleX + 0.5f)));
+    const float sy1 = static_cast<float>(::floor(static_cast<double>(y1 / m_scaleY + 0.5f)));
+    const float sx2 = static_cast<float>(::floor(static_cast<double>(x2 / m_scaleX + 0.5f)));
+    const double sy2 = ::floor(static_cast<double>(y2 / m_scaleY + 0.5f));
+    if (sy2 < 0.0)
+        return false;
+    if (sy1 > m_size)
+        return false;
+    GlyphCell cells[512];
+    if (len > 512) len = 512;          // [CHOSEN, not recovered] SwiffFontObject's own text cap
+    layout(text, len, cells);
+    const unsigned int n = len;
+    if (n == 0)
+        return false;
+    const unsigned int last = n - 1;
+    const unsigned int s = (last < first) ? last : first;
+    const unsigned int e = (last < end) ? last : end;
+    if (sx2 < cells[s].cellLeft)
+        return false;
+    if (!(sx1 < cells[e].right))
+        return false;
+    bool haveStart = false, haveEnd = false;
+    for (unsigned int i = s; i < n && i <= e && !(haveStart && haveEnd); ++i)
+    {
+        const float l = cells[i].cellLeft;
+        const float r = cells[i].right;
+        if (!haveStart && !(sx1 < l) && sx1 < r)
+        {
+            *selStart = static_cast<int>(i);
+            haveStart = true;
+        }
+        if (!haveEnd && !(sx2 < l) && sx2 < r)
+        {
+            *selEnd = static_cast<int>(i);
+            haveEnd = true;
+        }
+    }
+    if (!haveStart)
+        *selStart = static_cast<int>(first);
+    if (!haveEnd)
+        *selEnd = static_cast<int>(end);
+    return true;
+}
+
 // Intentionally empty device lifecycle callbacks.
 void DifFont::onDeviceLost()    {}
 void DifFont::onDeviceReset()   {}
@@ -329,16 +497,35 @@ int DifFont::release()
     const int remaining = --m_refCount;
     if (!remaining)
     {
-        // Unregister before releasing resources; unregistered failed-load candidates are harmless.
-        dx9rend::unregisterDeviceLostResetListener(static_cast<dx9rend::DeviceLostResetListener*>(this));
-        if (m_glyphs) ::renddx9abi::engineFree(m_glyphs);
-        if (m_kerns)  ::renddx9abi::engineFree(m_kerns);
-        // The atlas is a counted texture reference - dropped through the manager.
-        if (m_atlas)
-            ::dice::hfe::dx9rend::textureManagerEvictFromCache(m_atlas);
+        // The destructor's order (PE 0x100A5290): the device half, then the glyph storage.
+        detachDevice();
+        for (auto it = m_glyphs.begin(); it != m_glyphs.end(); ++it)
+            if (it->second)
+                ::renddx9abi::engineFree(it->second);
+        this->~DifFont();
         ::renddx9abi::engineFree(this);
     }
     return remaining;
+}
+
+
+// PE 0x100A5290's first half: unregister (unregistered failed-load candidates are harmless), then
+// drop the font's own atlas reference (0x100A52AB..0x100A52CD: `if (!--atlas->refCount)
+// { sub_10014E20; free }`); the TextureManager's cache keeps its reference and lets it go in the
+// destroy broadcast.
+void DifFont::detachDevice()
+{
+    if (m_deviceDetached)
+        return;
+    m_deviceDetached = true;
+    dx9rend::unregisterDeviceLostResetListener(static_cast<dx9rend::DeviceLostResetListener*>(this));
+    if (m_atlas)
+    {
+        ::dice::hfe::dx9rend::EngineTexture* atlas =
+            static_cast< ::dice::hfe::dx9rend::EngineTexture*>(m_atlas);
+        ::dice::hfe::dx9rend::textureReleaseRef(atlas);
+        m_atlas = 0;
+    }
 }
 
 
@@ -347,113 +534,42 @@ int DifFont::release()
 //     m00 =  2 / vpHeight-ish ... (see below) - it maps the font's pixel space to clip space using
 // the back buffer viewport (device GetViewport), the same values the shipped code reads at v33..v36.
 
-bool DifFont::load(const char* path)
+bool DifFont::load()
 {
-    m_refCount = 1;
-
-    // The .dif text file
-    char difPath[512];
-    ::_snprintf_s(difPath, sizeof(difPath), _TRUNCATE, "%s.dif", path);
-    ::renddx9abi::EngineFileData file = ::renddx9abi::readEngineFile(difPath);
+    const std::string path = m_directory + m_key;
+    const std::string difPath = path + ".dif";
+    ::renddx9abi::EngineFileData file = ::renddx9abi::readEngineFile(difPath.c_str());
     if (!file.ok())
         return false;      // this candidate path has no .dif - getFont tries the next and logs
 
-    Tokenizer tok(reinterpret_cast<const char*>(file.data), file.size);
-    char word[64];
-
-    // header section
-    if (!tok.nextToken(word, sizeof(word)) || ::strcmp(word, "header") != 0)
+    // [CHOSEN, not recovered] A counted native string stream replaces istrstream's
+    // borrowed buffer while retaining formatted extraction and EOF/fail state.
+    std::istringstream input(std::string(reinterpret_cast<const char*>(file.data), file.size));
+    while (!input.eof())
     {
-        ::renddx9abi::freeEngineFile(file);
-        ::renddx9abi::logf("FontSystem.cpp: \"%s.dif\" is missing its header", path);
-        return false;
-    }
-    const int version = tok.nextInt();
-    tok.nextLine(word, sizeof(word));             // the complete font-name line (unused here)
-    m_atlasW = static_cast<unsigned int>(tok.nextInt());
-    m_atlasH = (version <= 1) ? m_atlasW : static_cast<unsigned int>(tok.nextInt());
-    m_size   = tok.nextFloat();
-
-    // the remaining sections, in whatever order they appear
-    while (tok.nextToken(word, sizeof(word)))
-    {
-        if (::strcmp(word, "glyphs") == 0)
-        {
-            const int count = tok.nextInt();
-            for (int i = 0; i < count; ++i)
-            {
-                const int   code = tok.nextInt();
-                const float f1   = tok.nextFloat();    // left side bearing
-                const float f2   = tok.nextFloat();    // ink width
-                const float f3   = tok.nextFloat();    // right side bearing
-                const int   yoff = tok.nextInt();      // the INT = vertical Y-offset (top position)
-                const int   x    = tok.nextInt();
-                const int   y    = tok.nextInt();
-                const int   x2   = tok.nextInt();
-                const int   y2   = tok.nextInt();
-                DifGlyph* g = insertGlyph(static_cast<unsigned short>(code));
-                if (!g)
-                    break;
-                // Glyph advance is left bearing plus ink width plus right bearing; the integer field is a vertical offset.
-                g->bearingX = f1;
-                g->advance  = f1 + f2 + f3;
-                g->bearingY = static_cast<float>(yoff);   // the vertical top offset
-                g->intField = f2;                          // ink width
-                g->rightBearing = f3;                      // right side bearing
-                g->x  = static_cast<short>(x);
-                g->y  = static_cast<short>(y);
-                g->x2 = static_cast<short>(x2);
-                g->y2 = static_cast<short>(y2);
-                g->height = static_cast<float>(y2 - y);
-            }
-        }
-        else if (::strcmp(word, "kerning") == 0)
-        {
-            const int count = tok.nextInt();
-            if (count > 0)
-            {
-                m_kernCap = static_cast<unsigned int>(count);
-                m_kerns = static_cast<Kern*>(::renddx9abi::engineAlloc(m_kernCap * sizeof(Kern)));
-            }
-            for (int i = 0; i < count; ++i)
-            {
-                // Kerning amounts are fractional and must be parsed as floats.
-                const int   a   = tok.nextInt();
-                const int   b   = tok.nextInt();
-                const float amt = tok.nextFloat();
-                if (m_kerns && m_kernCount < m_kernCap)
-                {
-                    m_kerns[m_kernCount].key =
-                        (static_cast<unsigned int>(static_cast<unsigned short>(a)) << 16)
-                        | static_cast<unsigned short>(b);
-                    m_kerns[m_kernCount].amount = amt;
-                    ++m_kernCount;
-                }
-            }
-        }
+        std::string word;
+        input >> word;
+        if (word.empty())
+            break;
+        if (word == "header")
+            readHeader(input);
+        else if (word == "kerning")
+            readKerning(input);
+        else if (word == "glyphs")
+            readGlyphs(input);
     }
     ::renddx9abi::freeEngineFile(file);
 
-    // Sort both tables so lookups are a binary search (the shipped std::map is ordered; ours is a
-    // sorted array to the same observable effect).
-    if (m_glyphs && m_glyphCount > 1)
-        ::qsort(m_glyphs, m_glyphCount, sizeof(DifGlyph), &compareGlyph);
-    if (m_kerns && m_kernCount > 1)
-    {
-        // insertion sort on the small kerning table by key
-        for (unsigned int i = 1; i < m_kernCount; ++i)
-        {
-            Kern k = m_kerns[i];
-            unsigned int j = i;
-            while (j > 0 && m_kerns[j - 1].key > k.key) { m_kerns[j] = m_kerns[j - 1]; --j; }
-            m_kerns[j] = k;
-        }
-    }
-
     // The .dds atlas
-    char ddsPath[512];
-    ::_snprintf_s(ddsPath, sizeof(ddsPath), _TRUNCATE, "%s.dds", path);
-    m_atlas = ::dice::hfe::dx9rend::textureManagerGetTexture(vc71::string(ddsPath));
+    const std::string ddsPath = path + ".dds";
+    // 0x100A45F0..0x100A4694: the atlas load is bracketed by the ResourceManager defer byte
+    // (RM+0x04): save it (sub_1000D950), clear it (sub_1000D960 with edi = 0), getTexture
+    // (sub_10019260), restore it. So the atlas is read at once even while a level load defers
+    // texture reads - the loading screen creates its fonts in that window.
+    const bool deferSaved = ::dice::hfe::dx9rend::resourceManagerIsReady();
+    ::dice::hfe::dx9rend::resourceManagerSetReady(0);
+    m_atlas = ::dice::hfe::dx9rend::textureManagerGetTexture(std::string(ddsPath));
+    ::dice::hfe::dx9rend::resourceManagerSetReady(deferSaved ? 1 : 0);
 
     // Builds the viewport orthographic projection, with translation in the fourth matrix row.
     void* device = ::dice::hfe::dx9rend::renderDevice();
@@ -480,10 +596,11 @@ bool DifFont::load(const char* path)
     if (::dice::hfe::classManager)
         m_fontRenderer = ::dice::hfe::classManager->getSingleton(renddx9abi::HostString("FontRenderer"));
 
-    ::renddx9abi::logf("DifFont::load(\"%s\"): %u glyphs, %u kerning pairs, atlas %ux%u -> 0x%08X"
+    ::renddx9abi::logf("DifFont::load(\"%s\"): %u glyphs, %u kerning pairs, atlas %ux%u -> 0x%p"
                        "  projFrom vp=(%d,%d,%d,%d)",
-                       path, m_glyphCount, m_kernCount, m_atlasW, m_atlasH,
-                       ::renddx9abi::addr(m_atlas),
+                       path.c_str(), static_cast<unsigned int>(m_glyphs.size()),
+                       static_cast<unsigned int>(m_kerns.size()), m_atlasW, m_atlasH,
+                       m_atlas,
                        (int) m_projVp[0], (int) m_projVp[1], (int) m_projVp[2], (int) m_projVp[3]);
     return true;
 }
@@ -512,10 +629,10 @@ const unsigned short kFontSelDeclElements[2][4] =
     { 0xFF, 0, 0x0011, 0x0000 },    // D3DDECL_END
 };
 
-// sub_10014930 - the EngineTexture's D3D texture lives at its +8 (dword index 2).
+// sub_10014930 - the EngineTexture's D3D texture, its +8 baseTexture.
 void* engineTextureD3D(void* engineTexture)
 {
-    return engineTexture ? reinterpret_cast<void**>(engineTexture)[2] : 0;
+    return engineTexture ? static_cast<dx9rend::EngineTexture*>(engineTexture)->baseTexture : 0;
 }
 
 // ShaderParameter / D3DX helpers. The handle has a recovered typed owner contract, so retrieving
@@ -528,7 +645,8 @@ void* paramGetHandle(void* p)     // +0x0C (sub_10021190): return m_handle
 void fxSetTexture(void* fx, void* handle, void* texture)
 {
     if (!fx) return;
-    ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxSetTextureFn>(fx, 0xD0)(fx, handle, texture);
+    static_cast<ID3DXEffect*>(fx)->SetTexture(::renddx9abi::d3dxHandle(handle),
+                                              static_cast<IDirect3DBaseTexture9*>(texture));
 }
 
 // Row-major 4x4 multiply, out = a * b (D3DXMatrixMultiply's convention).
@@ -545,9 +663,9 @@ void matMul(float* out, const float* a, const float* b)
 } // anonymous namespace
 
 
-// [CHOSEN, not recovered] Draws each run immediately with CPU-transformed clip-space vertices.
-// Registers for device resets at priority 5.
-// [RETIRE-WHEN: RW-80] Implement and validate the original three-buffer batching path.
+// The Flash text batcher. Fonts append clip-space glyph quads to the current FONT_VBS ring buffer;
+// SwiffRender flushes the queued run before its own geometry, at the mask brackets and at the end of
+// a display. Registers for device resets at priority 5. Layout: the retail 0x78-byte object.
 
 extern const unsigned int CID_FontRenderer = 81047u;   // matches ModuleGeomMisc's getSingletonList
 extern const unsigned int IID_IFontRenderer = 80048u;
@@ -559,194 +677,306 @@ namespace {
 // The fontselection unit quad {(0,0,0),(1,0,0),(0,1,0),(1,1,0)} - the twelve dwords both the init
 // (0x100A143C..0x100A145C) and the reset (0x100A17D8..0x100A17F8) store, in the same order.
 const float kFontSelectionQuad[12] = { 0,0,0,  1,0,0,  0,1,0,  1,1,0 };
+const unsigned int kFontRingVertices = 10002u;   // 0x2712, each FONT_VBS
 } // anonymous namespace
 
 class FontRenderer
 {
 public:
-    FontRenderer();                                         // geom_FontRenderer_ctor, 0x100A1740
+    FontRenderer();                                         // 0x100A1740
 
-    bool init();                                            // sub_100A1240 (lazy, on first draw)
-    void refindTechniques();                                // sub_100A1470
-    void drawRun(const FontVertex* verts, unsigned int count, void* atlas, bool scaled);
+    void init();                                            // 0x100A1240, SwiffRender::init
+    void begin();                                           // 0x100A1470, SwiffRender::beginDisplay
+    void endFrame();                                        // 0x100A1500, SwiffRender::endDisplay
+    void setTechnique(const std::string& name);             // 0x100A1540, DifFont::setScale
+    void setTexture(void* atlas) { m_texture = atlas; }     // 0x100A1590
+    void flush();                                           // 0x100A15A0
+    void advanceRing();                                     // 0x100A1660
+    void lockAt(unsigned int firstVertex);                  // 0x100A16C0
+    void unlock();                                          // 0x100A1720
+    void teardown();                                        // 0x100A18A0, SwiffRender::shutdown
+    void drawSelection(const float* matrix);
+
+    // The batch state a font reads and advances while it appends a run (0x100A3DE0, 0x100A38D0).
+    void*        texture() const       { return m_texture; }
+    bool         locked() const        { return m_locked != 0; }
+    bool         lockedThisFrame() const { return m_lockFrame == m_frame; }
+    unsigned int cursor() const        { return m_cursor; }
+    FontVertex*  reserve(unsigned int count);
 
     void  addRef() { ++m_refCount; }
     int   getRef() const { return m_refCount; }
     int   release();
     void* queryInterface(unsigned int iid) const;
     void  destroy(char flags);                              // +0x10
+    void  destructorBody();
 
     void  onDeviceLost();                                   // listener +0x00, 0x100A1220
     void  onDeviceReset();                                  // listener +0x04, 0x100A17B0
     // Both listener bodies are handed the subobject (0x100A1883 steps back with `lea ecx,[esi-4]`).
     static FontRenderer* fromListener(void* sub)
     {
-        return reinterpret_cast<FontRenderer*>(static_cast<char*>(sub) - 4);
+        return reinterpret_cast<FontRenderer*>(static_cast<char*>(sub)
+                                               - offsetof(FontRenderer, m_listenerVptr));
     }
 
 private:
-    bool ensureInit();
-    void teardown();                                        // sub_100A18A0
-    void advanceRing();                                     // sub_100A1660, the ring step
-
-    const void** m_vptr;           // +0 - IBase vtable (must be first; queryInterface returns this)
-    const void** m_listenerVptr;   // +4 - the DeviceLostResetListener subobject (0x1020D268)
-    void* m_effect;
-    void* m_paramTransform;
-    void* m_paramDiffuse;
-    void* m_paramTexture;
-    void* m_decl;                  // FONT_VBS declaration (pos+color+uv)
-    void* m_selDecl;               // fontselection declaration (pos only)
-    void* m_vb[3];                 // FONT_VBS ring
-    void* m_selVb;                 // fontselection quad
-    void* m_techRegular;
-    void* m_techRegularScaled;
-    void* m_techSelectionQuad;
-    unsigned int m_vbIndex;
-    bool  m_initialized;
-    bool  m_initFailed;
-    // [CHOSEN] the shipped +0x5C "ring buffer locked" byte. drawRun raises it only across its own
-    // lock..unlock, so a lost walk never finds it set here; the shipped batcher left the buffer
-    // locked between runs, which is what its lost body exists to undo.
-    bool  m_ringLocked;
-    int   m_refCount;
+    friend class SwiffFontObject; // [CHOSEN, not recovered] Same-TU native batch-state access.
+    const void** m_vptr;           // +0x00  IBase vtable 0x1020D274
+    const void** m_listenerVptr;   // +0x04  DeviceLostResetListener 0x1020D268
+    int          m_refCount;       // +0x08
+    void*        m_texture;        // +0x0C  the atlas the queued run samples (EngineTexture*)
+    void*        m_effect;         // +0x10  "mods/xpack/Shaders/Font"
+    void*        m_paramTransform; // +0x14
+    void*        m_paramDiffuse;   // +0x18
+    void*        m_paramTexture;   // +0x1C
+    void*        m_selDecl;        // +0x20  fontselection declaration (position only)
+    void*        m_decl;           // +0x24  FONT_VBS declaration (position, colour, uv)
+    void*        m_selVb;          // +0x28  FONTSELECTION
+    FontVertex*  m_write;          // +0x2C  the locked range of the current ring buffer
+    unsigned int m_count;          // +0x30  vertices queued since the last flush
+    unsigned int m_vbIndex;        // +0x34  0..2
+    void*        m_vb[3];          // +0x38  FONT_VBS ring
+    void*        m_tech[3];        // +0x44  Regular, RegularScaled, SelectionQuad
+    unsigned int m_techIndex;      // +0x50  0 Regular, 1 RegularScaled
+    unsigned int m_start;          // +0x54  first vertex of the queued run
+    unsigned int m_cursor;         // +0x58  vertices written to the current buffer
+    unsigned char m_locked;        // +0x5C
+    unsigned char m_pad5D[3];
+    unsigned int m_frame;          // +0x60  endFrame counts displays
+    unsigned int m_lockFrame;      // +0x64  m_frame when the current lock was taken
+    unsigned int m_ringGeneration; // +0x68  advanceRing counts buffer switches
+    unsigned int m_selectionFrame; // +0x6C  a text draw with a selection stores m_frame here
+    unsigned int m_u70;            // +0x70  init clears it; no other access found
+    unsigned int m_runs;           // +0x74  runs appended since begin
 };
 
-// Registers at priority 5 before clearing the ring-buffer slots. Requires the renderer's listener registry.
-FontRenderer::FontRenderer()
-    : m_vptr(fontRendererVtable()), m_listenerVptr(fontRendererListenerVtable()),
-      m_effect(0), m_paramTransform(0), m_paramDiffuse(0), m_paramTexture(0),
-      m_decl(0), m_selDecl(0), m_selVb(0),
-      m_techRegular(0), m_techRegularScaled(0), m_techSelectionQuad(0),
-      m_vbIndex(0), m_initialized(false), m_initFailed(false), m_ringLocked(false), m_refCount(1)
+// PE 0x100A19C0
+void FontRenderer::drawSelection(const float* matrix)
 {
-    static_assert(offsetof(FontRenderer, m_listenerVptr) == 4,
-                  "both FontRenderer listener bodies are handed this + 4");
+    using namespace dx9rend;
+    flush();
+    static_cast<ShaderParameter*>(m_paramTransform)->setValue(matrix, 0);
+    const float color[4] = {0.0f, 0.0f, 0.0f, 0.3f};
+    static_cast<ShaderParameter*>(m_paramDiffuse)->setValue(color, 0);
+    effectSetTechniqueRecord(m_effect, m_tech[2]);
+    vertexBufferBindStream(m_selVb, 0);
+    vertexDeclarationBind(m_selDecl);
+    effectBegin(m_effect);
+    effectBeginPass(m_effect, 0);
+    rendererDrawPrimitive(2, 5, 0);
+    effectEnd(m_effect);
+}
+
+// PE 0x100A3560
+void DifFont::drawSelection(NativeFontView* font, const float* matrix, float width)
+{
+    if (!font || m_scaleX == 0.0f || m_scaleY == 0.0f || width == 0.0f)
+        return;
+    unsigned int first, count;
+    float offset;
+    font->getRun(&first, &count, &offset);
+    if (!count)
+        return;
+    D3DXMATRIX translated, projected, scaling, finalMatrix;
+    memcpy(&translated, matrix, sizeof(translated));
+    translated._41 += offset;
+    D3DXMatrixMultiply(&projected, &translated, reinterpret_cast<const D3DXMATRIX*>(m_projection));
+#if defined(_WIN32)
+    D3DXMatrixScaling(&scaling, width, m_size, 1.0f);
+#else
+    // [CHOSEN, not recovered] The native D3DX subset has no scaling entry point.
+    memset(&scaling, 0, sizeof(scaling));
+    scaling._11 = width;
+    scaling._22 = m_size;
+    scaling._33 = scaling._44 = 1.0f;
+#endif
+    D3DXMatrixMultiply(&finalMatrix, &scaling, &projected);
+    static_cast<FontRenderer*>(m_fontRenderer)->drawSelection(&finalMatrix._11);
+}
+
+// PE 0x100A1740. Registers the listener at priority 5 before the ring slots are cleared.
+FontRenderer::FontRenderer()
+    : m_vptr(fontRendererVtable()), m_listenerVptr(fontRendererListenerVtable()), m_refCount(1),
+      m_texture(0), m_effect(0), m_paramTransform(0), m_paramDiffuse(0), m_paramTexture(0),
+      m_selDecl(0), m_selVb(0), m_count(0), m_vbIndex(0), m_techIndex(0), m_start(0), m_cursor(0),
+      m_locked(0), m_frame(0), m_lockFrame(0), m_ringGeneration(0)
+{
+#if defined(_M_IX86)
+    static_assert(offsetof(FontRenderer, m_listenerVptr) == 0x04, "listener subobject");
+    static_assert(offsetof(FontRenderer, m_write) == 0x2C, "the locked pointer");
+    static_assert(offsetof(FontRenderer, m_vb) == 0x38, "the FONT_VBS ring");
+    static_assert(offsetof(FontRenderer, m_locked) == 0x5C, "the lock byte");
+    static_assert(sizeof(FontRenderer) == 0x78, "the factory's allocation (0x1007CF9C push 78h)");
+#endif
     dx9rend::registerDeviceLostResetListener(&m_listenerVptr, 5);
     m_vb[0] = m_vb[1] = m_vb[2] = 0;
 }
 
-bool FontRenderer::init()
+// PE 0x100A1240. The effect, its three parameters, both declarations, the three techniques, the
+// cleared batch state, the ring and the selection quad. No step is null-tested.
+void FontRenderer::init()
 {
     using namespace dx9rend;
     m_effect = shaderManagerGetEffect(g_shaderManager, "mods/xpack/Shaders/Font");
-    if (!m_effect)
-    {
-        ::renddx9abi::logf("[FRONTIER] FontRenderer::init: getEffect(\"mods/xpack/Shaders/Font\") "
-                           "returned null - no font effect, text will not render");
-        return false;
-    }
     Effect* fx = static_cast<Effect*>(m_effect);
-    m_paramTransform = effectGetShaderParameter(fx, vc71::string("TRANSFORM"));
-    m_paramDiffuse   = effectGetShaderParameter(fx, vc71::string("DIFFUSE"));
-    m_paramTexture   = effectGetShaderParameter(fx, vc71::string("TEXTURE"));
+    m_paramTransform = effectGetShaderParameter(fx, std::string("TRANSFORM"));
+    m_paramDiffuse   = effectGetShaderParameter(fx, std::string("DIFFUSE"));
+    m_paramTexture   = effectGetShaderParameter(fx, std::string("TEXTURE"));
 
-    m_decl    = vertexDeclarationCreate(kFontDeclElements);
-    m_selDecl = vertexDeclarationCreate(kFontSelDeclElements);
+    m_decl    = vertexDeclarationCreate(kFontDeclElements);       // 0x1020D1C0
+    m_selDecl = vertexDeclarationCreate(kFontSelDeclElements);    // 0x1020D1E0
 
-    m_techRegular       = effectFindTechniqueRecord(m_effect, "Regular");
-    m_techRegularScaled = effectFindTechniqueRecord(m_effect, "RegularScaled");
-    m_techSelectionQuad = effectFindTechniqueRecord(m_effect, "SelectionQuad");
+    m_tech[0] = effectFindTechniqueRecord(m_effect, "Regular");
+    m_tech[1] = effectFindTechniqueRecord(m_effect, "RegularScaled");
+    m_tech[2] = effectFindTechniqueRecord(m_effect, "SelectionQuad");
+
+    m_locked = 0;
+    m_count = 0;
+    m_cursor = 0;
+    m_vbIndex = 0;
+    m_frame = 0;
+    m_lockFrame = 0;
+    m_ringGeneration = 0;
+    m_runs = 0;
+    m_u70 = 0;
+    m_selectionFrame = 0;
 
     const int prevPool = bufferManagerSwapPool(0);
     for (int i = 0; i < 3; ++i)
-        m_vb[i] = bufferManagerCreateVertexBuffer(10002, 24, 0x208, "FONT_VBS");
+        m_vb[i] = bufferManagerCreateVertexBuffer(kFontRingVertices, 24, 0x208, "FONT_VBS");
     m_selVb = bufferManagerCreateVertexBuffer(4, 12, 0x208, "FONTSELECTION");
     bufferManagerSwapPool(prevPool);
 
-    // Seed the fontselection quad with the shipped unit quad {(0,0,0),(1,0,0),(0,1,0),(1,1,0)}.
     float* q = static_cast<float*>(vertexBufferLock(m_selVb, 0, 0, 0x2000));
-    if (q)
-    {
-        ::memcpy(q, kFontSelectionQuad, sizeof(kFontSelectionQuad));
-        vertexBufferUnlock(m_selVb);
-    }
-
-    ::renddx9abi::logf("FontRenderer::init: effect=0x%08X techniques R/RS/SQ=0x%08X/0x%08X/0x%08X, "
-                       "3x FONT_VBS + FONTSELECTION created",
-                       ::renddx9abi::addr(m_effect), ::renddx9abi::addr(m_techRegular),
-                       ::renddx9abi::addr(m_techRegularScaled), ::renddx9abi::addr(m_techSelectionQuad));
-    return true;
+    ::memcpy(q, kFontSelectionQuad, sizeof(kFontSelectionQuad));
+    vertexBufferUnlock(m_selVb);
 }
 
-void FontRenderer::refindTechniques()
+// PE 0x100A1470. A display starts a new run at the start of the current buffer; the lock and the
+// ring position carry over. The techniques are looked up again in case the effect was rebuilt.
+void FontRenderer::begin()
 {
-    if (!m_effect)
-        return;
-    m_techRegular       = dx9rend::effectFindTechniqueRecord(m_effect, "Regular");
-    m_techRegularScaled = dx9rend::effectFindTechniqueRecord(m_effect, "RegularScaled");
-    m_techSelectionQuad = dx9rend::effectFindTechniqueRecord(m_effect, "SelectionQuad");
-    m_vbIndex = 0;
+    m_count = 0;
+    m_cursor = 0;
+    m_start = 0;
+    m_runs = 0;
+    m_tech[0] = dx9rend::effectFindTechniqueRecord(m_effect, "Regular");
+    m_tech[1] = dx9rend::effectFindTechniqueRecord(m_effect, "RegularScaled");
+    m_tech[2] = dx9rend::effectFindTechniqueRecord(m_effect, "SelectionQuad");
 }
 
-void FontRenderer::drawRun(const FontVertex* verts, unsigned int count, void* atlas, bool scaled)
+// PE 0x100A1500. A selection older than two displays expires; the display count advances and the
+// TEXTURE sampler is cleared.
+void FontRenderer::endFrame()
+{
+    if (m_selectionFrame && m_selectionFrame + 2 < m_frame)
+        m_selectionFrame = 0;
+    ++m_frame;
+    fxSetTexture(dx9rend::effectD3dxHandle(m_effect), paramGetHandle(m_paramTexture), 0);
+}
+
+// PE 0x100A1540. Any other name leaves the index unchanged.
+void FontRenderer::setTechnique(const std::string& name)
+{
+    if (name == "Regular")
+        m_techIndex = 0;
+    else if (name == "RegularScaled")
+        m_techIndex = 1;
+}
+
+// PE 0x100A15A0. Draws the queued run as one triangle list from m_start, then starts the next run
+// where this one ended. The single pass is not closed with EndPass.
+void FontRenderer::flush()
 {
     using namespace dx9rend;
-    if (!count || !ensureInit() || !m_vb[m_vbIndex])
+    if (!m_count)
         return;
-
-    // The FONT_VBS holds 10002 vertices; never memcpy past it. A single run this long is not a real
-    // menu string, but clamping keeps a pathological caller from overrunning the buffer.
-    if (count > 10002u)
-        count = (10002u / 3u) * 3u;
-
-    void* vb = m_vb[m_vbIndex];
-    void* base = vertexBufferLock(vb, 0, 0, 0x2000);       // D3DLOCK_DISCARD
-    if (!base)
-        return;
-    m_ringLocked = true;                                   // the shipped +0x5C, for the lost body
-    ::memcpy(base, verts, count * sizeof(FontVertex));
-    vertexBufferUnlock(vb);
-    m_ringLocked = false;
-
-    effectSetTechniqueRecord(m_effect, scaled ? m_techRegularScaled : m_techRegular);
-    fxSetTexture(effectD3dxHandle(m_effect), paramGetHandle(m_paramTexture), engineTextureD3D(atlas));
-
-    vertexBufferBindStream(vb, 0);
+    effectSetTechniqueRecord(m_effect, m_tech[m_techIndex]);
+    fxSetTexture(effectD3dxHandle(m_effect), paramGetHandle(m_paramTexture),
+                 engineTextureD3D(m_texture));
+    if (m_locked)
+    {
+        vertexBufferUnlock(m_vb[m_vbIndex]);
+        m_locked = 0;
+    }
+    vertexBufferBindStream(m_vb[m_vbIndex], 0);
     vertexDeclarationBind(m_decl);
-
-    // sub_100A15A0 issues a single pass (begin -> beginPass(0) -> DrawPrimitive -> end); the Font
-    // technique is single-pass, so it never loops passes or calls EndPass. Matched here.
     effectBegin(m_effect);
     effectBeginPass(m_effect, 0);
-    rendererDrawPrimitive(count / 3, 4 /* D3DPT_TRIANGLELIST */, 0);
+    rendererDrawPrimitive(m_count / 3, 4 /* D3DPT_TRIANGLELIST */, m_start);
     effectEnd(m_effect);
-
-    m_vbIndex = (m_vbIndex + 1) % 3;
+    m_count = 0;
+    m_start = m_cursor;
 }
 
-// GPU init is deferred to the first glyph draw so that registering the singleton (which happens at
-// module time, possibly before the D3D device and shader manager are live) can never fault or disturb
-// the already-verified menu. By the first text draw the menu is up and the device is ready.
-// (The constructor's device-lost registration is not deferred: it needs only the renderer base's
-// list, which DX9RendModule - registered first by initDll - builds in the Renderer's constructor
-// before ModuleGeomMisc's singletons exist. A registered renderer with nothing initialized walks
-// through both listener bodies without touching anything: every step is null-tested.)
-bool FontRenderer::ensureInit()
+// PE 0x100A1660. Moves to the next ring buffer, takes a discard lock on it and restarts the run.
+void FontRenderer::advanceRing()
 {
-    if (m_initialized) return true;
-    if (m_initFailed)  return false;
-    if (init()) { m_initialized = true; return true; }
-    m_initFailed = true;
-    return false;
-}
-
-
-// Unlocks an outstanding ring buffer before the lower-priority BufferManager releases it.
-// The current immediate drawing path does not leave buffers locked between calls.
-
-void FontRenderer::onDeviceLost()
-{
-    if (m_ringLocked)
+    if (m_locked)
     {
         dx9rend::vertexBufferUnlock(m_vb[m_vbIndex]);
-        m_ringLocked = false;
+        m_locked = 0;
+    }
+    if (++m_vbIndex >= 3)
+        m_vbIndex = 0;
+    ++m_ringGeneration;
+    m_count = 0;
+    m_cursor = 0;
+    m_start = 0;
+    m_lockFrame = m_frame;
+    m_write = static_cast<FontVertex*>(dx9rend::vertexBufferLock(m_vb[m_vbIndex], 0, 0, 0x2000));
+    m_locked = 1;
+}
+
+// PE 0x100A16C0. Locks the rest of the current buffer from firstVertex with D3DLOCK_NOOVERWRITE.
+void FontRenderer::lockAt(unsigned int firstVertex)
+{
+    if (m_locked)
+    {
+        dx9rend::vertexBufferUnlock(m_vb[m_vbIndex]);
+        m_locked = 0;
+    }
+    m_write = static_cast<FontVertex*>(dx9rend::vertexBufferLock(
+        m_vb[m_vbIndex], firstVertex, kFontRingVertices - firstVertex, 0x1000));
+    m_locked = 1;
+    m_lockFrame = m_frame;
+    m_count = 0;
+}
+
+// PE 0x100A1720.
+void FontRenderer::unlock()
+{
+    if (m_locked)
+    {
+        dx9rend::vertexBufferUnlock(m_vb[m_vbIndex]);
+        m_locked = 0;
     }
 }
 
+// The append step of 0x100A38D0 (0x100A3A11..0x100A3A34): the run's slot in the locked range,
+// then both counters advance by the reserved vertex count.
+FontVertex* FontRenderer::reserve(unsigned int count)
+{
+    FontVertex* out = m_write + m_count;
+    m_count += count;
+    m_cursor += count;
+    return out;
+}
 
-// Refills the selection quad, refreshes shader techniques and restarts the vertex-buffer ring.
+// PE 0x100A1220 (listener +0x00). An outstanding lock is released before the BufferManager, at a
+// lower priority, releases the buffers.
+void FontRenderer::onDeviceLost()
+{
+    if (m_locked)
+    {
+        dx9rend::vertexBufferUnlock(m_vb[m_vbIndex]);
+        m_locked = 0;
+    }
+}
 
+// PE 0x100A17B0 (listener +0x04). Refills the selection quad, looks the techniques up again and,
+// when the ring exists, moves to the next buffer.
 void FontRenderer::onDeviceReset()
 {
     if (m_selVb)
@@ -758,31 +988,16 @@ void FontRenderer::onDeviceReset()
     }
     if (m_effect)
     {
-        m_techRegular       = dx9rend::effectFindTechniqueRecord(m_effect, "Regular");
-        m_techRegularScaled = dx9rend::effectFindTechniqueRecord(m_effect, "RegularScaled");
-        m_techSelectionQuad = dx9rend::effectFindTechniqueRecord(m_effect, "SelectionQuad");
+        m_tech[0] = dx9rend::effectFindTechniqueRecord(m_effect, "Regular");
+        m_tech[1] = dx9rend::effectFindTechniqueRecord(m_effect, "RegularScaled");
+        m_tech[2] = dx9rend::effectFindTechniqueRecord(m_effect, "SelectionQuad");
     }
     if (m_vb[m_vbIndex])
         advanceRing();
 }
 
-// sub_100A1660 - the ring step: unlock the current buffer if locked, advance the index (wrapping at
-// 3), and restart the batch on the new buffer. [CHOSEN] Only the first two are this model's: the
-// shipped tail then takes a D3DLOCK_DISCARD lock on the new buffer and keeps it (+0x2C pointer, +0x5C
-// = 1) and resets the batch counters (+0x30/+0x54/+0x58 = 0, +0x64 = +0x60, +0x68 += 1). drawRun
-// takes its own discard lock for every run, so there is no persistent lock or batch to restart.
-void FontRenderer::advanceRing()
-{
-    if (m_ringLocked)
-    {
-        dx9rend::vertexBufferUnlock(m_vb[m_vbIndex]);
-        m_ringLocked = false;
-    }
-    if (++m_vbIndex >= 3)
-        m_vbIndex = 0;
-}
-
-// Releases shader parameters, effects, declarations and buffers, checking each resource for null.
+// PE 0x100A18A0. Releases the parameters, the effect, both declarations and the buffers, testing
+// each for null.
 void FontRenderer::teardown()
 {
     if (m_paramTransform) static_cast<dx9rend::ShaderParameter*>(m_paramTransform)->release();
@@ -816,29 +1031,38 @@ void FontRenderer::teardown()
     m_selVb = 0;
 }
 
-// Final release invokes the virtual destructor so the listener is unregistered before storage is freed.
+// PE 0x100A1AC0. The final release runs the virtual destructor, which unregisters the listener.
 int FontRenderer::release()
 {
     const int remaining = --m_refCount;
     if (!remaining)
     {
-        typedef void* (__fastcall* DestroyFn)(void*, void*, char);
-        reinterpret_cast<DestroyFn>(const_cast<void*>(m_vptr[0x10 / 4]))(this, 0, 1);
+        typedef void* (__thiscall* DestroyFn)(void*, char);
+        reinterpret_cast<DestroyFn>(const_cast<void*>(m_vptr[0x10 / 4]))(this, 1);
     }
     return remaining;
 }
 
-// Unregisters the listener before teardown and frees storage when flags bit zero is set.
-void FontRenderer::destroy(char flags)
+// Restores both tables, unregisters the device listener, then tears the resources down.
+// PE 0x100A1A60. unreachable in 1.50: no code or data references to this out-of-line copy; the
+// deleting destructor 0x100A1AE0 inlines it. [INFERRED] Name.
+void FontRenderer::destructorBody()
 {
     m_vptr         = fontRendererVtable();
     m_listenerVptr = fontRendererListenerVtable();
     dx9rend::unregisterDeviceLostResetListener(&m_listenerVptr);
     teardown();
+}
+
+// PE 0x100A1AE0. Unregisters the listener, tears down and frees when bit 0 of flags is set.
+void FontRenderer::destroy(char flags)
+{
+    destructorBody();
     if (flags & 1)
         ::renddx9abi::engineFree(this);
 }
 
+// PE 0x100A1A90.
 void* FontRenderer::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IFontRenderer)
@@ -846,13 +1070,21 @@ void* FontRenderer::queryInterface(unsigned int iid) const
     return 0;
 }
 
+// The FontRenderer operations SwiffRender.cpp calls on its +1036 singleton.
+void fontRendererInit(void* fr)     { static_cast<FontRenderer*>(fr)->init(); }
+void fontRendererBegin(void* fr)    { static_cast<FontRenderer*>(fr)->begin(); }
+void fontRendererFlush(void* fr)    { static_cast<FontRenderer*>(fr)->flush(); }
+void fontRendererUnlock(void* fr)   { static_cast<FontRenderer*>(fr)->unlock(); }
+void fontRendererEndFrame(void* fr) { static_cast<FontRenderer*>(fr)->endFrame(); }
+void fontRendererTeardown(void* fr) { static_cast<FontRenderer*>(fr)->teardown(); }
+
 namespace {
-void  __fastcall fr_addRef(void* s, void*)  { static_cast<FontRenderer*>(s)->addRef(); }
-int   __fastcall fr_getRef(void* s, void*)  { return static_cast<FontRenderer*>(s)->getRef(); }
-int   __fastcall fr_release(void* s, void*) { return static_cast<FontRenderer*>(s)->release(); }
-void* __fastcall fr_queryInterface(void* s, void*, unsigned int iid)
+void  RD9_THUNK fr_addRef(void* s RD9_THUNK_EDX)  { static_cast<FontRenderer*>(s)->addRef(); }
+int   RD9_THUNK fr_getRef(void* s RD9_THUNK_EDX)  { return static_cast<FontRenderer*>(s)->getRef(); }
+int   RD9_THUNK fr_release(void* s RD9_THUNK_EDX) { return static_cast<FontRenderer*>(s)->release(); }
+void* RD9_THUNK fr_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return static_cast<FontRenderer*>(s)->queryInterface(iid); }
-void* __fastcall fr_destroy(void* s, void*, char flags)
+void* RD9_THUNK fr_destroy(void* s RD9_THUNK_EDX, char flags)
 { static_cast<FontRenderer*>(s)->destroy(flags); return s; }
 
 // 0x1020D274, five slots in the shipped order.
@@ -866,9 +1098,9 @@ const void* kFontRendererVtable[5] =
 };
 
 // 0x1020D268, the listener table (the three dwords before the primary).
-void __fastcall fr_onDeviceLost(void* sub, void*)  { FontRenderer::fromListener(sub)->onDeviceLost(); }
-void __fastcall fr_onDeviceReset(void* sub, void*) { FontRenderer::fromListener(sub)->onDeviceReset(); }
-void __fastcall fr_onDeviceDestroy(void*, void*)   { /* 0x10037D40: ret, the shared nullsub */ }
+void RD9_THUNK fr_onDeviceLost(void* sub RD9_THUNK_EDX)  { FontRenderer::fromListener(sub)->onDeviceLost(); }
+void RD9_THUNK fr_onDeviceReset(void* sub RD9_THUNK_EDX) { FontRenderer::fromListener(sub)->onDeviceReset(); }
+void RD9_THUNK fr_onDeviceDestroy(void* RD9_THUNK_EDX)   { /* 0x10037D40: ret, the shared nullsub */ }
 
 const void* kFontRendererListenerVtable[3] =
 {
@@ -881,7 +1113,17 @@ const void* kFontRendererListenerVtable[3] =
 const void** fontRendererVtable() { return kFontRendererVtable; }
 const void** fontRendererListenerVtable() { return kFontRendererListenerVtable; }
 
-// RefFactory for dice.hfe.geom.FontRenderer. init() is not called here - it runs lazily on first draw.
+// PE 0x100A3450. The FontRenderer is resolved by load(); the comparison is `scale.x > 1.0f`.
+void DifFont::setScale(float x, float y)
+{
+    m_scaleX = x;
+    m_scaleY = y;
+    if (m_fontRenderer)
+        static_cast<FontRenderer*>(m_fontRenderer)->setTechnique(
+            m_scaleX > 1.0f ? std::string("RegularScaled") : std::string("Regular"));
+}
+
+// RefFactory for dice.hfe.geom.FontRenderer. SwiffRender::init runs init() (0x10152560).
 IBase* __fastcall createFontRenderer(unsigned int iid, IBase* outer)
 {
     if (outer)
@@ -906,15 +1148,34 @@ public:
     SwiffFontObject(DifFont* font, const wchar_t* initialText);
 
     // The slots SwiffRender forwards to (all __fastcall(self, edx, ...) to match __thiscall dispatch).
-    static void  __fastcall vRelease(void* self, void*);                                    // +8
-    static int   __fastcall vSetText(void* self, void*, const wchar_t* text, int flag);     // +16
-    static void  __fastcall vDraw(void* self, void*, const float* m, unsigned int color);   // +20
-    static char  __fastcall vGetExtent(void* self, void*, int arg, float* outW, float* outH);// +28
-    static char  __fastcall vForward32(void* self, void*, int arg, float x, float y);       // +32
-    static char  __fastcall vForward40(void* self, void*, int a, int b);                     // +40
-    static char  __fastcall vForward44(void* self, void*, float x1, float y1,
+    static void  RD9_THUNK vInvalidate(void* self RD9_THUNK_EDX);                                 // +8
+    static int   RD9_THUNK vSetText(void* self RD9_THUNK_EDX, const wchar_t* text, int flag);     // +16
+    static void  RD9_THUNK vDraw(void* self RD9_THUNK_EDX, const float* m, unsigned int color);   // +20
+    static char  RD9_THUNK vGetExtent(void* self RD9_THUNK_EDX, int arg, float* outW, float* outH);// +28
+    static void RD9_THUNK vGetRun(void* self RD9_THUNK_EDX, unsigned int*, unsigned int*, float*);
+    static void RD9_THUNK vGetFirst(void* self RD9_THUNK_EDX, unsigned int*);
+    static bool RD9_THUNK vWouldOverflow(void* self RD9_THUNK_EDX);
+    static const std::vector<GlyphCell>* RD9_THUNK vGetCells(void* self RD9_THUNK_EDX);
+    static const float* RD9_THUNK vGetColor(void* self RD9_THUNK_EDX);
+    static void RD9_THUNK vBaseGetRun(void* self RD9_THUNK_EDX, unsigned int*, unsigned int*, float*);
+    static void RD9_THUNK vBaseGetFirst(void* self RD9_THUNK_EDX, unsigned int*);
+    static void RD9_THUNK vBaseSetText(void* self RD9_THUNK_EDX, const wchar_t*, int);
+    static void RD9_THUNK vBaseDraw(void* self RD9_THUNK_EDX, const float*, unsigned int);
+    static const float* RD9_THUNK vBaseGetColor(void* self RD9_THUNK_EDX);
+    static char RD9_THUNK vBaseGetExtent(void* self RD9_THUNK_EDX, int, float*, float*);
+    static char RD9_THUNK vBaseHit(void* self RD9_THUNK_EDX, int*, float, float);
+#if !defined(_MSC_VER) || defined(_WIN64)
+    // [CHOSEN, not recovered] Native (and MSVC x64, where an int cannot carry the pointer): the
+    // shipped +32 and +40 bodies take int* outs. Each arm's definition below carries the citation.
+    static char  RD9_THUNK vForward32(void* self RD9_THUNK_EDX, int* outPos, float x, float y);   // +32
+    static char  RD9_THUNK vForward40(void* self RD9_THUNK_EDX, int* outA, int* outB);            // +40
+#else
+    static char  RD9_THUNK vForward32(void* self RD9_THUNK_EDX, int arg, float x, float y);       // +32
+    static char  RD9_THUNK vForward40(void* self RD9_THUNK_EDX, int a, int b);                     // +40
+#endif
+    static char  RD9_THUNK vForward44(void* self RD9_THUNK_EDX, float x1, float y1,
                                        float x2, float y2);                                  // +44
-    static int   __fastcall vForward48(void* self, void*);                                   // +48
+    static int   RD9_THUNK vForward48(void* self RD9_THUNK_EDX);                                   // +48
 
     DifFont* font() const { return m_font; }
 
@@ -922,11 +1183,16 @@ public:
     // namespace-scope seams can reach them; the shipped code pokes the equivalent byte offsets.
     void configure(float boxWidth, int align);   // +120 box width, +136 alignment (offset left to setText)
     void setScrollIndex(int value);               // +104 caret index, then the visible window (sub_100A3710)
+    // [CHOSEN, not recovered] Named access to the native wrapper's existing window recomputation.
+    void refreshWindow() { recomputeWindow(); }
+    void destroy();                               // SwiffRender slot 27's delete (0x100A42F0 + free)
 
 private:
     void setText(const wchar_t* text, int flag);
     void setColor(unsigned int rgba);
     void draw(const float* m, unsigned int color);
+    void drawRun(const float* m);
+    void initializeBase(DifFont* font, const wchar_t* text);
     bool measure(unsigned int index, float* outW, float* outH) const;
     void recomputeWindow();
 
@@ -934,70 +1200,106 @@ private:
 
     const void** m_vptr;           // must be first - SwiffRender reads *font as the vtable
     DifFont*     m_font;
-    // [CHOSEN, not recovered] Inline text storage avoids repeated heap allocation; the original uses vc71::wstring.
+    // [CHOSEN, not recovered] Inline text storage avoids repeated heap allocation; the original uses std::wstring.
     wchar_t      m_textBuf[kTextCap];
     unsigned int m_textLen;
     unsigned int m_color;          // packed D3DCOLOR the emitter writes per-vertex (shipped +68)
-    float        m_colR, m_colG, m_colB, m_colA;   // components (shipped +76..88), kept for the shadow
+    unsigned int m_previousColor;
+    float        m_colB, m_colG, m_colR, m_colA;   // original blue/green/red/alpha component order
+    std::vector<GlyphCell> m_cells;
+    unsigned int m_runStart;
+    unsigned int m_runCount;
+    unsigned int m_runGeneration;
+    unsigned char m_dirty;
+    unsigned char m_drawingSelection;
+    float m_lastX, m_lastY;
     float        m_boxWidth;       // alignment box width (shipped +120)
     int          m_align;          // 0=left/none, 1=right, 2=center (shipped +136; sub_100A4F20's enum)
     float        m_alignOffset;    // computed x offset (shipped +140)
-    unsigned int m_shadowColor2;   // shipped +128, 0 = no drop shadow
+    // The text-field selection (RW-80): shipped +0x7C start and +0x80 end glyph index, zeroed by the
+    // constructor (0x100A272B) and by +0x30 (sub_100A3440), read by +0x28 (sub_10152080) and by the
+    // draw's highlight arm (0x100A4FF0 / 0x100A5013: a non-zero end draws it). +0x80 was earlier read
+    // here as a drop-shadow colour; nothing wrote or read that member.
+    int          m_selStart;       // shipped +124
+    int          m_selEnd;         // shipped +128
     // Visible glyph range computed by setScrollIndex to fit the box and keep the caret in view.
     unsigned int m_scrollIndex;    // shipped +104, the caret index the window keeps in view
     unsigned int m_firstVisible;   // shipped +108, the first glyph drawn
     unsigned int m_visibleCount;   // shipped +112, how many glyphs are drawn from there
     float        m_scrollOffset;   // shipped +116, -(scaleX * left of the first drawn glyph), pixels
-    int          m_refCount;
 
     void assignText(const wchar_t* text);
     void computeAlign();
 };
 
-// Wrapper dispatch table. Unused window and interactive-editing slots remain null; drawing reads window fields directly.
+// Base and derived wrapper tables preserve the attested slot order.
 namespace {
 const void* kSwiffFontVtable[13] =
 {
-    0,                                                              // 0
-    0,                                                              // 1
-    reinterpret_cast<void*>(&SwiffFontObject::vRelease),            // 2  (+8)  release
-    0,                                                              // 3
+    reinterpret_cast<void*>(&SwiffFontObject::vGetRun),           // 0
+    reinterpret_cast<void*>(&SwiffFontObject::vGetFirst),         // 1
+    reinterpret_cast<void*>(&SwiffFontObject::vInvalidate),         // 2  (+8)  invalidate
+    reinterpret_cast<void*>(&SwiffFontObject::vWouldOverflow),    // 3
     reinterpret_cast<void*>(&SwiffFontObject::vSetText),           // 4  (+16) setText
     reinterpret_cast<void*>(&SwiffFontObject::vDraw),              // 5  (+20) draw
-    0,                                                              // 6
+    reinterpret_cast<void*>(&SwiffFontObject::vGetColor),         // 6
     reinterpret_cast<void*>(&SwiffFontObject::vGetExtent),        // 7  (+28) measure
     reinterpret_cast<void*>(&SwiffFontObject::vForward32),         // 8  (+32)
-    0,                                                              // 9
+    reinterpret_cast<void*>(&SwiffFontObject::vGetCells),          // 9
     reinterpret_cast<void*>(&SwiffFontObject::vForward40),         // 10 (+40)
     reinterpret_cast<void*>(&SwiffFontObject::vForward44),         // 11 (+44)
     reinterpret_cast<void*>(&SwiffFontObject::vForward48),         // 12 (+48)
 };
 
-// [CHOSEN, not recovered] Interactive text queries return not-handled and report once.
-// [RETIRE-WHEN: RW-80] Replace when editable-field behavior is implemented.
-void fontForwardNote()
+const void* kBaseFontVtable[10] =
 {
-    static bool noted = false;
-    if (noted) return;
-    noted = true;
-    ::renddx9abi::logf("[FRONTIER] SwiffFontObject: an interactive text-field query slot "
-                       "(+32/+40/+44/+48) was reached - display labels return 'not handled'; the "
-                       "editable-field path (sub_100A51B0/sub_10152080/sub_100A5200/sub_100A3440) is "
-                       "unwritten (RW-80)");
-}
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseGetRun),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseGetFirst),
+    reinterpret_cast<void*>(&SwiffFontObject::vInvalidate),
+    reinterpret_cast<void*>(&SwiffFontObject::vWouldOverflow),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseSetText),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseDraw),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseGetColor),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseGetExtent),
+    reinterpret_cast<void*>(&SwiffFontObject::vBaseHit),
+    reinterpret_cast<void*>(&SwiffFontObject::vGetCells),
+};
+
 } // anonymous namespace
 
+// PE 0x10151FE0 (derived constructor: base PE 0x100A4E20, then +0x68..+0x8C zeroed, vptr 0x1021E0D0).
+// [CHOSEN, not recovered] The shipped constructor takes no reference on the DifFont (the borrowed
+// FontSystem::getFont result, PE 0x100A09C0) and the shipped destroy (PE 0x100A42F0) releases none.
+// The addRef below is balanced by exactly one release in SwiffFontObject::destroy, reached from
+// sr_releaseFontHandle (PE 0x10154870); it keeps the font alive if FontSystem tears down first.
 SwiffFontObject::SwiffFontObject(DifFont* font, const wchar_t* initialText)
-    : m_vptr(kSwiffFontVtable), m_font(font), m_textLen(0),
-      m_color(0xFFFFFFFFu), m_colR(1.0f), m_colG(1.0f), m_colB(1.0f), m_colA(1.0f),
-      m_boxWidth(0.0f), m_align(0), m_alignOffset(0.0f), m_shadowColor2(0),
-      m_scrollIndex(0), m_firstVisible(0), m_visibleCount(0), m_scrollOffset(0.0f), m_refCount(1)
+    : m_vptr(kBaseFontVtable), m_font(font), m_textLen(0),
+      m_color(0xFFFFFFFFu), m_previousColor(0), m_colB(1.0f), m_colG(1.0f), m_colR(1.0f), m_colA(1.0f),
+      m_runStart(0), m_runCount(0), m_runGeneration(0), m_dirty(1), m_drawingSelection(0), m_lastX(0), m_lastY(0),
+      m_boxWidth(0.0f), m_align(0), m_alignOffset(0.0f), m_selStart(0), m_selEnd(0),
+      m_scrollIndex(0), m_firstVisible(0), m_visibleCount(0), m_scrollOffset(0.0f)
 {
-    m_textBuf[0] = 0;
+    initializeBase(font, initialText);
     if (font)
         font->addRef();
-    if (initialText)
-        assignText(initialText);
+    m_vptr = kSwiffFontVtable;
+}
+
+// PE 0x100A4E20. [CHOSEN, not recovered] Native outer construction supplies
+// bounded text storage and defined cache/color fields where retail leaves bytes unwritten.
+void SwiffFontObject::initializeBase(DifFont* font, const wchar_t* text)
+{
+    m_vptr = kBaseFontVtable;
+    m_textBuf[0] = 0;
+    m_textLen = 0;
+    m_font = font;
+    m_runCount = 0;
+    m_runStart = 0;
+    m_runGeneration = 0;
+    m_color = 0xFFFFFFFFu;
+    m_previousColor = 0;
+    if (text)
+        vBaseSetText(this RD9_THUNK_ARG, text, 1);
 }
 
 void SwiffFontObject::assignText(const wchar_t* text)
@@ -1014,7 +1316,7 @@ void SwiffFontObject::assignText(const wchar_t* text)
 
 // sub_100A4F20 - store the text, then compute the alignment x-offset from the box width.
 static bool swiffFontTraceOn();   // [TEMP] RW-89, defined beside configure() below
-void SwiffFontObject::setText(const wchar_t* text, int /*flag*/)
+void SwiffFontObject::setText(const wchar_t* text, int flag)
 {
     if (swiffFontTraceOn())
     {
@@ -1023,7 +1325,7 @@ void SwiffFontObject::setText(const wchar_t* text, int /*flag*/)
         narrow[n] = 0;
         ::renddx9abi::logf("[font] text %p '%s'", this, narrow);
     }
-    assignText(text);
+    vBaseSetText(this RD9_THUNK_ARG, text, flag);
     computeAlign();
 }
 
@@ -1124,11 +1426,176 @@ void SwiffFontObject::setColor(unsigned int rgba)
     m_colG = static_cast<float>(b1) * 0.0039215689f;
     m_colR = static_cast<float>(b2) * 0.0039215689f;
     m_colA = static_cast<float>(b3) * 0.0039215689f;
-    m_color = (b3 << 24) | (b0 << 16) | (b1 << 8) | b2;
+    const unsigned int packed = (b3 << 24) | (b0 << 16) | (b1 << 8) | b2;
+    if (m_previousColor != packed)
+    {
+        m_color = packed;
+        m_previousColor = packed;
+        m_dirty = 1;
+    }
+}
+
+// PE 0x100A6010
+void RD9_THUNK SwiffFontObject::vBaseGetRun(void* self RD9_THUNK_EDX,
+    unsigned int* first, unsigned int* count, float* offset)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    *first = o->m_runStart;
+    *count = o->m_runCount;
+    *offset = 0.0f;
+}
+
+// PE 0x100A6030
+void RD9_THUNK SwiffFontObject::vBaseGetFirst(void* self RD9_THUNK_EDX, unsigned int* first)
+{
+    *first = static_cast<SwiffFontObject*>(self)->m_runStart;
+}
+
+// PE 0x100A33E0
+void RD9_THUNK SwiffFontObject::vGetRun(void* self RD9_THUNK_EDX,
+    unsigned int* first, unsigned int* count, float* offset)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (o->m_drawingSelection)
+    {
+        *first = static_cast<unsigned int>(o->m_selStart) * 6u;
+        *count = (static_cast<unsigned int>(o->m_selEnd) - static_cast<unsigned int>(o->m_selStart)) * 6u;
+    }
+    else
+    {
+        *first = o->m_runStart + o->m_firstVisible * 6u;
+        *count = o->m_visibleCount * 6u;
+    }
+    *offset = o->m_alignOffset + o->m_scrollOffset;
+}
+
+// PE 0x100A33D0
+void RD9_THUNK SwiffFontObject::vGetFirst(void* self RD9_THUNK_EDX, unsigned int* first)
+{
+    *first = static_cast<SwiffFontObject*>(self)->m_firstVisible;
+}
+
+// PE 0x100A3380
+bool RD9_THUNK SwiffFontObject::vWouldOverflow(void* self RD9_THUNK_EDX)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    o->m_runCount = o->m_textLen * 6u;
+    const FontRenderer* const fr = static_cast<FontRenderer*>(o->m_font->fontRenderer());
+    return fr->m_cursor + o->m_runCount > kFontRingVertices;
+}
+
+// PE 0x100A4330
+const std::vector<GlyphCell>* RD9_THUNK SwiffFontObject::vGetCells(void* self RD9_THUNK_EDX)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (o->m_cells.size() != o->m_textLen)
+    {
+        std::vector<GlyphCell>().swap(o->m_cells);
+        o->m_cells.resize(o->m_textLen);
+        o->m_font->layout(o->m_textBuf, o->m_textLen, o->m_cells.data());
+    }
+    return &o->m_cells;
+}
+
+// PE 0x100A43A0
+void RD9_THUNK SwiffFontObject::vBaseSetText(void* self RD9_THUNK_EDX, const wchar_t* text, int flag)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    std::vector<GlyphCell>().swap(o->m_cells);
+    o->assignText(text);
+    if (static_cast<unsigned char>(flag))
+        reinterpret_cast<NativeFontView*>(self)->invalidate();
+}
+
+// PE 0x100A6040
+const float* RD9_THUNK SwiffFontObject::vBaseGetColor(void* self RD9_THUNK_EDX)
+{
+    return &static_cast<SwiffFontObject*>(self)->m_colB;
+}
+
+// PE 0x10152030
+const float* RD9_THUNK SwiffFontObject::vGetColor(void* self RD9_THUNK_EDX)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (o->m_drawingSelection)
+    {
+        static const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        return white;
+    }
+    return &o->m_colB;
+}
+
+// PE 0x100A4E80
+char RD9_THUNK SwiffFontObject::vBaseGetExtent(void* self RD9_THUNK_EDX,
+    int index, float* width, float* height)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (!o->m_font)
+        return 0;
+    return o->measure(static_cast<unsigned int>(index), width, height) ? 1 : 0;
+}
+
+// PE 0x100A4EC0
+char RD9_THUNK SwiffFontObject::vBaseHit(void* self RD9_THUNK_EDX,
+    int* index, float x, float y)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (!o->m_font)
+        return 0;
+    return o->m_font->hitTest(o->m_textBuf, o->m_textLen, index, x, y, 0, o->m_textLen) ? 1 : 0;
+}
+
+// PE 0x100A40F0
+void RD9_THUNK SwiffFontObject::vBaseDraw(void* self RD9_THUNK_EDX,
+    const float* matrix, unsigned int color)
+{
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    o->setColor(color);
+    if (o->m_font)
+        o->drawRun(matrix);
+}
+
+// PE 0x100A4FD0
+void SwiffFontObject::draw(const float* matrix, unsigned int color)
+{
+    setColor(color);
+    if (!m_font)
+        return;
+    // [CHOSEN, not recovered] Preserve the existing native missing-renderer guard.
+    if (!m_font->fontRenderer())
+        return;
+    if (m_selEnd)
+    {
+        FontRenderer* const fr = static_cast<FontRenderer*>(m_font->fontRenderer());
+        fr->m_selectionFrame = fr->m_frame;
+    }
+    drawRun(matrix);
+    if (!m_selEnd)
+        return;
+    float start, end, height;
+    if (!measure(static_cast<unsigned int>(m_selStart), &start, &height) ||
+        !measure(static_cast<unsigned int>(m_selEnd), &end, &height))
+        return;
+    m_drawingSelection = 1;
+    D3DXMATRIX translation, translated;
+#if defined(_WIN32)
+    D3DXMatrixTranslation(&translation, start, 0.0f, 0.0f);
+#else
+    // [CHOSEN, not recovered] The native D3DX subset has no translation entry point.
+    memset(&translation, 0, sizeof(translation));
+    translation._11 = translation._22 = translation._33 = translation._44 = 1.0f;
+    translation._41 = start;
+#endif
+    D3DXMatrixMultiply(&translated, reinterpret_cast<const D3DXMATRIX*>(matrix), &translation);
+    drawRun(matrix);
+    m_font->drawSelection(reinterpret_cast<NativeFontView*>(this), &translated._11, end - start);
+    m_drawingSelection = 0;
 }
 
 // Measures the scaled start of character index, or the final right edge when index is past the text.
 // outH receives the glyph's vertical offset. Returns false with zero outputs for empty text.
+// PE 0x100A4810: measurement operation. [CHOSEN, not recovered] The wrapper owns bounded
+// text/cell storage and retains its existing nullable-output guards.
 bool SwiffFontObject::measure(unsigned int index, float* outW, float* outH) const
 {
     if (outW) *outW = 0.0f;
@@ -1157,18 +1624,58 @@ bool SwiffFontObject::measure(unsigned int index, float* outW, float* outH) cons
 
 // Draws the computed visible glyph range with pixel-snapped positioning, alignment and scrolling offsets.
 // A window with no visible glyphs draws nothing.
-void SwiffFontObject::draw(const float* m, unsigned int color)
+void SwiffFontObject::drawRun(const float* m)
 {
-    setColor(color);
     if (!m_font || !m_textLen)
         return;
     if (m_font->scaleX() == 0.0f || m_font->scaleY() == 0.0f)    // sub_100A3DE0's first tests
         return;
-    if (!m_visibleCount)                                            // slot 0's count, 0 -> return
-        return;
     FontRenderer* fr = static_cast<FontRenderer*>(m_font->fontRenderer());
     if (!fr)
         return;
+    NativeFontView* const view = reinterpret_cast<NativeFontView*>(this);
+    unsigned int firstVertex, vertexCount;
+    float offset;
+    view->getRun(&firstVertex, &vertexCount, &offset);
+    if (!vertexCount)
+        return;
+    if (fr->m_selectionFrame || (!m_dirty && m_runGeneration == fr->m_ringGeneration &&
+        firstVertex != 0 && firstVertex != fr->m_cursor))
+    {
+        fr->flush();
+        fr->advanceRing();
+    }
+    if (m_dirty && m_runGeneration != 0)
+    {
+        fr->flush();
+        fr->advanceRing();
+    }
+    if (view->wouldOverflow())
+    {
+        fr->flush();
+        fr->advanceRing();
+    }
+    if (fr->texture() != m_font->atlas())
+    {
+        fr->flush();
+        fr->setTexture(m_font->atlas());
+    }
+    if (m_lastX == m[12] && m_lastY == m[13] && !m_dirty && m_runGeneration == fr->m_ringGeneration)
+    {
+        fr->m_count += vertexCount;
+        fr->m_cursor += vertexCount;
+        ++fr->m_runs;
+        return;
+    }
+    if (!fr->locked() && !fr->lockedThisFrame())
+    {
+        fr->flush();
+        fr->advanceRing();
+    }
+    unsigned int first;
+    view->getFirst(&first);
+    m_lastX = m[12];
+    m_lastY = m[13];
 
     // [TEMP] RW-89 vertical tracer: the line origin this label is drawn from, in screen pixels,
     // beside the first glyph's own top offset and height. Those are the only two inputs to where a
@@ -1191,18 +1698,19 @@ void SwiffFontObject::draw(const float* m, unsigned int color)
         }
         const float* pv = m_font->projVp();
         ::renddx9abi::logf("[font] draw %p '%s' lineY=%.1f lineX=%.1f off=%.1f yoff=%.1f gh=%.1f size=%.1f"
-                           "  projVp=(%d,%d,%d,%d) drawVp=(%d,%d,%d,%d) win=%u+%u/%u box=%.1f scroll=%.1f",
+                           "  projVp=(%d,%d,%d,%d) drawVp=(%d,%d,%d,%d) win=%u+%u/%u box=%.1f scroll=%.1f col=%08X",
                            this, narrow, m[13], m[12], m_alignOffset,
                            g0 ? g0->bearingY : -999.0f, g0 ? g0->height : -999.0f, m_font->size(),
                            (int) pv[0], (int) pv[1], (int) pv[2], (int) pv[3],
                            dvp[0], dvp[1], dvp[2], dvp[3],
-                           m_firstVisible, m_visibleCount, m_textLen, m_boxWidth, m_scrollOffset);
+                           m_firstVisible, m_visibleCount, m_textLen, m_boxWidth, m_scrollOffset, m_color);
     }
 
     // Round horizontal placement with floor(x + offsets + 0.5); vertical placement uses floor(y).
     float t[16];
     ::memcpy(t, m, sizeof(t));
-    t[12] = ::floorf(m[12] + (m_alignOffset + m_scrollOffset) + 0.5f);
+    const float translatedX = m[12] + offset; // PE 0x100A3FB0 spills before roundFontPosition.
+    t[12] = static_cast<float>(roundFontPosition(translatedX));
     t[13] = ::floorf(m[13]);
     t[0]  = 1.0f;                        // sub_100A3DE0 forces the diagonal scale to 1
     t[5]  = 1.0f;
@@ -1218,27 +1726,38 @@ void SwiffFontObject::draw(const float* m, unsigned int color)
     float fm[16];
     matMul(fm, scaling, tmp);                            // scaling x (textMatrix x projection)
 
-    // Shader scaling uses scaleX > 1; texel bias separately tests exact unit scale.
-    const bool  scaled = m_font->scaleX() > 1.0f;
-    const float invW = 1.0f / static_cast<float>(m_font->atlasW() ? m_font->atlasW() : 1);
-    const float invH = 1.0f / static_cast<float>(m_font->atlasH() ? m_font->atlasH() : 1);
-    const float bias = (m_font->scaleX() == 1.0f) ? 0.0099999998f : 0.0f;
-
-    FontVertex* scratch = static_cast<FontVertex*>(
-        ::renddx9abi::engineAlloc(6 * m_visibleCount * sizeof(FontVertex)));
-    if (!scratch)
-        return;
+    if (!fr->locked())
+        fr->lockAt(fr->cursor());
 
     // The positions come from the layout (sub_100A4BF0), read at the window's indices: the emitter
     // walks records and characters from the first visible one (a4 = slot 1's answer, sub_100A33D0).
     // [CHOSEN] `i < m_textLen` is added to the window bound: the shipped trusts the window, which is
     // stale only if the text shrinks between a caret call and a draw - never on SwiffPlayer's path
     // (formatText ends with the caret calls) - and this port's buffers are fixed arrays.
-    GlyphCell cells[kTextCap];
-    m_font->layout(m_textBuf, m_textLen, cells);
-    const unsigned int end = m_firstVisible + m_visibleCount;
+    const unsigned int end = first + vertexCount / 6u;
+    unsigned int present = 0;
+    for (unsigned int i = first; i < end && i < m_textLen; ++i)
+    {
+        const unsigned short ch = static_cast<unsigned short>(m_textBuf[i]);
+        if (m_font->glyph(ch == 160 ? 32 : ch))
+            ++present;
+    }
+    m_runStart = fr->m_cursor;
+    m_runGeneration = fr->m_ringGeneration;
+    // Texel bias tests exact unit scale (0x100A39D8); the technique was chosen by DifFont::setScale.
+    // [CHOSEN, not recovered] Retain the existing zero-dimension divisor omission.
+    const float invW = 1.0f / static_cast<float>(m_font->atlasW() ? m_font->atlasW() : 1);
+    const float invH = 1.0f / static_cast<float>(m_font->atlasH() ? m_font->atlasH() : 1);
+    const float bias = (m_font->scaleX() == 1.0f) ? 0.0099999998f : 0.0f;
+    const std::vector<GlyphCell>& cells = *view->getCells();
+    FontVertex* output = fr->reserve(present * 6u);
+    if (!output)
+    {
+        ++fr->m_runs;
+        return;
+    }
     unsigned int vc = 0;
-    for (unsigned int i = m_firstVisible; i < end && i < m_textLen; ++i)
+    for (unsigned int i = first; i < end && i < m_textLen; ++i)
     {
         unsigned short ch = m_textBuf[i];
         if (ch == 160) ch = 32;
@@ -1246,7 +1765,6 @@ void SwiffFontObject::draw(const float* m, unsigned int color)
         if (!g)
             continue;
 
-        if (g->x2 > g->x && g->y2 > g->y)                // a visible (non-space) glyph
         {
             const float u1 = (static_cast<float>(g->x)  + bias) * invW;
             const float v1 = (static_cast<float>(g->y)  + bias) * invH;
@@ -1280,55 +1798,116 @@ void SwiffFontObject::draw(const float* m, unsigned int color)
             bl.u = u1; bl.v = v2;
             br.u = u2; br.v = v2;
 
-            scratch[vc++] = tl; scratch[vc++] = tr; scratch[vc++] = bl;
-            scratch[vc++] = bl; scratch[vc++] = tr; scratch[vc++] = br;
+            output[vc++] = tl; output[vc++] = tr; output[vc++] = bl;
+            output[vc++] = bl; output[vc++] = tr; output[vc++] = br;
         }
     }
-
-    if (vc)
-        fr->drawRun(scratch, vc, m_font->atlas(), scaled);
-    ::renddx9abi::engineFree(scratch);
+    m_dirty = 0;
+    ++fr->m_runs;
 }
 
-// [CHOSEN, not recovered] Decrements the wrapper reference without freeing it while list ownership is unfinished.
-// [RETIRE-WHEN: RW-80 font-list ops] The owning font list must release wrappers during removal.
-void __fastcall SwiffFontObject::vRelease(void* self, void*)
+// PE 0x100A33B0
+void RD9_THUNK SwiffFontObject::vInvalidate(void* self RD9_THUNK_EDX)
 {
-    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
-    if (o->m_refCount > 0)
-        --o->m_refCount;
-    // No free - the font list owns the wrapper; its (withheld) erase performs the teardown.
+    SwiffFontObject* const o = static_cast<SwiffFontObject*>(self);
+    if (o->m_font && o->m_textLen)
+        o->m_dirty = 1;
 }
-int __fastcall SwiffFontObject::vSetText(void* self, void*, const wchar_t* text, int flag)
+int RD9_THUNK SwiffFontObject::vSetText(void* self RD9_THUNK_EDX, const wchar_t* text, int flag)
 {
     static_cast<SwiffFontObject*>(self)->setText(text, flag);
     return 0;
 }
-void __fastcall SwiffFontObject::vDraw(void* self, void*, const float* m, unsigned int color)
+void RD9_THUNK SwiffFontObject::vDraw(void* self RD9_THUNK_EDX, const float* m, unsigned int color)
 {
     static_cast<SwiffFontObject*>(self)->draw(m, color);
 }
 // sub_100A5160 - the extent up to character `arg` (SwiffPlayer asks with the caret for the caret's x
 // and with the line length for word wrap), plus the window's scroll offset. No font: 0 with the
 // outs untouched; no text: 0 with both zeroed (sub_100A4810's own first stores).
-char __fastcall SwiffFontObject::vGetExtent(void* self, void*, int arg, float* outW, float* outH)
+char RD9_THUNK SwiffFontObject::vGetExtent(void* self RD9_THUNK_EDX, int arg, float* outW, float* outH)
 {
     SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
     if (!o->m_font)
         return 0;
-    if (!o->measure(static_cast<unsigned int>(arg), outW, outH))
+    if (!vBaseGetExtent(self RD9_THUNK_ARG, arg, outW, outH))
         return 0;
     *outW = o->m_scrollOffset + *outW;
     return 1;
 }
-char __fastcall SwiffFontObject::vForward32(void*, void*, int, float, float) { fontForwardNote(); return 0; }
-char __fastcall SwiffFontObject::vForward40(void*, void*, int, int)          { fontForwardNote(); return 0; }
-char __fastcall SwiffFontObject::vForward44(void*, void*, float, float, float, float) { fontForwardNote(); return 0; }
-int  __fastcall SwiffFontObject::vForward48(void*, void*)                    { fontForwardNote(); return 0; }
+#if !defined(_MSC_VER) || defined(_WIN64)
+// sub_100A51B0 (+0x20): no font answers false. Otherwise DifFont::hitTest(text, out, x - scroll
+// offset (+0x74), y, first visible (+0x6C), first + visible count (+0x70)) and its answer.
+char RD9_THUNK SwiffFontObject::vForward32(void* self RD9_THUNK_EDX, int* outPos, float x, float y)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    if (!o->m_font)
+        return 0;
+    return o->m_font->hitTest(o->m_textBuf, o->m_textLen, outPos, x - o->m_scrollOffset, y,
+                              o->m_firstVisible, o->m_visibleCount + o->m_firstVisible) ? 1 : 0;
+}
+// sub_10152080 (+0x28): *outA = selection start (+0x7C), *outB = selection end (+0x80); the answer
+// is end != 0 (`cmp 0,[ecx+80h]; sbb; neg`).
+char RD9_THUNK SwiffFontObject::vForward40(void* self RD9_THUNK_EDX, int* outA, int* outB)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    *outA = o->m_selStart;
+    *outB = o->m_selEnd;
+    return o->m_selEnd != 0 ? 1 : 0;
+}
+#else
+// The 32-bit declarations carry the same out pointers as ints (x86: identical bits). The same
+// retail bodies as the arm above, which carries their citations.
+char RD9_THUNK SwiffFontObject::vForward32(void* self RD9_THUNK_EDX, int arg, float x, float y)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    if (!o->m_font)
+        return 0;
+    return o->m_font->hitTest(o->m_textBuf, o->m_textLen, reinterpret_cast<int*>(arg),
+                              x - o->m_scrollOffset, y, o->m_firstVisible,
+                              o->m_visibleCount + o->m_firstVisible) ? 1 : 0;
+}
+char RD9_THUNK SwiffFontObject::vForward40(void* self RD9_THUNK_EDX, int a, int b)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    *reinterpret_cast<int*>(a) = o->m_selStart;
+    *reinterpret_cast<int*>(b) = o->m_selEnd;
+    return o->m_selEnd != 0 ? 1 : 0;
+}
+#endif
+// sub_100A5200 (+0x2C): no font answers false. Otherwise the selection is cleared through this
+// object's own +0x30, then DifFont::selectRange(text, &start, &end, x1 - offset, y1, x2 - offset, y2,
+// first visible, first + count). A refusal answers false; an empty range (start == end) is cleared
+// again through +0x30 and answers false; otherwise true.
+char RD9_THUNK SwiffFontObject::vForward44(void* self RD9_THUNK_EDX, float x1, float y1, float x2, float y2)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    if (!o->m_font)
+        return 0;
+    (void) vForward48(self RD9_THUNK_ARG);       // shipped: this->vtbl[+0x30], this table's vForward48
+    if (!o->m_font->selectRange(o->m_textBuf, o->m_textLen, &o->m_selStart, &o->m_selEnd,
+                                x1 - o->m_scrollOffset, y1, x2 - o->m_scrollOffset, y2,
+                                o->m_firstVisible, o->m_visibleCount + o->m_firstVisible))
+        return 0;
+    if (o->m_selStart == o->m_selEnd)
+    {
+        (void) vForward48(self RD9_THUNK_ARG);
+        return 0;
+    }
+    return 1;
+}
+// sub_100A3440 (+0x30): start = end = 0; EAX is the zero it stored.
+int  RD9_THUNK SwiffFontObject::vForward48(void* self RD9_THUNK_EDX)
+{
+    SwiffFontObject* o = static_cast<SwiffFontObject*>(self);
+    o->m_selStart = 0;
+    o->m_selEnd = 0;
+    return 0;
+}
 
 
 // Caches fonts by name and size, and reloads them when the display width changes.
-// A zero width uses GSWindowSizeX. [CHOSEN, not recovered] Cache storage uses an array instead of a map.
+// A zero width uses GSWindowSizeX. Cache keys are lowercased before lookup and insertion.
 
 extern const unsigned int CID_FontSystem = 81044u;    // matches ModuleGeomMisc's getSingletonList
 extern const unsigned int IID_IFontSystem = 80045u;
@@ -1341,7 +1920,7 @@ class FontSystem
 public:
     FontSystem();
 
-    DifFont* getFont(const char* name, int size);
+    DifFont* getFont(const char* key);
 
     void  addRef() { ++m_refCount; }
     int   getRef() const { return m_refCount; }
@@ -1350,33 +1929,38 @@ public:
 
     // the +4 subobject's one slot, IEventListener::handleEvent(category, id, node,
     // data), thiscall with `retn 10h`: the front's __fastcall shim shape (ecx = the subobject).
-    static void __fastcall handleRendererEvent(void* listener, void*, int category, unsigned int id,
+    static void RD9_THUNK handleRendererEvent(void* listener RD9_THUNK_EDX, int category, unsigned int id,
                                                void* node, void* data);
 
 private:
+    ~FontSystem();
     void     init();                                  // sub_100A0A80 - clear, then register (11)
     void     clear();                                 // sub_100A0B30 - drop every cached font
     bool     reloadFonts(int width, int height);      // sub_100A0F10
     DifFont* loadFont(const char* key, int width);    // sub_100A0480 (+ sub_100A0350's insert)
+    DifFont* createLoadedFont(std::string directory, const char* key);
+    unsigned short* buildLexiconCharacters();
+    bool     readLexiconCharacters(const std::string& path,
+                                   std::map<unsigned short, bool>& characters);
 
-    struct Entry { char key[128]; DifFont* font; };
     const void** m_vptr;           // +0 - IBase vtable (must be first)
     const void** m_eventVptr;      // +4 - the ECRenderer listener, 0x1020D16C (the handler's `add ecx, -4`)
-    Entry*       m_entries;
-    unsigned int m_count;
-    unsigned int m_cap;
     int          m_refCount;
+    void*        m_unusedLexicon; // PE +0x0C; only the unreferenced buildLexiconCharacters fills it
+    std::map<std::string, DifFont*> m_cache;
 };
 
-// the two vptrs, refcount 1, the empty cache, then sub_100A0A80.
+// PE 0x100A10A0: the two vptrs, refcount 1, the empty cache, then init().
 FontSystem::FontSystem()
     : m_vptr(fontSystemVtable()), m_eventVptr(fontSystemEventVtable()),
-      m_entries(0), m_count(0), m_cap(0), m_refCount(1)
+      m_refCount(1), m_unusedLexicon(0)
 {
     init();
 }
 
-// sub_100A0A80 (174 B). The EventManager is dereferenced unguarded, as shipped - it is one of the
+// PE 0x100A0A80: clear() inlined (each cached font's detachDevice 0x100A5290 and free, then the
+// tree erase 0x1009FF20 and head reset), then registerEventHandler(11, listener, 0) through
+// EventManager +0x2C; returns true, which the constructor discards. The EventManager is dereferenced unguarded, as shipped - it is one of the
 // singletons initDll requires, and this class is a flags-2 singleton built after initDll. The
 // handler goes in at priority 0, the same category and priority as SwiffRender's.
 void FontSystem::init()
@@ -1389,18 +1973,21 @@ void FontSystem::init()
 // Clears cached fonts. [CHOSEN, not recovered] Uses counted releases so persistent wrappers retain their fonts.
 void FontSystem::clear()
 {
-    for (unsigned int i = 0; i < m_count; ++i)
-        if (m_entries[i].font)                                         // `test edi, edi; je`
-            m_entries[i].font->release();
-    m_count = 0;
+    for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
+        if (it->second)                                               // `test edi, edi; je`
+            it->second->release();
+    m_cache.clear();
 }
 
 
-void __fastcall FontSystem::handleRendererEvent(void* listener, void*, int category, unsigned int id,
+// PE 0x100A1060
+void RD9_THUNK FontSystem::handleRendererEvent(void* listener RD9_THUNK_EDX, int category, unsigned int id,
                                                 void* /*node*/, void* data)
 {
+#if defined(_M_IX86)
     static_assert(offsetof(FontSystem, m_eventVptr) == 4,
                   "the listener subobject sits at +4 - the slot's `add ecx, -4` depends on it");
+#endif
     if (category != 11)                                                // `cmp [ebp+8], 0Bh`
         return;
     if (id == 0 || id > 2)                                             // `test; jbe` / `cmp 2; ja`
@@ -1408,7 +1995,7 @@ void __fastcall FontSystem::handleRendererEvent(void* listener, void*, int categ
     // The payload is dereferenced with no null test, as shipped.
     const unsigned int packed = *static_cast<const unsigned int*>(data);
     FontSystem* const self = reinterpret_cast<FontSystem*>(
-        static_cast<unsigned char*>(listener) - 4);                    // `add ecx, -4`
+        static_cast<unsigned char*>(listener) - offsetof(FontSystem, m_eventVptr));   // `add ecx, -4`
     self->reloadFonts(static_cast<int>(packed >> 16),                  // `shr eax, 10h`, pushed last
                       static_cast<int>(packed & 0xFFFFu));             // `and edx, 0FFFFh`
 }
@@ -1419,38 +2006,177 @@ void __fastcall FontSystem::handleRendererEvent(void* listener, void*, int categ
 // when every reload succeeded; the one caller discards it.
 bool FontSystem::reloadFonts(int width, int /*height*/)
 {
-    const unsigned int count = m_count;
-    typedef char Key[128];
-    Key* keys = count ? static_cast<Key*>(::renddx9abi::engineAlloc(count * sizeof(Key))) : 0;
-    for (unsigned int i = 0; i < count; ++i)
+    std::vector<std::string> keys;
+    for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
     {
-        if (keys)
-            ::strncpy_s(keys[i], sizeof(keys[i]), m_entries[i].key, _TRUNCATE);   // sub_10011220
-        if (m_entries[i].font)
-            m_entries[i].font->release();                              // sub_100A5290 + free
+        keys.push_back(it->first);
+        if (it->second)
+            it->second->release();                                    // existing counted native ownership
     }
-    m_count = 0;                                                       // sub_1009FF20 + head reset
+    m_cache.clear();                                                   // sub_1009FF20 + head reset
 
     bool ok = true;                                                    // [ebp-1] = 1
-    for (unsigned int i = 0; keys && i < count; ++i)
-        if (!loadFont(keys[i], width))                                 // sub_100A0480(key, width, 0)
+    for (const std::string& key : keys)
+        if (!loadFont(key.c_str(), width))                             // sub_100A0480(key, width, 0)
             ok = false;
-
-    if (keys)
-        ::renddx9abi::engineFree(keys);
     return ok;
 }
 
-DifFont* FontSystem::getFont(const char* name, int size)
+// PE 0x100A09C0
+DifFont* FontSystem::getFont(const char* name)
 {
-    char key[128];
-    ::_snprintf_s(key, sizeof(key), _TRUNCATE, "%s_%d", name ? name : "", size);
-    for (unsigned int i = 0; i < m_count; ++i)
-        if (::strcmp(m_entries[i].key, key) == 0)
-            return m_entries[i].font;
+    DifFont* result;
+    {
+        std::string key(name);
+        dx9rend::pathToLower(key);
+        const auto found = m_cache.find(key);
+        if (found != m_cache.end())
+            result = found->second;
+        else
+        {
+            const std::string requested(name);
+            result = loadFont(requested.c_str(), 0);
+        }
+    }
+    return result;
+}
 
-    // sub_100A09C0's miss arm: the loader with width 0 (0x100A0A2A..0x100A0A34).
-    return loadFont(key, 0);
+// Collects every character the current language's lexicon files use and stores them, ascending
+// and terminated by 0xFFFF, as a new bf_malloc'd table in +0x0C (the previous table is freed; with
+// no character the slot stays null). The language comes from GSLanguage, "English" when empty;
+// every non-empty file under "localization/<language>/", subdirectories included, is read.
+// Returns the table.
+// PE 0x100A0C40. unreachable in 1.50: no code or data references. [INFERRED] Name.
+unsigned short* FontSystem::buildLexiconCharacters()
+{
+    std::map<unsigned short, bool> characters;
+    std::string language = ::dice::hfe::settings->stringGet(std::string("GSLanguage"), std::string(""));
+    if (language == "")
+        language = "English";
+    std::string pattern;
+    {
+        const std::string directory = std::string("localization/") + language;
+        pattern = directory + "/";
+    }
+    std::list< ::dice::hfe::io::FileInfo> files;
+    ::dice::hfe::fileManager->findFiles(pattern, true, files);                 // +0x34
+    for (std::list< ::dice::hfe::io::FileInfo>::iterator it = files.begin(); it != files.end(); ++it)
+    {
+        if (it->size != 0 && !it->isDirectory)
+        {
+            const std::string path = pattern + it->name;
+            readLexiconCharacters(path, characters);
+        }
+    }
+    if (m_unusedLexicon)
+        ::renddx9abi::engineFree(m_unusedLexicon);
+    m_unusedLexicon = 0;
+    if (!characters.empty())
+    {
+        unsigned short* const table = static_cast<unsigned short*>(
+            ::renddx9abi::engineAlloc(static_cast<unsigned int>(characters.size()) * 2u + 2u));
+        m_unusedLexicon = table;
+        unsigned int count = 0;
+        for (std::map<unsigned short, bool>::const_iterator it = characters.begin();
+             it != characters.end(); ++it)
+            static_cast<unsigned short*>(m_unusedLexicon)[count++] = it->first;
+        static_cast<unsigned short*>(m_unusedLexicon)[count] = 0xFFFF;
+    }
+    return static_cast<unsigned short*>(m_unusedLexicon);
+}
+
+// Reads one UTF-16LE lexicon file (FF FE fingerprint) of key and value lines, each terminated by
+// 0x1B and followed by one skipped unit, and records every value character other than CR and LF
+// (nonbreaking space as space). Whitespace between records is skipped. Returns false when the
+// file cannot be opened, its fingerprint is missing or wrong (both reported as errors), or a seek
+// fails.
+// PE 0x100A0030. unreachable in 1.50: its only caller is buildLexiconCharacters. [INFERRED] Name.
+bool FontSystem::readLexiconCharacters(const std::string& path,
+                                       std::map<unsigned short, bool>& characters)
+{
+    static const char* const kFile =
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\GeomMisc\\FontSystem\\FontSystem.cpp";
+    ::renddx9abi::EngineStream stream;
+    if (!stream.open(path, 2, 0, 0))
+        return false;
+    unsigned char fingerprint[2];
+    if (!stream.read(fingerprint, 2))
+    {
+        ::renddx9abi::Debug(DebugTypeError, kFile, 112, "")
+            << "while reading lexicon file '" << path << "': couldn't read fingerprint";
+        return false;
+    }
+    if (fingerprint[0] != 0xFF || fingerprint[1] != 0xFE)
+    {
+        ::renddx9abi::Debug(DebugTypeError, kFile, 117, "")
+            << "while reading lexicon file '" << path << "': bad unicode fingerprint";
+        return false;
+    }
+    while (stream.getAvailableBytes() != 0)
+    {
+        std::u16string key;
+        std::u16string value;
+        // The shipped seek tests read only al.
+        if (!stream.readWideLine(key, 0x1B) || !static_cast<unsigned char>(stream.seek(1, 2))
+            || !stream.readWideLine(value, 0x1B))
+            return false;
+        if (value.size() == 0)
+        {
+            // Shipped dead store: the converted key is never read.
+            char narrowKey[0x104];
+#if defined(_WIN32)
+            ::wcstombs(narrowKey, reinterpret_cast<const wchar_t*>(key.c_str()), 0x104);
+#else
+            // [PLATFORM] wchar_t is 32-bit here; the 16-bit units are widened for the CRT call.
+            const std::wstring wideKey(key.begin(), key.end());
+            ::wcstombs(narrowKey, wideKey.c_str(), 0x104);
+#endif
+        }
+        if (!static_cast<unsigned char>(stream.seek(1, 2)))
+            return false;
+        for (unsigned int i = 0; i < value.size(); ++i)
+        {
+            if (value[i] == 0x0A || value[i] == 0x0D)
+                continue;
+            if (value[i] == 0xA0)
+                value[i] = 0x20;
+            const unsigned short character = static_cast<unsigned short>(value[i]);
+            if (characters.find(character) == characters.end())
+                characters.insert(std::make_pair(character, true));
+        }
+        unsigned short unit;
+        while (stream.read(&unit, 2))
+        {
+            if (unit != 0x0A && unit != 0x0D && unit != 0x20 && unit != 0x09)
+                break;
+        }
+        if (stream.getAvailableBytes() != 0)
+            stream.seek(1, -2);
+    }
+    return true;
+}
+
+// PE 0x100A0350
+DifFont* FontSystem::createLoadedFont(std::string directory, const char* key)
+{
+    void* const storage = ::renddx9abi::engineAlloc(sizeof(DifFont));
+    DifFont* font = 0;
+    if (storage)
+    {
+        const std::string name(key);
+        font = new (storage) DifFont(directory, name);
+    }
+    if (!font)
+        return 0;
+    if (!font->load())
+    {
+        font->release();
+        return 0;
+    }
+    std::string cacheKey(key);
+    dx9rend::pathToLower(cacheKey);
+    m_cache.insert(std::make_pair(cacheKey, font));
+    return font;
 }
 
 // Finds and loads a font for the requested width; zero uses the current display resolution.
@@ -1472,7 +2198,7 @@ DifFont* FontSystem::loadFont(const char* key, int width)
         reference = 1024.0f;
     const float fontScale = static_cast<float>(res) / reference;
 
-    vc71::string langStr;
+    std::string langStr;
     ::dice::hfe::dx9rend::readStringSetting("GSLanguage", langStr);
     const char* lang = (!langStr.empty()) ? langStr.c_str() : "english";
 
@@ -1482,28 +2208,23 @@ DifFont* FontSystem::loadFont(const char* key, int width)
     unsigned int nc = 0;
     if (resFolder[0])
     {
-        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/%s/%s", lang, resFolder, key);
-        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/%s", resFolder, key);
+        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/%s/", lang, resFolder);
+        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/", resFolder);
     }
     else
     {
-        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/%s", lang, key);
-        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s", key);
+        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/%s/", lang);
+        ::_snprintf_s(cand[nc++], sizeof(cand[0]), _TRUNCATE, "Fonts/");
     }
 
     DifFont* font = 0;
     for (unsigned int i = 0; i < nc; ++i)
     {
-        DifFont* f = static_cast<DifFont*>(::renddx9abi::engineAlloc(sizeof(DifFont)));
-        if (!f)
-            break;
-        new (f) DifFont();
-        if (f->load(cand[i]))
+        if (DifFont* const f = createLoadedFont(std::string(cand[i]), key))
         {
             font = f;
             break;
         }
-        f->release();       // missing .dif - free this attempt and try the next candidate
     }
     if (!font)
     {
@@ -1515,21 +2236,26 @@ DifFont* FontSystem::loadFont(const char* key, int width)
     }
     font->setScale(fontScale, fontScale);      // sub_100A3450, both components from the x ratio
 
-    if (m_count >= m_cap)
-    {
-        const unsigned int cap = m_cap ? m_cap * 2 : 8;
-        Entry* grown = static_cast<Entry*>(::renddx9abi::engineAlloc(cap * sizeof(Entry)));
-        if (!grown)
-            return font;                     // usable, just not cached
-        for (unsigned int i = 0; i < m_count; ++i) grown[i] = m_entries[i];
-        if (m_entries) ::renddx9abi::engineFree(m_entries);
-        m_entries = grown;
-        m_cap = cap;
-    }
-    ::strncpy_s(m_entries[m_count].key, sizeof(m_entries[m_count].key), key, _TRUNCATE);
-    m_entries[m_count].font = font;
-    ++m_count;
     return font;
+}
+
+// PE 0x100A0BD0: both vptrs, unregister from category 11 (EventManager +0x30), free +0x0C, clear
+// (0x100A0B30, the [CHOSEN] counted form below), then the tree erase and head reset.
+FontSystem::~FontSystem()
+{
+    m_vptr = fontSystemVtable();
+    m_eventVptr = fontSystemEventVtable();
+    ::dice::hfe::eventManager->unregisterEventHandler(
+        static_cast<EventCategory>(11), reinterpret_cast<IEventListener*>(&m_eventVptr));
+    if (m_unusedLexicon)
+        ::renddx9abi::engineFree(m_unusedLexicon);
+    // [CHOSEN, not recovered] Keep persistent wrappers' counted native ownership.
+    // A live wrapper retains the font object while its device half is detached.
+    for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
+        if (DifFont* const font = it->second)
+            if (font->release() > 0)
+                font->detachDevice();
+    m_cache.clear();
 }
 
 int FontSystem::release()
@@ -1537,16 +2263,13 @@ int FontSystem::release()
     const int remaining = --m_refCount;
     if (!remaining)
     {
-        // Unregister the event handler before clearing font cache and map storage.
-        ::dice::hfe::eventManager->unregisterEventHandler(
-            static_cast<EventCategory>(11), reinterpret_cast<IEventListener*>(&m_eventVptr));
-        clear();
-        if (m_entries) ::renddx9abi::engineFree(m_entries);
+        this->~FontSystem();
         ::renddx9abi::engineFree(this);
     }
     return remaining;
 }
 
+// PE 0x100A11C0
 void* FontSystem::queryInterface(unsigned int iid) const
 {
     if (iid == RD9_IID_IBASE || iid == IID_IFontSystem)
@@ -1555,10 +2278,10 @@ void* FontSystem::queryInterface(unsigned int iid) const
 }
 
 namespace {
-void  __fastcall fs_addRef(void* s, void*)  { static_cast<FontSystem*>(s)->addRef(); }
-int   __fastcall fs_getRef(void* s, void*)  { return static_cast<FontSystem*>(s)->getRef(); }
-int   __fastcall fs_release(void* s, void*) { return static_cast<FontSystem*>(s)->release(); }
-void* __fastcall fs_queryInterface(void* s, void*, unsigned int iid)
+void  RD9_THUNK fs_addRef(void* s RD9_THUNK_EDX)  { static_cast<FontSystem*>(s)->addRef(); }
+int   RD9_THUNK fs_getRef(void* s RD9_THUNK_EDX)  { return static_cast<FontSystem*>(s)->getRef(); }
+int   RD9_THUNK fs_release(void* s RD9_THUNK_EDX) { return static_cast<FontSystem*>(s)->release(); }
+void* RD9_THUNK fs_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 { return static_cast<FontSystem*>(s)->queryInterface(iid); }
 
 const void* kFontSystemVtable[4] =
@@ -1607,7 +2330,14 @@ void* createSwiffFont(const char* name, int size, const wchar_t* initialText)
     if (!fsBase)
         return 0;
     FontSystem* fs = static_cast<FontSystem*>(fsBase);
-    DifFont* font = fs->getFont(name, size);
+    // [CHOSEN, not recovered] Preserve PE 0x10152F26's %d spelling without
+    // restoring sprintf's fixed-buffer overflow for long font names.
+    char number[32];
+    ::_snprintf_s(number, sizeof(number), _TRUNCATE, "%d", size);
+    std::string key(name ? name : "");
+    key += '_';
+    key += number;
+    DifFont* font = fs->getFont(key.c_str());
     if (!font)
         return 0;
     SwiffFontObject* wrapper = static_cast<SwiffFontObject*>(
@@ -1631,6 +2361,30 @@ void swiffFontSetScrollIndex(void* font, int value)
 {
     if (font)
         static_cast<SwiffFontObject*>(font)->setScrollIndex(value);
+}
+
+void swiffFontRefreshWindow(void* font)
+{
+    static_cast<SwiffFontObject*>(font)->refreshWindow();
+}
+
+// SwiffRender slot 27 (0x10154870) deletes a wrapper: its destructor (0x100A42F0), then the engine
+// free (0x1005F360). The caller has tested the pointer.
+// [CHOSEN, not recovered] This wrapper holds a reference on its DifFont (the shipped constructor
+// 0x100A4E20 takes none), so the delete returns it; the shipped destructor frees the wrapper's
+// glyph vector and text string; this layout uses a native vector and bounded inline text.
+void SwiffFontObject::destroy()
+{
+    if (m_font)
+        m_font->release();
+    m_font = 0;
+    this->~SwiffFontObject();
+    ::renddx9abi::engineFree(this);
+}
+
+void swiffFontDelete(void* font)
+{
+    static_cast<SwiffFontObject*>(font)->destroy();
 }
 
 } // namespace geom

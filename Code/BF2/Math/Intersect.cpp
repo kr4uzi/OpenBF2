@@ -12,7 +12,9 @@
 namespace dice {
 namespace hfe {
 
-// ELF 0x495E20; engine ELF 0x83B26D0.
+// ELF 0x495E20; engine ELF 0x83B26D0; RendDX9.dll copy PE 0x101C78F0 (unreachable there: no code or
+// data references). [PLATFORM] the PE copy forms the denominator as (nz*dz + ny*dy) + nx*dx; the order
+// below differs in the last float bit only. An unordered denominator proceeds, as the PE does.
 bool findIntersection(const Plane3& plane, const Ray3& ray, Vec3& position)
 {
     const float denominator = plane.normal.x * ray.direction.x
@@ -52,7 +54,7 @@ bool intersect(const Frustum& frustum, const LocalBoundingBox& box)
     return true;
 }
 
-// ELF 0x496180. Per axis: below the box -> (c - min)^2, above it -> (c - max)^2, inside -> 0.
+// ELF 0x496180; RendDX9.dll copy PE 0x101C7C00 (unreachable there: no code or data references). Per axis: below the box -> (c - min)^2, above it -> (c - max)^2, inside -> 0.
 bool sphereIntersectsAABB(const Vec3& centre, float radius, const Vec3& boxMin, const Vec3& boxMax)
 {
     const float* c  = &centre.x;
@@ -111,14 +113,17 @@ inline bool slabTest(const Vec3& origin, const Vec3& dir, const float* lo, const
 
 } // namespace
 
-// ELF 0x496010.
+// ELF 0x496010; RendDX9.dll copy PE 0x101C7A60 (unreachable there: no code or data references). The
+// PE tests each reciprocal with `fcomp 0; test ah, 1; jne`, so a NaN reciprocal takes the negative-slab
+// arm there.
 bool rayIntersectsAABB(const Vec3& origin, const Vec3& dir, const Vec3& boxMin, const Vec3& boxMax,
                        float& tMin, float& tMax)
 {
     return slabTest(origin, dir, &boxMin.x, &boxMax.x, tMin, tMax);
 }
 
-// ELF 0x4961F0. The box grown by `radius` on all six sides first.
+// ELF 0x4961F0; RendDX9.dll copy PE 0x101C7CB0 (unreachable there: no code or data references;
+// the grown corners are formed first, then the same slab test as PE 0x101C7A60). The box grown by `radius` on all six sides first.
 bool rayRadiusIntersectsAABB(const Vec3& origin, const Vec3& dir, float radius,
                              const Vec3& boxMin, const Vec3& boxMax, float& tMin, float& tMax)
 {

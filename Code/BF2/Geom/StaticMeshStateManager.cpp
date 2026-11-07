@@ -5,15 +5,16 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../../RendDX9Abi/HostFileAbi.h"
-#include "../../RendDX9Abi/Vc71String.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
+#include <string>
 #include "../RendDX9/Texture.h"
 #include "StaticMeshTemplate.h"
 
+#include <algorithm>
 #include <new>
 #include <string.h>
 
@@ -21,12 +22,11 @@ namespace dice {
 namespace hfe {
 
 namespace dx9rend {
-// BF2Render.cpp, PE 0x1023B96C. The shader-quality index lives at +0x6CC; VideoOptions.cpp
-// reaches the very same field by documented raw offset, and so does this file.
-extern IBase* g_Renderer;
+// BF2Render.cpp - the Renderer's +0x6CC shader-quality index (RAPATH).
+unsigned int rendererRaPath();
 // TextureManager.cpp - declared here rather than pulled in through RendDX9Base.h, the same way
 // MeshTemplate.cpp declares the BufferManager entry points it needs.
-void* textureManagerGetTexture(const vc71::string& name);
+void* textureManagerGetTexture(const std::string& name);
 int   textureManagerDefaultMipClass();                      // sub_10017DF0 on dword_1023B974
 int   textureManagerSwapDefaultMipClass(int value);
 } // namespace dx9rend
@@ -51,31 +51,27 @@ extern const unsigned int g_shaderComboFlags[16] =
 // [CHOSEN, not recovered] Storage is owned by this translation unit.
 // [RETIRE-WHEN: the STM technique init fills it.]
 
-vc71::vector_layout g_staticMeshQualityMasks = { 0, 0, 0, 0 };
+std::vector<unsigned int> g_staticMeshQualityMasks;
 
 namespace {
 
-// g_Renderer + 0x6CC, the renderer's shader-quality index. BF2Render.cpp keeps the Renderer's tail
-// opaque, so this field is reached by documented raw offset - the same treatment VideoOptions.cpp's
-// rendererSetShaderPathAndUpdate gives the identical dword (PE 0x100286C0).
+// g_Renderer + 0x6CC, the renderer's shader-quality index, through BF2Render.cpp's accessor (the
+// same dword VideoOptions.cpp's rendererSetShaderPathAndUpdate writes, PE 0x100286C0).
 inline int rendererShaderQualityIndex()
 {
-    const unsigned char* const base =
-        reinterpret_cast<const unsigned char*>(::dice::hfe::dx9rend::g_Renderer);
-    return *reinterpret_cast<const int*>(base + 0x6CC);
+    return static_cast<int>(::dice::hfe::dx9rend::rendererRaPath());
 }
 
-// vc71::string carries no find/compare of its own (it is an ABI carrier, not a container), so the
-// two std::string operations the shipped bodies use are spelled out here. Both are equivalent for
+// The two std::string operations the shipped bodies use, spelled out as they ran. Both are equivalent for
 // the NUL-terminated names these strings hold; neither of the shipped call sites can see an
 // embedded NUL, because every name arrives from the file as a counted run that is then
 // NUL-terminated by hand.
-inline bool stringContains(const vc71::string& haystack, const char* needle)
+inline bool stringContains(const std::string& haystack, const char* needle)
 {
     return ::strstr(haystack.c_str(), needle) != 0;
 }
 
-inline bool stringEquals(const vc71::string& a, const vc71::string& b)
+inline bool stringEquals(const std::string& a, const std::string& b)
 {
     return a.size() == b.size() && ::strcmp(a.c_str(), b.c_str()) == 0;
 }
@@ -85,8 +81,7 @@ inline bool stringEquals(const vc71::string& a, const vc71::string& b)
 unsigned int staticMeshQualityMask()
 {
     // PE: mov eax, g_Renderer / mov ecx, [eax+6CCh] / mov edx, dword_1025B8AC / mov ebx, [edx+ecx*4]
-    return reinterpret_cast<const unsigned int*>(
-        g_staticMeshQualityMasks.first)[rendererShaderQualityIndex()];
+    return g_staticMeshQualityMasks.data()[rendererShaderQualityIndex()];
 }
 
 // dword_102651C0. Null until StaticMeshRenderer's constructor creates it; nulled again only by that
@@ -107,27 +102,17 @@ void* const* shaderMaterialVtable();
 
 // IT IS NOT guarded. If the singleton has already been released, ecx is null and [ecx+0x0C]
 // faults; no guard is added here either.
+// PE 0x101A91B0
 void staticMeshStateManagerRemoveFromCache(StaticMeshStateManager* self, const void* value)
 {
-    char* cursor = self->m_cache.first;
-    if (cursor == self->m_cache.last)
-        return;
-    char* next = cursor + 4;
-    do
+    StaticMeshStateManager::ShaderMaterialCache& cache = self->m_cache;
+    for (StaticMeshStateManager::ShaderMaterialCache::iterator it = cache.begin(); it != cache.end();)
     {
-        if (*reinterpret_cast<const void* const*>(cursor) == value)
-        {
-            ::memmove(cursor, next,
-                      4u * static_cast<unsigned int>((self->m_cache.last - next) >> 2));
-            self->m_cache.last -= 4;
-        }
+        if (*it == value)
+            it = cache.erase(it);
         else
-        {
-            cursor += 4;
-            next   += 4;
-        }
+            ++it;
     }
-    while (cursor != self->m_cache.last);
 }
 
 // sub_101A9200 - the record's member teardown. Republishes the vtable, releases the eight texture
@@ -147,20 +132,20 @@ void shaderMaterialDestroyMembers(ShaderMaterial* self)
         }
     }
     staticMeshStateManagerRemoveFromCache(g_staticMeshStateManager, self);
-    self->name.~string();
+    self->name.~basic_string();
 }
 
-int __fastcall shaderMaterial_addRef(void* self, void*)
+int RD9_THUNK shaderMaterial_addRef(void* self RD9_THUNK_EDX)
 {
     return ++static_cast<ShaderMaterial*>(self)->refCount;
 }
 
-int __fastcall shaderMaterial_getRef(void* self, void*)
+int RD9_THUNK shaderMaterial_getRef(void* self RD9_THUNK_EDX)
 {
     return static_cast<ShaderMaterial*>(self)->refCount;
 }
 
-void* __fastcall shaderMaterial_destroy(void* self, void*, unsigned char flags)
+void* RD9_THUNK shaderMaterial_destroy(void* self RD9_THUNK_EDX, unsigned char flags)
 {
 
     shaderMaterialDestroyMembers(static_cast<ShaderMaterial*>(self));
@@ -169,17 +154,17 @@ void* __fastcall shaderMaterial_destroy(void* self, void*, unsigned char flags)
     return self;
 }
 
-int __fastcall shaderMaterial_release(void* self, void*)
+int RD9_THUNK shaderMaterial_release(void* self RD9_THUNK_EDX)
 {
     // decrement, and on zero dispatch through slot +0x10 with 1.
     ShaderMaterial* const p = static_cast<ShaderMaterial*>(self);
     const int remaining = --p->refCount;
     if (remaining == 0)
-        shaderMaterial_destroy(self, 0, 1);
+        shaderMaterial_destroy(self RD9_THUNK_ARG, 1);
     return remaining;
 }
 
-void* __fastcall shaderMaterial_queryInterface(void* self, void*, unsigned int iid)
+void* RD9_THUNK shaderMaterial_queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
 {
     return iid != 1u ? 0 : self;
 }
@@ -196,7 +181,55 @@ void* const kShaderMaterialVtable[5] =
 
 void* const* shaderMaterialVtable() { return kShaderMaterialVtable; }
 
+// PE 0x1000CB20
+int RD9_THUNK staticMeshStateManager_addRef(void* self RD9_THUNK_EDX)
+{
+    return static_cast<StaticMeshStateManager*>(self)->addRef();
+}
+
+// PE 0x101A9A10
+int RD9_THUNK staticMeshStateManager_getRef(void* self RD9_THUNK_EDX)
+{
+    return static_cast<StaticMeshStateManager*>(self)->getRef();
+}
+
+int RD9_THUNK staticMeshStateManager_release(void* self RD9_THUNK_EDX)
+{
+    return static_cast<StaticMeshStateManager*>(self)->release();
+}
+
+// PE 0x10025930
+void* RD9_THUNK staticMeshStateManager_queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
+{
+    return static_cast<StaticMeshStateManager*>(self)->queryInterface(iid);
+}
+
+// PE table 0x102216E4
+void* const kStaticMeshStateManagerVtable[4] =
+{
+    reinterpret_cast<void*>(&staticMeshStateManager_addRef),
+    reinterpret_cast<void*>(&staticMeshStateManager_getRef),
+    reinterpret_cast<void*>(&staticMeshStateManager_release),
+    reinterpret_cast<void*>(&staticMeshStateManager_queryInterface)
+};
+
 } // anonymous namespace
+
+// ShaderMaterial constructor: vptr (off_10221558), refCount 1, empty name, zeroed combo, eight texture
+// slots and texture count. createMaterial builds its stack record with the same stores inline.
+// unreachable in 1.50: no code or data references
+// PE 0x101A8CC0
+ShaderMaterial* shaderMaterialConstruct(ShaderMaterial* self)
+{
+    self->vptr     = const_cast<void**>(shaderMaterialVtable());
+    self->refCount = 1;
+    new (&self->name) std::string();
+    self->shaderCombo = 0;
+    for (int i = 0; i < 8; ++i)
+        self->textures[i] = 0;
+    self->textureCount = 0;
+    return self;
+}
 
 // The typed form of the disposal every owner performs - mergeMaterials (PE 0x10119CFE),
 // readMaterials' lod-skip arm and the template destructor's helper all reach it as
@@ -204,58 +237,35 @@ void* const* shaderMaterialVtable() { return kShaderMaterialVtable; }
 // record's own vptr rather than calling the body directly keeps that property.
 int shaderMaterialRelease(ShaderMaterial* material)
 {
-    typedef int (__fastcall* ReleaseFn)(void*, void*);
+    typedef int (__thiscall* ReleaseFn)(void*);
     void** const table = reinterpret_cast<void**>(material->vptr);
-    return reinterpret_cast<ReleaseFn>(table[2])(material, 0);
+    return reinterpret_cast<ReleaseFn>(table[2])(material);
 }
 
+// PE 0x101A90F0
 StaticMeshStateManager::StaticMeshStateManager()
+    : m_vptr(const_cast<void**>(kStaticMeshStateManagerVtable)), m_refCount(1)
 {
-    // 0x101A90F0, in shipped order. m_cache.alloc (the empty std::allocator word) is deliberately
-    // NOT written, exactly as the shipped constructor leaves it.
-    m_vptr        = const_cast<void**>(shaderMaterialVtable());   // see the note below
-    m_refCount    = 1;
-    m_cache.first = 0;
-    m_cache.last  = 0;
-    m_cache.end   = 0;
-    new (&m_texturePrefix) vc71::string();
-    m_texturePrefix = "Textures/";
+    // 0x101A90F0, in shipped order; the cache and the prefix are default-constructed by the
+    // compiler before the body.
+    m_texturePrefix = std::string("Textures/");
     m_template    = 0;
-
-    // off_102216E4 is the manager's OWN four-slot quartet and shares its first two bodies with
-    // Nothing in the recovered image dispatches through it - the renderer's
-    // constructor and destructor call the constructor and sub_101A9150 directly - so publishing a
-    // separate four-entry table here would add a surface no recovered call site uses. The slot is
-    // filled with the record table's address purely so the field is not left indeterminate; if a
-    // dispatching caller is ever found, give the manager its own table then.
 }
 
+// PE 0x101A9150
 void StaticMeshStateManager::destroyMembers()
 {
-    // The vector is emptied by repeatedly erasing its first element - a memmove of the
-    // whole tail per element, which is what the shipped clear() expansion does here - and only then
-    // is the buffer freed and the three words zeroed. The vtable is republished before the loop.
-    char* const first = m_cache.first;
-    const bool wasEmpty = (first == m_cache.last);
-    m_vptr = const_cast<void**>(shaderMaterialVtable());
-    if (!wasEmpty)
-    {
-        do
-        {
-            ::memmove(first, first + 4,
-                      4u * static_cast<unsigned int>((m_cache.last - (first + 4)) >> 2));
-            m_cache.last -= 4;
-        }
-        while (first != m_cache.last);
-    }
-    m_texturePrefix.~string();
-    if (m_cache.first)
-        ::renddx9abi::engineFree(m_cache.first);
-    m_cache.first = 0;
-    m_cache.last  = 0;
-    m_cache.end   = 0;
+    // The vtable is republished, the cache emptied (the shipped clear() expansion erases the first
+    // element repeatedly), then the prefix is destroyed and only then the cache's buffer freed.
+    // The owner frees the storage afterwards without running a C++ destructor.
+    m_vptr = const_cast<void**>(kStaticMeshStateManagerVtable);
+    while (!m_cache.empty())
+        m_cache.erase(m_cache.begin());
+    m_texturePrefix.~basic_string();
+    m_cache.~ShaderMaterialCache();
 }
 
+// PE 0x101A9A20
 int StaticMeshStateManager::release()
 {
 
@@ -271,12 +281,12 @@ int StaticMeshStateManager::release()
 namespace {
 
 
+// PE 0x101A8D10
 // Decodes a lowercased shader filename, testing longer names first.
 // Normalizes basendetail to basenbase so both names share the same cached material identity.
-
 void staticMeshDecodeShaderCombo(StaticMeshStateManager* self, ShaderMaterial* material)
 {
-    vc71::string& name = material->name;
+    std::string& name = material->name;
 
     if (stringContains(name, "basedetaildirtcrackndetailncrack"))
     {
@@ -350,6 +360,7 @@ void staticMeshDecodeShaderCombo(StaticMeshStateManager* self, ShaderMaterial* m
 // The unsigned sentinel triggers the first-material rewind so the second map uses slot 2.
 unsigned int g_shaderTextureBitCursor = 0xFFFFFFFFu;      // dword_1023AD40
 
+// PE 0x101A8AF0
 int staticMeshNextTextureSlot(int combo, int currentSlot)
 {
     unsigned int cursor = g_shaderTextureBitCursor;
@@ -382,16 +393,14 @@ int staticMeshNextTextureSlot(int combo, int currentSlot)
 // pointers. The shipped comparison sets a flag for slots 0..6 and folds slot 7 into the final
 // `&&`, so slots 0..6 are always compared even after a mismatch - no short circuit. Reproduced.
 
+// PE 0x101A9010
 ShaderMaterial* staticMeshFindCachedMaterial(StaticMeshStateManager* self,
                                              const ShaderMaterial* wanted)
 {
-    const unsigned int count =
-        self->m_cache.first
-            ? static_cast<unsigned int>((self->m_cache.last - self->m_cache.first) >> 2)
-            : 0u;
+    const unsigned int count = static_cast<unsigned int>(self->m_cache.size());
     for (unsigned int i = 0; i < count; ++i)
     {
-        ShaderMaterial* const entry = reinterpret_cast<ShaderMaterial**>(self->m_cache.first)[i];
+        ShaderMaterial* const entry = self->m_cache[i];
         if (stringEquals(entry->name, wanted->name) && entry->shaderCombo == wanted->shaderCombo)
         {
             bool same = (entry->textures[0] == wanted->textures[0]);
@@ -409,37 +418,6 @@ ShaderMaterial* staticMeshFindCachedMaterial(StaticMeshStateManager* self,
 }
 
 
-// sub_101A97E0 - vector<ShaderMaterial*>::insert(end, 1, value), VC7.1 growth policy (half again,
-// clamped up to what was asked for). Kept as a source-level container operation; the shipped
-// allocator is engineAlloc/engineFree.
-
-void staticMeshCachePush(vc71::vector_layout& cache, ShaderMaterial* value)
-{
-    const unsigned int size =
-        cache.first ? static_cast<unsigned int>((cache.last - cache.first) >> 2) : 0u;
-    const unsigned int capacity =
-        cache.first ? static_cast<unsigned int>((cache.end - cache.first) >> 2) : 0u;
-
-    if (!cache.first || size >= capacity)
-    {
-        unsigned int grown = capacity + (capacity >> 1);
-        if (grown < size + 1u)
-            grown = size + 1u;
-
-        char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(grown * 4u));
-        if (size)
-            ::memcpy(buffer, cache.first, size * 4u);
-        if (cache.first)
-            ::renddx9abi::engineFree(cache.first);
-        cache.first = buffer;
-        cache.last  = buffer + size * 4u;
-        cache.end   = buffer + grown * 4u;
-    }
-
-    *reinterpret_cast<ShaderMaterial**>(cache.last) = value;
-    cache.last += 4;
-}
-
 // The stack-resident ShaderMaterial createMaterial builds. Raw storage, so the record is destroyed
 // exactly once - by shaderMaterialDestroyMembers - on every one of the shipped body's four exits.
 struct ShaderMaterialScratch
@@ -455,7 +433,7 @@ struct ShaderMaterialScratch
 // Map names without '/' use path + m_texturePrefix. owner is stored in the material;
 // version is retained in the signature but unused.
 
-ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
+ShaderMaterial* StaticMeshStateManager::createMaterial(const std::string& path,
                                                        ::renddx9abi::HostNonlinearStream* stream,
                                                        unsigned int version,
                                                        StaticMeshTemplate* owner)
@@ -468,7 +446,7 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
     ShaderMaterial& temp = scratch.get();
     temp.vptr     = const_cast<void**>(shaderMaterialVtable());
     temp.refCount = 1;
-    new (&temp.name) vc71::string();
+    new (&temp.name) std::string();
     ::memset(temp.textures, 0, sizeof(temp.textures));
     temp.shaderCombo  = 0;
     temp.textureCount = 0;
@@ -499,12 +477,12 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
         stream->read(raw, nameLength);
         raw[nameLength] = 0;
 
-        vc71::string prefix;
-        vc71::string mapName(raw);
+        std::string prefix;
+        std::string mapName(raw);
 
         if (!stringContains(mapName, "/"))
         {
-            vc71::string built(path);
+            std::string built(path);
             built += m_texturePrefix;
             prefix = built;
         }
@@ -537,7 +515,7 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
                 if (owner->m_isVegetation)
                     ::dice::hfe::dx9rend::textureManagerSwapDefaultMipClass(9);
 
-                vc71::string full(prefix);
+                std::string full(prefix);
                 full += mapName;
                 temp.textures[slot] = ::dice::hfe::dx9rend::textureManagerGetTexture(full);
 
@@ -559,17 +537,18 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
 
     if (ShaderMaterial* const cached = staticMeshFindCachedMaterial(this, &temp))
     {
-        shaderMaterial_addRef(cached, 0);        // the shipped `(v23)(v23)` - slot +0x00
+        shaderMaterial_addRef(cached RD9_THUNK_ARG);        // the shipped `(v23)(v23)` - slot +0x00
         shaderMaterialDestroyMembers(&temp);
         return cached;
     }
 
-    ShaderMaterial* fresh = static_cast<ShaderMaterial*>(::renddx9abi::engineAlloc(0x4C));
+    ShaderMaterial* fresh =
+        static_cast<ShaderMaterial*>(::renddx9abi::engineAlloc(sizeof(ShaderMaterial)));
     if (fresh)
     {
         fresh->vptr     = const_cast<void**>(shaderMaterialVtable());
         fresh->refCount = 1;
-        new (&fresh->name) vc71::string();
+        new (&fresh->name) std::string();
         fresh->shaderCombo = 0;
         ::memset(fresh->textures, 0, sizeof(fresh->textures));
         fresh->textureCount = 0;
@@ -588,7 +567,7 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
         }
     }
 
-    staticMeshCachePush(m_cache, fresh);
+    m_cache.push_back(fresh);                    // PE 0x101A97E0: VC7.1 std::vector<ShaderMaterial*>::_Insert_n(end, 1, value) instantiation (STL, not source)
     shaderMaterialDestroyMembers(&temp);
     return fresh;
 }
@@ -599,7 +578,7 @@ ShaderMaterial* StaticMeshStateManager::createMaterial(const vc71::string& path,
 
 
 // The signature StaticMeshTemplate::readMaterials calls, as agreed with the coordinator.
-ShaderMaterial* staticMeshStateManagerCreateMaterial(const vc71::string& path,
+ShaderMaterial* staticMeshStateManagerCreateMaterial(const std::string& path,
                                                      ::renddx9abi::HostNonlinearStream* stream,
                                                      unsigned int version,
                                                      StaticMeshTemplate* owner)
@@ -607,7 +586,7 @@ ShaderMaterial* staticMeshStateManagerCreateMaterial(const vc71::string& path,
     return g_staticMeshStateManager->createMaterial(path, stream, version, owner);
 }
 
-// StaticMeshRenderer's constructor: engineAlloc(0x38) then 0x101A90F0.
+// StaticMeshRenderer's constructor: engineAlloc (retail 0x38) then 0x101A90F0.
 StaticMeshStateManager* staticMeshStateManagerConstruct(void* storage)
 {
     return new (storage) StaticMeshStateManager();

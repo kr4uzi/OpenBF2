@@ -2,13 +2,22 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "RendDX9Base.h"
 #include "Texture.h"
+#include "ResourceTracker.h"
+#include "../RendMisc/IRenderer.h"
+#include "../GeomMisc/Debug.h"
+#if defined(_WIN32)
+#include <dxerr9.h>
+#pragma comment(lib, "dxerr9.lib")
+#endif
 
 #include <new>
+#include <cstdio>
 
 namespace dice {
 namespace hfe {
@@ -20,7 +29,7 @@ extern void* g_rendererBase;   // dword_1023B970 - RendDX9Init.cpp. The ctor/dto
 int                 textureManagerDefaultMipClass();   // sub_10017DF0 -> TM+0x98
 int                 textureManagerManagedFlag();       // sub_10017E30 -> TM+0x20
 unsigned char       textureManagerRecreateMode();      // sub_10017E50 -> TM+0x24
-const vc71::string& textureManagerOriginLabel();       // TM+0x9C
+const std::string& textureManagerOriginLabel();       // TM+0x9C
 
 namespace {
 
@@ -29,9 +38,9 @@ namespace {
 // this interface has no release slot.
 
 
-int  __fastcall tex_getRef(void* self, void*)  { return static_cast<EngineTexture*>(self)->refCount; }
-void __fastcall tex_nullsub(void*, void*)      { /* nullsub - empty in the original too */ }
-void __fastcall tex_addRef(void* self, void*)  { ++static_cast<EngineTexture*>(self)->refCount; }
+int  RD9_THUNK tex_getRef(void* self RD9_THUNK_EDX)  { return static_cast<EngineTexture*>(self)->refCount; }
+void RD9_THUNK tex_nullsub(void* RD9_THUNK_EDX)      { /* nullsub - empty in the original too */ }
+void RD9_THUNK tex_addRef(void* self RD9_THUNK_EDX)  { ++static_cast<EngineTexture*>(self)->refCount; }
 
 void* const kTextureVtable[3] =
 {
@@ -51,12 +60,23 @@ IDirect3DDevice9* baseDevice()
 
 // Adjusts the renderer's live-texture statistic.
 
+// PE 0x1000D8D0
+void decrementTextureCount(void* stats)
+{
+    --*reinterpret_cast<int*>(static_cast<unsigned char*>(stats) + 0x2C);
+}
+
 void bumpTextureCount(int delta)
 {
+    // [CHOSEN, not recovered] Retain the existing missing-renderer null-access omission.
+    // PE 0x10014B81 / 0x10014E4F dispatch the statistics getter without a guard.
     if (!g_rendererBase)
         return;
-    int* counter = reinterpret_cast<int*>(static_cast<unsigned char*>(g_rendererBase) + 0x108 + 0x2C);
-    *counter += delta;
+    void* const stats = static_cast<IRenderer*>(g_rendererBase)->getRenderStats();
+    if (delta == -1)
+        decrementTextureCount(stats);
+    else
+        *reinterpret_cast<int*>(static_cast<unsigned char*>(stats) + 0x2C) += delta;
 }
 
 } // anonymous namespace
@@ -66,10 +86,11 @@ void bumpTextureCount(int delta)
 // shipped ctor writes exactly the fields below and leaves the created-desc block (+0x28..+0x43) and
 // the bytes at +0x52/+0x53 and +0x79..+0x7B as they land. Reproduced field-for-field, in the
 // shipped order where an observer could tell (the string copy and the counter bump come last).
-
+// The placement default-initialization constructs only the name string (+0x58, empty).
+// PE 0x10014AF0 (listing read).
 EngineTexture* textureCtor(void* storage)
 {
-    EngineTexture* t = static_cast<EngineTexture*>(storage);
+    EngineTexture* t = new (storage) EngineTexture;
 
     t->vptr        = const_cast<void**>(kTextureVtable);
     t->refCount    = 1;
@@ -77,7 +98,6 @@ EngineTexture* textureCtor(void* storage)
     t->lockCount   = 0;                                    // +0x44
     t->byte51      = 0;                                    // +0x51
     t->priority    = 0;                                    // +0x54
-    new (&t->name) vc71::string();                         // +0x58, empty
     t->totalBytes  = 0;                                    // +0x74
     t->usedSuffixedFile = 0;                               // +0x78
 
@@ -93,7 +113,7 @@ EngineTexture* textureCtor(void* storage)
 
     t->name = textureManagerOriginLabel();                 // string copy from TM+0x9C
 
-    // (*(base->vptr + 0x6C))(base) -> +0x108; sub_1000D8C0 -> ++(+0x2C).
+    // (*(base->vptr + 0x6C))(base) -> +0x108; PE 0x1000D8C0 -> ++(+0x2C).
     bumpTextureCount(+1);
     return t;
 }
@@ -109,14 +129,11 @@ void textureDtor(EngineTexture* tex)
     if (tex->baseTexture)
     {
         tex->baseTexture->Release();
-        // sub_10047EE0(0, baseTexture) - the resource-tracker erase. Same deliberate omission as
-        // BufferManager.cpp:274: the tracker map feeds only the GSLoadedTextureDetailedInfo debug
-        // dump, which is unwritten, and registering into an unread structure would be worse.
-        // [FRONTIER] dice::hfe::dx9rend - the resource tracker (sub_10047E70 / sub_10047EE0)
+        resourceTrackerRemove(0, tex->baseTexture);         // PE 0x10014E3B: after Release
         tex->baseTexture = 0;
     }
     bumpTextureCount(-1);                                  // base vslot +0x6C, then sub_1000D8D0
-    tex->name.~string();
+    tex->~EngineTexture();                                 // destroys the name
 }
 
 void textureAddRef(EngineTexture* tex)
@@ -137,8 +154,7 @@ int textureReleaseD3DResource(EngineTexture* tex)
     const int remaining = static_cast<int>(tex->baseTexture->Release());
     if (!remaining)
     {
-        // sub_10047EE0(0, baseTexture) - the resource-tracker erase. Same withheld frontier as
-        // textureDtor; see the note there.
+        resourceTrackerRemove(0, tex->baseTexture);         // PE 0x10014E8C
     }
     tex->baseTexture = 0;
     return remaining;
@@ -159,11 +175,12 @@ void textureReleaseRef(EngineTexture*& tex)
 // Replaces and AddRefs the D3D texture, copies its description, and resets lock state.
 // Updates origin name, mip byte count, and resource tracking after releasing the old texture.
 
+// PE 0x10014840 (listing read).
 bool textureAttach(EngineTexture* tex, IDirect3DBaseTexture9* d3d, const unsigned int desc[7])
 {
     if (tex->baseTexture)
     {
-        // sub_10047EE0(0) then Release - the shipped order. Tracker: see the note in textureDtor.
+        resourceTrackerRemove(0, tex->baseTexture);         // PE 0x10014854: before Release
         tex->baseTexture->Release();
         tex->baseTexture = 0;
         tex->lockCount   = 0;
@@ -176,7 +193,8 @@ bool textureAttach(EngineTexture* tex, IDirect3DBaseTexture9* d3d, const unsigne
 
     tex->name = textureManagerOriginLabel();               // TM+0x9C, again
 
-    unsigned int w = tex->width, h = tex->height, d = tex->depth;
+    int w = static_cast<int>(tex->width), h = static_cast<int>(tex->height),
+        d = static_cast<int>(tex->depth);
     const int bpp = bitsPerPixel(tex->format);
     tex->totalBytes = 0;
     for (unsigned int i = 0; i < tex->mipLevels; ++i)
@@ -188,9 +206,8 @@ bool textureAttach(EngineTexture* tex, IDirect3DBaseTexture9* d3d, const unsigne
             d >>= 1;
     }
 
-    // sub_10047E70(0, this->baseTexture, totalBytes, &name, &pool, this) - NOT reproduced, same
-    // frontier as above. Nothing on the boot path reads the tracker map.
-    // [FRONTIER] dice::hfe::dx9rend - the resource tracker (sub_10047E70 / sub_10048AE0)
+    // PE 0x10014909; mip arithmetic above uses the image's signed divides and shifts.
+    resourceTrackerRegister(0, tex->baseTexture, tex->totalBytes, tex->name, &tex->pool, tex);
     return true;
 }
 
@@ -198,7 +215,7 @@ bool textureAttach(EngineTexture* tex, IDirect3DBaseTexture9* d3d, const unsigne
 // sub_10014820 - qmemcpy(this + 0x0C, info, 0x1C). The original D3DXIMAGE_INFO, stamped at the very
 // end of loadTextureFromFile - after the mip-skip has already shrunk the created desc at +0x28, so
 // the two blocks deliberately differ on a skipped-mip load.
-
+// PE 0x10014820.
 void textureSetFileInfo(EngineTexture* tex, const void* info28)
 {
     ::memcpy(tex->fileInfo, info28, 0x1C);
@@ -209,6 +226,7 @@ void textureSetFileInfo(EngineTexture* tex, const void* info28)
 // GetSurfaceLevel(mip); otherwise QI IDirect3DCubeTexture9 and GetCubeMapSurface(face, mip). The
 // QI'd interface is Released before returning; the surface ref passes to the caller.
 
+// PE 0x10014950
 IDirect3DSurface9* textureGetLevelSurface(EngineTexture* tex, unsigned int mip, unsigned int face)
 {
     IDirect3DSurface9* surf = 0;
@@ -236,6 +254,7 @@ namespace {
 // creates a fresh 1-level systemmem texture of the mip's exact w/h/format, returning its level-0
 // surface (the texture itself is Released; the surface ref survives it).
 
+// PE 0x100149E0. The ignored incoming surface is omitted from this private native adapter.
 IDirect3DSurface9* createStagingSurface(unsigned int w, unsigned int h, unsigned int format)
 {
     IDirect3DDevice9* device = baseDevice();
@@ -249,21 +268,40 @@ IDirect3DSurface9* createStagingSurface(unsigned int w, unsigned int h, unsigned
 }
 
 
-// Texture_updateSurface, device->UpdateSurface(src, 0, dst, 0), with the shipped
-// failure diagnostic at Texture.cpp:484 ("Failed to update texture. <DXGetErrorDescription9>").
-// The diagnostic is rendered through the rebuild's log rather than the unread debug-stream family
-// (sub_10074300/sub_10074690), the same choice every recovered diagnostic in this image has made.
+const char* updateErrorDescription(HRESULT result)
+{
+#if defined(_WIN32)
+    return ::DXGetErrorDescription9A(result);
+#else
+    // [CHOSEN, not recovered] DXErr9 is a Windows SDK library; retain the native HRESULT.
+    static char description[32];
+    std::snprintf(description, sizeof(description), "HRESULT 0x%08X",
+                  static_cast<unsigned int>(result));
+    return description;
+#endif
+}
 
+// PE 0x10014A40
 void updateSurfaceFromStaging(IDirect3DSurface9* dst, IDirect3DSurface9* src)
 {
     IDirect3DDevice9* device = baseDevice();
     const HRESULT hr = device->UpdateSurface(src, 0, dst, 0);
-    if (FAILED(hr))
-        ::renddx9abi::logf("Texture.cpp:484: Failed to update texture. hr=0x%08X",
-                           static_cast<unsigned int>(hr));
+    if (hr != 0)
+    {
+        ::renddx9abi::Debug diagnostic(DebugTypeError,
+            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendDX9\\Texture.cpp", 484, "");
+        const char* const description = updateErrorDescription(hr);
+        diagnostic << "Failed to update texture. " << description;
+    }
 }
 
 } // anonymous namespace
+
+// PE 0x100149D0. [INFERRED] name: the sole caller passes the loaded texture in ECX,
+// pushes no arguments, and discards the result; the entire shipped body is RET.
+void textureFinalizeFromCode(EngineTexture*)
+{
+}
 
 
 // Locks a mip/face through a staging surface for default-pool textures or directly otherwise.
@@ -336,7 +374,7 @@ TextureLockRecord* textureLock(EngineTexture* tex, unsigned int mip, unsigned in
 // sub_10014D30 - unlock. Managed: QI the matching interface and UnlockRect/UnlockBox. Default:
 // unlock the staging surface, fetch the real level surface again, UpdateSurface staging -> real,
 // release both. Then free the record and --lockCount. Always returns 1.
-
+// PE 0x10014D30.
 bool textureUnlock(EngineTexture* tex, TextureLockRecord* rec)
 {
     if (tex->pool != 0)

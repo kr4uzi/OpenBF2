@@ -21,9 +21,9 @@ AreaObject::AreaObject(const AreaObjectTemplate* objectTemplate)
 AreaObject::~AreaObject() {}
 void AreaObject::init() { Bundle::init(); }
 
-#if DEDICATED
-// The dedicated images leave the observer at (0,0,0). Client camera/render work remains a
-// declaration-only frontier; these definitions deliberately belong to the dedicated image.
+// Both images measure from the observer at (0,0,0): the client body BF2.exe 0x5FF790 (table
+// 0x8F3838 +0xA8) is the dedicated one, with the bounds test as a call (0x5CD130, inclusive
+// min/max) instead of inline compares.
 void AreaObject::handleFrameUpdate(float)
 {
     const Mat4& absolute = getAbsoluteTransformation();
@@ -75,6 +75,8 @@ void AreaObject::handleFrameUpdate(float)
     }
 }
 
+#if DEDICATED
+// Dedicated-only: no client caller.
 void AreaObject::addAbsolutePoint()
 {
     const Vec3& position = getAbsolutePosition();

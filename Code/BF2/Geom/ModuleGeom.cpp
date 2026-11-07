@@ -8,8 +8,6 @@
 
 #include "../../RendDX9Abi/PluginModules.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
-#include "../../RendDX9Abi/Vc71Vector.h"
-#include "../../RendDX9Abi/Vc71Map.h"
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/BfMemory.h"
 #include "../../RendDX9Abi/Frontier.h"
@@ -27,7 +25,6 @@ namespace geom {
 
 extern IBase* g_GeometryTemplateManager;
 
-#if BF2_PLUGIN_ABI_NATIVE
 bool registerLightManagerConsoleObjects();
 bool unregisterLightManagerConsoleObjects();
 bool registerShadowManagerConsoleObjects();
@@ -40,6 +37,8 @@ bool registerSkyDomeConsoleObjects();
 bool unregisterSkyDomeConsoleObjects();
 bool registerTerrainConsoleObjects();
 bool unregisterTerrainConsoleObjects();
+bool registerTerrainCullerConsoleObjects();
+bool unregisterTerrainCullerConsoleObjects();
 bool registerNametagManagerConsoleObjects();      // Geom/NametagManagerConsole.cpp - `nametags`
 bool unregisterNametagManagerConsoleObjects();
 bool registerUndergrowthConsoleObjects();       // Geom/UndergrowthSystemConsole.cpp - `undergrowth`
@@ -52,8 +51,13 @@ bool registerObjectGeometryConsoleObjects();   // Geom/ObjectGeometryConsole.cpp
 bool unregisterObjectGeometryConsoleObjects();
 bool registerStaticMeshRendererConsoleObjects();   // Geom/StaticMeshRendererConsole.cpp - the atlas rows
 bool unregisterStaticMeshRendererConsoleObjects();
-#endif
-#if BF2_PLUGIN_ABI_NATIVE && defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
+bool registerSkinnedMeshRendererConsoleObjects();
+bool unregisterSkinnedMeshRendererConsoleObjects();
+bool registerParticleSystemManagerConsoleObjects();
+bool unregisterParticleSystemManagerConsoleObjects();
+bool registerWeatherManagerConsoleObjects();   // Geom/WeatherManagerConsole.cpp - `weatherManager`
+bool unregisterWeatherManagerConsoleObjects();
+#if defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
 // Geom/LightmapGeneration/LightmapGenerationConsole.cpp - the 2006 editor's `lightmapGeneration`
 // rows, editor flavour only ([CHOSEN, not recovered]: 1.50 publishes none).
 bool registerLightmapGenerationConsoleObjects();
@@ -67,6 +71,9 @@ bool unregisterLightmapGenerationConsoleObjects();
 // RoadCompiledRenderer.cpp - see the registration below.
 extern const unsigned int CID_RoadCompiledRenderer;
 IBase* __fastcall createRoadCompiledRenderer(unsigned int iid, IBase* outer);
+
+extern const unsigned int CID_LightGeometry;
+IBase* __fastcall createLightGeometry(unsigned int iid, IBase* outer);
 
 // RoadCompiledTemplate.cpp - GeometryTemplate.RoadCompiled (821901), the template every stock road
 // names. see the class list below.
@@ -84,15 +91,22 @@ IBase* __fastcall createRoadTemplate(unsigned int iid, IBase* outer);
 extern const unsigned int CID_RoadEditable;
 IBase* __fastcall createRoadEditable(unsigned int iid, IBase* outer);
 
+// BundledMeshOptimizer.cpp / StaticMeshOptimizer.cpp - the two GeometryOptimizer classes
+// Renderer::initialize registers, runs and clears (class ids dword_1021AF0C / dword_1021AF14).
+IBase* __fastcall createBundledMeshOptimizer(unsigned int iid, IBase* outer);
+IBase* __fastcall createStaticMeshOptimizer(unsigned int iid, IBase* outer);
+
 // DecalSystem/DecalManager.cpp - because joining A server crashed without it:
 // BF2's in-game HUD does getSingleton("DecalManager") and dereferences the result unchecked
 // (0x004F6FD2). The singleton entry is already in getSingletonList; this supplies its factory.
 extern const unsigned int CID_DecalManager;
 IBase* __fastcall createDecalManager(unsigned int iid, IBase* outer);
 
-// The gameplay-rendering singleton batch. Each is a faithful minimal class - the
-// reference spine + registration are real, the render path is a named frontier. See the per-class
-// files. SkyDome and the weather/undergrowth group remain deferred.
+// DecalSystem/DecalShadowManager.cpp. Its constructor registers "DecalShadowTemplate" with the
+// decal manager, which the singleton list creates first.
+IBase* __fastcall createDecalShadowManager(unsigned int iid, IBase* outer);
+
+// Factories for the particle, static-mesh and skinned-mesh renderer singletons.
 extern const unsigned int CID_ParticleSystemManager;
 IBase* __fastcall createParticleSystemManager(unsigned int iid, IBase* outer);
 extern const unsigned int CID_StaticMeshRenderer;
@@ -105,6 +119,12 @@ IBase* __fastcall createSkyDome(unsigned int iid, IBase* outer);
 
 // Factory for the undergrowth singleton and its grass resources.
 IBase* __fastcall createUndergrowthSystem(unsigned int iid, IBase* outer);
+
+// Factories for the storm (Geom/WeatherManager.cpp) and its lightning (Geom/LightningManager.cpp).
+IBase* __fastcall createLightningManager(unsigned int iid, IBase* outer);
+IBase* __fastcall createWeatherManager(unsigned int iid, IBase* outer);
+// Geom/Rain/RainManager.cpp.
+IBase* __fastcall createRainManager(unsigned int iid, IBase* outer);
 
 // Factory for static-mesh templates and their material/technique state.
 IBase* __fastcall createStaticMeshTemplate(unsigned int iid, IBase* outer);
@@ -130,6 +150,13 @@ IBase* __fastcall createNametagManager(unsigned int iid, IBase* outer);
 extern const unsigned int CID_SwiffRender;
 extern const unsigned int IID_ISwiffRender;
 IBase* __fastcall createSwiffRender(unsigned int iid, IBase* outer);
+
+// GeomMisc/MenuRend/Video.cpp - the Bink movie pair. FSMoviePlayer and SwiffRender create Video by
+// name; Video::close releases its VideoTarget.
+extern const unsigned int CID_VideoTarget;
+IBase* __fastcall createVideoTarget(unsigned int iid, IBase* outer);
+extern const unsigned int CID_Video;
+IBase* __fastcall createVideo(unsigned int iid, IBase* outer);
 
 // GeometryTemplateManager.cpp - now in its attested source home.  The first create/find/active and
 // ownership tranche made the old in-ModuleGeom skeleton too large to keep here honestly (RW-51).
@@ -171,14 +198,14 @@ IBase* g_RainManager            = 0;
 IBase* g_Terrain                = 0;
 
 // Replaces Terrain with the requested registered geometry class. Unknown names publish nothing.
-void registerTerrainSingleton(const vc71::string& className)
+void registerTerrainSingleton(const std::string& className)
 {
     const bool exists =
         classManager->getSingleton(renddx9abi::HostString("Terrain")) != 0;
     if (exists)
         classManager->unregisterSingleton(renddx9abi::HostString("Terrain"));
 
-    vc71::string fullName("dice.hfe.geom.");
+    std::string fullName("dice.hfe.geom.");
     fullName += className;
     unsigned int classId = 0;
     if (classManager->getClassID(renddx9abi::HostString(fullName.c_str()), &classId))
@@ -229,6 +256,9 @@ IBase* g_SwiffRender = 0;
 // Event (10, 1) registers and immediately creates SwiffRender after SwiffPlayer loads.
 // Event (10, 2) unregisters it and clears the singleton pointer.
 
+// PE 0x100B0EB2. Shipped defect: the retail body dereferences the class manager and the event manager
+// without a null test; the guards below keep the native backends from faulting before startup order
+// publishes them (memory-safety exception).
 void ModuleGeom::handleCoreModuleEvent(int category, int id, int a3, int a4)
 {
     if (category != 10)
@@ -256,9 +286,8 @@ void ModuleGeom::handleCoreModuleEvent(int category, int id, int a3, int a4)
     }
 }
 
-// Appends the geometry factories available to ClassManager in registration order.
-// [FRONTIER] dice::hfe::geom::ModuleGeom::getClassList: publish remaining registrations only
-// when their required virtual bodies are callable and their creation/use paths are verified.
+// Appends the 32 geometry classes in retail order, each with its shipped name and class id.
+// PE 0x100C7F43.
 void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector))
 {
     RD9_TRACE("dice::hfe::geom::ModuleGeom::getClassList", 0x10);
@@ -267,13 +296,60 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
 
     {
         ClassRegInfo info;
+        info.classId = 821004u;
+        info.name    = "dice.hfe.geom.Terrain";
+        info.create  = RD9_CLASS_FACTORY(&createTerrain);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 821005u;
+        info.name    = "dice.hfe.geom.TerrainEditable";
+        info.create  = RD9_CLASS_FACTORY(&createTerrainEditable);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
         info.classId = CID_GeometryTemplateManager;
         info.name    = "dice.hfe.geom.GeometryTemplateManager";
         info.create  = RD9_CLASS_FACTORY(&createGeometryTemplateManager);
         out.push_back(info);
     }
-
-    // Keep the recovered factories in the same relative order as PE 0x100C7F43's 32 entries.
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CA651u;
+        info.name    = "dice.hfe.geom.GeometryTemplate.BundledMesh";
+        info.create  = RD9_CLASS_FACTORY(&createBundledMeshTemplate);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CA655u;
+        info.name    = "dice.hfe.geom.GeometryTemplate.MeshParticleMesh";
+        info.create  = RD9_CLASS_FACTORY(&createMeshParticleMeshTemplate);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CA652u;
+        info.name    = "dice.hfe.geom.GeometryTemplate.SkinnedMesh";
+        info.create  = RD9_CLASS_FACTORY(&createSkinnedMeshTemplate);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CA653u;
+        info.name    = "dice.hfe.geom.GeometryTemplate.StaticMesh";
+        info.create  = RD9_CLASS_FACTORY(&createStaticMeshTemplate);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = CID_RoadCompiledTemplate;
+        info.name    = "dice.hfe.geom.GeometryTemplate.RoadCompiled";
+        info.create  = RD9_CLASS_FACTORY(&createRoadCompiledTemplate);
+        out.push_back(info);
+    }
     {
         ClassRegInfo info;
         info.classId = CID_StaticMeshRenderer;
@@ -295,9 +371,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createParticleSystemManager);
         out.push_back(info);
     }
-
-    // HemiMapManager - complete 14-slot table, including the editor/offline makeHemiMap operation.
-    // Its connected stock path is the setBaseHemiMap console binding used by every stock Sky.con.
     {
         ClassRegInfo info;
         info.classId = CID_HemiMapManager;
@@ -305,9 +378,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createHemiMapManager);
         out.push_back(info);
     }
-
-    // DecalManager - for the join path (see the forward declaration above). Its
-    // getSingletonList entry (flags 2) now has a factory, so getSingleton("DecalManager") resolves.
     {
         ClassRegInfo info;
         info.classId = CID_DecalManager;
@@ -315,10 +385,13 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createDecalManager);
         out.push_back(info);
     }
-
-    // VideoOptions::apply dereferences this singleton on every boot inside a
-    // branch guarded only on g_Renderer - the shipped defect in RW-76 - so the class exists to make
-    // that branch survivable. Only slot +0x18 is on that path and it is written.
+    {
+        ClassRegInfo info;
+        info.classId = 821020u;                                             // dword_1021AEF0
+        info.name    = "dice.hfe.geom.DecalShadowManager";
+        info.create  = RD9_CLASS_FACTORY(&createDecalShadowManager);       // 0x100B0793
+        out.push_back(info);
+    }
     {
         ClassRegInfo info;
         info.classId = CID_RoadCompiledRenderer;
@@ -326,8 +399,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createRoadCompiledRenderer);
         out.push_back(info);
     }
-
-    // Editable-road renderer registration.
     {
         ClassRegInfo info;
         info.classId = CID_RoadEditableRenderer;
@@ -335,10 +406,20 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createRoadEditableRenderer);
         out.push_back(info);
     }
-
-    // Roads.RoadTemplate - 821008 (dword_1021AEB4); shipped after the two GeometryOptimizers
-    // (0x100C83BB), which the tree does not register. created only
-    // through createInstance (the editor's road templates); see Geom/RoadTemplate.cpp.
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CAA39u;
+        info.name    = "dice.hfe.geom.GeometryOptimizer.BundledMeshOptimizer";
+        info.create  = RD9_CLASS_FACTORY(&createBundledMeshOptimizer);
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 0x870CAA3Bu;
+        info.name    = "dice.hfe.geom.GeometryOptimizer.StaticMeshOptimizer";
+        info.create  = RD9_CLASS_FACTORY(&createStaticMeshOptimizer);
+        out.push_back(info);
+    }
     {
         ClassRegInfo info;
         info.classId = CID_RoadTemplate;
@@ -346,8 +427,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createRoadTemplate);
         out.push_back(info);
     }
-
-    // Editable-road factory registration.
     {
         ClassRegInfo info;
         info.classId = CID_RoadEditable;
@@ -355,10 +434,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createRoadEditable);
         out.push_back(info);
     }
-
-    // NametagManager - 852419. Shipped getClassList order puts it immediately before LightManager
-    // (0x100C8439, just after Roads.RoadEditable). The singleton list below already names it, so
-    // ClassManager now creates it and fills g_NametagManager (IID 0xB801DCFE). RW-239.
     {
         ClassRegInfo info;
         info.classId = 852419u;
@@ -366,10 +441,6 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createNametagManager);
         out.push_back(info);
     }
-
-    // XpLightManager.cpp: PE factory 0x100B0502, exact 0x980-byte allocation and 189-slot primary
-    // interface. Its boot-live settings/empty-light surface is recovered; later light-instance and
-    // GPU paths stop at their individual slots.
     {
         ClassRegInfo info;
         info.classId = CID_LightManager;
@@ -377,17 +448,13 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createLightManager);
         out.push_back(info);
     }
-
-    // Register the rasterizer instantiated by the (10, 1) core event.
     {
         ClassRegInfo info;
-        info.classId = CID_SwiffRender;
-        info.name    = "dice.hfe.geom.SwiffRender";
-        info.create  = RD9_CLASS_FACTORY(&createSwiffRender);
+        info.classId = 0x870CAA3Eu;
+        info.name    = "dice.hfe.geom.ObjectDrawer";
+        info.create  = RD9_CLASS_FACTORY(&createObjectDrawer);
         out.push_back(info);
     }
-
-    // SkyDome - 0x870CAA3D. ; see the note beside its forward declaration above.
     {
         ClassRegInfo info;
         // The literal, not a named constant, to match how getSingletonList below spells the same
@@ -398,10 +465,13 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createSkyDome);
         out.push_back(info);
     }
-
-    // UndergrowthSystem - 822323005 (CID_UndergrowthSystem). the
-    // shipped list puts it after SkyDome and LightGeometry (0x100C8574). flags-2 singleton, so
-    // registerSingleton constructs it; its constructor allocates only the empty atlas owner.
+    {
+        ClassRegInfo info;
+        info.classId = CID_LightGeometry;
+        info.name    = "dice.hfe.geom.LightGeometry";
+        info.create  = RD9_CLASS_FACTORY(&createLightGeometry);
+        out.push_back(info);
+    }
     {
         ClassRegInfo info;
         info.classId = 822323005u;
@@ -409,96 +479,50 @@ void ModuleGeom::getClassList(RD9_HOST_VECTOR_PARAMETER(ClassRegInfo, hostVector
         info.create  = RD9_CLASS_FACTORY(&createUndergrowthSystem);
         out.push_back(info);
     }
-
-    // Register mesh factories in BundledMesh, SkinnedMesh, StaticMesh order.
     {
         ClassRegInfo info;
-        info.classId = 0x870CA651u;
-        info.name    = "dice.hfe.geom.GeometryTemplate.BundledMesh";
-        info.create  = RD9_CLASS_FACTORY(&createBundledMeshTemplate);
-        out.push_back(info);
-    }
-    // G1 draft: GeometryTemplate.MeshParticleMesh - 0x870CA655. Shipped between BundledMesh and
-    // SkinnedMesh (0x100C8049..0x100C8071). Published together with the MeshParticlesRenderer's
-    // retained-list draw (drawExtras, PE 0x101753E0): muzzle flashes and tracers draw through
-    // IGeometry +0x18, which only queues into that renderer.
-    {
-        ClassRegInfo info;
-        info.classId = 0x870CA655u;
-        info.name    = "dice.hfe.geom.GeometryTemplate.MeshParticleMesh";
-        info.create  = RD9_CLASS_FACTORY(&createMeshParticleMeshTemplate);
+        info.classId = CID_SwiffRender;
+        info.name    = "dice.hfe.geom.SwiffRender";
+        info.create  = RD9_CLASS_FACTORY(&createSwiffRender);
         out.push_back(info);
     }
     {
         ClassRegInfo info;
-        info.classId = 0x870CA652u;
-        info.name    = "dice.hfe.geom.GeometryTemplate.SkinnedMesh";
-        info.create  = RD9_CLASS_FACTORY(&createSkinnedMeshTemplate);
+        info.classId = CID_VideoTarget;                                     // dword_1021AF34
+        info.name    = "dice.hfe.geom.VideoTarget";
+        info.create  = RD9_CLASS_FACTORY(&createVideoTarget);              // 0x100B0C67
         out.push_back(info);
     }
-
-    // GeometryTemplate.StaticMesh - 0x870CA653. See the note beside its forward declaration above.
-    // Kept in the shipped list's relative order: the three GeometryTemplate.* entries sit together,
-    // after GeometryTemplateManager and before StaticMeshRenderer.
     {
         ClassRegInfo info;
-        info.classId = 0x870CA653u;
-        info.name    = "dice.hfe.geom.GeometryTemplate.StaticMesh";
-        info.create  = RD9_CLASS_FACTORY(&createStaticMeshTemplate);
+        info.classId = CID_Video;                                           // dword_1021AF38
+        info.name    = "dice.hfe.geom.Video";
+        info.create  = RD9_CLASS_FACTORY(&createVideo);                    // 0x100B0CA6
         out.push_back(info);
     }
-
-    // Compiled-road template registration.
     {
         ClassRegInfo info;
-        info.classId = CID_RoadCompiledTemplate;
-        info.name    = "dice.hfe.geom.GeometryTemplate.RoadCompiled";
-        info.create  = RD9_CLASS_FACTORY(&createRoadCompiledTemplate);
+        info.classId = 822323012u;                                          // dword_1021AF40
+        info.name    = "dice.hfe.geom.LightningManager";
+        info.create  = RD9_CLASS_FACTORY(&createLightningManager);         // 0x100B0BA4
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 822323011u;                                          // dword_1021AF3C
+        info.name    = "dice.hfe.geom.WeatherManager";
+        info.create  = RD9_CLASS_FACTORY(&createWeatherManager);           // 0x100B0BE6
+        out.push_back(info);
+    }
+    {
+        ClassRegInfo info;
+        info.classId = 822323013u;                                          // dword_1021AF44
+        info.name    = "dice.hfe.geom.RainManager";
+        info.create  = RD9_CLASS_FACTORY(&createRainManager);              // 0x100B0C25
         out.push_back(info);
     }
 
-    // ObjectDrawer - 0x870CAA3E.  ; see the note beside its forward declaration.
-    // Renderer::initialize step 10 asks for it by createInstance(0x870CAA3E, 0xB801DCFC), and
-    // queryInterface answers both that IID and the plain IBase 1.
-    {
-        ClassRegInfo info;
-        info.classId = 0x870CAA3Eu;
-        info.name    = "dice.hfe.geom.ObjectDrawer";
-        info.create  = RD9_CLASS_FACTORY(&createObjectDrawer);
-        out.push_back(info);
-    }
-
-    // Terrain is instantiated on demand by terrain.create.
-    {
-        ClassRegInfo info;
-        info.classId = 821004u;
-        info.name    = "dice.hfe.geom.Terrain";
-        info.create  = RD9_CLASS_FACTORY(&createTerrain);
-        out.push_back(info);
-    }
-
-    // TerrainEditable - 821005 (dword_1021AEB0), the shipped list's "dice.hfe.geom.TerrainEditable"
-    // entry, factory 0x100B0586. TerrainEditable R1:
-    // construction, init, update and draw are written; the editing and saving slots stop at named
-    // [FRONTIER]s. Reached only through `terrain.create TerrainEditable` (registerTerrainSingleton) -
-    // the editor's verb; no shipped level asks for it. Outside the editor flavour init faults exactly
-    // as retail 1.50 does (see Geom/TerrainEditable.cpp).
-    {
-        ClassRegInfo info;
-        info.classId = 821005u;
-        info.name    = "dice.hfe.geom.TerrainEditable";
-        info.create  = RD9_CLASS_FACTORY(&createTerrainEditable);
-        out.push_back(info);
-    }
-
-    // Count follows the output container; keep the diagnostic's literal name list in sync.
-    ::renddx9abi::logf("ModuleGeom::getClassList: %u classes registered (GeometryTemplateManager, "
-                       "StaticMeshRenderer, SkinnedMeshRenderer, ParticleSystemManager, HemiMapManager, "
-                       "DecalManager, RoadCompiledRenderer, LightManager, SwiffRender, SkyDome, UndergrowthSystem, "
-                       "GeometryTemplate.BundledMesh, GeometryTemplate.MeshParticleMesh, GeometryTemplate.SkinnedMesh, GeometryTemplate.StaticMesh, ObjectDrawer, "
-                       "GeometryTemplate.RoadCompiled, "
-                       "RoadEditableRenderer, Roads.RoadTemplate, "
-                       "Terrain, TerrainEditable, NametagManager); the rest of the shipped 32 are withheld - no factory bodies yet",
+    ::renddx9abi::logf("ModuleGeom::getClassList: %u of the 32 shipped classes registered",
                        out.size());
 }
 
@@ -518,6 +542,7 @@ struct GeomSingleton
 
 } // anonymous namespace
 
+// PE 0x100C7974: the sixteen-entry table above, read in full.
 void ModuleGeom::getSingletonList(RD9_HOST_VECTOR_PARAMETER(SingletonRegInfo, hostVector))
 {
     RD9_TRACE("dice::hfe::geom::ModuleGeom::getSingletonList", 0x14);
@@ -560,6 +585,7 @@ void ModuleGeom::getSingletonList(RD9_HOST_VECTOR_PARAMETER(SingletonRegInfo, ho
     }
 }
 
+// PE 0x100B0DF6. The console lists are registered per translation unit natively (see below).
 bool ModuleGeom::init()
 {
     RD9_TRACE("dice::hfe::geom::ModuleGeom::init", 0x18);
@@ -568,21 +594,23 @@ bool ModuleGeom::init()
     // ConsoleObjects::registerConsoleObjects at 0x1007B570, then registers the category-10 event
     // handler below.  Native mode shares the rebuilt host's STL ABI; retail-compatible mode cannot
     // safely publish current-toolchain ConsoleObject/container layouts to the VC7.1 host.
-#if BF2_PLUGIN_ABI_NATIVE
     registerLightManagerConsoleObjects();
+    registerWeatherManagerConsoleObjects();
     registerShadowManagerConsoleObjects();
     registerHemiMapManagerConsoleObjects();
     registerGeometryTemplateConsoleObjects();
     registerSkyDomeConsoleObjects();
     registerTerrainConsoleObjects();
+    registerTerrainCullerConsoleObjects();
     registerNametagManagerConsoleObjects();
     registerUndergrowthConsoleObjects();
     registerDecalManagerConsoleObjects();
     registerOverGrowthConsoleObjects();
     registerObjectGeometryConsoleObjects();
     registerStaticMeshRendererConsoleObjects();
-#endif
-#if BF2_PLUGIN_ABI_NATIVE && defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
+    registerSkinnedMeshRendererConsoleObjects();
+    registerParticleSystemManagerConsoleObjects();
+#if defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
     registerLightmapGenerationConsoleObjects();
 #endif
 
@@ -622,6 +650,7 @@ bool ModuleGeom::init()
     return true;
 }
 
+// PE 0x100B0E28.
 bool ModuleGeom::close()
 {
     RD9_TRACE("dice::hfe::geom::ModuleGeom::close", 0x1C);
@@ -634,23 +663,25 @@ bool ModuleGeom::close()
             static_cast<EventCategory>(10),
             reinterpret_cast<IEventListener*>(static_cast<ECCoreEventHandler*>(this)));
     }
-#if BF2_PLUGIN_ABI_NATIVE && defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
+#if defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR
     unregisterLightmapGenerationConsoleObjects();
 #endif
-#if BF2_PLUGIN_ABI_NATIVE
+    unregisterParticleSystemManagerConsoleObjects();
+    unregisterSkinnedMeshRendererConsoleObjects();
     unregisterStaticMeshRendererConsoleObjects();
     unregisterObjectGeometryConsoleObjects();
     unregisterOverGrowthConsoleObjects();
     unregisterDecalManagerConsoleObjects();
     unregisterUndergrowthConsoleObjects();
     unregisterNametagManagerConsoleObjects();
+    unregisterTerrainCullerConsoleObjects();
     unregisterTerrainConsoleObjects();
     unregisterSkyDomeConsoleObjects();
     unregisterGeometryTemplateConsoleObjects();
     unregisterHemiMapManagerConsoleObjects();
     unregisterShadowManagerConsoleObjects();
+    unregisterWeatherManagerConsoleObjects();
     unregisterLightManagerConsoleObjects();
-#endif
     if (classManager && classManager->getSingleton(renddx9abi::HostString("Terrain")))
         classManager->unregisterSingleton(renddx9abi::HostString("Terrain"));
     return true;

@@ -19,6 +19,30 @@
 #include <alloca.h>     // alloca
 #include <cmath>        // std::isfinite, std::isnan
 
+#if !defined(_WIN32)
+// [CHOSEN, not recovered] POSIX Interlocked adapters (macOSplan.md, S2.10).
+// Targets must be naturally aligned native words, never fields in packed file/packet data.
+// Increment/decrement/add return the new value; exchange/add-exchange/CAS return the old value.
+template<class T> inline T InterlockedIncrement(volatile T* target)
+{ return __atomic_add_fetch(target, 1, __ATOMIC_SEQ_CST); }
+template<class T> inline T InterlockedDecrement(volatile T* target)
+{ return __atomic_sub_fetch(target, 1, __ATOMIC_SEQ_CST); }
+template<class T, class V> inline T InterlockedAdd(volatile T* target, V value)
+{ return __atomic_add_fetch(target, static_cast<T>(value), __ATOMIC_SEQ_CST); }
+template<class T, class V> inline T InterlockedExchangeAdd(volatile T* target, V value)
+{ return __atomic_fetch_add(target, static_cast<T>(value), __ATOMIC_SEQ_CST); }
+template<class T, class V> inline T InterlockedExchange(volatile T* target, V value)
+{ return __atomic_exchange_n(target, static_cast<T>(value), __ATOMIC_SEQ_CST); }
+template<class T, class V, class C>
+inline T InterlockedCompareExchange(volatile T* target, V value, C comparand)
+{
+    T previous = static_cast<T>(comparand);
+    __atomic_compare_exchange_n(target, &previous, static_cast<T>(value), false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return previous;
+}
+#endif
+
 // Win32 calling-convention spellings are empty for this non-MSVC native port.
 #ifndef __cdecl
 #define __cdecl

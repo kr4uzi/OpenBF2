@@ -2,15 +2,21 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "../../../RendDX9Abi/ThunkAbi.h"
 #include "../../../RendDX9Abi/HfeAbi.h"
+#include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/BfMemory.h"
 #include "../../../RendDX9Abi/Frontier.h"
 #include "../../../RendDX9Abi/PluginEntry.h"   // dice::hfe::fileManager - the +0x38 getFileInfo probe
-#include "../../../RendDX9Abi/Vc71Map.h"       // the 0x30-byte VC7.1 map the +0x54 MetaFx cache uses
-#include "../../../RendDX9Abi/D3dxEffect.h"    // the audited slot caller; every offset below is read
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
+#if defined(_WIN32)
+#include <dxerr9.h>
+#endif
 #include "../RendDX9Base.h"
+#include "../ShaderLoading.h"
 #include "../../RendMisc/IRenderer.h"   // Renderer +0xBC, typed (see below)
 #include "../../Game/Main/IVideoOptions.h"
+#include "../../Core/StringUtil.h"
 // FOR sub_10033740 only, and it is a read, not a policy change. The block at the
 // top of this file explains that the two translation units deliberately meet at the linker; that is
 // still true for metaFxConstruct/metaFxParse, which stay externs. sub_10033740 is different: it
@@ -20,23 +26,27 @@
 // by offset and no private member is touched.
 #include "RaShaderPermutator.h"
 #include "RaShader.h"          // RaShaderTable + findOrCreateShader, for the load pass
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native overloads retain declaration order.
+#include "../../IO/File/FileChangeManager.h"
+#endif
 
+#include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <new>
 #include <string>
 #include <list>
+#include <map>
 #include <regex>
+#include <set>
+#include <vector>
 
 namespace dice {
 namespace hfe {
 
 extern IBase* fileChangeManager; // PluginEntry.cpp, PE 0x10244AC8
-
-// PluginEntry.cpp, PE 0x10244AB8. initDll fetches it but does NOT require it, so it can legally be
-// null here; the shipped compileEffect dereferences it with no guard. See the note on the progress
-// bracket in compileEffect for what this build does instead.
-extern IBase* loadStat;
 
 namespace dx9rend {
 
@@ -60,26 +70,9 @@ extern void* g_stateManager;
 // Shared in-place shader deobfuscation.
 void deobfuscateShader(unsigned char* buf, unsigned int size);
 
-
-// D3DX imports declared locally because current Windows SDK headers omit D3DX9.
-
-struct RaD3DXMACRO
-{
-    const char* Name;
-    const char* Definition;
-};
-
-#pragma comment(linker, "/alternatename:_D3DXCreateEffect@36=_D3DXCreateEffect")
-#pragma comment(linker, "/alternatename:_D3DXCreateBuffer@8=_D3DXCreateBuffer")
-
-extern "C" long __stdcall D3DXCreateEffect(void* pDevice, const void* pSrcData,
-                                           unsigned int SrcDataLen, const RaD3DXMACRO* pDefines,
-                                           void* pInclude, unsigned long Flags, void* pPool,
-                                           void** ppEffect, void** ppCompilationErrors);
-extern "C" long __stdcall D3DXCreateBuffer(unsigned int NumBytes, void** ppBuffer);
-
 namespace Ra {
 
+extern void* g_effectManager;
 
 // MetaFx construction and parsing are implemented in RaShaderPermutator.cpp.
 // Its constructor takes the path stem, extension and mode flag.
@@ -95,8 +88,8 @@ unsigned int metaFxObjectSize();
 
 // PE 0x1003E110. `storage` is the engine allocation sized by the call above; returns it.
 MetaFx* metaFxConstruct(void* storage,
-                        const vc71::string& stem,
-                        const vc71::string& extension,
+                        const std::string& stem,
+                        const std::string& extension,
                         bool flag);
 
 // PE 0x1003EEF0 - `do { sub_1003EAB0(this); } while (!sub_1003E3B0(this));`, the permutation parse
@@ -118,8 +111,9 @@ const CapsView* capsOf()      { return static_cast<const CapsView*>(g_deviceCaps
 
 bool         isNvidia()       { const CapsView* c = capsOf(); return c && c->adapter.VendorId == 4318u; }
 bool         isAti()          { const CapsView* c = capsOf(); return c && c->adapter.VendorId == 4098u; }
-unsigned int vsMajor()        { const CapsView* c = capsOf(); return c ? ((c->caps.VertexShaderVersion >> 8) & 0xFF) : 0u; }
-unsigned int psMajor()        { const CapsView* c = capsOf(); return c ? ((c->caps.PixelShaderVersion  >> 8) & 0xFF) : 0u; }
+// The shader-major readers are RendDX9Init.cpp's deviceCapsVertexShaderMajor (retail sub_100010B0)
+// and deviceCapsPixelShaderMajor (retail sub_100010D0); the calls below use them directly.
+
 // sub_100010E0 - `*(BYTE*)(this + 204)`, byte 0 of D3DCAPS9.PixelShaderVersion: the minor number.
 // The compile search wants the pair as one 0xMMmm word, which is how 0x100354EF..0x10035504 builds
 // it (`major << 8 | minor`).
@@ -131,34 +125,26 @@ unsigned int maxAnisotropy()  { const CapsView* c = capsOf(); return c ? c->caps
 bool         minAniso()       { const CapsView* c = capsOf(); return c && (c->caps.TextureFilterCaps & 0x400u) != 0; }
 bool         magAniso()       { const CapsView* c = capsOf(); return c && (c->caps.TextureFilterCaps & 0x4000000u) != 0; }
 
-// The list sentinels, identical in shape to BufferManager.cpp's - see the node-size rule there
-// (size == flag offset + 3, confirmed against two read allocators).
-//     sub_10036120  flag 45  -> 48   [INFERRED] by the rule
-//     sub_10036250  flag 69  -> 72   [INFERRED] by the rule
-//     sub_100362F0  flag 41  -> 44   [INFERRED] by the rule
-unsigned int* allocSentinel(unsigned int size, unsigned int flagOffset)
-{
-    unsigned char* node = static_cast<unsigned char*>(::renddx9abi::engineAlloc(size));
-    if (!node)
-        return 0;
-    for (unsigned int i = 0; i < size; ++i)
-        node[i] = 0;
-    node[flagOffset - 1] = 1;
-    node[flagOffset]     = 1;
-    unsigned int* w = reinterpret_cast<unsigned int*>(node);
-    const unsigned int self = reinterpret_cast<unsigned int>(node);
-    w[0] = self; w[1] = self; w[2] = self;
-    return w;
-}
+// The three trees' head nodes, by the node-size rule BufferManager.cpp records (size == flag
+// offset + 3, confirmed against two read allocators):
+//     sub_10036120  flag 45  -> 48   [INFERRED] by the rule - the two string -> pointer caches
+//     sub_10036250  flag 69  -> 72   [INFERRED] by the rule - the string -> string memory files
+//     sub_100362F0  flag 41  -> 44   [INFERRED] by the rule - the include handler's name set
 
-struct RaList { void* alloc; unsigned int* head; unsigned int count; };
-
-void initList(RaList& l, unsigned int nodeSize, unsigned int flagOffset)
+// sub_10036390 / sub_100372D0 (the effect cache) and sub_10035E40 / sub_10035FD0 / sub_10036470
+// (the memory files) push their two c_str()s straight into MSVCR71's `_stricmp`.
+struct RaStricmpLess
 {
-    l.alloc = 0;
-    l.head  = allocSentinel(nodeSize, flagOffset);
-    l.count = 0;
-}
+    bool operator()(const std::string& a, const std::string& b) const
+    {
+        return ::_stricmp(a.c_str(), b.c_str()) < 0;
+    }
+};
+
+typedef std::map<std::string, void*, RaStricmpLess>        RaEffectCache;     // -> ID3DXEffect*
+typedef std::map<std::string, MetaFx*>                     RaMetaFxCache;     // strcmp order
+typedef std::map<std::string, std::string, RaStricmpLess> RaMemoryFileMap;
+typedef std::set<std::string>                              RaWatchSet;        // strcmp order
 
 // Reads the shared vendor-probe transparency-AA code as a 32-bit value.
 inline unsigned int transparencyAACode(const unsigned char (&code)[4])
@@ -172,24 +158,27 @@ inline unsigned int transparencyAACode(const unsigned char (&code)[4])
 // Include resolver and file-change listener owned by EffectManager.
 // Tracks watched names case-sensitively and keeps the current shader's fully expanded text.
 
+void* raIncludeVtable();
+void* raIncludeListenerVtable();
+
 struct EffectSubObject
 {
+    // PE 0x10035A00
+    EffectSubObject()
+        : vptr(raIncludeVtable()), vptr2(raIncludeListenerVtable()), refCount(1) {}
+    ~EffectSubObject();
+
     void*        vptr;        // +0x00  &off_101E139C - the ID3DXInclude table, installed below
     void*        vptr2;       // +0x04  off_101E1388
     int          refCount;    // +0x08  1
-    RaList       list;        // +0x0C  44-byte nodes - the registered-watch name set
-    vc71::string text;        // +0x18  "Generated.fx"
+    RaWatchSet   watched;     // +0x0C  the registered-watch name set
+    std::string text;        // +0x18  "Generated.fx"
 };
-
-static_assert(sizeof(EffectSubObject) == 0x34, "sub_10035A00 allocates 0x34");
-
-// Defined at the bottom of this file, beside the two bodies it points at; declared
-// here because the constructor installs it and the constructor is above them.
-void* raIncludeVtable();
 
 // off_101E143C, the DeviceLostResetListener at EffectManager+0x04. Defined
 // after resetEffects, which its lost slot tail-jumps to.
 void* effectManagerListenerVtable();
+void* effectManagerPrimaryVtable();
 
 } // anonymous namespace
 
@@ -201,18 +190,24 @@ class EffectManager
 {
 public:
     explicit EffectManager(IDirect3DDevice9* device, bool disableShaderCache);
+    ~EffectManager();
+
+    // PE 0x1001A010 / 0x10051870.
+    int addRef() { return ++m_refCount; }
+    int getRef() { return m_refCount; }
+    int release();
 
     void rebuildShaderDefines();   // sub_10033240, EffectManager.cpp:438
     void rebuildDebugDefines();
     void setShowChannel(unsigned int channel);
 
     // The MetaFx cache at +0x54. See the block after the class bodies for the evidence.
-    MetaFx* getMetaFx(const vc71::string& name);
+    MetaFx* getMetaFx(const std::string& name);
     // THE name IS taken BY value, and that is read from the epilogue (`retn 20h` = a 28-byte
     // std::string plus the flag dword), not guessed. The callee destroys it.
-    MetaFx* loadMetaFx(vc71::string name, bool flag);
+    MetaFx* loadMetaFx(std::string name, bool flag);
 
-    const vc71::string& shaderDefines() const { return m_shaderDefines; }
+    const std::string& shaderDefines() const { return m_shaderDefines; }
 
     // The single byte ShaderManager_updateShaderDefines reads.
     bool flag40() const { return m_flag40 != 0; }
@@ -220,63 +215,90 @@ public:
     // the in-memory shader-file table at +0x9C. The permutator writes
     // each generated .fx into it under a lowercased name and drops them again afterwards, which is
     // how a generated permutation reaches the D3DX include handler without ever touching disk.
-    bool addMemoryFile(const vc71::string& name, const vc71::string& contents);
-    void removeMemoryFile(const vc71::string& name);
+    bool addMemoryFile(const std::string& name, const std::string& contents);
+    void removeMemoryFile(const std::string& name);
 
 
     // sub_10035900, `retn 4`. The one call the RaShader build makes.
-    void* getEffect(const vc71::string& name);
+    void* getEffect(const std::string& name);
 
     // sub_10034F60, `retn 0Ch`. The compile, including the .cfx disk cache.
-    void* compileEffect(const vc71::string& name, int unused, void** effectOut);
+    void* compileEffect(const std::string& name, int unused, void** effectOut);
 
     // Compiles source into an ID3DXBuffer containing effect bytecode.
-    void* compileEffectSource(const char* source, unsigned int sourceLen,
-                              const RaD3DXMACRO* defines, unsigned long* flags, void** errors);
+    ID3DXBuffer* compileEffectSource(const char* source, unsigned int sourceLen,
+                                     const D3DXMACRO* defines, unsigned long* flags,
+                                     ID3DXBuffer** errors);
 
     // sub_10033DB0, `retn 8`. Reads one effect file whole into an engine-heap, NUL-terminated
     // buffer. Falls back to the in-memory table and then to generating the permutation.
-    unsigned int readEffectFile(const vc71::string& name, unsigned char** bufferOut);
+    unsigned int readEffectFile(const std::string& name, unsigned char** bufferOut);
 
     // sub_10033AA0, `retn 4`. The in-memory table lookup; null on a miss.
-    const vc71::string* findMemoryFile(const vc71::string& name);
+    const std::string* findMemoryFile(const std::string& name);
 
     // sub_100336C0, `retn 0`. Re-parse every cached MetaFx while the memory table is empty.
     void refillMemoryFiles();
 
     // sub_10033740, `retn 4`. Generate the one permutation whose clean name matches.
-    bool generateMissingShader(const vc71::string& name);
+    bool generateMissingShader(const std::string& name);
 
     // sub_10033170, `retn 8`. Write a compiled blob to the .cfx cache, index-XORed.
-    bool writeEffectCache(void* blob, const vc71::string& path);
+    bool writeEffectCache(ID3DXBuffer* blob, const std::string& path);
+    bool dumpEffectDisassembly(const std::string& filter);   // PE 0x10033860, unreachable in 1.50
 
     // The include handler needs these three; it runs as a free __stdcall function on m_sub.
-    const vc71::string& debugDefines() const { return m_debugDefines; }
+    const std::string& debugDefines() const { return m_debugDefines; }
     EffectSubObject*    includeHandler() const { return m_sub; }
 
     // Resets cached effects without changing the selected debug channel.
     void resetEffects();
 
+    // The DeviceLostResetListener subobject at +0x04, and its owner back from it.
+    void* deviceLostListener() { return &m_vptr2; }
+    static EffectManager* fromDeviceLostListener(void* listener)
+    {
+        return reinterpret_cast<EffectManager*>(
+            static_cast<unsigned char*>(listener) - offsetof(EffectManager, m_vptr2));
+    }
+
+    void setFlag40(unsigned char value) { m_flag40 = value; }
+
+    // The eight debug-toggle setters: when the byte changes it is stored and every cached effect is
+    // rebuilt (resetEffects, sub_10034210). These and the device-pointer setter are unreachable in 1.50:
+    // no code or data references. [INFERRED] names.
+    // PE 0x10034330: byte +0x48.
+    void setDisableDiffuseMap(unsigned char value) { if (m_disableDiffuseMap != value) { m_disableDiffuseMap = value; resetEffects(); } }
+    // PE 0x10034350: byte +0x49.
+    void setDisableBumpMap(unsigned char value) { if (m_disableBumpMap != value) { m_disableBumpMap = value; resetEffects(); } }
+    // PE 0x10034370: byte +0x4A.
+    void setDisableSpecular(unsigned char value) { if (m_disableSpecular != value) { m_disableSpecular = value; resetEffects(); } }
+    // PE 0x10034390: byte +0x4B.
+    void setDisableSpecularMap(unsigned char value) { if (m_disableSpecularMap != value) { m_disableSpecularMap = value; resetEffects(); } }
+    // PE 0x100343B0: byte +0x4C.
+    void setDisableLightmap(unsigned char value) { if (m_disableLightmap != value) { m_disableLightmap = value; resetEffects(); } }
+    // PE 0x100343D0: byte +0x4D.
+    void setEnableWireframe(unsigned char value) { if (m_enableWireframe != value) { m_enableWireframe = value; resetEffects(); } }
+    // PE 0x100343F0: byte +0x4E.
+    void setDisableVsPs(unsigned char value) { if (m_disableVsPs != value) { m_disableVsPs = value; resetEffects(); } }
+    // PE 0x10034410: byte +0x4F.
+    void setDisableVsPs20(unsigned char value) { if (m_disableVsPs20 != value) { m_disableVsPs20 = value; resetEffects(); } }
+    // PE 0x10033220: stores the device pointer (+0x38) without AddRef.
+    void setDevice(IDirect3DDevice9* device) { m_device = device; }
+
 private:
-
-    // m_list2C reinterpreted as the VC7.1 std::map header it is. THE comparator IS `_stricmp`,
-    // not the case-sensitive ordering the +0x54 cache uses: sub_10036390 (find) and sub_100372D0
-    // (operator[]) both push their two c_str()s straight into MSVCR71's `_stricmp`. Vc71Map.h's
-    // mapFindInsensitive/mapInsertInsensitive are the twins that match, and its plain mapFind is
-    // the wrong one here.
-    vc71::map_layout& effectCache();
-
-    // m_list54 reinterpreted as the VC7.1 std::map header it is. See the MetaFx-cache block below
-    // for why the shared 0x30-node helpers are the right ones for this map and not for the others.
-    vc71::map_layout& metaFxCache();
+    void clearMetaFx();
 
     void*            m_vptr;          // +0x00  off_101E1448
     void*            m_vptr2;         // +0x04  off_101E143C - DeviceLostResetListener
     int              m_refCount;      // +0x08  1
     // Most recently requested effect and its lowercase name, updated on hits and misses.
-    vc71::string     m_name;          // +0x0C
+    std::string     m_name;          // +0x0C
     void*            m_lastEffect;    // +0x28
-    RaList           m_list2C;        // +0x2C  48-byte nodes - THE effect cache
+    // +0x2C: THE effect cache, lowered name -> ID3DXEffect. THE comparator IS `_stricmp`, not the
+    // case-sensitive ordering the +0x54 cache uses: sub_10036390 (find) and sub_100372D0
+    // (operator[]) both push their two c_str()s straight into MSVCR71's `_stricmp`.
+    RaEffectCache    m_effectCache;   // +0x2C
     IDirect3DDevice9* m_device;       // +0x38
     // +0x3C is D3DXCreateEffect's pPool. The constructor zeroes it and nothing in the image ever
     // writes it, so every Ra effect is created with a NULL effect pool - which is legal and means
@@ -298,22 +320,89 @@ private:
     unsigned char    m_disableVsPs20;       // +0x4F
 
     unsigned int     m_showChannel;   // +0x50
-    RaList           m_list54;        // +0x54  48-byte nodes
+    RaMetaFxCache    m_metaFxCache;   // +0x54  lowered .mfx name -> MetaFx (strcmp order)
     unsigned char    m_byte60;        // +0x60  GSDisableShaderCache
     unsigned char    m_byte61;        // +0x61
     unsigned char    m_byte62;        // +0x62  ctor: 1
     unsigned char    m_pad63;
-    vc71::string     m_debugDefines;  // +0x64
-    vc71::string     m_shaderDefines; // +0x80
-    RaList           m_list9C;        // +0x9C  72-byte nodes
+    std::string     m_debugDefines;  // +0x64
+    std::string     m_shaderDefines; // +0x80
+    RaMemoryFileMap  m_memoryFiles;   // +0x9C  lowered generated-file name -> its source
 };
 
-static_assert(sizeof(EffectManager) == 0xA8,
-              "initializeD3DSubsystems allocates 168 for it");
+namespace {
 
+// [CHOSEN, not recovered] Typed dispatch over PE table 0x101E1448. The named
+// deleting entry keeps its single manual slot on both native and MSVC builds.
+class EffectManagerPrimaryFace
+{
+public:
+    virtual int addRef() = 0;
+    virtual int getRef() = 0;
+    virtual int release() = 0;
+    virtual void* queryInterface(unsigned int) const = 0;
+    virtual void onFileChange(const std::string&, unsigned int) = 0;
+    virtual void* destroy(unsigned int) = 0;
+};
+
+// PE 0x1001A010.
+int RD9_THUNK em_addRef(void* self RD9_THUNK_EDX)
+{
+    return static_cast<EffectManager*>(self)->addRef();
+}
+// PE 0x10051870.
+int RD9_THUNK em_getRef(void* self RD9_THUNK_EDX)
+{
+    return static_cast<EffectManager*>(self)->getRef();
+}
+// PE 0x1001A020.
+int RD9_THUNK em_release(void* self RD9_THUNK_EDX)
+{
+    return static_cast<EffectManager*>(self)->release();
+}
+// PE 0x10041990.
+void* RD9_THUNK em_queryInterface(void* self RD9_THUNK_EDX, unsigned int iid)
+{
+    return iid == RD9_IID_IBASE || iid == 0x3C7B54FFu ? self : 0;
+}
+// PE 0x10034450. Neither callback argument is read.
+void RD9_THUNK em_onFileChange(void* self RD9_THUNK_EDX,
+                              const std::string&, unsigned int)
+{
+    static_cast<EffectManager*>(self)->resetEffects();
+}
+// PE 0x10037D90.
+void* RD9_THUNK em_destroy(void* self RD9_THUNK_EDX, unsigned int flags)
+{
+    static_cast<EffectManager*>(self)->~EffectManager();
+    if (flags & 1u)
+        ::renddx9abi::engineFree(self);
+    return self;
+}
+
+void* const kEffectManagerPrimaryVtable[6] =
+{
+    reinterpret_cast<void*>(&em_addRef),
+    reinterpret_cast<void*>(&em_getRef),
+    reinterpret_cast<void*>(&em_release),
+    reinterpret_cast<void*>(&em_queryInterface),
+    reinterpret_cast<void*>(&em_onFileChange),
+    reinterpret_cast<void*>(&em_destroy)
+};
+
+void* effectManagerPrimaryVtable()
+{
+    return const_cast<void**>(kEffectManagerPrimaryVtable);
+}
+
+} // anonymous namespace
+
+// PE 0x10035A60. The shipped constructor reads GSDisableShaderCache itself (settings slot +0x50,
+// default false) after the sub-object allocation; createEffectManager's caller reads the same
+// setting with the same default and passes it in.
 EffectManager::EffectManager(IDirect3DDevice9* device, bool disableShaderCache)
-    : m_vptr(0)
-    , m_vptr2(0)
+    : m_vptr(effectManagerPrimaryVtable())
+    , m_vptr2(effectManagerListenerVtable())
     , m_refCount(1)
     , m_lastEffect(0)
     , m_device(device)
@@ -338,47 +427,24 @@ EffectManager::EffectManager(IDirect3DDevice9* device, bool disableShaderCache)
     m_pad42[0] = 0;
     m_pad42[1] = 0;
 
-    initList(m_list2C, 48, 45);
-    initList(m_list54, 48, 45);
-    initList(m_list9C, 72, 69);
+    // The three trees (+0x2C, +0x54, +0x9C) are constructed empty with the members.
 
-    m_sub = static_cast<EffectSubObject*>(::renddx9abi::engineAlloc(sizeof(EffectSubObject)));
-    if (m_sub)
-    {
-        // D3DX calls this include-handler table while compiling shader #include directives.
-        m_sub->vptr     = raIncludeVtable();
-
-        // off_101E1388, the second table, is still null. All six of its bodies are read (see the
-        // block above EffectSubObject) but the only thing that dispatches on it is the
-        // FileChangeManager watch, whose registration is withheld under RW-78 exactly as
-        // Ra/RaShaderPermutator.cpp's and TextureManager's are. Installing a table nothing calls
-        // would claim a registration that is not made.
-        // [FRONTIER] dice::hfe::dx9rend::Ra::EffectManager - the include handler's IBase table
-        m_sub->vptr2    = 0;
-        m_sub->refCount = 1;
-        initList(m_sub->list, 44, 41);
-        new (&m_sub->text) vc71::string();
-    }
+    void* const subStorage = ::renddx9abi::engineAlloc(sizeof(EffectSubObject));   // sub_10035A00
+    m_sub = subStorage ? new (subStorage) EffectSubObject : 0;
 
     // The setting the constructor reads. The original stores it into the byte at +0x60.
     m_byte60 = disableShaderCache ? 1 : 0;
-
-    // Installs the device-reset listener, which forwards resetEffects to its owner.
-    // [FRONTIER] The primary interface remains null until its destructor is implemented;
-    // file-change registration and shutdown deletion must remain deferred.
-    m_vptr2 = effectManagerListenerVtable();
 
     rebuildShaderDefines();
     rebuildDebugDefines();
 }
 
 
-// complete - eight bools and a channel enum, appended to the string at
+// PE 0x10033040 (listing read). Eight bools and a channel enum, appended to the string at
 // +0x64. Self-contained; no caps, no device, no settings.
-
 void EffectManager::rebuildDebugDefines()
 {
-    m_debugDefines = "";
+    m_debugDefines.clear();
 
     if (m_disableDiffuseMap)  m_debugDefines += "#define DISABLE_DIFFUSEMAP\n";
     if (m_disableBumpMap)     m_debugDefines += "#define DISABLE_BUMPMAP\n";
@@ -418,24 +484,35 @@ void EffectManager::rebuildShaderDefines()
     m_shaderDefines += isAti()    ? "#define ATI 1\n"    : "#define ATI 0\n";
 
     // A shader-model level requires support from both vertex and pixel shaders.
-    m_shaderDefines += (psMajor() < 3 || vsMajor() < 3) ? "#define SM30 0\n" : "#define SM30 1\n";
-    m_shaderDefines += (psMajor() < 2 || vsMajor() < 2) ? "#define SM20 0\n" : "#define SM20 1\n";
+    m_shaderDefines += (deviceCapsPixelShaderMajor() < 3 || deviceCapsVertexShaderMajor() < 3)
+        ? "#define SM30 0\n" : "#define SM30 1\n";
+    m_shaderDefines += (deviceCapsPixelShaderMajor() < 2 || deviceCapsVertexShaderMajor() < 2)
+        ? "#define SM20 0\n" : "#define SM20 1\n";
 
     // base[435] - byte 1740, the same field updateShaderDefines prints as rapath.
+#if defined(_M_IX86)
     const unsigned int raPath =
         base ? *reinterpret_cast<const unsigned int*>(reinterpret_cast<const unsigned char*>(base) + 1740) : 0u;
+#else
+    // [CHOSEN, not recovered] (issue #7) The x64 Renderer is native, so the field (+0x6CC) is read
+    // through its accessor, which needs the published Renderer. The first rebuild runs inside the
+    // base construction (constructD3DHalf), before `g_Renderer = this`, when the Renderer
+    // constructor has already zeroed the field - 0 is what the read would find there.
+    const unsigned int raPath = (base && g_Renderer) ? rendererRaPath() : 0u;
+#endif
     ::sprintf_s(line, "#define RAPATH %i \n", raPath);
     m_shaderDefines += line;
 
     // base[1302] gates it alongside the multisample check - see hasAlpha2Mask in ShaderManager.cpp.
-    const unsigned char* rawBase = reinterpret_cast<const unsigned char*>(base);
     bool a2m = false;
     if (base)
     {
+        // Unlike the shared probe, this test reads the first type unsigned (any non-zero type).
         const bool multisampleOk =
-            base->multiSampleFirst && ((base->multiSampleLast - base->multiSampleFirst) >= 2)
-                ? (*base->multiSampleFirst > 0) : false;
-        a2m = (rawBase[1300] || (!rawBase[1301] && multisampleOk)) && rawBase[1302];
+            !base->multiSamples.empty() ? (base->multiSamples[0].type > 0) : false;
+        a2m = (base->forceMultisample                                  // base[1300]
+               || (!base->disableMultisample && multisampleOk))        // base[1301]
+              && base->hasAlphaToCoverage;                             // base[1302]
     }
     ::sprintf_s(line, "#define HASALPHA2MASK %i \n", a2m ? 1 : 0);
     m_shaderDefines += line;
@@ -457,13 +534,11 @@ void EffectManager::rebuildShaderDefines()
     unsigned int filterQuality = 0;
     if (base)
     {
-        const unsigned int* videoOptions =
-            reinterpret_cast<const unsigned int*>(rawBase + 1016);
-        filterQuality = videoOptions[7 + 10];
+        filterQuality = static_cast<unsigned int>(base->videoOptions.quality[7]);   // this[7 + 10]
     }
 
-    vc71::string stmNormMip("#define FILTER_STM_NORM_MIP LINEAR \n");
-    vc71::string bmNormMip ("#define FILTER_BM_NORM_MIP LINEAR \n");
+    std::string stmNormMip("#define FILTER_STM_NORM_MIP LINEAR \n");
+    std::string bmNormMip ("#define FILTER_BM_NORM_MIP LINEAR \n");
 
     switch (filterQuality)
     {
@@ -511,90 +586,152 @@ void EffectManager::rebuildShaderDefines()
 
 namespace {
 
-// The retail PE orders the FileChangeManager overloads as +0x14 remove(listener) and +0x18
-// remove(listener,name).  The latter is the instruction-proven call in EffectManager::resetEffects.
+// PE +0x14 removes all listener registrations; +0x18 removes one named registration.
+// MSVC reverses same-name virtual overloads, so declare the named overload first.
+#if defined(_MSC_VER)
 class IFileChangeManagerPe : public IBase
 {
 public:
-    virtual void slot10() = 0; // addListener; not called here
-    virtual bool removeListener(IBase* listener) = 0; // +0x14
+    virtual renddx9abi::HostString addListener(IBase* listener,
+                                               const renddx9abi::HostString& name,
+                                               unsigned int userData) = 0; // +0x10
     virtual bool removeListener(IBase* listener,
                                 const renddx9abi::HostString& name) = 0; // +0x18
+    virtual bool removeListener(IBase* listener) = 0; // +0x14
 };
+#endif
 
-struct EffectNode48
+} // anonymous namespace
+
+namespace {
+
+EffectSubObject* includeFromListener(void* listener)
 {
-    EffectNode48* left;
-    EffectNode48* parent;
-    EffectNode48* right;
-    unsigned char key[28];
-    IBase* effect;
-    unsigned char color;
-    unsigned char isNil;
-    unsigned char pad[2];
-};
-
-struct EffectNode72
-{
-    EffectNode72* left;
-    EffectNode72* parent;
-    EffectNode72* right;
-    unsigned char key[28];
-    unsigned char value[28];
-    unsigned char color;
-    unsigned char isNil;
-    unsigned char pad[2];
-};
-
-static_assert(sizeof(EffectNode48) == 48, "EffectManager cache node layout drift");
-static_assert(sizeof(EffectNode72) == 72, "EffectManager secondary cache node layout drift");
-
-EffectNode48* nextEffectNode(EffectNode48* node)
-{
-    if (!node->right->isNil)
-    {
-        node = node->right;
-        while (!node->left->isNil)
-            node = node->left;
-        return node;
-    }
-    EffectNode48* parent = node->parent;
-    while (!parent->isNil && node == parent->right)
-    {
-        node = parent;
-        parent = parent->parent;
-    }
-    return parent;
+    return reinterpret_cast<EffectSubObject*>(static_cast<unsigned char*>(listener)
+        - offsetof(EffectSubObject, vptr2));
 }
 
-void destroyEffectNodes(EffectNode48* node)
+// PE 0x100359A0
+EffectSubObject::~EffectSubObject()
 {
-    // sub_100369E0: recurse right, destroy/free the current node, continue down its left arm.
-    while (!node->isNil)
-    {
-        destroyEffectNodes(node->right);
-        EffectNode48* const left = node->left;
-        reinterpret_cast<vc71::string*>(node->key)->~string();
-        ::renddx9abi::engineFree(node);
-        node = left;
-    }
+    vptr = raIncludeVtable();
+    vptr2 = raIncludeListenerVtable();
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Use the native provider's overload ordering.
+    static_cast<io::IFileChangeManager*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+        ->removeListener(reinterpret_cast<io::IFileChangeListener*>(&vptr2));
+#else
+    static_cast<IFileChangeManagerPe*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+        ->removeListener(reinterpret_cast<IBase*>(&vptr2));
+#endif
 }
 
-void destroyEffectNodes72(EffectNode72* node)
+// PE 0x1000CB20; the listener is the secondary face, with the count at its +4.
+int RD9_THUNK includeListenerAddRef(void* listener RD9_THUNK_EDX)
 {
-    // sub_10036A80 destroys the mapped string first, then the key string, in this order.
-    while (!node->isNil)
+    return ++includeFromListener(listener)->refCount;
+}
+
+// PE 0x101A9A10
+int RD9_THUNK includeListenerGetRef(void* listener RD9_THUNK_EDX)
+{
+    return includeFromListener(listener)->refCount;
+}
+
+// PE 0x10037D60
+int RD9_THUNK includeListenerRelease(void* listener RD9_THUNK_EDX)
+{
+    EffectSubObject* const sub = includeFromListener(listener);
+    const int remaining = --sub->refCount;
+    if (!remaining && sub)
     {
-        destroyEffectNodes72(node->right);
-        EffectNode72* const left = node->left;
-        reinterpret_cast<vc71::string*>(node->value)->~string();
-        reinterpret_cast<vc71::string*>(node->key)->~string();
-        ::renddx9abi::engineFree(node);
-        node = left;
+        sub->~EffectSubObject();
+        ::renddx9abi::engineFree(sub);
     }
+    return remaining;
+}
+
+// PE 0x10037420; IBase deliberately answers the include face, not this listener face.
+void* RD9_THUNK includeListenerQuery(void* listener RD9_THUNK_EDX, unsigned int iid)
+{
+    EffectSubObject* const sub = includeFromListener(listener);
+    if (iid == RD9_IID_IBASE) return sub;
+    if (iid == 0x3C7B54FFu) return sub ? listener : 0; // IID_IFileChangeListener, dword_10208E10
+    return 0;
+}
+
+// PE 0x10037D30; neither callback argument nor the receiver is read.
+void RD9_THUNK includeListenerChanged(void* /*listener*/ RD9_THUNK_EDX,
+                                     const std::string& /*name*/, unsigned int /*userData*/)
+{
+    static_cast<EffectManager*>(g_effectManager)->resetEffects();
+}
+
+void* const kRaIncludeListenerVtable[5] =
+{
+    reinterpret_cast<void*>(&includeListenerAddRef),
+    reinterpret_cast<void*>(&includeListenerGetRef),
+    reinterpret_cast<void*>(&includeListenerRelease),
+    reinterpret_cast<void*>(&includeListenerQuery),
+    reinterpret_cast<void*>(&includeListenerChanged)
+};
+
+void* raIncludeListenerVtable()
+{
+    return const_cast<void**>(kRaIncludeListenerVtable);
 }
 
 } // anonymous namespace
+
+// PE 0x1001A020.
+int EffectManager::release()
+{
+    const int remaining = --m_refCount;
+    if (!remaining)
+        reinterpret_cast<EffectManagerPrimaryFace*>(this)->destroy(1);
+    return remaining;
+}
+
+// PE 0x10034170. MetaFx cache ownership uses direct destruction, not release().
+void EffectManager::clearMetaFx()
+{
+    for (const auto& item : m_metaFxCache)
+    {
+        MetaFx* const meta = item.second;
+        if (meta)
+        {
+            meta->~MetaFx();
+            ::renddx9abi::engineFree(meta);
+        }
+    }
+    m_metaFxCache.clear();
+}
+
+// PE 0x10035BC0.
+EffectManager::~EffectManager()
+{
+    m_vptr = effectManagerPrimaryVtable();
+    m_vptr2 = effectManagerListenerVtable();
+#if !defined(_MSC_VER)
+    static_cast<io::IFileChangeManager*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+        ->removeListener(reinterpret_cast<io::IFileChangeListener*>(this));
+#else
+    static_cast<IFileChangeManagerPe*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+        ->removeListener(reinterpret_cast<IBase*>(this));
+#endif
+    if (m_sub)
+    {
+        m_sub->~EffectSubObject();
+        ::renddx9abi::engineFree(m_sub);
+    }
+    for (auto& item : m_effectCache)
+    {
+        static_cast<ID3DXEffect*>(item.second)->Release();
+        item.second = 0;
+    }
+    clearMetaFx();
+    // Native members then unwind memory files, define strings, caches and name.
+}
 
 // The reset is deliberately broad: shader/debug define strings, every material
 // queue's compiled effect, every cached Effect wrapper/watch, and the secondary string cache.
@@ -604,35 +741,31 @@ void EffectManager::resetEffects()
     rebuildShaderDefines();
     renderQueuesResetEffects();
 
-    EffectNode48* const head = reinterpret_cast<EffectNode48*>(m_list2C.head);
-    for (EffectNode48* node = head->left; node != head; node = nextEffectNode(node))
+    for (RaEffectCache::iterator node = m_effectCache.begin(); node != m_effectCache.end(); ++node)
     {
-        if (node->effect)
+        if (node->second)
         {
-            // Cached effects are COM interfaces: Release uses __stdcall and an explicit receiver.
-            ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxReleaseFn>(node->effect, 0x08)(node->effect);
-            node->effect = 0;
+            static_cast<ID3DXEffect*>(node->second)->Release();
+            node->second = 0;
         }
 
-        const vc71::string& key = *reinterpret_cast<const vc71::string*>(node->key);
-        const renddx9abi::HostString hostKey = renddx9abi::makeHostString(key);
+        const renddx9abi::HostString hostKey = renddx9abi::makeHostString(node->first);
+#if !defined(_MSC_VER)
+        // [CHOSEN, not recovered] Use the provider's typed native interface.
+        static_cast<io::IFileChangeManager*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+            ->removeListener(reinterpret_cast<io::IFileChangeListener*>(this), hostKey);
+#else
         static_cast<IFileChangeManagerPe*>(
             static_cast<void*>(::dice::hfe::fileChangeManager))->removeListener(
                 reinterpret_cast<IBase*>(this), hostKey);
+#endif
     }
 
-    destroyEffectNodes(head->parent);
-    head->parent = head;
-    head->left = head;
-    head->right = head;
-    m_list2C.count = 0;
+    // sub_100369E0 over the cache's nodes, then the head relinked.
+    m_effectCache.clear();
 
-    EffectNode72* const secondaryHead = reinterpret_cast<EffectNode72*>(m_list9C.head);
-    destroyEffectNodes72(secondaryHead->parent);
-    secondaryHead->parent = secondaryHead;
-    secondaryHead->left = secondaryHead;
-    secondaryHead->right = secondaryHead;
-    m_list9C.count = 0;
+    // sub_10036A80 over the memory files: each node's mapped string, then its key string.
+    m_memoryFiles.clear();
 }
 
 namespace {
@@ -641,12 +774,12 @@ namespace {
 // Device loss rebuilds defines and drops compiled effects/watches; reset does nothing.
 // Subsequent draws compile effects again, using valid disk caches when available.
 
-void __fastcall em_onDeviceLost(void* listener, void*)
+void RD9_THUNK em_onDeviceLost(void* listener RD9_THUNK_EDX)
 {
-    reinterpret_cast<EffectManager*>(static_cast<unsigned char*>(listener) - 4)->resetEffects();
+    EffectManager::fromDeviceLostListener(listener)->resetEffects();
 }
 
-void __fastcall em_listenerNullsub(void*, void*)
+void RD9_THUNK em_listenerNullsub(void* RD9_THUNK_EDX)
 {
     // 0x10037D40 - `ret`, empty in the original too.
 }
@@ -665,6 +798,7 @@ void* effectManagerListenerVtable()
 
 } // anonymous namespace
 
+// PE 0x10034430.
 void EffectManager::setShowChannel(unsigned int channel)
 {
     if (m_showChannel != channel)
@@ -675,35 +809,17 @@ void EffectManager::setShowChannel(unsigned int channel)
 }
 
 
-// MetaFx cache nodes have a 48-byte compatibility layout, distinct from the other
-// effect-manager maps. Do not share their node allocation or nil-byte accessors.
-// The compatibility tree preserves key order but currently omits red-black balancing.
+// The MetaFx cache at +0x54: lowered .mfx name -> MetaFx, case-sensitive (strcmp) order.
 
 
 namespace {
-
-static_assert(sizeof(RaList) == sizeof(vc71::map_layout),
-              "the +0x54 cache header is the shipped 12-byte VC7.1 std::map {comp, head, size}");
 
 
 // Compatibility FileInfo needs a live VC7.1 string and the full 64-byte output record,
 // even though this path only consumes getFileInfo's Boolean result.
 
-#if !BF2_PLUGIN_ABI_NATIVE
-struct PeFileInfo
-{
-    vc71::string  name;          // +0x00
-    unsigned char isDirectory;   // +0x1C
-    unsigned char pad1[3];
-    unsigned int  size;          // +0x20
-    unsigned int  pad2;          // +0x24  MSVC 8-aligns the filetime block that follows
-    unsigned int  times[6];      // +0x28  creation / last access / last write, low dword first
-};
 
-static_assert(sizeof(PeFileInfo) == 64, "the PE io::FileInfo the shipped frame reserves");
-#endif
-
-bool fileManagerGetFileInfo(const vc71::string& path)
+bool fileManagerGetFileInfo(const std::string& path)
 {
     // [CHOSEN, not recovered] Permit loading before the host publishes FileManager.
     if (!::dice::hfe::fileManager)
@@ -711,24 +827,15 @@ bool fileManagerGetFileInfo(const vc71::string& path)
 
     const renddx9abi::HostString hostPath = renddx9abi::makeHostString(path);
 
-#if BF2_PLUGIN_ABI_NATIVE
     ::dice::hfe::io::FileInfo info;
     return ::dice::hfe::fileManager->getFileInfo(hostPath, info);
-#else
-    PeFileInfo info;
-    void** const vtbl = *reinterpret_cast<void***>(::dice::hfe::fileManager);
-    typedef unsigned char (__thiscall* GetFileInfoFn)(void*, const renddx9abi::HostString&,
-                                                      PeFileInfo&);
-    return reinterpret_cast<GetFileInfoFn>(vtbl[0x38 / 4])(
-               ::dice::hfe::fileManager, hostPath, info) != 0;
-#endif
 }
 
 
 // Prefixes unqualified shader paths; a null renderer selects xpack.
 // [CHOSEN, not recovered] Scratch strings are local rather than shared static storage.
 
-void applyModPrefix(vc71::string& path)
+void applyModPrefix(std::string& path)
 {
     if (::strstr(path.c_str(), "mods/"))
         return;
@@ -739,47 +846,32 @@ void applyModPrefix(vc71::string& path)
         xpack = static_cast<IRenderer*>(g_Renderer)->isExpansionPack();
     }
 
-    vc71::string prefixed(xpack ? "mods/xpack/" : "mods/bf2/");
+    std::string prefixed(xpack ? "mods/xpack/" : "mods/bf2/");
     prefixed += path;
     path = prefixed;
 }
 
 } // anonymous namespace
 
-vc71::map_layout& EffectManager::metaFxCache()
-{
-    // RaList and vc71::map_layout are the same twelve bytes in the same order. The cast keeps the
-    // shipped member declaration - which is what fixes every later offset in this 168-byte class -
-    // while letting the audited shared helpers do the walking.
-    return *reinterpret_cast<vc71::map_layout*>(&m_list54);
-}
-
-// Accesses the string-keyed effect cache using its compatibility map layout.
-vc71::map_layout& EffectManager::effectCache()
-{
-    return *reinterpret_cast<vc71::map_layout*>(&m_list2C);
-}
-
 
 // Returns a cached MetaFx by lower-case key, loading with the original name on a miss.
-
-MetaFx* EffectManager::getMetaFx(const vc71::string& name)
+// PE 0x10033D40 (listing read).
+MetaFx* EffectManager::getMetaFx(const std::string& name)
 {
     // sub_10074E80 is `std::string toLower(const std::string&)` - a copy, then the in-place
     // lowercase at sub_10074D10 that this tree already carries as pathToLower.
-    vc71::string key(name);
+    std::string key(name);
     pathToLower(key);
 
     // sub_10036410 is std::map::find: a lower_bound (sub_101C0AD0) and then "is the probe less
     // than what we landed on", which selects between the node and end(). Its caller compares the
-    // result against *(this + 0x58) - the head - so a miss is end(); mapFind answers the same
-    // question with a null.
-    const vc71::map_node* const node = vc71::mapFind(metaFxCache(), key.c_str());
-    if (node)
-        return static_cast<MetaFx*>(vc71::mapNodeValue(node));
+    // result against *(this + 0x58) - the head - so a miss is end().
+    const RaMetaFxCache::const_iterator node = m_metaFxCache.find(key);
+    if (node != m_metaFxCache.end())
+        return node->second;
 
-    // Requires the render-queue table published by initializeD3DSubsystems.
-    const unsigned char flag = *(static_cast<const unsigned char*>(g_renderQueues) + 0xB4);
+    // Requires the render-queue table published by initializeD3DSubsystems: its +0xB4 byte.
+    const unsigned char flag = static_cast<const RaShaderTable*>(g_renderQueues)->byteB4;
 
     return loadMetaFx(name, flag != 0);
 }
@@ -787,20 +879,20 @@ MetaFx* EffectManager::getMetaFx(const vc71::string& name)
 
 // Constructs and caches a MetaFx; returns null if it is already cached.
 // Use getMetaFx to retrieve existing entries. Diagnostics use the resolved path.
-
-MetaFx* EffectManager::loadMetaFx(vc71::string name, bool flag)
+// PE 0x10033B10 (listing read).
+MetaFx* EffectManager::loadMetaFx(std::string name, bool flag)
 {
     {
         // The re-check, on the same lowered key and the same map as getMetaFx.
-        vc71::string key(name);
+        std::string key(name);
         pathToLower(key);
-        if (vc71::mapFind(metaFxCache(), key.c_str()))
+        if (m_metaFxCache.find(key) != m_metaFxCache.end())
             return 0;                       // null, NOT the cached MetaFx - see above
     }
 
     // THE fixup IS guarded ON g_Renderer BY THE caller even though sub_10029D00 handles a null
     // g_Renderer itself. Both tests are shipped; both are kept.
-    vc71::string path(name);
+    std::string path(name);
     if (g_Renderer)
         applyModPrefix(path);
 
@@ -817,9 +909,9 @@ MetaFx* EffectManager::loadMetaFx(vc71::string name, bool flag)
     if (storage)
     {
         // Derive extension before stem from the resolved path.
-        vc71::string extension;
-        pathGetExtension(extension, path);                   // sub_10075180 -> sub_10075580
-        vc71::string stem;
+        std::string extension;
+        extension = extractFileExt(path);                   // sub_10075180 -> sub_10075580
+        std::string stem;
         pathStripExtension(stem, path);                      // sub_100753D0 -> sub_10075A50
 
         // AND THE boolean IS inverted ON THE WAY IN. 0x10033C4E is `cmp [ebp+arg_1C], 0` -
@@ -834,16 +926,14 @@ MetaFx* EffectManager::loadMetaFx(vc71::string name, bool flag)
     if (metaFx)
     {
         // sub_10074E80 a second time - the first lowered key was destroyed with the re-check.
-        vc71::string key(name);
+        std::string key(name);
         pathToLower(key);
 
         // sub_100367F0 - std::map::insert(value_type(key, metaFx)). The pair is assembled on the
         // stack at 0x10033CB5 (the string) and 0x10033CC1 (the pointer 28 bytes later), copied
         // once more at 0x10033CD4, and handed over by reference. The key cannot already be present
         // here: the re-check above returned on a hit.
-        vc71::map_node* const node = vc71::mapInsert(metaFxCache(), 0x30, key.c_str());
-        if (node)
-            vc71::mapNodeValueRef(node) = metaFx;
+        m_metaFxCache.insert(std::make_pair(key, metaFx));
 
         metaFxParse(metaFx);
     }
@@ -868,7 +958,27 @@ bool createEffectManager(IDirect3DDevice9* device, bool disableShaderCache)
 // `dword_1023D954 ? dword_1023D954 + 4 : 0`. The null arm is shipped - it registers a null listener.
 void* effectManagerDeviceLostListener()
 {
-    return g_effectManager ? static_cast<unsigned char*>(g_effectManager) + 4 : 0;
+    return g_effectManager ? static_cast<EffectManager*>(g_effectManager)->deviceLostListener() : 0;
+}
+
+// [CHOSEN, not recovered] Owner-TU seam for PE 0x1000AE7D..0x1000AE8E.
+// The caller removes the listener first; retain the primary deleting-slot dispatch.
+void destroyEffectManager()
+{
+    if (g_effectManager)
+        static_cast<EffectManagerPrimaryFace*>(g_effectManager)->destroy(1u);
+}
+
+// The +0x40 byte (the _FORCE_1_4_SHADERS_ input) for ShaderManager.cpp and RaShaderPermutator.cpp,
+// and its writer for VideoOptions' shader-path change. Unguarded, as the shipped readers are.
+unsigned char effectManagerFlag40()
+{
+    return static_cast<EffectManager*>(g_effectManager)->flag40() ? 1u : 0u;
+}
+
+void effectManagerSetFlag40(unsigned char value)
+{
+    static_cast<EffectManager*>(g_effectManager)->setFlag40(value);
 }
 
 } // namespace Ra
@@ -894,7 +1004,7 @@ void effectManagerRebuildShaderDefines()
 
 // unguarded ON purpose. Both shipped call sites - 0x10115D08 and load
 // dword_1023D954 straight into ecx and call, with no null test.
-Ra::MetaFx* effectManagerGetMetaFx(const vc71::string& name)
+Ra::MetaFx* effectManagerGetMetaFx(const std::string& name)
 {
     return static_cast<Ra::EffectManager*>(Ra::g_effectManager)->getMetaFx(name);
 }
@@ -902,169 +1012,29 @@ Ra::MetaFx* effectManagerGetMetaFx(const vc71::string& name)
 
 // Returns the compiled ID3DXEffect for path, or null. Requires the effect-manager singleton.
 
-void* effectManagerGetEffect(const vc71::string& path)
+void* effectManagerGetEffect(const std::string& path)
 {
     return static_cast<Ra::EffectManager*>(Ra::g_effectManager)->getEffect(path);
 }
 
 
-// In-memory generated shader files use 72-byte string/string nodes, not cache pointer nodes.
-// Names compare case-insensitively and are also lowercased. The compatibility tree keeps
-// search order but omits red-black rebalancing.
+// In-memory generated shader files: a string -> string map at +0x9C (72-byte nodes in the image).
+// Names compare case-insensitively and are also lowercased.
 
 namespace Ra {
-namespace {
-
-inline EffectNode72*  asNode72(unsigned int* p) { return reinterpret_cast<EffectNode72*>(p); }
-inline vc71::string&  key72(EffectNode72* n)    { return *reinterpret_cast<vc71::string*>(n->key); }
-inline vc71::string&  value72(EffectNode72* n)  { return *reinterpret_cast<vc71::string*>(n->value); }
-
-// sub_10035E40 - lower_bound. Descends remembering the last node that is NOT less than the key.
-EffectNode72* lowerBound72(RaList& m, const vc71::string& key)
-{
-    EffectNode72* const head = asNode72(m.head);
-    EffectNode72* node = head->parent;
-    EffectNode72* best = head;
-    while (!node->isNil)
-    {
-        if (::_stricmp(key72(node).c_str(), key.c_str()) >= 0) { best = node; node = node->left; }
-        else                                                    { node = node->right; }
-    }
-    return best;
-}
-
-// sub_10035FD0 - upper_bound. The same descent with the comparison the other way round.
-EffectNode72* upperBound72(RaList& m, const vc71::string& key)
-{
-    EffectNode72* const head = asNode72(m.head);
-    EffectNode72* node = head->parent;
-    EffectNode72* best = head;
-    while (!node->isNil)
-    {
-        if (::_stricmp(key.c_str(), key72(node).c_str()) >= 0) { node = node->right; }
-        else                                                    { best = node; node = node->left; }
-    }
-    return best;
-}
-
-// In-order successor, the walk sub_10037090 inlines to advance across the erase range.
-EffectNode72* next72(EffectNode72* node)
-{
-    if (node->isNil)
-        return node;
-    if (!node->right->isNil)
-    {
-        node = node->right;
-        while (!node->left->isNil)
-            node = node->left;
-        return node;
-    }
-    EffectNode72* parent = node->parent;
-    while (!parent->isNil && node == parent->right)
-    {
-        node = parent;
-        parent = parent->parent;
-    }
-    return parent;
-}
-
-void destroyNode72(EffectNode72* node)
-{
-    key72(node).~string();
-    value72(node).~string();
-    ::renddx9abi::engineFree(node);
-}
-
-// Unlink one node, then free it. Plain BST removal - see the RW-74 note above.
-void erase72(RaList& m, EffectNode72* z)
-{
-    EffectNode72* const head = asNode72(m.head);
-    if (z == head || z->isNil)
-        return;
-
-    EffectNode72* splice = z;
-    if (!z->left->isNil && !z->right->isNil)
-        splice = next72(z);
-
-    EffectNode72* child = splice->left->isNil ? splice->right : splice->left;
-    if (!child->isNil)
-        child->parent = splice->parent;
-
-    if (splice == head->parent)            head->parent = child;   // the root
-    else if (splice == splice->parent->left)  splice->parent->left  = child;
-    else                                      splice->parent->right = child;
-
-    if (splice != z)
-    {
-        key72(z)   = key72(splice);
-        value72(z) = value72(splice);
-    }
-
-    // The head's leftmost/rightmost cursors, which the shipped clear path also rebuilds.
-    EffectNode72* scan = head->parent;
-    if (scan->isNil) { head->left = head; head->right = head; }
-    else
-    {
-        while (!scan->left->isNil)  scan = scan->left;
-        head->left = scan;
-        scan = head->parent;
-        while (!scan->right->isNil) scan = scan->right;
-        head->right = scan;
-    }
-
-    destroyNode72(splice);
-    if (m.count)
-        --m.count;
-}
-
-} // anonymous namespace
 
 
 // Inserts a lowercase name without replacing duplicates; always returns true.
 
-bool EffectManager::addMemoryFile(const vc71::string& name, const vc71::string& contents)
+// PE 0x10034080.
+bool EffectManager::addMemoryFile(const std::string& name, const std::string& contents)
 {
-    vc71::string lowered(name);
+    std::string lowered(name);
     pathToLower(lowered);
 
-    EffectNode72* const head  = asNode72(m_list9C.head);
-    EffectNode72*       node  = head->parent;
-    EffectNode72*       parent = head;
-    bool                goLeft = true;
-
-    while (!node->isNil)
-    {
-        parent = node;
-        goLeft = ::_stricmp(lowered.c_str(), key72(node).c_str()) < 0;
-        node   = goLeft ? node->left : node->right;
-    }
-
     // std::map::insert semantics: an existing equivalent key wins and nothing is stored.
-    EffectNode72* const existing = lowerBound72(m_list9C, lowered);
-    if (existing != head && ::_stricmp(key72(existing).c_str(), lowered.c_str()) == 0)
-        return true;
-
-    EffectNode72* const fresh =
-        static_cast<EffectNode72*>(::renddx9abi::engineAlloc(sizeof(EffectNode72)));
-    if (!fresh)
-        return true;                                  // shipped: the result is a constant true
-
-    fresh->left   = head;
-    fresh->right  = head;
-    fresh->parent = parent;
-    fresh->color  = 0;
-    fresh->isNil  = 0;
-    fresh->pad[0] = 0;
-    fresh->pad[1] = 0;
-    new (fresh->key)   vc71::string(lowered);
-    new (fresh->value) vc71::string(contents);
-
-    if (parent == head)      { head->parent = fresh; head->left = fresh; head->right = fresh; }
-    else if (goLeft)         { parent->left  = fresh; if (parent == head->left)  head->left  = fresh; }
-    else                     { parent->right = fresh; if (parent == head->right) head->right = fresh; }
-
-    ++m_list9C.count;
-    return true;
+    m_memoryFiles.insert(std::make_pair(lowered, contents));
+    return true;                                      // shipped: the result is a constant true
 }
 
 
@@ -1073,20 +1043,15 @@ bool EffectManager::addMemoryFile(const vc71::string& name, const vc71::string& 
 // equal_range evaluated backwards. Preserved, because both descents read the same tree and the
 // order is observable if either ever faulted.
 
-void EffectManager::removeMemoryFile(const vc71::string& name)
+// PE 0x10034460.
+void EffectManager::removeMemoryFile(const std::string& name)
 {
-    vc71::string lowered(name);
+    std::string lowered(name);
     pathToLower(lowered);                          // sub_10074E80's lowering half
 
-    EffectNode72* const last  = upperBound72(m_list9C, lowered);   // sub_10035FD0, first
-    EffectNode72*       first = lowerBound72(m_list9C, lowered);   // sub_10035E40, second
-
-    while (first != last && !first->isNil)
-    {
-        EffectNode72* const doomed = first;
-        first = next72(first);
-        erase72(m_list9C, doomed);
-    }
+    const RaMemoryFileMap::iterator last  = m_memoryFiles.upper_bound(lowered);   // sub_10035FD0, first
+    const RaMemoryFileMap::iterator first = m_memoryFiles.lower_bound(lowered);   // sub_10035E40, second
+    m_memoryFiles.erase(first, last);
 }
 
 
@@ -1109,7 +1074,7 @@ struct RaFileInfo
     unsigned int writeTimeHigh;
 };
 
-bool raGetFileInfo(const vc71::string& path, RaFileInfo& out)
+bool raGetFileInfo(const std::string& path, RaFileInfo& out)
 {
     out.size = 0;
     out.writeTimeLow = 0;
@@ -1121,7 +1086,6 @@ bool raGetFileInfo(const vc71::string& path, RaFileInfo& out)
 
     const renddx9abi::HostString hostPath = renddx9abi::makeHostString(path);
 
-#if BF2_PLUGIN_ABI_NATIVE
     ::dice::hfe::io::FileInfo info;
     if (!::dice::hfe::fileManager->getFileInfo(hostPath, info))
         return false;
@@ -1129,24 +1093,11 @@ bool raGetFileInfo(const vc71::string& path, RaFileInfo& out)
     out.writeTimeLow  = info.lastWriteTimeLow;
     out.writeTimeHigh = info.lastWriteTimeHigh;
     return true;
-#else
-    PeFileInfo info;
-    void** const vtbl = *reinterpret_cast<void***>(::dice::hfe::fileManager);
-    typedef unsigned char (__thiscall* GetFileInfoFn)(void*, const renddx9abi::HostString&,
-                                                      PeFileInfo&);
-    if (!reinterpret_cast<GetFileInfoFn>(vtbl[0x38 / 4])(
-            ::dice::hfe::fileManager, hostPath, info))
-        return false;
-    out.size          = info.size;
-    out.writeTimeLow  = info.times[4];   // record+0x38, what 0x100351A5 compares
-    out.writeTimeHigh = info.times[5];   // record+0x3C
-    return true;
-#endif
 }
 
 // FileManager vslot +0x18. The read pair is (2, 0) and the write pair is (0, 2), both read off
 // their call sites: 0x1003528C pushes 0,0,2,path and 0x1003317F pushes 0,2,0,path.
-renddx9abi::HostStream* raOpen(const vc71::string& path, int mode, int access)
+renddx9abi::HostStream* raOpen(const std::string& path, int mode, int access)
 {
     if (!::dice::hfe::fileManager)
         return 0;
@@ -1157,7 +1108,7 @@ renddx9abi::HostStream* raOpen(const vc71::string& path, int mode, int access)
 }
 
 // Returns the basename without its final extension, accepting either path separator.
-void raCacheStem(vc71::string& out, const vc71::string& in)
+void raCacheStem(std::string& out, const std::string& in)
 {
     std::string t(in.c_str(), in.size());
     const std::string::size_type back = t.rfind('\\');
@@ -1173,115 +1124,17 @@ void raCacheStem(vc71::string& out, const vc71::string& in)
     out = t.c_str();
 }
 
-// sub_1003C440 - drop every '_' (95) and '|' (124). File-static in the PE, so each caller's
-// translation unit carries its own copy; Ra/RaShaderPermutator.cpp has the other one, and this file
-// already follows the same precedent for sub_10029D00.
-void raCleanPermutationName(vc71::string& out, const vc71::string& in)
-{
-    std::string t;
-    const char* p = in.c_str();
-    for (; *p; ++p)
-        if (*p != '_' && *p != '|')
-            t += *p;
-    out = t.c_str();
-}
-
-// The 44-byte node the include handler's watch set uses: links, a 28-byte key, _Color at +40 and
-// _Isnil at +41 - the shape sub_100362F0 allocates and sub_100379A0 / sub_10037A50 walk. Its
-// comparator is the ordinary case-sensitive std::string `<` (std::operator< on char), NOT the
-// `_stricmp` the two caches above use.
-struct EffectNode44
-{
-    EffectNode44* left;
-    EffectNode44* parent;
-    EffectNode44* right;
-    unsigned char key[28];
-    unsigned char color;
-    unsigned char isNil;
-    unsigned char pad[2];
-};
-
-static_assert(sizeof(EffectNode44) == 44, "sub_100362F0 allocates 44");
-
-inline vc71::string& key44(EffectNode44* n) { return *reinterpret_cast<vc71::string*>(n->key); }
-
-// sub_100379A0 - find. lower_bound, then "is the probe less than what we landed on".
-bool raWatchSetContains(RaList& m, const vc71::string& key)
-{
-    EffectNode44* const head = reinterpret_cast<EffectNode44*>(m.head);
-    EffectNode44* node = head->parent;
-    while (node && !node->isNil)
-    {
-        const int cmp = ::strcmp(key.c_str(), key44(node).c_str());
-        if (cmp == 0)
-            return true;
-        node = cmp < 0 ? node->left : node->right;
-    }
-    return false;
-}
-
-// sub_10037A50 - insert. Same RW-74 divergence as every other insert in this tree: a correct BST
-// with the shipped ordering, without sub_10037B10's rebalance.
-void raWatchSetInsert(RaList& m, const vc71::string& key)
-{
-    EffectNode44* const head = reinterpret_cast<EffectNode44*>(m.head);
-    EffectNode44* parent = head;
-    EffectNode44* node   = head->parent;
-    bool goLeft = true;
-
-    while (node && !node->isNil)
-    {
-        parent = node;
-        goLeft = ::strcmp(key.c_str(), key44(node).c_str()) < 0;
-        node   = goLeft ? node->left : node->right;
-    }
-
-    EffectNode44* const fresh =
-        static_cast<EffectNode44*>(::renddx9abi::engineAlloc(sizeof(EffectNode44)));
-    if (!fresh)
-        return;
-
-    fresh->left   = head;
-    fresh->right  = head;
-    fresh->parent = parent;
-    fresh->color  = 0;
-    fresh->isNil  = 0;
-    fresh->pad[0] = 0;
-    fresh->pad[1] = 0;
-    new (fresh->key) vc71::string(key);
-
-    if (parent == head)  { head->parent = fresh; head->left = fresh; head->right = fresh; }
-    else if (goLeft)     { parent->left  = fresh; if (parent == head->left)  head->left  = fresh; }
-    else                 { parent->right = fresh; if (parent == head->right) head->right = fresh; }
-
-    ++m.count;
-}
-
-// sub_10036470 - the 72-byte map's find. The same `_stricmp` lower_bound shape as sub_10036390,
-// on the node geometry this file already models.
-EffectNode72* find72(RaList& m, const vc71::string& key)
-{
-    EffectNode72* const head = asNode72(m.head);
-    EffectNode72* node = head->parent;
-    while (node && !node->isNil)
-    {
-        const int cmp = ::_stricmp(key.c_str(), key72(node).c_str());
-        if (cmp == 0)
-            return node;
-        node = cmp < 0 ? node->left : node->right;
-    }
-    return 0;
-}
-
 // Generates the first permutation whose cleaned name matches wanted; returns false on a miss.
-bool raGenerateShaderByCleanName(MetaFx* fx, const vc71::string& wanted)
+// PE 0x1003DD70.
+bool raGenerateShaderByCleanName(MetaFx* fx, const std::string& wanted)
 {
+    std::string clean;
+    clean.reserve(256);
     const MetaFxStringArray& names = fx->getGeneratedNames();
     for (std::size_t i = 0; i < names.size(); ++i)
     {
-        vc71::string clean;
-        raCleanPermutationName(clean, names[i]);
-        if (::strcmp(clean.c_str(), wanted.c_str()) == 0)
+        clean = cleanPermutationName(names[i]);   // PE 0x1003C440
+        if (clean == wanted)
         {
             fx->generateShader(names[i]);
             return true;
@@ -1299,16 +1152,16 @@ bool raGenerateShaderByCleanName(MetaFx* fx, const vc71::string& wanted)
 
 void EffectManager::refillMemoryFiles()
 {
-    if (m_list9C.count != 0)
+    if (!m_memoryFiles.empty())
         return;
 
     const bool writeGeneratedFiles =
-        (*(static_cast<const unsigned char*>(g_renderQueues) + 0xB4)) == 0;
+        static_cast<const RaShaderTable*>(g_renderQueues)->byteB4 == 0;   // the table's +0xB4
 
-    EffectNode48* const head = reinterpret_cast<EffectNode48*>(m_list54.head);
-    for (EffectNode48* node = head->left; node != head; node = nextEffectNode(node))
+    for (RaMetaFxCache::const_iterator node = m_metaFxCache.begin();
+         node != m_metaFxCache.end(); ++node)
     {
-        MetaFx* const fx = static_cast<MetaFx*>(static_cast<void*>(node->effect));
+        MetaFx* const fx = node->second;
         if (!fx)
             continue;
         if (!writeGeneratedFiles)
@@ -1325,42 +1178,43 @@ void EffectManager::refillMemoryFiles()
 
 // Refreshes memory files before looking up the lowercase name.
 
-const vc71::string* EffectManager::findMemoryFile(const vc71::string& name)
+const std::string* EffectManager::findMemoryFile(const std::string& name)
 {
     refillMemoryFiles();
 
-    vc71::string key(name);
+    std::string key(name);
     pathToLower(key);
 
-    EffectNode72* const node = find72(m_list9C, key);
-    if (!node)
+    // sub_10036470 - the map's find, the same `_stricmp` lower_bound shape as sub_10036390.
+    const RaMemoryFileMap::const_iterator node = m_memoryFiles.find(key);
+    if (node == m_memoryFiles.end())
         return 0;
-    return &value72(node);                                    // node + 40
+    return &node->second;
 }
 
 
 // Generates a missing shader from the first matching MetaFx name.
 // The suffix starts at prefix length even when the substring match was not at offset zero.
 
-bool EffectManager::generateMissingShader(const vc71::string& name)
+bool EffectManager::generateMissingShader(const std::string& name)
 {
-    vc71::string stripped;
+    std::string stripped;
     pathStripExtension(stripped, name);
-    vc71::string wanted(stripped);
+    std::string wanted(stripped);
     pathToLower(wanted);                                      // the sub_10074E80 half
 
-    EffectNode48* const head = reinterpret_cast<EffectNode48*>(m_list54.head);
-    for (EffectNode48* node = head->left; node != head; node = nextEffectNode(node))
+    for (RaMetaFxCache::const_iterator node = m_metaFxCache.begin();
+         node != m_metaFxCache.end(); ++node)
     {
-        vc71::string prefix;
-        pathStripExtension(prefix, *reinterpret_cast<const vc71::string*>(node->key));
+        std::string prefix;
+        pathStripExtension(prefix, node->first);
 
         const std::string haystack(wanted.c_str(), wanted.size());
         if (haystack.find(prefix.c_str(), 0, prefix.size()) == std::string::npos)
             continue;
 
-        const vc71::string tail(wanted.c_str() + prefix.size());
-        MetaFx* const fx = static_cast<MetaFx*>(static_cast<void*>(node->effect));
+        const std::string tail(wanted.c_str() + prefix.size());
+        MetaFx* const fx = node->second;
         raGenerateShaderByCleanName(fx, tail);
         return true;
     }
@@ -1372,9 +1226,9 @@ bool EffectManager::generateMissingShader(const vc71::string& name)
 // Tries disk, generated memory files, then on-demand generation. Returns zero on failure;
 // buffers allocated before a read/open failure are retained.
 
-unsigned int EffectManager::readEffectFile(const vc71::string& name, unsigned char** bufferOut)
+unsigned int EffectManager::readEffectFile(const std::string& name, unsigned char** bufferOut)
 {
-    vc71::string path(name);
+    std::string path(name);
     if (g_Renderer)
         applyModPrefix(path);
 
@@ -1405,14 +1259,15 @@ unsigned int EffectManager::readEffectFile(const vc71::string& name, unsigned ch
         return read;
     }
 
-    const vc71::string* const stored = findMemoryFile(path);
+    const std::string* const stored = findMemoryFile(path);
     if (stored)
     {
-        *bufferOut = static_cast<unsigned char*>(
-            ::renddx9abi::engineAlloc(stored->size() + 1));
+        // An effect source; its size fits the shipped 32-bit count.
+        const unsigned int size = static_cast<unsigned int>(stored->size());
+        *bufferOut = static_cast<unsigned char*>(::renddx9abi::engineAlloc(size + 1));
         if (*bufferOut)
             ::strcpy(reinterpret_cast<char*>(*bufferOut), stored->c_str());
-        return stored->size();
+        return size;
     }
 
     if (generateMissingShader(name))
@@ -1424,17 +1279,70 @@ unsigned int EffectManager::readEffectFile(const vc71::string& name, unsigned ch
 }
 
 
+// PE 0x10033860 (listing read). Unreachable in 1.50: no code or data references. For every cached
+// effect whose name contains `filter` (case-insensitive) it disassembles the effect with colour code
+// and writes the text to "<name without extension>_dis.htm" through the file manager. Always returns
+// true. Retail continues into the write after an open failure, dereferencing the null stream and the
+// buffer it has just released; that continuation is omitted here and the effect is skipped.
+bool EffectManager::dumpEffectDisassembly(const std::string& filter)
+{
+#if defined(_WIN32)
+    for (RaEffectCache::iterator node = m_effectCache.begin(); node != m_effectCache.end(); ++node)
+    {
+        // PE 0x10075110: both names lowered, then std::string::find on the pair.
+        std::string loweredName(node->first.c_str());
+        std::string loweredFilter(filter.c_str());
+        pathToLower(loweredName);
+        pathToLower(loweredFilter);
+        if (loweredName.find(loweredFilter.c_str(), 0, loweredFilter.size()) == std::string::npos)
+            continue;
+
+        ID3DXBuffer* buffer = 0;
+        const long hr = D3DXDisassembleEffect(static_cast<ID3DXEffect*>(node->second), TRUE, &buffer);
+        if (hr != 0)
+        {
+            ::renddx9abi::logf("Ra/EffectManager.cpp:1469 Failed to disasm. %s",
+                               DXGetErrorDescription9A(hr));
+            continue;
+        }
+
+        std::string stem;
+        pathStripExtension(stem, node->first);
+        std::string path(stem);
+        path += "_dis.htm";
+        renddx9abi::HostStream* const file = raOpen(path, 0, 2);   // FileManager +0x18, the write pair
+        if (!file)
+        {
+            buffer->Release();
+            ::renddx9abi::logf("Ra/EffectManager.cpp:1478 Failed to open disasm file.");
+            continue;
+        }
+
+        file->write(buffer->GetBufferPointer(), buffer->GetBufferSize());   // stream +0x14
+        file->release();
+        buffer->Release();
+    }
+    return true;
+#else
+    // [CHOSEN, not recovered] The native D3DX backend has no effect disassembler; report and refuse.
+    (void)filter;
+    ::fprintf(stderr, "[CHOSEN, not recovered] dice::hfe::dx9rend::Ra::EffectManager::dumpEffectDisassembly: "
+                      "no effect disassembler on this port\n");
+    ::fflush(stderr);
+    return false;
+#endif
+}
+
 // Writes a binary compiled-effect cache with each byte XORed by its index.
 // Returns false if the output cannot be opened; individual writes are unchecked.
 
-bool EffectManager::writeEffectCache(void* blob, const vc71::string& path)
+bool EffectManager::writeEffectCache(ID3DXBuffer* blob, const std::string& path)
 {
     renddx9abi::HostStream* const file = raOpen(path, 0, 2);  // FileManager +0x18, the write pair
     if (!file)
         return false;
 
-    const unsigned int size =
-        ::renddx9abi::d3dxSlot<unsigned int (__stdcall*)(void*)>(blob, 0x10)(blob);
+    const unsigned int size = blob->GetBufferSize();
 
     char* const copy = static_cast<char*>(::renddx9abi::engineAlloc(size));
     if (!copy)
@@ -1448,9 +1356,7 @@ bool EffectManager::writeEffectCache(void* blob, const vc71::string& path)
         return false;
     }
 
-    const char* const src =
-        static_cast<const char*>(
-            ::renddx9abi::d3dxSlot<void* (__stdcall*)(void*)>(blob, 0x0C)(blob));
+    const char* const src = static_cast<const char*>(blob->GetBufferPointer());
     ::memcpy(copy, src, size);
 
     for (unsigned int i = 0; i < size; ++i)
@@ -1465,7 +1371,7 @@ bool EffectManager::writeEffectCache(void* blob, const vc71::string& path)
 // The two seams Ra/RaShaderPermutator.cpp calls. The shipped bodies are methods on the
 // EffectManager; the permutator reaches them through the singleton, exactly as its own call sites
 // do (`mov ecx, dword_1023D954`). Unguarded, as those call sites are.
-bool effectManagerAddMemoryFile(const vc71::string& name, const vc71::string& contents)
+bool effectManagerAddMemoryFile(const std::string& name, const std::string& contents)
 {
     return static_cast<EffectManager*>(g_effectManager)->addMemoryFile(name, contents);
 }
@@ -1477,10 +1383,15 @@ void effectManagerResetEffects()
     static_cast<EffectManager*>(g_effectManager)->resetEffects();
 }
 
-void effectManagerRemoveMemoryFile(const vc71::string& name)
+void effectManagerRemoveMemoryFile(const std::string& name)
 {
     static_cast<EffectManager*>(g_effectManager)->removeMemoryFile(name);
 }
+
+// byte_1023D950 - set to 1 the first time a compile produces a usable technique (PE 0x100357B9).
+// The same retail byte is read and written by SwiffRender's getFlag/setFlag slots (PE 0x10153490 /
+// PE 0x101534A0), so it has external linkage and SwiffRender.cpp refers to this one definition.
+unsigned char g_anyEffectCompiled = 0;
 
 namespace {
 
@@ -1494,9 +1405,6 @@ unsigned char g_skipOptimization = 0;   // byte_1023DD9A
 unsigned char g_partialPrecision = 0;   // byte_1023DD99
 unsigned char g_forceOneFour     = 0;   // byte_1023DD98
 
-// byte_1023D950 - set to 1 the first time a compile produces a usable technique. Read back by
-// sub_10153490/sub_101534A0, which are outside this subsystem.
-unsigned char g_anyEffectCompiled = 0;
 
 // The macro tables, transcribed from 0x101E1268..0x101E1308. Each row is {name, value}.
 const char* const kPsVersion[5][2] =
@@ -1520,26 +1428,114 @@ const char* const kForce14[2][2] =
 // dword_101E12F8 - the minimum (major<<8 | minor) pixel-shader version each psmodel row needs.
 const unsigned int kMinPsVersion[5] = { 0x103u, 0x104u, 0x201u, 0x202u, 0x200u };
 
-// ID3DXBuffer and ID3DXEffectCompiler, by the offsets their call sites use.
-typedef unsigned long (__stdcall* RaBufReleaseFn)(void*);                      // +0x08
-typedef void*         (__stdcall* RaBufGetPointerFn)(void*);                   // +0x0C
-typedef unsigned int  (__stdcall* RaBufGetSizeFn)(void*);                      // +0x10
-typedef long (__stdcall* RaFxCompileEffectFn)(void*, unsigned long, void**, void**);  // +0x0EC
-typedef void* (__stdcall* RaFxGetTechniqueByNameFn)(void*, const char*);              // +0x034
-typedef long (__stdcall* RaFxFindNextValidTechniqueFn)(void*, void*, void**);         // +0x0F4
-typedef long (__stdcall* RaFxOnLostDeviceFn)(void*);                                  // +0x114
-typedef long (__stdcall* RaFxOnResetDeviceFn)(void*);                                 // +0x118
-typedef long (__stdcall* RaFxSetStateManagerFn)(void*, void*);                        // +0x11C
-
-inline void raRelease(void*& p)
+// PE 0x10035DC0.
+template <typename Interface>
+inline void raRelease(Interface*& p)
 {
     // sub_10035DC0 - `if (p) { p->Release(); p = 0; }`, the 23-byte helper every arm here uses.
     if (p)
     {
-        ::renddx9abi::d3dxSlot<RaBufReleaseFn>(p, 0x08)(p);
+        p->Release();
         p = 0;
     }
 }
+
+// [CHOSEN, not recovered] Native regex carrier for the fixed PME expressions below (issue #7).
+// PCRegExp.dll is a VC7.1/x86 dependency. Retain its global cursor and input-object identity;
+// C++14 ECMAScript has no multiline/dotall options, and its dot also excludes carriage returns.
+class RaProjectedPattern
+{
+public:
+    RaProjectedPattern(const std::string& expression, bool dotAll = false)
+        : anchored(!expression.empty() && expression[0] == '^'), lastInput(0), cursor(0)
+    {
+        std::string native;
+        bool characterClass = false;
+        for (std::string::size_type i = anchored ? 1 : 0; i < expression.size(); ++i)
+        {
+            const char c = expression[i];
+            if (c == '\\' && i + 1 < expression.size())
+            {
+                native += c;
+                native += expression[++i];
+                continue;
+            }
+            if (c == '[') characterClass = true;
+            if (c == ']') characterClass = false;
+            if (c == '.' && !characterClass)
+                native += dotAll ? "[\\s\\S]" : "[^\\n]";
+            else
+            {
+                // The only braces in these fixed expressions delimit an asm block.
+                if (!characterClass && (c == '{' || c == '}')) native += '\\';
+                native += c;
+            }
+        }
+        pattern.assign(native, std::regex::ECMAScript | std::regex::icase);
+    }
+
+    void reset()
+    {
+        lastInput = 0;
+        cursor = 0;
+        markers.clear();
+        subject.clear();
+    }
+
+    bool match(const std::string& input)
+    {
+        if (lastInput != &input)
+            cursor = 0;
+        lastInput = &input;
+        markers.clear();
+        subject = input;
+        std::string::size_type at = cursor;
+        if (anchored && at && at <= subject.size() && subject[at - 1] != '\n')
+        {
+            at = subject.find('\n', at);
+            if (at != std::string::npos) ++at;
+        }
+        while (at != std::string::npos && at <= subject.size())
+        {
+            std::cmatch found;
+            const char* const begin = subject.c_str() + at;
+            const bool matched = std::regex_search(begin, subject.c_str() + subject.size(), found,
+                pattern, anchored ? std::regex_constants::match_continuous
+                                  : std::regex_constants::match_default);
+            if (matched)
+            {
+                for (size_t i = 0; i < found.size(); ++i)
+                {
+                    const std::string::size_type first = at + found.position(i);
+                    markers.push_back(std::make_pair(first, first + found.length(i)));
+                }
+                cursor = markers[0].second;
+                return true;
+            }
+            if (!anchored) break;
+            at = subject.find('\n', at);
+            if (at != std::string::npos) ++at;
+        }
+        cursor = 0;
+        return false;
+    }
+
+    std::string group(unsigned int index) const
+    {
+        const std::pair<size_t, size_t>& span = markers[index];
+        return subject.substr(span.first, span.second - span.first);
+    }
+
+    std::pair<size_t, size_t> span(unsigned int index) const { return markers[index]; }
+
+private:
+    bool anchored;
+    std::regex pattern;
+    const std::string* lastInput;
+    std::string::size_type cursor;
+    std::string subject;
+    std::vector<std::pair<size_t, size_t> > markers;
+};
 
 // Pumps the renderer's inactive/device-lost wait and reports whether it reset the device.
 // g_Renderer must be non-null. A true result invalidates shader compilation state.
@@ -1556,20 +1552,26 @@ bool rendererDeviceWasReset()
 // This local copy retains its module reference. Consolidate it with the permutator's
 // helper when that helper has a shared declaration and external linkage.
 
-typedef long (__stdcall* RaD3dxCreateEffectCompilerFn)(const char* srcData,
-                                                       unsigned int srcDataLen,
-                                                       const void* defines,
-                                                       void* include,
-                                                       unsigned long flags,
-                                                       void** compilerOut,
-                                                       void** parseErrorsOut);
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Native compiler entry; no Win32 DLL recursion workaround.
+long raCreateEffectCompiler(const char* srcData, unsigned int srcDataLen,
+    const D3DXMACRO* defines, LPD3DXINCLUDE include, unsigned long flags,
+    ID3DXEffectCompiler** compilerOut, ID3DXBuffer** parseErrorsOut)
+{
+    return D3DXCreateEffectCompiler(srcData, srcDataLen, defines, include,
+        static_cast<DWORD>(flags), compilerOut, parseErrorsOut);
+}
+#else
+typedef HRESULT (WINAPI* RaD3dxCreateEffectCompilerFn)(LPCSTR, UINT, CONST D3DXMACRO*,
+                                                       LPD3DXINCLUDE, DWORD,
+                                                       LPD3DXEFFECTCOMPILER*, LPD3DXBUFFER*);
 
 HMODULE                      s_raD3dxModule = 0;              // dword_1023E108
 RaD3dxCreateEffectCompilerFn s_raCreateEffectCompiler = 0;    // dword_1023E10C
 
 long raCreateEffectCompiler(const char* srcData, unsigned int srcDataLen,
-                            const void* defines, void* include, unsigned long flags,
-                            void** compilerOut, void** parseErrorsOut)
+                            const D3DXMACRO* defines, LPD3DXINCLUDE include, unsigned long flags,
+                            ID3DXEffectCompiler** compilerOut, ID3DXBuffer** parseErrorsOut)
 {
     if (!s_raD3dxModule)
     {
@@ -1592,6 +1594,7 @@ long raCreateEffectCompiler(const char* srcData, unsigned int srcDataLen,
     return s_raCreateEffectCompiler(srcData, srcDataLen, defines, include, flags,
                                     compilerOut, parseErrorsOut);
 }
+#endif
 
 
 // StringFromGUID2's output, spelled out. The shipped body calls ole32's StringFromGUID2 into 39
@@ -1614,29 +1617,30 @@ void raFormatGuid(char out[40], const GUID& guid)
 // Compiles source with this manager's include resolver and supplied macro definitions.
 // Returns a compiled-effect buffer, or null with compiler diagnostics in errors.
 // The optional second pass fixes projected-texture shaders for pixel shader 1.4.
-
-void* EffectManager::compileEffectSource(const char* source, unsigned int sourceLen,
-                                         const RaD3DXMACRO* defines, unsigned long* flags,
-                                         void** errors)
+// PE 0x100344B0.
+ID3DXBuffer* EffectManager::compileEffectSource(const char* source, unsigned int sourceLen,
+                                                const D3DXMACRO* defines, unsigned long* flags,
+                                                ID3DXBuffer** errors)
 {
     {
         // The shipped expression, with the four copy-constructed temporaries MSVC emitted for it
         // collapsed: `text = std::string("#line 2 \"Generated.fx\"\r\n") + source`.
-        vc71::string generated("#line 2 \"Generated.fx\"\r\n");
+        std::string generated("#line 2 \"Generated.fx\"\r\n");
         generated += source;
         m_sub->text = generated;
     }
 
-    void* blob = 0;
+    ID3DXBuffer* blob = 0;
 
     for (int pass = 1; ; ++pass)
     {
-        void* compiler = 0;
+        ID3DXEffectCompiler* compiler = 0;
 
         // sub_1003C610 - the lazily-bound D3DXCreateEffectCompiler in d3dx9_24.dll, with `pInclude`
-        // set to this object's +0x44 sub-object.
+        // set to this object's +0x44 sub-object, whose +0x00 is the off_101E139C include table.
         const long created = raCreateEffectCompiler(
-            source, sourceLen, defines, m_sub, *flags, &compiler, errors);
+            source, sourceLen, defines, reinterpret_cast<LPD3DXINCLUDE>(m_sub), *flags, &compiler,
+            errors);
         if (created != 0)
         {
             raRelease(compiler);
@@ -1646,14 +1650,13 @@ void* EffectManager::compileEffectSource(const char* source, unsigned int source
         raRelease(*errors);
 
         blob = 0;
-        const long hr = ::renddx9abi::d3dxSlot<RaFxCompileEffectFn>(compiler, 0x0EC)(
-            compiler, *flags, &blob, errors);
+        const long hr = compiler->CompileEffect(*flags, &blob, errors);
         raRelease(compiler);
 
         if (hr != 0)
         {
             if (blob)
-                ::renddx9abi::d3dxSlot<RaBufReleaseFn>(blob, 0x08)(blob);
+                blob->Release();
             return 0;
         }
 
@@ -1663,9 +1666,8 @@ void* EffectManager::compileEffectSource(const char* source, unsigned int source
             return 0;
 
 
-        // [FRONTIER] Projected-texture rewriting for ps_1_4 remains unavailable.
-        // The flag is never enabled, and the compatibility test reads macro entry 3
-        // rather than psversion at entry 5. Preserve both conditions.
+        // PE 0x100345C4..0x100345FF: preserve the flag and the shipped macro-index test.
+        // The compatibility test reads entry 3, rather than PSVERSION at entry 5.
 
         if (!m_byte61
             || ::strcmp(defines[3].Name, "PSVERSION") != 0
@@ -1674,14 +1676,136 @@ void* EffectManager::compileEffectSource(const char* source, unsigned int source
             break;
         }
 
-        RD9_FRONTIER("dice::hfe::dx9rend::Ra::EffectManager::compileEffectSource "
-                     "(the ps_1_4 projected-texture fixup, 0x100345FF; PME/D3DXDisassembleEffect. "
-                     "This is unreachable in the shipped image - +0x61 is never set and the macro "
-                     "index the two strcmps use is entry 3, not 5)", 0x61);
+        // PE 0x100345FF..0x10034896. These are function-local static PME patterns in retail.
+        static RaProjectedPattern projectedFlags(
+            "^\\s*TextureTransformFlags\\s*\\[([0-6])\\]\\s*=.*PROJECTED.*;.*");
+        projectedFlags.reset();
+        std::vector<std::string> projectedRegisters;
+        while (projectedFlags.match(std::string(m_sub->text.c_str())))
+            projectedRegisters.push_back(std::string("r") + projectedFlags.group(1));
+        if (projectedRegisters.empty())
+            return blob;
+
+        static RaProjectedPattern projectedCall("=\\s*tex2Dproj\\s*\\(.*\\)");
+        if (!projectedCall.match(std::string(m_sub->text.c_str())))
+            return blob;
+
+        static RaProjectedPattern compiledPixelShader(
+            "^\\s*PixelShader\\s*=\\s*compile\\s+(ps_1_4|M?PSMODEL)\\s+.+\\(.*\\)\\s*;");
+        compiledPixelShader.reset();
+        if (!compiledPixelShader.match(std::string(m_sub->text.c_str())))
+            return blob;
+        const std::pair<size_t, size_t> insertion = compiledPixelShader.span(0);
+        m_sub->text.erase(insertion.first, insertion.second - insertion.first);
+
+#if defined(_WIN32)
+        // PE 0x1003489C..0x10034946. Shipped defect: the disassembly failure describes the
+        // GetPassDesc result, rather than the failing D3DXDisassembleEffect HRESULT.
+        ID3DXEffect* effect = 0;
+        const HRESULT createdEffect = D3DXCreateEffect(m_device, blob->GetBufferPointer(),
+            blob->GetBufferSize(), 0, 0, static_cast<DWORD>(*flags & ~0x800u),
+            static_cast<ID3DXEffectPool*>(m_effectPool), &effect, 0);
+        if (createdEffect != 0)
+        {
+            blob->Release();
+            raRelease(effect);
+            return 0;
+        }
+        const D3DXHANDLE technique = effect->GetTechnique(0);
+        const D3DXHANDLE effectPass = effect->GetPass(technique, 0);
+        D3DXPASS_DESC passDescription;
+        const HRESULT describedPass = effect->GetPassDesc(effectPass, &passDescription);
+        const DWORD* const pixelShader = passDescription.pPixelShaderFunction;
+        ID3DXBuffer* disassembly = 0;
+        if (D3DXDisassembleEffect(effect, FALSE, &disassembly) != 0)
+        {
+            ::renddx9abi::logf("Ra/EffectManager.cpp:672 Failed to disasm. %s",
+                               DXGetErrorDescription9A(describedPass));
+            raRelease(effect);
+            raRelease(blob);
+            raRelease(disassembly);
+            return 0;
+        }
+        const std::string disassembled(static_cast<const char*>(disassembly->GetBufferPointer()));
+        raRelease(disassembly);
+
+        // PE 0x1003494B..0x10034B43. Only the first texld match per projected register changes.
+        static RaProjectedPattern assembledPixelShader(
+            "^\\s*PixelShader\\s*=\\s*asm\\s*{.*}\\s*;", true);
+        assembledPixelShader.reset();
+        std::string assembly;
+        if (assembledPixelShader.match(std::string(disassembled.c_str())))
+        {
+            assembly = assembledPixelShader.group(0);
+            bool changed = false;
+            for (size_t i = 0; i < projectedRegisters.size(); ++i)
+            {
+                RaProjectedPattern load(std::string("^\\s*texld\\s+") + projectedRegisters[i]
+                    + ",\\s*t[0-6]_dw(\\.xyww)", true);
+                if (load.match(std::string(assembly.c_str())))
+                {
+                    const std::pair<size_t, size_t> swizzle = load.span(1);
+                    assembly.replace(swizzle.first, swizzle.second - swizzle.first, ".xyzw");
+                    changed = true;
+                }
+            }
+            if (!changed)
+            {
+                raRelease(effect);
+                return blob;
+            }
+        }
+        // Shipped defect: absence of an assembly match still takes the recompile path,
+        // inserting an empty assembly string after removing the compiled shader statement.
+        m_sub->text.insert(insertion.first, assembly);
+
+        // PE 0x10034B4E..0x10034D51. The table and its description result are unchecked.
+        ID3DXConstantTable* constants = 0;
+        D3DXGetShaderConstantTable(pixelShader, &constants);
+        std::string bindings;
+        unsigned int index = 0;
+        for (D3DXHANDLE constant = constants->GetConstant(0, index); constant;
+             constant = constants->GetConstant(0, ++index))
+        {
+            D3DXCONSTANT_DESC descriptions[16];
+            ::memset(descriptions, 0, sizeof(descriptions));
+            UINT count = 16;
+            constants->GetConstantDesc(constant, descriptions, &count);
+            const char* format = 0;
+            switch (descriptions[0].RegisterSet)
+            {
+            case D3DXRS_SAMPLER: format = "Sampler[%i] = (%s);\r\n"; break;
+            case D3DXRS_FLOAT4: format = "PixelShaderConstantF[%i] = (%s);\r\n"; break;
+            case D3DXRS_INT4: format = "PixelShaderConstantI[%i] = (%s);\r\n"; break;
+            case D3DXRS_BOOL: format = "PixelShaderConstantB[%i] = (%s);\r\n"; break;
+            default:
+                ::renddx9abi::logf("Ra/EffectManager.cpp:770 Unknown register set.");
+                break;
+            }
+            if (format)
+                bindings += ::dice::hfe::formatString(format,
+                    descriptions[0].RegisterIndex, descriptions[0].Name);
+        }
+        m_sub->text.insert(insertion.first, bindings);
+        raRelease(constants);
+        raRelease(effect);
+        m_sub->text = m_sub->text + "";
+        source = m_sub->text.c_str();
+        sourceLen = static_cast<unsigned int>(m_sub->text.size());
+        raRelease(blob);
+#else
+        // [CHOSEN, not recovered] The native D3DX backend has no effect disassembler.
+        // Refuse this compilation rather than returning a blob without the required rewrite.
+        ::fprintf(stderr, "[CHOSEN, not recovered] dice::hfe::dx9rend::Ra::EffectManager::compileEffectSource: "
+                          "projected ps_1_4 rewrite unavailable; compilation refused\n");
+        ::fflush(stderr);
+        blob->Release();
+        return 0;
+#endif
     }
 
-    // LABEL_70 - clear the expanded copy and hand the blob back.
-    m_sub->text = "";
+    // PE 0x10034DE7: clear the expanded copy and hand the blob back.
+    m_sub->text.clear();
     return blob;
 }
 
@@ -1690,20 +1814,12 @@ void* EffectManager::compileEffectSource(const char* source, unsigned int source
 // Cache identity includes the adapter, build number and filter quality; stale caches
 // are recompiled across supported shader models. unused is retained for ABI compatibility.
 
-void* EffectManager::compileEffect(const vc71::string& name, int unused, void** effectOut)
+void* EffectManager::compileEffect(const std::string& name, int unused, void** effectOut)
 {
+    // PE 0x10034F60.
     (void)unused;   // arg_4: passed by getEffect as 0, never read by the shipped body
 
-    // [PLATFORM] Compatibility builds publish LoadStat progress during shader compilation.
-    // [FRONTIER] Native builds omit this loading-bar update until LoadStat exposes typed
-    // accessors; its layout differs and must not be read using PE offsets.
-#if !BF2_PLUGIN_ABI_NATIVE
-    // [CHOSEN, not recovered] Allow LoadStat to be absent during early DLL initialization.
-    unsigned char* const rawLoadStat = static_cast<unsigned char*>(
-        static_cast<void*>(::dice::hfe::loadStat));
-    if (rawLoadStat)
-        rawLoadStat[8] = 1;
-#endif
+    loadStat->m_unknown08 = true;
 
     unsigned long flags = 0;
     if (g_noPreshader)      flags  = 0x100u;
@@ -1722,7 +1838,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
     {
         const CapsView* const caps = capsOf();
         if (caps)
-            raFormatGuid(guidText, caps->adapter.DeviceIdentifier);
+            raFormatGuid(guidText, deviceCapsDeviceIdentifier());          // sub_10001260
     }
 
     // g_rendererBase->vslot+0x74 -> VideoOptions; VideoOptions->vslot+0x04(7) -> filter quality.
@@ -1737,11 +1853,11 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
         }
     }
 
-    vc71::string modPath("mods/bf2");
+    std::string modPath("mods/bf2");
     if (g_Renderer && static_cast<IRenderer*>(g_Renderer)->isExpansionPack())
         modPath = "mods/xpack";
 
-    vc71::string cachePath("@HOME@/");
+    std::string cachePath("@HOME@/");
     cachePath += modPath;
     cachePath += "/cache/";
     {
@@ -1752,7 +1868,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
     }
     cachePath += "/";
     {
-        vc71::string stem;
+        std::string stem;
         raCacheStem(stem, name);
         cachePath += stem;
     }
@@ -1791,21 +1907,21 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
         readEffectFile(useCache ? cachePath : name, &source);
     if (sourceLen == 0)
     {
-        // This early return leaves LoadStat's busy flag set and skips the progress event.
+        // shipped defect: this early return leaves suppression set and skips the progress event.
         *effectOut = 0;
         ::renddx9abi::engineFree(source);
         return 0;
     }
 
-    void* effect    = 0;
-    void* errors    = 0;
-    void* technique = 0;
+    ID3DXEffect* effect    = 0;
+    ID3DXBuffer* errors    = 0;
+    D3DXHANDLE   technique = 0;
 
     if (useCache)
     {
         // Read the cached effect again into D3DX-owned storage.
         // Local failure guards report a bad cache and leave a null effect for build failure.
-        void* buffer = 0;
+        ID3DXBuffer* buffer = 0;
         if (D3DXCreateBuffer(cacheInfo.size, &buffer) != 0)
             ::renddx9abi::logf("EffectManager.cpp:1000 (D3DXCreateBuffer(%u) failed for \"%s\")",
                                cacheInfo.size, cachePath.c_str());
@@ -1813,7 +1929,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
         renddx9abi::HostStream* const file = raOpen(cachePath, 2, 0);
         if (file && buffer)
         {
-            void* const dst = ::renddx9abi::d3dxSlot<RaBufGetPointerFn>(buffer, 0x0C)(buffer);
+            void* const dst = buffer->GetBufferPointer();
             const unsigned int read = file->read(dst, cacheInfo.size);
             if (read != cacheInfo.size)
                 ::renddx9abi::logf("EffectManager.cpp:1004 (read %u of %u from \"%s\")",
@@ -1824,19 +1940,17 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
 
         if (buffer)
         {
-            const unsigned int size =
-                ::renddx9abi::d3dxSlot<RaBufGetSizeFn>(buffer, 0x10)(buffer);
-            char* const bytes =
-                static_cast<char*>(::renddx9abi::d3dxSlot<RaBufGetPointerFn>(buffer, 0x0C)(buffer));
+            const unsigned int size = buffer->GetBufferSize();
+            char* const bytes = static_cast<char*>(buffer->GetBufferPointer());
             for (unsigned int i = 0; i < size; ++i)
                 bytes[i] = static_cast<char>(bytes[i] ^ static_cast<char>(i));
 
             const unsigned long createFlags = flags | (m_byte62 ? 0x800u : 0u);
             const long hr = D3DXCreateEffect(
                 m_device,
-                ::renddx9abi::d3dxSlot<RaBufGetPointerFn>(buffer, 0x0C)(buffer),
-                ::renddx9abi::d3dxSlot<RaBufGetSizeFn>(buffer, 0x10)(buffer),
-                0, 0, createFlags, m_effectPool, &effect, &errors);
+                buffer->GetBufferPointer(),
+                buffer->GetBufferSize(),
+                0, 0, createFlags, static_cast<LPD3DXEFFECTPOOL>(m_effectPool), &effect, &errors);
             if (hr != 0)
                 ::renddx9abi::logf("EffectManager.cpp:1016 Failed to create effect: hr=0x%08X (%s)",
                                    static_cast<unsigned>(hr), cachePath.c_str());
@@ -1844,12 +1958,10 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
 
         if (effect)
         {
-            technique = ::renddx9abi::d3dxSlot<RaFxGetTechniqueByNameFn>(effect, 0x34)(
-                effect, "defaultTechnique");
+            technique = effect->GetTechniqueByName("defaultTechnique");
             if (!technique)
-                ::renddx9abi::d3dxSlot<RaFxFindNextValidTechniqueFn>(effect, 0xF4)(
-                    effect, 0, &technique);
-            ::renddx9abi::d3dxSlot<RaFxOnLostDeviceFn>(effect, 0x114)(effect);
+                effect->FindNextValidTechnique(0, &technique);
+            effect->OnLostDevice();
 
             raRelease(buffer);
 
@@ -1858,13 +1970,11 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
             // Both OnLostDevice calls are shipped and both are kept.
             if (g_Renderer && rendererDeviceWasReset())
             {
-                ::renddx9abi::d3dxSlot<RaFxOnResetDeviceFn>(effect, 0x118)(effect);
-                technique = ::renddx9abi::d3dxSlot<RaFxGetTechniqueByNameFn>(effect, 0x34)(
-                    effect, "defaultTechnique");
+                effect->OnResetDevice();
+                technique = effect->GetTechniqueByName("defaultTechnique");
                 if (!technique)
-                    ::renddx9abi::d3dxSlot<RaFxFindNextValidTechniqueFn>(effect, 0xF4)(
-                        effect, 0, &technique);
-                ::renddx9abi::d3dxSlot<RaFxOnLostDeviceFn>(effect, 0x114)(effect);
+                    effect->FindNextValidTechnique(0, &technique);
+                effect->OnLostDevice();
             }
         }
         else
@@ -1878,7 +1988,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
         if (readBoolSetting("GSLoadObfuscated", true))
             deobfuscateShader(source, sourceLen);
 
-        const unsigned int psVersion = (psMajor() << 8) | psMinor();
+        const unsigned int psVersion = (deviceCapsPixelShaderMajor() << 8) | psMinor();
 
         // GSQuickShaderPermutation starts the pixel-model search at ps_2_a instead of ps_1_3.
         const bool quick = readBoolSetting("GSQuickShaderPermutation", false);
@@ -1913,7 +2023,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
                     psIndex = 0;
                 }
 
-                RaD3DXMACRO defines[7];
+                D3DXMACRO defines[7];
                 defines[0].Name = kVsModel[vsIndex][0];  defines[0].Definition = kVsModel[vsIndex][1];
                 defines[1].Name = kPsModel[psIndex][0];  defines[1].Definition = kPsModel[psIndex][1];
                 defines[2].Name = kForce14[forceIndex][0];
@@ -1927,7 +2037,7 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
                 raRelease(errors);
 
                 unsigned long passFlags = flags;      // the shipped body passes a copy by pointer
-                void* const blob = compileEffectSource(
+                ID3DXBuffer* const blob = compileEffectSource(
                     reinterpret_cast<const char*>(source), sourceLen, defines, &passFlags, &errors);
                 if (!blob)
                     continue;
@@ -1937,9 +2047,10 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
 
                 const long hr = D3DXCreateEffect(
                     m_device,
-                    ::renddx9abi::d3dxSlot<RaBufGetPointerFn>(blob, 0x0C)(blob),
-                    ::renddx9abi::d3dxSlot<RaBufGetSizeFn>(blob, 0x10)(blob),
-                    0, 0, createFlags, m_effectPool, &effect, &errors);
+                    blob->GetBufferPointer(),
+                    blob->GetBufferSize(),
+                    0, 0, createFlags, static_cast<LPD3DXEFFECTPOOL>(m_effectPool), &effect,
+                    &errors);
 
                 // NOT reproduced, AND nothing IS lost. 0x1003573D and 0x10035743 call
                 // DXGetErrorStringA (sub_1005F380, 48,672 B) and DXGetErrorDescription9A
@@ -1950,19 +2061,18 @@ void* EffectManager::compileEffect(const vc71::string& name, int unused, void** 
                 if (!effect)
                     continue;
 
-                ::renddx9abi::d3dxSlot<RaFxFindNextValidTechniqueFn>(effect, 0xF4)(
-                    effect, 0, &technique);
-                ::renddx9abi::d3dxSlot<RaFxOnLostDeviceFn>(effect, 0x114)(effect);
+                effect->FindNextValidTechnique(0, &technique);
+                effect->OnLostDevice();
 
                 if (technique)
                 {
                     g_anyEffectCompiled = 1;                  // byte_1023D950
                     writeEffectCache(blob, cachePath);
-                    ::renddx9abi::d3dxSlot<RaBufReleaseFn>(blob, 0x08)(blob);
+                    blob->Release();
                     goto compiled;
                 }
 
-                ::renddx9abi::d3dxSlot<RaBufReleaseFn>(blob, 0x08)(blob);
+                blob->Release();
                 raRelease(effect);
             }
             ++vsIndex;
@@ -1974,72 +2084,23 @@ compiled:
     {
         // Release the caller's previous effect before replacing it.
         if (*effectOut)
-            ::renddx9abi::d3dxSlot<RaBufReleaseFn>(*effectOut, 0x08)(*effectOut);
+            static_cast<ID3DXEffect*>(*effectOut)->Release();
         *effectOut = effect;
 
 
-        // File-change registration stays disabled until the callback argument types are known.
-        // Disk edits therefore do not reload effects during a running session.
-        // [RETIRE-WHEN: RW-78]
-
+#if !defined(_MSC_VER)
+        static_cast<io::IFileChangeManager*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+            ->addListener(reinterpret_cast<io::IFileChangeListener*>(this), name, 4);
+#else
+        static_cast<IFileChangeManagerPe*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+            ->addListener(reinterpret_cast<IBase*>(this), name, 4);
+#endif
     }
 
     raRelease(errors);
 
-#if !BF2_PLUGIN_ABI_NATIVE
-    if (rawLoadStat)
-    {
-        rawLoadStat[8] = 0;
-        if (*reinterpret_cast<const unsigned int*>(rawLoadStat) != 0)
-        {
-            float percent;
-            if (rawLoadStat[0x0B])
-            {
-                percent = 100.0f;
-            }
-            else
-            {
-                unsigned int* const current = reinterpret_cast<unsigned int*>(rawLoadStat + 0x50);
-                unsigned int* const total   = reinterpret_cast<unsigned int*>(rawLoadStat + 0x54);
-                const float* const  lo      = reinterpret_cast<const float*>(rawLoadStat + 0x68);
-                const float* const  hi      = reinterpret_cast<const float*>(rawLoadStat + 0x6C);
-                if (*total)
-                {
-                    if (*current >= *total)
-                        *current = *total;
-                    percent = (static_cast<float>(*current) / static_cast<float>(*total))
-                              * (*hi - *lo) + *lo;
-                }
-                else
-                {
-                    percent = *lo;
-                }
-                percent *= 100.0f;
-            }
-
-            if (::dice::hfe::eventManager)
-            {
-                // Only percent is supplied by the original callback contract.
-                // [CHOSEN, not recovered] Zero the remaining fields rather than expose stack data.
-                struct { float percent; float pad1; const char* pad2; } payload = { percent, 0.0f, 0 };
-
-                // EventManager vslot +0x10. ON THE PE that IS THE four-argument
-                // postEvent(EventCategory, unsigned id, void* payload, float); on the ELF the same
-                // overload sits at +0x14 and +0x10 is postEvent(cat, EventNode*, float).
-                // Code/BF2/Core/EventManager.h records the swap, and TextureManager.cpp's twin
-                // carries the same warning. This branch is PE-only by construction, so the raw slot
-                // is the correct dispatch and it avoids pulling the engine EventManager header into
-                // a retail-ABI translation unit.
-                void** const emVtbl =
-                    *reinterpret_cast<void***>(static_cast<void*>(::dice::hfe::eventManager));
-                typedef unsigned int (__thiscall* RaPostEventFn)(void*, int, unsigned int,
-                                                                 void*, float);
-                reinterpret_cast<RaPostEventFn>(emVtbl[0x10 / 4])(
-                    static_cast<void*>(::dice::hfe::eventManager), 10, 4u, &payload, 0.0f);
-            }
-        }
-    }
-#endif
+    loadStat->m_unknown08 = false;
+    shaderLoadingEvent();                                     // PE 0x1003582C..0x100358A6
 
     ::renddx9abi::engineFree(source);                          // sub_1005F360 on Str1
     return effect;
@@ -2049,20 +2110,19 @@ compiled:
 // Returns the cached effect or compiles it using the lower-case name.
 // Updates the last-name/effect cache even when compilation returns null.
 
-void* EffectManager::getEffect(const vc71::string& name)
+void* EffectManager::getEffect(const std::string& name)
 {
-    vc71::string key(name);
+    std::string key(name);
     pathToLower(key);
 
     void* effect = 0;
 
     // sub_10036390 - std::map::find with the `_stricmp` comparator. Its caller compares the
-    // returned iterator against *(this + 0x30), the head, so a miss is end(); mapFindInsensitive
-    // answers the same question with a null.
-    vc71::map_node* node = vc71::mapFindInsensitive(effectCache(), key);
-    if (node)
+    // returned iterator against *(this + 0x30), the head, so a miss is end().
+    const RaEffectCache::const_iterator node = m_effectCache.find(key);
+    if (node != m_effectCache.end())
     {
-        effect = vc71::mapNodeValue(node);                     // node + 40
+        effect = node->second;
     }
     else
     {
@@ -2070,12 +2130,11 @@ void* EffectManager::getEffect(const vc71::string& name)
         if (effect)
         {
             // sub_100372D0 - operator[], which inserts on a miss and returns &node->second.
-            node = vc71::mapInsertInsensitive(effectCache(), 0x30, key);
-            if (node)
-                vc71::mapNodeValueRef(node) = effect;
+            m_effectCache[key] = effect;
 
             // Requires the published StateManager.
-            ::renddx9abi::d3dxSlot<RaFxSetStateManagerFn>(effect, 0x11C)(effect, g_stateManager);
+            static_cast<ID3DXEffect*>(effect)->SetStateManager(
+                static_cast<LPD3DXEFFECTSTATEMANAGER>(g_stateManager));
         }
     }
 
@@ -2140,10 +2199,10 @@ bool raFindIncludeLine(const std::string& text, const std::string& pattern,
 }
 
 
+// PE 0x10037470.
 // Supplies virtual RaDefines.fx or reads and watches an include, then splices its text
 // into the expanded source. Always returns S_OK, including file failures; on open failure
 // outBytes remains untouched and the allocated buffer is not released.
-
 long __stdcall raIncludeOpen(void* self, int /*includeType*/, const char* fileName,
                              const void* /*parentData*/, const void** outData,
                              unsigned int* outBytes)
@@ -2162,18 +2221,19 @@ long __stdcall raIncludeOpen(void* self, int /*includeType*/, const char* fileNa
     if (::_stricmp(fileName, "shaders/RaDefines.fx") == 0
         || ::_stricmp(fileName, "mods/xpack/shaders/RaDefines.fx") == 0)
     {
-        vc71::string defines(owner->shaderDefines());
+        std::string defines(owner->shaderDefines());
         defines += owner->debugDefines();
 
-        *outBytes = defines.size();
-        char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(defines.size() + 1));
+        const unsigned int size = static_cast<unsigned int>(defines.size());   // a few KB of text
+        *outBytes = size;
+        char* const buffer = static_cast<char*>(::renddx9abi::engineAlloc(size + 1));
         *outData = buffer;
         if (buffer)
             ::strcpy(buffer, defines.c_str());
     }
     else
     {
-        vc71::string path(fileName);
+        std::string path(fileName);
         if (g_Renderer)
             applyModPrefix(path);
 
@@ -2211,10 +2271,19 @@ long __stdcall raIncludeOpen(void* self, int /*includeType*/, const char* fileNa
         if (obfuscated)
             deobfuscateShader(reinterpret_cast<unsigned char*>(buffer), info.size);
 
-        // The watch set. The SET maintenance is shipped and is kept; the registration behind it is
-        // withheld under RW-78, exactly as compileEffect's is - see the block there.
-        if (!raWatchSetContains(sub->list, path))
-            raWatchSetInsert(sub->list, path);
+        // PE 0x100376C8: insert before registering, and ignore the returned resolved path.
+        if (sub->watched.find(path) == sub->watched.end())
+        {
+            sub->watched.insert(path);
+#if !defined(_MSC_VER)
+            // [CHOSEN, not recovered] The native provider uses its C++ interface.
+            static_cast<io::IFileChangeManager*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+                ->addListener(reinterpret_cast<io::IFileChangeListener*>(&sub->vptr2), path, 3);
+#else
+            static_cast<IFileChangeManagerPe*>(static_cast<void*>(::dice::hfe::fileChangeManager))
+                ->addListener(reinterpret_cast<IBase*>(&sub->vptr2), path, 3);
+#endif
+        }
     }
 
     // The splice. `"^#include\\s+\"" + fileName + "\".*"`, PME flags "mg", applied to the expanded
@@ -2226,7 +2295,8 @@ long __stdcall raIncludeOpen(void* self, int /*includeType*/, const char* fileNa
 
         for (;;)
         {
-            std::string text(sub->text.c_str(), sub->text.size());
+            // PE 0x10037878: basic_string(const char*) from c_str(), so the copy stops at an embedded NUL.
+            std::string text(sub->text.c_str());
             std::string::size_type begin = 0;
             std::string::size_type end   = 0;
             if (!raFindIncludeLine(text, pattern, begin, end))
@@ -2281,15 +2351,6 @@ void* raIncludeVtable()
 // is unavailable; native builds perform the scan.
 namespace {
 
-// sub_10075180 + the "mfx" literal at 0x101E1C00, compared with sub_100750C0(3).
-bool raPathExtensionIs(const char* path, const char* extension)
-{
-    const char* const dot = ::strrchr(path, '.');
-    if (!dot)
-        return false;
-    return ::_stricmp(dot + 1, extension) == 0;
-}
-
 // sub_10041AC0 - see the block above.  The argument is already lowercased.
 bool raIsLoadableShaderFx(const char* lowered)
 {
@@ -2310,19 +2371,18 @@ int raLoadAllShaders(RaShaderTable* table, unsigned char flags)
     static_cast<EffectManager*>(g_effectManager)->resetEffects();
 
     {
-        const vc71::string defaultName("default");
+        const std::string defaultName("default");
         table->defaultShader = findOrCreateShader(table, defaultName, false);   // +0x84
     }
 
     int created = 0;
 
-#if BF2_PLUGIN_ABI_NATIVE
     std::list< ::dice::hfe::io::FileInfo> files;
 
     if (::dice::hfe::fileManager)
     {
         const ::renddx9abi::HostString bare =
-            ::renddx9abi::makeHostString(vc71::string("shaders/"));
+            ::renddx9abi::makeHostString(std::string("shaders/"));
         ::dice::hfe::fileManager->findFiles(bare, false, files);         // vslot +0x34
     }
 
@@ -2331,10 +2391,11 @@ int raLoadAllShaders(RaShaderTable* table, unsigned char flags)
         for (std::list< ::dice::hfe::io::FileInfo>::const_iterator it = files.begin();
              it != files.end(); ++it)
         {
-            if (!raPathExtensionIs(it->name.c_str(), "mfx"))
+            // sub_10075180 on the entry name, then sub_100750C0 against std::string("mfx") over 3 chars.
+            if (!equalsIgnoreCase(extractFileExt(it->name), std::string("mfx"), 3))
                 continue;
 
-            vc71::string full("shaders/");
+            std::string full("shaders/");
             full += it->name.c_str();
 
             // The flag is the table's own +0xB4 - the same byte refillMemoryFiles reads one
@@ -2345,7 +2406,7 @@ int raLoadAllShaders(RaShaderTable* table, unsigned char flags)
 
     static_cast<EffectManager*>(g_effectManager)->refillMemoryFiles();
 
-    vc71::string modRoot("shaders/");
+    std::string modRoot("shaders/");
     if (g_Renderer)
         applyModPrefix(modRoot);
 
@@ -2364,17 +2425,17 @@ int raLoadAllShaders(RaShaderTable* table, unsigned char flags)
             // sub_10074E80 is `copy then sub_10074D10`, and sub_10074D10 is the pathToLower this
             // file already uses twice above; written out rather than reaching into RaShader.cpp's
             // file-local copy of the pair.
-            vc71::string lowered(it->name.c_str());
+            std::string lowered(it->name.c_str());
             pathToLower(lowered);
             if (!raIsLoadableShaderFx(lowered.c_str()))
                 continue;
 
-            vc71::string stem;
+            std::string stem;
             raCacheStem(stem, lowered);
             if (stem.size() < 8u)
                 continue;                                                 // see the note above
 
-            const vc71::string name(stem.c_str() + 8);                    // substr(8) - "rashader"
+            const std::string name(stem.c_str() + 8);                    // substr(8) - "rashader"
             RaShader* const shader = findOrCreateShader(table, name, false);
 
             if ((flags & 4u) != 0 && shader)
@@ -2388,14 +2449,6 @@ int raLoadAllShaders(RaShaderTable* table, unsigned char flags)
                        "(flags 0x%02X)",
                        static_cast<unsigned int>(files.size()), created,
                        static_cast<unsigned int>(flags));
-#else
-    (void)flags;
-    ::renddx9abi::logf("[FRONTIER] dice::hfe::dx9rend::Ra - the shaders/* load pass (sub_10042150) "
-                       "is SKIPPED in the retail-ABI flavour: its directory scan needs FileManager "
-                       "vslot +0x34, whose VC7.1 std::list<io::FileInfo> out-parameter this build "
-                       "does not model. The native flavour runs it. No value is fabricated; the "
-                       "default shader above IS created, as it is on both paths.");
-#endif
 
     return created;
 }

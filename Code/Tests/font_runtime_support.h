@@ -43,7 +43,7 @@ struct Texture : geom::IMemeTexture
     int release() override { ++releases; return 0; }
     void* queryInterface(unsigned int) const override { return nullptr; }
     void setTexture(const char* n,const char* p,int) override { name=n;prefix=p; }
-    bool createTexture(unsigned int,unsigned int) override { return false; }
+    void createTexture(unsigned int,unsigned int,unsigned int) override {}
     bool drawUV(dice::meme::Quad*,float a,float b,float c,float d) override
     { ++draws;uv[0]=a;uv[1]=b;uv[2]=c;uv[3]=d;return false; }
     bool drawOther(geom::IMemeTexture*,dice::meme::Quad*) override { return false; }

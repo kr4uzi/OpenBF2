@@ -3,6 +3,17 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif !DEDICATED
+// [CHOSEN, not recovered] Owner decision: a read-only file in the client's @HOME@.
+#include "PosixRegistry.h"
+#include <cstdio>
+#include <fstream>
+#include <map>
+#if defined(__APPLE__)
+#include "../Platform/macOS/ClientPaths.h"
+#else
+#include "../IO/File/FileManager.h"
+#endif
 #endif
 
 namespace dice { namespace hfe {
@@ -28,7 +39,16 @@ bool readRegistryString(RegKeyCategory category, const std::string& name,
         path = std::string("SOFTWARE\\Electronic Arts\\EA Games\\") + modName;
 
     bool found = false;
+#if defined(_M_IX86)
     if (RegOpenKeyA(root, path.c_str(), &key) == ERROR_SUCCESS)
+#else
+    // [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): BF2's 32-bit installer
+    // writes these keys into the 32-bit registry view (WOW6432Node), which a 32-bit process reads
+    // implicitly; a 64-bit process must ask for that view or it finds no keys (an empty CD key then
+    // takes translateCdKey's shipped null-blob fault at the first server challenge). Subkeys opened
+    // relative to this handle stay in the same view.
+    if (RegOpenKeyExA(root, path.c_str(), 0, KEY_READ | KEY_WOW64_32KEY, &key) == ERROR_SUCCESS)
+#endif
     {
         BYTE data[1024];
         DWORD type;
@@ -72,6 +92,95 @@ bool readRegistryString(RegKeyCategory category, const std::string& name,
 
 Registry* registry = &rinstance;
 
+#if !defined(_WIN32) && !DEDICATED
+// [CHOSEN, not recovered] File syntax and owner decision: docs/macos-r1-registry-file.md.
+namespace posixRegistry {
+namespace {
+std::string trim(const std::string& text)
+{
+    const auto first = text.find_first_not_of(" \t\r");
+    return first == std::string::npos ? std::string() :
+        text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
+}
+
+std::string fold(std::string text)
+{
+    for (char& c : text)
+        if (c >= 'A' && c <= 'Z')
+            c += 'a' - 'A';
+    return text;
+}
+
+std::string keyPath(RegKeyCategory category, const std::string& path)
+{
+    return fold(std::string(category == RegKeyLocalMachine ?
+        "HKEY_LOCAL_MACHINE\\" : "HKEY_CURRENT_USER\\") + path);
+}
+
+std::map<std::string, std::string> readFile()
+{
+    std::map<std::string, std::string> values;
+#if defined(__APPLE__)
+    const std::string home = macos::clientDataDirectory();
+#else
+    // Use the filesystem's @HOME@ policy when a future POSIX client supplies it.
+    if (!io::fileManager)
+        return values;
+    const std::string home = io::fileManager->getHomeSubstitution();
+#endif
+    if (home.empty())
+        return values;
+    std::ifstream input(home + "/Registry.con");
+    std::string line;
+    unsigned int number = 0;
+    while (std::getline(input, line)) {
+        ++number;
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+            continue;
+        const auto separator = line.find('=');
+        const std::string key = fold(trim(line.substr(0, separator)));
+        const auto last = key.find_last_of('\\');
+        if (separator == std::string::npos || line.find('\0') != std::string::npos ||
+            (key.compare(0, 19, "hkey_local_machine\\") != 0 &&
+             key.compare(0, 18, "hkey_current_user\\") != 0) ||
+            last == std::string::npos || last + 1 == key.size() ||
+            key.find("\\\\") != std::string::npos) {
+            // Never include values: the file can contain a CD key.
+            std::fprintf(stderr, "Registry.con: ignoring malformed line %u\n", number);
+            std::fflush(stderr);
+            continue;
+        }
+        values[key] = trim(line.substr(separator + 1));
+    }
+    if (input.bad())
+        values.clear();
+    return values;
+}
+} // namespace
+
+bool readValue(RegKeyCategory category, const std::string& path,
+               const std::string& name, std::string& output)
+{
+    const auto values = readFile();
+    const auto found = values.find(keyPath(category, path) + "\\" +
+                                   (name.empty() ? "@" : fold(name)));
+    if (found == values.end())
+        return false;
+    output = found->second;
+    return true;
+}
+
+bool keyExists(RegKeyCategory category, const std::string& path)
+{
+    const auto values = readFile();
+    const std::string prefix = keyPath(category, path) + "\\";
+    const auto found = values.lower_bound(prefix);
+    return found != values.end() && found->first.compare(0, prefix.size(), prefix) == 0;
+}
+} // namespace posixRegistry
+#endif
+
 // Client PE 0x450FE0. [PLATFORM] ELF 0x83CB6F0 constructs an empty string and
 // ignores even the supplied default; this is an actual shipped Linux body.
 std::string Registry::getString(RegKeyCategory category, const std::string& name,
@@ -81,6 +190,16 @@ std::string Registry::getString(RegKeyCategory category, const std::string& name
     std::string result = defaultValue;
     readRegistryString(category, name, defaultValue, result, modName);
     return result;
+#elif !DEDICATED
+    // [CHOSEN, not recovered] POSIX clients read Registry.con; missing values retain the
+    // Windows absent-key defaults introduced in docs/macos-c-asan-heap.md.
+    const std::string path = std::string("SOFTWARE\\Electronic Arts\\EA Games\\") +
+        (modName.empty() ? "Battlefield 2" : modName);
+    std::string result;
+    if (posixRegistry::readValue(category, path, name, result) ||
+        posixRegistry::readValue(category, path + "\\" + name, "", result))
+        return result;
+    return defaultValue;
 #else
     return std::string("");
 #endif

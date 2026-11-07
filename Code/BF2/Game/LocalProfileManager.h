@@ -83,10 +83,15 @@ public:
     virtual bool quickLogin(const std::string& name, const std::string& password) = 0; // PE+C0 4AAD00
     virtual bool saveGlobalSettings() = 0; // PE+C4 4A9440
     virtual bool validateProfileFiles(const std::string& directory) = 0; // PE+C8 4A8580
+    // PE+CC 619360 `mov eax,[ecx+34h]; ret` and PE+D0 4A7DB0 (sret copy of this+38h, RET 4):
+    // the profile index and password the last login stored. [INFERRED] names. The only known
+    // caller is BF2Engine's activateMod pair (0x403E40 / 0x404010).
+    virtual int getLoginProfileIndex() = 0;      // PE+CC 619360 (ICF-shared one-load getter)
+    virtual std::string getLoginPassword() = 0;  // PE+D0 4A7DB0
     // [INFERRED] +A8/+AC/+B0 use unsigned indices/count and a borrowed pointer.
     // Full PE bodies/callers prove the x86 widths, arity and return conventions;
     // int-vs-unsigned and pointer-vs-reference source spelling are not attested.
-    // [FRONTIER] PE+CC..+D4 remain absent; no additional opaque slot is filled.
+    // PE+D4 4ABD10 is the scalar deleting destructor; no destructor slot is declared (see below).
 };
 
 struct LocalProfileFixture;
@@ -150,6 +155,8 @@ public:
     bool quickLogin(const std::string& name, const std::string& password) override;
     bool saveGlobalSettings() override;
     bool validateProfileFiles(const std::string& directory) override;
+    int getLoginProfileIndex() override;
+    std::string getLoginPassword() override;
     void handleEvent(EventCategory, unsigned int, EventNode*, void*) override; // actual5B74B0 RET16
 private:
     friend struct LocalProfileFixture;
@@ -163,8 +170,8 @@ private:
     bool m_profilesDirty;                      // retail+21
     bool m_filterValidProfiles;                // retail+22
     std::vector<LocalProfile> m_profiles;        // retail+24
-    int m_field34;
-    std::string m_field38;
+    int m_field34;                             // retail+34 login's profile index (+CC)
+    std::string m_field38;                     // retail+38 login's password (+D0)
     bool m_field54;
 };
 

@@ -1,6 +1,4 @@
 // Coordinates squad membership, leadership and its owned formation.
-// [FRONTIER] Leader-change movement remains incomplete.
-// [RETIRE-WHEN: aidll-02-skeleton] Remove when the corresponding implementation is complete and validated.
 // [INFERRED] Source placement.
 
 #ifndef AI_AIDLL_AI_AIBOT_SQUADCOORDINATOR_H      // [INFERRED] guard style

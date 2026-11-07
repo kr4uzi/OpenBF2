@@ -2,8 +2,7 @@
 // [CHOSEN, not recovered] shared header usable by renderer and editor images.
 // Method names and getter constness are [INFERRED]; const getters must remain distinct from
 // Terrain's primary-interface getters. Preserve the 90-slot 1.50 virtual order.
-// [CHOSEN, not recovered] native base-name getters return HostString by value because the
-// Terrain base retains VC7.1 strings. Compatibility builds return references to that storage.
+// [CHOSEN, not recovered] base-name getters return HostString by value.
 #ifndef BF2_GEOM_ITERRAINEDITABLE_H
 #define BF2_GEOM_ITERRAINEDITABLE_H
 
@@ -31,11 +30,7 @@ typedef std::string TerrainEditableString;
 #endif
 
 // The base-name getters' result (see the above).
-#if defined(BF2_IMAGE_RENDDX9) && !BF2_PLUGIN_ABI_NATIVE
-typedef const TerrainEditableString& TerrainEditableNameResult;   // retail: const std::string&
-#else
 typedef TerrainEditableString TerrainEditableNameResult;          // [CHOSEN] native: by value
-#endif
 
 // IID_ITerrainEditable (Core/Ids.h) - dword_1021AE1C, the id TerrainEditable::queryInterface answers
 // with this + 0x768.
@@ -62,34 +57,34 @@ public:
     virtual void  setLodSwitchDistance(float distance) = 0;                               // +0x24 0x1010DC70  binding `lodSwitchDistance`
     virtual float getLodSwitchDistance() const = 0;                                       // +0x28
     virtual void  setLowDetailTexture(const TerrainEditableString& path) = 0;             // +0x2C 0x101097B0  [INFERRED] name
-    virtual void  setPrimaryWorldScale(const Vec3& scale) = 0;                            // +0x30 0x101A6600  binding `primaryWorldScale`
+    virtual void  setPrimaryWorldScale(const Vec3& scale) = 0;                            // +0x30 (TerrainEditableGetSets.cpp)  binding `primaryWorldScale`
     virtual const Vec3& getPrimaryWorldScale() const = 0;                                 // +0x34
-    virtual void  setSecondaryWorldScale(const Vec3& scale) = 0;                          // +0x38 0x101A6630  binding `secondaryWorldScale`
+    virtual void  setSecondaryWorldScale(const Vec3& scale) = 0;                          // +0x38 (TerrainEditableGetSets.cpp)  binding `secondaryWorldScale`
     virtual const Vec3& getSecondaryWorldScale() const = 0;                               // +0x3C
-    virtual void  setUnresolved2C(float value) = 0;                                       // +0x40 0x101A5FE0  [UNRESOLVED] Terrain +0x2C, no binding
+    virtual void  setUnresolved2C(float value) = 0;                                       // +0x40 (TerrainEditableGetSets.cpp)  [UNRESOLVED] Terrain +0x2C, no binding
     virtual float getUnresolved2C() const = 0;                                            // +0x44
-    virtual void  setPatchSize(int size) = 0;                                             // +0x48 0x101A6000  binding `patchSize`
+    virtual void  setPatchSize(int size) = 0;                                             // +0x48 (TerrainEditableGetSets.cpp)  binding `patchSize`
     virtual int   getPatchSize() const = 0;                                               // +0x4C
-    virtual void  setSubdividePatches(bool subdivide) = 0;                                // +0x50 0x101A6020  binding `subdividePatches`
+    virtual void  setSubdividePatches(bool subdivide) = 0;                                // +0x50 (TerrainEditableGetSets.cpp)  binding `subdividePatches`
     virtual bool  getSubdividePatches() const = 0;                                        // +0x54
-    virtual void  setPatchColormapSize(int size) = 0;                                     // +0x58 0x101A6040  binding `patchColormapSize`
+    virtual void  setPatchColormapSize(int size) = 0;                                     // +0x58 (TerrainEditableGetSets.cpp)  binding `patchColormapSize`
     virtual int   getPatchColormapSize() const = 0;                                       // +0x5C
     virtual void  setLowDetailmapSize(int size) = 0;                                      // +0x60 0x1010DC90  binding `lowDetailmapSize`
     virtual int   getLowDetailmapSize() const = 0;                                        // +0x64
-    virtual void  setColormapBaseName(const TerrainEditableString& name) = 0;             // +0x68 0x101A6060  binding `colormapBaseName`
+    virtual void  setColormapBaseName(const TerrainEditableString& name) = 0;             // +0x68 (TerrainEditableGetSets.cpp)  binding `colormapBaseName`
     virtual TerrainEditableNameResult getColormapBaseName() const = 0;                    // +0x6C
-    virtual void  setLightmapBaseName(const TerrainEditableString& name) = 0;             // +0x70 0x101A60D0  binding `lightmapBaseName`
+    virtual void  setLightmapBaseName(const TerrainEditableString& name) = 0;             // +0x70 (TerrainEditableGetSets.cpp)  binding `lightmapBaseName`
     virtual TerrainEditableNameResult getLightmapBaseName() const = 0;                    // +0x74
-    virtual void  setDetailmapBaseName(const TerrainEditableString& name) = 0;            // +0x78 0x101A61D0  binding `detailmapBaseName`
+    virtual void  setDetailmapBaseName(const TerrainEditableString& name) = 0;            // +0x78 (TerrainEditableGetSets.cpp)  binding `detailmapBaseName`
     virtual TerrainEditableNameResult getDetailmapBaseName() const = 0;                   // +0x7C
-    virtual void  setLowDetailmapBaseName(const TerrainEditableString& name) = 0;         // +0x80 0x101A6240  binding `lowDetailmapBaseName`
+    virtual void  setLowDetailmapBaseName(const TerrainEditableString& name) = 0;         // +0x80 (TerrainEditableGetSets.cpp)  binding `lowDetailmapBaseName`
     virtual TerrainEditableNameResult getLowDetailmapBaseName() const = 0;                // +0x84
     virtual void  setShaderTechnique(int technique) = 0;                                  // +0x88 0x101A6560  binding `shaderTechnique`
     virtual int   getShaderTechnique() const = 0;                                         // +0x8C
-    virtual TerrainEditableString getLevelSavePath() const = 0;                           // +0x90 0x101A6660  "Editor_LevelSavePath" + "/"
-    virtual void  setDetailTextureName(int layer, const TerrainEditableString& name) = 0; // +0x94 0x101A6700  [INFERRED]
-    virtual unsigned char getDetailMaterial(int layer) const = 0;                         // +0x98 0x101A6780  [INFERRED] record byte +0x14
-    virtual void  setDetailMaterial(int layer, unsigned char material) = 0;               // +0x9C 0x101A67A0  [INFERRED]
+    virtual TerrainEditableString getLevelSavePath() const = 0;                           // +0x90 (TerrainEditableGetSets.cpp)  "Editor_LevelSavePath" + "/"
+    virtual void  setDetailTextureName(int layer, const TerrainEditableString& name) = 0; // +0x94 (TerrainEditableGetSets.cpp)  [INFERRED]
+    virtual unsigned char getDetailMaterial(int layer) const = 0;                         // +0x98 (TerrainEditableGetSets.cpp)  [INFERRED] record byte +0x14
+    virtual void  setDetailMaterial(int layer, unsigned char material) = 0;               // +0x9C (TerrainEditableGetSets.cpp)  [INFERRED]
     virtual TerrainDetailTextureBase* getDetailTexture(unsigned int layer) = 0;           // +0xA0 0x1010ACB0  accepts layer <= 6 (shipped)
 
     // Brush strength is an integer: positive paints, negative erases.

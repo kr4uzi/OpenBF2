@@ -37,7 +37,7 @@ struct SpotMaps : io::IControlMapManager {
     void deleteControlMap(const io::IControlMap*) override {actionUnsupported("maps delete");}
     void setActive(const std::string&) override {actionUnsupported("maps activate");}
     void setActive(const io::IControlMap*) override {actionUnsupported("maps activate");}
-    bool mapNextInput(io::IControlMap*,int,bool,bool,bool,bool,std::string&) override {actionUnsupported("maps next");}
+    int mapNextInput(io::IControlMap*,int,bool,bool,bool,bool,std::string&) override {actionUnsupported("maps next");}
     float getRepeatRate(int,bool) override {actionUnsupported("maps repeat");}
     void applyActive() override {actionUnsupported("maps apply");}
 };

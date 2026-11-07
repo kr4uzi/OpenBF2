@@ -14,6 +14,7 @@
 
 
 #include "base/tu_file.h"
+#include "../../Core/MsvcCrtCompat.h"   // [CHOSEN, not recovered] _snprintf_s/_TRUNCATE outside MSVC
 #include "base/utility.h"
 #include "gameswf_action.h"
 #include "gameswf_button.h"
@@ -499,6 +500,20 @@ namespace gameswf
 			smart_ptr<resource>	res;
 			m_exports.get(symbol, &res);
 			return res;
+		}
+
+		virtual void	release_registered_classes()
+		// [CHOSEN, not recovered] issue #7: Object.registerClass binds through the exports only.
+		{
+			for (stringi_hash<smart_ptr<resource> >::iterator it = m_exports.begin(); it != m_exports.end(); ++it)
+			{
+				character_def*	cdef = it->second != NULL ? it->second->cast_to_character_def() : NULL;
+				if (cdef != NULL && cdef->m_registered_class != NULL)
+				{
+					cdef->m_registered_class->drop_ref();
+					cdef->m_registered_class = NULL;
+				}
+			}
 		}
 
 		virtual void	add_import(const char* source_url, int id, const char* symbol)
@@ -1066,7 +1081,7 @@ namespace gameswf
 			// Recompute pixel scale.
 			float	scale_x = m_viewport_width / TWIPS_TO_PIXELS(m_def->m_frame_size.width());
 			float	scale_y = m_viewport_height / TWIPS_TO_PIXELS(m_def->m_frame_size.height());
-			m_pixel_scale = fmax(scale_x, scale_y);
+			m_pixel_scale = tu_util::fmax(scale_x, scale_y);
 		}
 
 
@@ -1590,6 +1605,20 @@ namespace gameswf
 	static movie_interface* s_current_root;
 
 	static tu_string s_workdir;
+
+	void	release_library_classes()
+	// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. The library
+	// keeps its definitions for the next player; their class bindings belong to the released
+	// movie, and a stale class's constructor would run in an environment that no longer exists.
+	{
+		for (stringi_hash< smart_ptr<movie_definition_sub> >::iterator it = s_movie_library.begin(); it != s_movie_library.end(); ++it)
+		{
+			if (it->second != NULL)
+			{
+				it->second->release_registered_classes();
+			}
+		}
+	}
 
 	void save_extern_movie(movie_interface* m)
 	{
@@ -3153,10 +3182,37 @@ namespace gameswf
 
 	// [TEMP] RW-89 mouse tracer: the press/release lines the interactive drives read, in the format
 	// of the stock-era tracer that lived beside generate_mouse_button_events. [RETIRE-WHEN: RW-89]
+#if !defined(_MSC_VER)
+	// [TEMP] c-swf-disconnect: BF2_SWF_EMPTY_LIST_GUARD=1 ends a sprite's mouse child pass when a
+	// handler emptied its list (off by default; not shipped behaviour, see the mouse_update loop).
+	static bool	swf_empty_list_guard()
+	{
+		static int	s_on = -1;
+		if (s_on < 0)
+		{
+			const char*	v = getenv("BF2_SWF_EMPTY_LIST_GUARD");
+			s_on = (v && v[0] == '1') ? 1 : 0;
+		}
+		return s_on != 0;
+	}
+
+	// [TEMP] c-swf-disconnect: the tracer's path, for the other gameswf files.
+	const char*	swf_list_trace_path(character* ch) { return swf_trace_path(ch); }
+#endif
+
 	static void	swf_trace_mouse(const char* what, character* ch)
 	{
 		log_error("[mouse] %s -> %s\n", what, swf_trace_path(ch));
 	}
+
+	// [TEMP] [CHOSEN, not recovered] Input-only diagnostics never inspect script values.
+	// [RETIRE-WHEN: ea-popup-input] Remove after live login/Close input is verified.
+	static bool swf_trace_input_enabled()
+	{
+		const char* value = ::getenv("BF2_SWIFFPLAYER_INPUTLOG");
+		return value && value[0] == '1' && value[1] == '\0';
+	}
+	static bool s_trace_mouse_pass = false;
 
 	struct sprite_instance : public character
 	{
@@ -3297,6 +3353,20 @@ namespace gameswf
 
 		bool	m_dead;	// [DICE-MOD SwiffPlayer #42] see character::mark_dead
 		virtual void	mark_dead() { m_dead = true; }
+
+		// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Adds the
+		// environment, the class prototype and every child to the base character's values.
+		virtual void	release_script_values(array<as_value>* held)
+		{
+			character::release_script_values(held);
+			m_as_environment.release_values(held);
+			if (m_class_proto != NULL)
+			{
+				held->push_back(as_value(m_class_proto.get_ptr()));
+				m_class_proto = NULL;
+			}
+			m_display_list.release_characters(held);
+		}
 
 		// [DICE-MOD SwiffPlayer #53] frame 0's DoAction tags, queued by on_event_load's
 		// execute_frame_tags(0), are NOT run at placement: the shipped on_event_load
@@ -3509,8 +3579,8 @@ namespace gameswf
 		//
 		// The shipped pass, per frame, per sprite:
 		//
-		//   1. its own state machine runs only while nobody holds the pointer or this sprite does (the
-		//      root's active entity). `consumed` - a sibling above already claimed the point - leaves
+		//   1. its own state machine runs while this sprite holds the pointer, or while nobody does
+		//      and this is not the root movie. `consumed` - a sibling above claimed the point - leaves
 		//      both state bits clear, so the sprite sees "up, outside"; otherwise bit 1 is a button
 		//      down and bit 0 is point_test_world on the pointer in world twips;
 		//   2. the first frame only latches, and nothing fires unless m_mouse_enabled;
@@ -3530,9 +3600,25 @@ namespace gameswf
 		{
 			// Keep this (particularly m_as_environment) alive during any method calls!
 			smart_ptr<as_object_interface>	this_ptr(this);
+#if !defined(_MSC_VER)
+			// [TEMP] c-swf-disconnect: nesting of mouse passes for the [swf-list] tracer.
+			struct pass_depth { pass_depth() { g_swf_mouse_pass_depth++; } ~pass_depth() { g_swf_mouse_pass_depth--; } } depth_scope;
+#endif
 
 			movie*	active = m_root->get_active_entity();
-			if (active == this || active == NULL)
+			const bool trace_root = this == m_root->get_root_movie() && swf_trace_input_enabled();
+			if (trace_root)
+			{
+				static int previous_buttons = -1;
+				int x, y, buttons;
+				m_root->get_mouse_state(&x, &y, &buttons);
+				s_trace_mouse_pass = buttons != previous_buttons;
+				previous_buttons = buttons;
+				if (s_trace_mouse_pass)
+					log_error("[mouse] dispatch at=(%d,%d) buttons=%d capture=%s\n", x, y, buttons,
+						active ? swf_trace_path(active->cast_to_character()) : "none");
+			}
+			if (active == this || (active == NULL && this != m_root->get_root_movie()))
 			{
 				m_prev_mouse_flags = m_mouse_flags;
 				m_mouse_flags = 0;
@@ -3554,6 +3640,10 @@ namespace gameswf
 					m_prev_mouse_flags = m_mouse_flags;
 					m_first_mouse_frame = false;
 				}
+				if (s_trace_mouse_pass && (m_mouse_flags & 1) && m_mouse_enabled)
+					log_error("[mouse] hit %s id=%d depth=%d frame=%d flags=%u previous=%u dead=%d\n",
+						swf_trace_path(this), get_id(), get_depth(), get_current_frame(),
+						m_mouse_flags, m_prev_mouse_flags, m_dead);
 				if (m_mouse_enabled && m_mouse_flags != m_prev_mouse_flags)
 				{
 					switch (m_mouse_flags | (m_prev_mouse_flags << 2))
@@ -3621,14 +3711,48 @@ namespace gameswf
 			{
 				for (int i = m_display_list.get_character_count() - 1; i >= 0; i--)
 				{
+#if !defined(_MSC_VER)
+					// [TEMP] c-swf-disconnect: the shipped loop (0x10080265..0x100802A2) caches the
+					// count and re-reads the buffer; an emptied list leaves the buffer NULL and the
+					// next read faults, in the shipped DLL as well. BF2_SWF_EMPTY_LIST_GUARD=1 (off by
+					// default; not shipped behaviour) ends the pass there instead.
+					if (m_display_list.get_character_count() <= i)
+					{
+						SWF_LIST_TRACE("loop '%s' i=%d past size %d%s", swf_trace_path(this), i,
+							m_display_list.get_character_count(),
+							m_display_list.get_character_count() == 0 ? " - EMPTY, buffer freed, next read faults" : " (stale slot)");
+						if (m_display_list.get_character_count() == 0 && swf_empty_list_guard())
+						{
+							break;
+						}
+					}
+#endif
 					const display_object_info&	dobj = m_display_list.get_display_object(i);
 					character*	ch = dobj.m_ref ? dobj.m_character.get_ptr() : NULL;
 					if (ch != NULL && ch->get_visible())
 					{
+#if !defined(_MSC_VER)
+						const int	trace_before = m_display_list.get_character_count();
+#endif
+						const bool was_consumed = consumed;
 						consumed = ch->mouse_update(consumed) || consumed;
+						if (s_trace_mouse_pass && consumed && !was_consumed)
+							log_error("[mouse] consumed by %s id=%d depth=%d\n",
+								swf_trace_path(ch), ch->get_id(), ch->get_depth());
+#if !defined(_MSC_VER)
+						if (m_display_list.get_character_count() != trace_before && swf_list_trace_on())
+						{
+							char	child_name[96];
+							snprintf(child_name, sizeof(child_name), "%s", ch->get_name().c_str());
+							SWF_LIST_TRACE("dlist CHANGED '%s' %d -> %d inside the child pass, after child #%d '%s'",
+								swf_trace_path(this), trace_before,
+								m_display_list.get_character_count(), i, child_name);
+						}
+#endif
 					}
 				}
 			}
+			if (trace_root) s_trace_mouse_pass = false;
 			return consumed || ((m_mouse_flags & 1) != 0 && m_mouse_enabled);
 		}
 
@@ -3914,6 +4038,12 @@ namespace gameswf
 			// the pass with a zero delta. The label form (goto_labeled_frame, vtable +28) applies
 			// at once. Stock 2006 replayed the timeline inline here.
 			m_pending_goto_frames.push_back(target_frame_number);
+#if !defined(_MSC_VER)
+			if (g_swf_mouse_pass_depth > 0)
+			{
+				SWF_LIST_TRACE("gotoFrame queued '%s' -> %d", swf_trace_path(this), target_frame_number);
+			}
+#endif
 
 			// goto_frame stops by default.
 			m_play_state = STOP;
@@ -3983,6 +4113,19 @@ namespace gameswf
 		{
 			// Keep this (particularly m_as_environment) alive during execution!
 			smart_ptr<as_object_interface>	this_ptr(this);
+#if !defined(_MSC_VER)
+			// [TEMP] c-swf-disconnect: gotos inside a mouse pass, or any that change the list size.
+			const int	trace_dl0 = m_display_list.get_character_count();
+			const int	trace_from = m_current_frame;
+#define SWF_TRACE_GOTO_SWEPT() \
+			if (swf_list_trace_on() && (g_swf_mouse_pass_depth > 0 || m_display_list.get_character_count() != trace_dl0)) \
+			{ \
+				SWF_LIST_TRACE("goto '%s' frame %d -> %d dlist %d -> %d", swf_trace_path(this), trace_from, \
+					target_frame_number, trace_dl0, m_display_list.get_character_count()); \
+			}
+#else
+#define SWF_TRACE_GOTO_SWEPT()
+#endif
 
 			// [DICE-MOD SwiffPlayer #53] a goto applied before the first pass takes the owed
 			// frame-0 script with it: the target frame's actions are what runs from here on.
@@ -4031,6 +4174,7 @@ namespace gameswf
 				m_time_remainder = 0;
 				m_update_frame = false;
 				m_display_list.update();
+				SWF_TRACE_GOTO_SWEPT();
 				on_event(event_id::ENTER_FRAME);
 				do_actions();
 				return;
@@ -4156,6 +4300,7 @@ namespace gameswf
 			m_time_remainder = 0;
 			m_update_frame = false;
 			m_display_list.update();
+				SWF_TRACE_GOTO_SWEPT();
 			on_event(event_id::ENTER_FRAME);
 			do_actions();
 		}
@@ -4170,6 +4315,12 @@ namespace gameswf
 				// [DICE-MOD SwiffPlayer #45] applied at once, as the shipped +28 (0x100802E0)
 				// dispatches straight to +24; the 2006 stop-by-default is kept for the callers
 				// that rely on it (the AS methods set their own state right after).
+#if !defined(_MSC_VER)
+				if (g_swf_mouse_pass_depth > 0)
+				{
+					SWF_LIST_TRACE("gotoLabel '%s' -> '%s'", swf_trace_path(this), label);
+				}
+#endif
 				apply_goto_frame(target_frame);
 				m_play_state = STOP;
 				return true;
@@ -5199,6 +5350,14 @@ namespace gameswf
 			smart_ptr<as_object_interface>	this_ptr(this);
 
 			bool called = false;
+#if !defined(_MSC_VER)
+			// [TEMP] c-swf-disconnect: the events a mouse pass fires (press, release, roll over/out).
+			if (g_swf_mouse_pass_depth > 0 && swf_list_trace_on())
+			{
+				SWF_LIST_TRACE("event %d/%s on '%s' dlist=%d", (int) id.m_id, id.get_function_name().c_str(),
+					swf_trace_path(this), m_display_list.get_character_count());
+			}
+#endif
 
 			// [DICE-MOD SwiffPlayer #51] sub_10081620: the clip-event handler when there is one, ELSE
 			// the member of that name, and only a defined one. Stock 2006 called both when both existed.
@@ -5225,6 +5384,13 @@ namespace gameswf
 					}
 				}
 			}
+#if !defined(_MSC_VER)
+			if (called && g_swf_mouse_pass_depth > 0 && swf_list_trace_on())
+			{
+				SWF_LIST_TRACE("event %d/%s done on '%s' dlist=%d", (int) id.m_id, id.get_function_name().c_str(),
+					swf_trace_path(this), m_display_list.get_character_count());
+			}
+#endif
 			return called;
 		}
 
@@ -5538,6 +5704,7 @@ namespace gameswf
 		movie*	parent = sprite->get_parent();
 		log_error("[removeMovieClip] '%s' depth=%d parent=%p\n",   // [TEMP] RW-88 nav tracer
 		          swf_trace_path(sprite), sprite->get_depth(), parent);
+		SWF_LIST_TRACE("removeMovieClip '%s' depth=%d", swf_trace_path(sprite), sprite->get_depth());
 		if (parent)
 		{
 			// Keep the instance alive across its own removal - the caller may still be running

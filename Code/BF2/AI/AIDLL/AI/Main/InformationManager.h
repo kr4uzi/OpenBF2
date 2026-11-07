@@ -11,8 +11,8 @@ namespace dice {
 namespace hfe {
 namespace ai {
 
-// [FRONTIER] the pooled type. `Information` is the AI's knowledge record; the pool only ever stores
-// `Information*`, so nothing here needs it complete. Chunk 07 owns it.
+// The pooled type. `Information` is the AI's knowledge record (AIKnowledge/Information.h); the pool
+// only ever stores `Information*`, so nothing here needs it complete.
 class Information;
 
 // sizeof == 4, from `operator new(4u)`: one pointer and nothing else.

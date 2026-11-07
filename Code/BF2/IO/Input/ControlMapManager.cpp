@@ -4,6 +4,11 @@
 #include "../../Core/ClassManager.h"       // create() builds a ControlMap through the class manager
 #include "../../Core/Ids.h"                // [INFERRED] header name; the constants are attested
 
+#include "../../Core/System.h"             // g_system - mapNextInput's 10 s limit
+#if defined(__APPLE__) && !DEDICATED
+#include "../../Platform/macOS/CocoaHost.h" // [CHOSEN, not recovered] mapNextInput's event pump
+#endif
+
 #include <utility>                         // std::make_pair - create()'s m_byId insert
 
 namespace dice {
@@ -15,6 +20,7 @@ namespace io {
 
 // Keep this declaration's type consistent with the singleton definition; MSVC mangles variable types.
 extern IBase* controlMapManager;        // ds:0x8AC8C8C - type must match Core/Globals.cpp
+extern IBase* inputDeviceManager;       // ds:0x8AC8C88 - mapNextInput polls its devices
 
 // constructor / destructor
 
@@ -175,11 +181,207 @@ IControlMap* ControlMapManager::getActive() const
     return m_active;
 }
 
-// [CHOSEN-STUB] Input capture is unimplemented and always reports no captured input.
-bool ControlMapManager::mapNextInput(IControlMap* /*map*/, int /*id*/, bool /*a*/, bool /*b*/,
-                                     bool /*c*/, bool /*d*/, std::string& /*out*/)
+namespace {
+// Inputs that may share a binding with another input (ds:0x898CD70 / ds:0x898CDA0), each table
+// ending with its own enum's None sentinel.
+const int playerInputAllowDuplicate[] = {
+    PICameraX, PICameraY, PIMouseLookX, PIMouseLookY, PINextItem, PIPrevItem, PINone
+};
+const int gameInputAllowDuplicate[] = {
+    GIRightShift, GILeftShift, GIRightCtrl, GILeftCtrl, GIRightAlt, GIOk, GIAltOk, GIMouseLookX,
+    GIMouseLookY, GIMouseWheelUp, GIMouseWheelDown, GISelectAll, GIDeselectAll, GIUp, GIDown,
+    GILeft, GIRight, GIBack, GIPageUp, GIPageDown, GIMenuSelect0, GIMenuSelect1, GIMenuSelect2,
+    GIMenuSelect3, GIMenuSelect4, GIMenuSelect5, GIMenuSelect6, GIMenuSelect7, GIMenuSelect8,
+    GIMenuSelect9, GIToggleFreeCamera, GIDelete, GINone
+};
+}
+
+// ELF 0x8498F50: membership in the player or game table.
+bool ControlMapManager::allowDuplicate(int id, bool playerMap)
 {
+    if (playerMap)
+    {
+        for (int i = 0; playerInputAllowDuplicate[i] != PINone; ++i)
+            if (id == playerInputAllowDuplicate[i])
+                return true;
+    }
+    else
+    {
+        for (int i = 0; gameInputAllowDuplicate[i] != GINone; ++i)
+            if (id == gameInputAllowDuplicate[i])
+                return true;
+    }
     return false;
+}
+
+// ELF 0x8497AC0 (5133 bytes). The "press a key to bind it" capture. It polls every input device
+// (no frame runs meanwhile) until one reports an input, at most 10 s (answer 2; a null map is 2 at
+// once). Escape clears the binding (and, for the player map's throttle on its primary positive
+// half, the c_PIAltSprint companion) and answers 0. An input the map, or with a default map the
+// other default maps, already uses for an input not allowed to share it answers 1 and names the
+// map in out. Otherwise the input is bound and the answer is 0.
+//   id: the PlayerInputMap / GameInputMap id; alternate: the secondary column; isAxis: bind as an
+//   axis (keys and buttons then fill one half); negative: that half is the negative one;
+//   playerMap: id is a player input (ControlSettings passes !gameInput).
+int ControlMapManager::mapNextInput(IControlMap* map, int id, bool alternate, bool isAxis,
+                                    bool negative, bool playerMap, std::string& out)
+{
+    if (map == 0)
+        return 2;
+
+    IInputDeviceManager* devices = static_cast<IInputDeviceManager*>(static_cast<void*>(inputDeviceManager));
+    const float start = static_cast<float>(g_system->getWallClockTime());           // +0x1C
+    for (;;)
+    {
+        const float now = static_cast<float>(g_system->getWallClockTime());
+        if (start + 10.0f <= now)
+            return 2;
+#if defined(__APPLE__) && !DEDICATED
+        // [CHOSEN, not recovered] DirectInput fills its device buffers without the message loop;
+        // the macOS devices are fed by the Cocoa pump, so the capture loop pumps it. A quit
+        // request stays latched for the main loop.
+        (void) macos::CocoaHost::instance().pumpEvents();
+#endif
+        devices->update(0.1f);                                                       // +0x24
+        devices->update(-1.0f);
+        std::map<InputDeviceFlags, IInputDevice*>& all =
+            *static_cast<std::map<InputDeviceFlags, IInputDevice*>*>(devices->getAllDevices()); // +0x2C
+        for (std::map<InputDeviceFlags, IInputDevice*>::iterator it = all.begin(); it != all.end(); ++it)
+        {
+            InputDeviceAxes axis;
+            InputDeviceButtons button;
+            InputDeviceKeys key;
+            bool inverted;
+            if (!it->second->getNextInput(axis, button, key, inverted))             // +0x2C
+                continue;
+
+            DuplicateKeyVector dups;
+            if (!isAxis && axis != 15)          // an axis motion cannot become a trigger
+                continue;
+
+            if (key == 1)                       // IDKey_Escape: clear the binding
+            {
+                map->reset(id, !negative, negative, alternate);                     // +0x58
+                if (playerMap && id == PIThrottle && !negative && !alternate)
+                    map->reset(PIAltSprint, true, true, false);
+                return 0;
+            }
+
+            IControlMap* playerDefault = this->getControlMap(std::string("_defaultPlayerInputControlMap"));
+            IControlMap* gameDefault = this->getControlMap(std::string("_defaultGameControlMap"));
+            InputDeviceFlags device = it->first;
+
+            if (map->findDuplicate(device, axis, button, key, dups))                 // +0xB8
+            {
+                for (unsigned int i = 0; i < dups.ids.size(); ++i)
+                {
+                    if (dups.ids[i] == id && dups.negative[i] == negative && dups.alternate[i] == alternate)
+                        continue;               // the binding being replaced
+                    if (!allowDuplicate(dups.ids[i], playerMap))
+                    {
+                        out = map->getName();                                        // +0x14
+                        return 1;
+                    }
+                }
+                dups.ids.resize(0);
+                dups.negative.resize(0);
+                dups.alternate.resize(0);
+            }
+
+            if (map == gameDefault || map == playerDefault)
+            {
+                // A default map is checked against the other default maps ("_" names).
+                for (std::map<int, IControlMap*>::iterator m = m_byId.begin(); m != m_byId.end(); ++m)
+                {
+                    IControlMap* other = m->second;
+                    if (other == map || other->getName()[0] != '_')
+                        continue;
+                    if (!other->findDuplicate(device, axis, button, key, dups))
+                        continue;
+                    for (unsigned int i = 0; i < dups.ids.size(); ++i)
+                    {
+                        if (!allowDuplicate(dups.ids[i], other != gameDefault))
+                        {
+                            out = other->getName();
+                            return 1;
+                        }
+                    }
+                    dups.ids.resize(0);
+                    dups.negative.resize(0);
+                    dups.alternate.resize(0);
+                }
+            }
+            else
+            {
+                if (gameDefault && gameDefault->findDuplicate(device, axis, button, key, dups))
+                {
+                    for (unsigned int i = 0; i < dups.ids.size(); ++i)
+                    {
+                        if (!allowDuplicate(dups.ids[i], !playerMap))
+                        {
+                            out = gameDefault->getName();
+                            return 1;
+                        }
+                    }
+                    dups.ids.resize(0);
+                    dups.negative.resize(0);
+                    dups.alternate.resize(0);
+                }
+                if (playerDefault && playerDefault->findDuplicate(device, axis, button, key, dups))
+                {
+                    for (unsigned int i = 0; i < dups.ids.size(); ++i)
+                    {
+                        if (!allowDuplicate(dups.ids[i], playerMap))
+                        {
+                            // Retail names the game default map here too (0x84983DE reads the
+                            // _defaultGameControlMap pointer), not the player map that clashed.
+                            out = gameDefault->getName();
+                            return 1;
+                        }
+                    }
+                    dups.ids.resize(0);
+                    dups.negative.resize(0);
+                    dups.alternate.resize(0);
+                }
+            }
+
+            if (key == 0)
+            {
+                if (button == 0)
+                {
+                    if (isAxis && axis != 15)
+                        map->addAxisMapping(id, device, axis, inverted != negative, alternate);       // +0x2C
+                }
+                else if (isAxis)
+                {
+                    map->addAxisMapping(id, device,
+                                        negative ? static_cast<InputDeviceButtons>(0) : button,
+                                        negative ? button : static_cast<InputDeviceButtons>(0),
+                                        alternate);                                                   // +0x30
+                }
+                else
+                {
+                    map->addTriggerMapping(id, device, button, this->getRepeatRate(id, playerMap),
+                                           alternate);                                                // +0x44
+                }
+            }
+            else if (isAxis)
+            {
+                map->addAxisMapping(id, device,
+                                    negative ? static_cast<InputDeviceKeys>(0) : key,
+                                    negative ? key : static_cast<InputDeviceKeys>(0),
+                                    alternate);                                                       // +0x34
+            }
+            else
+            {
+                map->addTriggerMapping(id, device, key, this->getRepeatRate(id, playerMap), alternate); // +0x48
+            }
+            // The throttle's forward key also drives c_PIAltSprint (double tap, 1000).
+            if (playerMap && id == PIThrottle && !negative && !alternate && key != 0)
+                map->addTriggerMapping(PIAltSprint, device, key, 1000.0f, false);                    // +0x48
+            return 0;
+        }
+    }
 }
 
 // Inputs held continuously rather than auto-repeated. Each table ends with its own enum's None sentinel.

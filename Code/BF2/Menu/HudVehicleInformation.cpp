@@ -1,5 +1,8 @@
 // HUD vehicle information. [INFERRED] Class and source placement.
 #include "HudVehicleInformation.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "HudBlinker.h"
 #include "BF2HudManager.h"
@@ -36,7 +39,14 @@
 #include <new>
 #include <cstring>
 #include <cwchar>
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "../Platform/macOS/MacSystem.h"   // [CHOSEN, not recovered] MessageBoxA's counterpart
+#endif
+#if !defined(_M_IX86)
+#include <cmath>
+#endif
 
 namespace dice { namespace hfe { extern ClassManager* classManager; extern IBase* squadManager; } }
 namespace dice { namespace hfe { namespace hud {
@@ -541,7 +551,11 @@ bool registerVehicleFloat(meme::System* system, float* value,
         return true;
     }
     const std::string caption = formatString("Failed to register: %s in %s", name.c_str(), container.c_str());
+#if defined(__APPLE__)
+    macos::showMessageBox("Error RegisterData", caption.c_str());
+#else
     MessageBoxA(nullptr, "Error RegisterData", caption.c_str(), 0); // 785860, retail text/caption
+#endif
     return false;
 }
 HudBlinker* makeVehicleBlinker(float* source, bool* output)
@@ -676,6 +690,7 @@ int HudVehicleInformation::getGuiIndex() { return m_guiIndex; }
 
 void HudVehicleInformation::setMouseLook(bool active)
 {
+#if defined(_WIN32)
     world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
     if (!player || !player->getCamera() || !player->getCamera()->getToggleMouseLook())
         return;
@@ -689,6 +704,7 @@ void HudVehicleInformation::setMouseLook(bool active)
         const float tolerance = 0.01f;
         const float first = m_playerAngle, second = m_vehicleAngle;
         bool aligned;
+#if defined(_M_IX86)
         __asm {
             fld first
             fsub second
@@ -698,8 +714,33 @@ void HudVehicleInformation::setMouseLook(bool active)
             test ah, 41h
             setnp aligned
         }
+#else
+        // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+        // setnp after test ah,41h: an ordered difference at or below the tolerance.
+        aligned = std::fabs(static_cast<double>(first) - second) <= tolerance;
+#endif
         if (aligned) m_guiIndex = m_field0a4;
     }
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player || !player->getCamera() || !player->getCamera()->getToggleMouseLook())
+        return;
+    if (active) {
+        if (m_guiIndex) {
+            m_field0a4 = m_guiIndex;
+            m_guiIndex = 0;
+        }
+    } else if (!m_guiIndex) {
+        // Preserve the unrounded x87 subtraction and unordered rejection.
+        const float tolerance = 0.01f;
+        const float first = m_playerAngle, second = m_vehicleAngle;
+        bool aligned;
+        // [CHOSEN, not recovered] Preserve x87 retained absolute difference and ordered <=.
+        aligned = bf2x87::lessEqual(bf2x87::abs(bf2x87::sub(bf2x87::wide(first), bf2x87::wide(second))), bf2x87::wide(tolerance));
+        if (aligned) m_guiIndex = m_field0a4;
+    }
+#endif
 }
 
 // Updates proximity indicators for nearby medics, mechanics and ammunition sources.

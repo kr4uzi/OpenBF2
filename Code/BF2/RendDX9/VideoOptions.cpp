@@ -7,55 +7,59 @@
 // See Code/BF2/RendDX9/BF2Render.cpp for the BF2_IMAGE_RENDDX9 guard and why it is here.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Compiler-typed native table entries.
+#include "../../RendDX9Abi/NativeVtable.h"
+#include "../Game/Main/IVideoOptions.h"
+#endif
 
+#include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/Frontier.h"
 #include "../Geom/XpLightManager.h"
 #include "../Geom/ParticleSystem/ParticleSystemManager.h"
+#include "../Geom/DecalSystem/DecalManager.h"  // apply's decals-enabled store
+#include "../Geom/Overgrowth/OverGrowth.h"     // apply's vegetation quality scale
 #include "../Geom/UndergrowthSystem.h"   // typed vegetation quality calls
+#include "../Geom/Terrain.h"             // apply's lighting-dirty store
+#include "../Geom/GeometryTemplateManager.h"   // the ECCore arm's template clear and re-arm
 #include "RendDX9Base.h"
 #include "../RendMisc/IRenderer.h"     // sub_1000F8D0's typed Renderer calls
 #include "../RendMisc/IRenderView.h"   //   (+0x10 setDisplayMode, +0x48 / +0x50 and the views' +0x40 / +0x10)
 #include "../Core/EventManager.h"      // sub_1000F8D0's two ECRenderer posts
-#include <cstddef>      // offsetof - the retail-ABI display-block assertions in sub_1000F8D0
+#include "../GeomMisc/Debug.h"          // initialize's registration-failure report
+#include <algorithm>    // std::find - buildResolutionList
+#include <cstddef>      // offsetof - baseOfVo
+#include <new>          // videoOptionsConstruct's placement construction
+#if defined(__APPLE__)
+#include "../Platform/macOS/CpuInfo.h" // [CHOSEN, not recovered] sysctl instead of CPUID/RDTSC.
+#include "../Platform/X87Compat.h"
+#include "../Platform/macOS/CocoaHost.h"
+#else
 #include <intrin.h>     // __rdtsc / __cpuid - the CPU-speed benchmark inside detectQualityLevel (+0x34)
+#endif
 #include <cstdio>       // _snprintf - the "%ix%i@%iHz" / "%dSamples" formatters
 #include <cstdlib>      // abort - the explicit ECCore callback frontier
 #include <cstring>      // _strnicmp - setDynamicOption's prefix match
-#if BF2_PLUGIN_ABI_NATIVE
 #include <string>       // the host-shaped dynamic-option carriers, below
 #include <vector>
-#else
-#include <type_traits>  // the retail-flavour assertion on HostString, below
-#endif
 
 namespace dice {
 namespace hfe {
 namespace dx9rend {
 
 
-// Cross-image dynamic options use HostString while internal storage keeps VC7.1 layout.
+// Cross-image dynamic options use HostString copies of the object's own option lists.
 // [CHOSEN, not recovered] [RETIRE-WHEN: RW-49] Native getters return conversion caches.
 // References last until the next getter call; use only on the render thread. Retire the
 // caches when storage directly matches the host ABI and reference lifetimes are validated.
 
-#if BF2_PLUGIN_ABI_NATIVE
 typedef std::vector< ::renddx9abi::HostString > HostDynamicOptionList;
-#else
-typedef ::vc71::vector_layout HostDynamicOptionList;
-// The retail arms of the three slots hand back this object's own storage unchanged, which is only
-// correct while the host's string IS the string these lists store. If that ever stops being true
-// this fails here rather than four bytes into a stranger's buffer.
-static_assert(std::is_same< ::renddx9abi::HostString, ::vc71::string>::value,
-              "the retail-ABI host string must be the VC7.1 string the dynamic-option lists store");
-#endif
 
-// Plugin-side typed view of the hand-built 15-slot table.  It deliberately selects the string and
-// vector carrier for the ABI flavour: current STL for the rebuilt native pair, VC7.1 layouts for
-// the retail-compatible DLL.  Keeping this view here lets internal virtual calls retain the PE's
-// dispatch order without casting vtable entries or accidentally passing a VC7.1 string to a native
-// std::string slot.
+// Plugin-side typed view of the hand-built 15-slot table, with the host's string and vector
+// carriers.  Keeping this view here lets internal virtual calls retain the PE's dispatch order
+// without casting vtable entries.
 class PluginVideoOptions
 {
 public:
@@ -76,16 +80,21 @@ public:
     virtual bool getPerGpuFlag() = 0;                                                     // +0x38
 };
 
-#if BF2_PLUGIN_ABI_NATIVE
 static ::renddx9abi::HostString s_nativeOption[2];
 static HostDynamicOptionList    s_nativeOptionList[2];
-#endif
 
 // The globals apply reaches. Each is defined where its class lives; declared here rather than
 // pulled in through a header because these are image globals, not an interface.
 extern IBase* g_Renderer;                    // BF2Render.cpp,   0x1023B96C
 extern void*  g_textureManager;              // TextureManager.cpp, dword_1023B974
-namespace Ra { extern void* g_effectManager; }   // dword_1023D954
+namespace Ra {
+extern void* g_effectManager;                       // dword_1023D954
+void effectManagerSetFlag40(unsigned char value);   // Ra/EffectManager.cpp - the +0x40 byte
+void effectManagerResetEffects();                   // sub_10034210
+}
+extern void* g_shaderManager;                               // ShaderManager.cpp, dword_1023B97C
+void updateShaderDefines(void* shaderManager, void* base);  // sub_10023730
+void textureManagerSweep();                                 // TextureManager.cpp, sub_10018FD0
 
 // BF2Render.cpp, dword_10258F38. The ECCore handler's case 2 publishes the level-scoped
 // OverGrowth owner. apply changes its recovered +0xF4 fog/view-distance scalar when present.
@@ -102,6 +111,9 @@ extern IBase* g_SkyDome;
 extern IBase* g_UndergrowthSystem;
 // Applying video settings dirties the terrain's lighting constants.
 extern IBase* g_Terrain;
+// TerrainCullerConsole.cpp, PE 0x100E2EF0: the culler's LOD switch distance (ignored outside
+// param14..1000).
+void RD9_THUNK setCullerLodSwitchDistance(TerrainCuller* self RD9_THUNK_EDX, int value);
 } // namespace geom
 
 namespace dx9rend {
@@ -117,14 +129,16 @@ namespace {
 struct CapsView { D3DCAPS9 caps; D3DADAPTER_IDENTIFIER9 adapter; };
 
 const CapsView* capsOf()     { return static_cast<const CapsView*>(g_deviceCaps); }
-unsigned int vsMajor()       { const CapsView* c = capsOf(); return c ? ((c->caps.VertexShaderVersion >> 8) & 0xFF) : 0u; }
-unsigned int psMajor()       { const CapsView* c = capsOf(); return c ? ((c->caps.PixelShaderVersion  >> 8) & 0xFF) : 0u; }
+
+// The shader-major readers are RendDX9Init.cpp's deviceCapsVertexShaderMajor (retail sub_100010B0)
+// and deviceCapsPixelShaderMajor (retail sub_100010D0); the calls below use them directly.
+
 unsigned int maxAnisotropy() { const CapsView* c = capsOf(); return c ? c->caps.MaxAnisotropy : 0u; }
 
 } // anonymous namespace
 
 
-// Video-quality interface embedded in the renderer at its asserted +0x3F8 offset.
+// Video-quality interface embedded in the renderer (retail +0x3F8; RendDX9Base::videoOptions).
 
 namespace {
 
@@ -133,7 +147,7 @@ namespace {
 
 // +0x04, sub_100112B0, read in full: `return this[index + 10]`. Dword index 10 is byte offset
 // 0x28, which is row B - the only row anything recovered reads.
-int __fastcall videoOptions_getQuality(void* self, void*, int index)
+int RD9_THUNK videoOptions_getQuality(void* self RD9_THUNK_EDX, int index)
 {
     const VideoOptions* vo = static_cast<const VideoOptions*>(self);
     if (index < 0 || index > 7)
@@ -148,20 +162,6 @@ int __fastcall videoOptions_getQuality(void* self, void*, int index)
 
 namespace {
 
-// [TEMP] [CHOSEN, not recovered] Resolution changes remain a logged skip during login.
-// Reports hits 1..4 and powers of two. [RETIRE-WHEN: rc-login-reset-hold]
-// Restore both calls after a live device reset verifies all default-pool resources are released.
-inline void noteResChangeHeld(int resIndex, int aaIndex)
-{
-    static unsigned int hits = 0;
-    ++hits;
-    if (hits > 4u && (hits & (hits - 1u)) != 0u)
-        return;
-    ::renddx9abi::logf("VideoOptions::apply: resolution/AA changed (res#%d, aa#%d); the resolution "
-                       "change sub_1000F8D0 is HELD (RC, RW-251) - the device keeps its current mode; "
-                       "the change is marked applied (hit #%u)", resIndex, aaIndex, hits);
-}
-
 // clamp(v - 1, 0, 1), the shape the original open-codes five times in a row.
 inline int clampMinusOne(int v)
 {
@@ -170,20 +170,23 @@ inline int clampMinusOne(int v)
     return t > 1 ? 1 : t;
 }
 
-// The Renderer fields apply writes. They live inside BF2Render.cpp's opaque tail rather than being
-// named members, so they are reached by documented raw offset - the same treatment RendDX9Init.cpp
-// gives the base object.
+// The Renderer fields apply writes, named by their retail offset. `renderer` is always the
+// published g_Renderer here; BF2Render.cpp's tail accessors map the offset onto the named member,
+// which keeps the x64 Renderer layout native (issue #7).
 inline void writeRendererInt(void* renderer, unsigned offset, int value)
 {
-    *reinterpret_cast<int*>(static_cast<unsigned char*>(renderer) + offset) = value;
+    (void)renderer;
+    rendererTailInt(offset) = value;
 }
 inline void writeRendererFloat(void* renderer, unsigned offset, float value)
 {
-    *reinterpret_cast<float*>(static_cast<unsigned char*>(renderer) + offset) = value;
+    (void)renderer;
+    rendererTailFloat(offset) = value;
 }
 inline void writeRendererByte(void* renderer, unsigned offset, unsigned char value)
 {
-    *(static_cast<unsigned char*>(renderer) + offset) = value;
+    (void)renderer;
+    rendererRenderSwitch(offset) = value;
 }
 
 // sub_100278A0: `this->vslot_0xC4()`, which is a one-line forward to
@@ -220,35 +223,14 @@ inline void callSlotFloat(void* obj, unsigned slot, float arg)
     reinterpret_cast<Fn>(vtbl[slot / 4])(obj, arg);
 }
 
-#if !BF2_PLUGIN_ABI_NATIVE
-// The retail-ABI host carrier IS the layout of the renderer's own display-mode block at base+0xA0
-// (sub_1000CA40 copies one onto the other member for member), which is what lets sub_1000F8D0 hand
-// that block to Renderer +0x10 as a carrier. Held here rather than trusted.
-static_assert(offsetof(RendDX9Base, modeWidth) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, width), "block width at +0x04");
-static_assert(offsetof(RendDX9Base, modeHeight) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, height), "block height at +0x06");
-static_assert(offsetof(RendDX9Base, modeRefresh) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, refreshHz), "block refresh at +0x08");
-static_assert(offsetof(RendDX9Base, modeBpp) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, bpp), "block bpp at +0x0A");
-static_assert(offsetof(RendDX9Base, depthFormatsAlloc) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, depthFormats), "block depth list at +0x0C");
-static_assert(offsetof(RendDX9Base, multiSampleAlloc) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, multiSamples), "block multisample list at +0x1C");
-static_assert(offsetof(RendDX9Base, vsync) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, vsync), "block vsync at +0x2C");
-static_assert(offsetof(RendDX9Base, hwndAlloc) - offsetof(RendDX9Base, fullscreen) ==
-              offsetof(::renddx9abi::HostDisplayMode, windows), "block window list at +0x30");
-#endif
 
 
 // sub_10009250 on base+0xA4 - the Mode40 copy-assignment, with the renderer's own record on the left
-// (base+0xA4 is laid out as a Mode40: width +0xA4, height +0xA6, refresh +0xA8, bpp +0xAA, the depth
-// list at +0xAC, the multisample list at +0xBC). The four scalars (NOT the pad byte), then each list
-// assigned from the source's range - VC7.1 `assign(first, last)`: erase everything, insert the range
-// at begin (0x10008A00 / 0x10008C30). [CHOSEN] the source-level assignment; the tree's shared
-// display-vector helper replaces the storage rather than reusing it, which nothing can observe.
+// (retail base+0xA4 is laid out as a Mode40: width +0xA4, height +0xA6, refresh +0xA8, bpp +0xAA, the
+// depth list at +0xAC, the multisample list at +0xBC). The four scalars (NOT the pad byte), then each
+// list assigned from the source's range - `assign(first, last)`: erase everything, insert the range
+// at begin (0x10008A00 / 0x10008C30). [CHOSEN] the source-level assignment; the multisample list's
+// helper replaces the storage rather than reusing it, which nothing can observe.
 
 void assignRendererModeRecord(RendDX9Base* b, const Mode40& src)
 {
@@ -256,43 +238,35 @@ void assignRendererModeRecord(RendDX9Base* b, const Mode40& src)
     b->modeHeight  = src.height;
     b->modeRefresh = src.refresh;
     b->modeBpp     = src.bpp;
-    ::renddx9abi::assignOwnedDisplayVector<unsigned int>(
-        *reinterpret_cast<vc71::vector_layout*>(&b->depthFormatsAlloc),
-        reinterpret_cast<const unsigned int*>(src.depthFormats.first),
-        reinterpret_cast<const unsigned int*>(src.depthFormats.last));
-    ::renddx9abi::assignOwnedDisplayVector<MultiSample8>(
-        *reinterpret_cast<vc71::vector_layout*>(&b->multiSampleAlloc),
-        reinterpret_cast<const MultiSample8*>(src.multiSample.first),
-        reinterpret_cast<const MultiSample8*>(src.multiSample.last));
+    b->depthFormats.assign(src.depthFormats.begin(), src.depthFormats.end());
+    assignMultiSampleList(b, src.multiSample.data(),
+                          src.multiSample.data() + src.multiSample.size());
 }
 
 // Applies a display mode and selected antialiasing settings. [INFERRED] helper name.
 // Requires initialized renderer services, a depth format and valid selected mode/AA indices.
 // Window size/refresh settings can override the mode. Resize precedes device reset.
 // Resolution events, capability probes and shader-define rebuild still run if reset fails.
+// PE 0x1000F8D0.
 void videoOptionsChangeResolution(VideoOptions* vo, const Mode40* mode)
 {
     RendDX9Base* const b = static_cast<RendDX9Base*>(g_rendererBase);
 
     // 1 - 0x1000F8DE..0x1000F8E4 `mov eax, [esi+0B0h]; mov eax, [eax]` unguarded.
-    const unsigned int keptDepthFormat = *b->depthFormatsFirst;
+    const unsigned int keptDepthFormat = b->depthFormats[0];
 
     // 2 - 0x1000F8FC `call sub_10009250` with ecx = base+0xA4.
     assignRendererModeRecord(b, *mode);
 
-    // 3 - free and null the triple (VC7.1 clear() is _Tidy), then
+    // 3 - free/null the depth vector, then
     //     sub_10009070 = push_back. The chosen mode's own depth candidates are discarded.
-    vc71::vector_layout& depth = *reinterpret_cast<vc71::vector_layout*>(&b->depthFormatsAlloc);
-    vectorClear<unsigned int>(&depth);
-    vc71::vectorRef<unsigned int>(&depth).push_back(keptDepthFormat);
+    std::vector<unsigned int>().swap(b->depthFormats);
+    b->depthFormats.push_back(keptDepthFormat);
 
     // 4 - the same on the multisample list, then sub_100090E0 =
     //     push_back(aaDescriptors[selected AA]). The index (+0xD8) is not range-checked.
-    vc71::vector_layout& multiSample =
-        *reinterpret_cast<vc71::vector_layout*>(&b->multiSampleAlloc);
-    vectorClear<MultiSample8>(&multiSample);
-    vc71::vectorRef<MultiSample8>(&multiSample).push_back(
-        reinterpret_cast<const MultiSample8*>(vo->aaDescriptors.first)[vo->minusOneD8]);
+    clearMultiSampleList(b);
+    pushMultiSample(b, vo->aaDescriptors.data()[vo->minusOneD8]);
 
     // 5 - 0x1000F966..0x1000F9A0: 16-bit stores of the low halves.
     if (vo->windowSizeX != 0 && vo->windowSizeY != 0)
@@ -327,28 +301,28 @@ void videoOptionsChangeResolution(VideoOptions* vo, const Mode40* mode)
     //     sizing frame is added whatever the window's style (a fixed-frame or fullscreen popup
     //     window gets the same arithmetic), and hWndInsertAfter is 0 (HWND_TOP) without
     //     SWP_NOZORDER, so the window is also raised - as shipped.
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Cocoa accepts client dimensions and owns frame decoration.
+    macos::CocoaHost::instance().resizeClient(b->modeWidth, b->modeHeight);
+#else
     const int sizeFrameX = ::GetSystemMetrics(SM_CXSIZEFRAME);          // 0x20
     const int windowWidth = b->modeWidth + sizeFrameX * 2;
     const int sizeFrameY = ::GetSystemMetrics(SM_CYSIZEFRAME);          // 0x21
     const int caption    = ::GetSystemMetrics(SM_CYCAPTION);            // 4
     const int windowHeight = caption + sizeFrameY * 2 + b->modeHeight;
-    ::SetWindowPos(static_cast<HWND>(*b->hwndFirst), 0, 0, 0, windowWidth, windowHeight,
+    ::SetWindowPos(static_cast<HWND>(b->windows[0]), 0, 0, 0, windowWidth, windowHeight,
                    SWP_NOMOVE);                                         // window list unguarded
+#endif
 
     // 9 - EventManager (PE +0x10) postEvent(11, 3, 0, 0.0f). With no delay
     //     and no dispatch in progress the host delivers it at once, to every category-11 handler.
     ::dice::hfe::eventManager->postEvent(static_cast<EventCategory>(11), 3, 0, 0.0f);
 
     // 10 - 0x1000FB0E..0x1000FB17: `mov ecx, dword_1023B970; push esi (= base+0xA0); call [eax+10h]`.
-#if BF2_PLUGIN_ABI_NATIVE
     // [CHOSEN, not recovered] The native host carrier is not the block's type; the retail call's
     // copy is a self-assignment that leaves the block unchanged (BF2Render.cpp), so this runs the
     // rest of +0x10 without one. Its answer is discarded, as the virtual call's is.
     rendererApplyCurrentDisplayMode(g_rendererBase);
-#else
-    static_cast<IRenderer*>(g_rendererBase)->setDisplayMode(
-        *reinterpret_cast<const ::renddx9abi::HostDisplayMode*>(&b->fullscreen));   // bool dropped
-#endif
 
     // 11 - 0x1000FB1A..0x1000FB3B: `shl ecx, 10h; add ecx, edx` into a stack dword whose address is
     //      the payload. Unsigned only so a width above 0x7FFF cannot overflow a signed shift.
@@ -365,7 +339,12 @@ void videoOptionsChangeResolution(VideoOptions* vo, const Mode40* mode)
 
 } // anonymous namespace
 
-void __fastcall videoOptions_apply(void* self, void*)
+namespace {
+void videoOptionsApplyCore(VideoOptions* vo);
+}
+
+// 0x10010500: the early-out while a game is loaded, then the shared body sub_1000FCB0.
+void RD9_THUNK videoOptions_apply(void* self RD9_THUNK_EDX)
 {
     RD9_TRACE_AT("dice::hfe::dx9rend::VideoOptions::apply", self, 0x2C);
 
@@ -378,7 +357,17 @@ void __fastcall videoOptions_apply(void* self, void*)
                            "is loaded!");
         return;
     }
+    videoOptionsApplyCore(vo);
+}
 
+namespace {
+
+// sub_1000FCB0 - compares the requested quality row with the applied one, pushes the settings to
+// the renderer subsystems and records what a level load must rebuild (the +0x114..+0x118 flags).
+// Shared by apply and the ECCore level-load arm; the resolution change inside is skipped while a
+// game is loaded.
+void videoOptionsApplyCore(VideoOptions* vo)
+{
     void* const renderer = ::dice::hfe::dx9rend::g_Renderer;
 
     // index 6: the mip level
@@ -399,31 +388,25 @@ void __fastcall videoOptions_apply(void* self, void*)
         else if (wanted6 == 3) mip = 0;
     }
 
-    // The fourteen mip-class records. The original reloads the TextureManager pointer and
-    // reassigns its scratch on every iteration; both are no-ops because the two values are always
-    // equal by this point, and the loop is written here as what it does.
-    unsigned char* const tm = static_cast<unsigned char*>(::dice::hfe::dx9rend::g_textureManager);
+    // The fourteen mip-class records (TM+0x28, stride 8). The original reloads the TextureManager
+    // pointer and reassigns its scratch on every iteration; both are no-ops because the two values
+    // are always equal by this point, and the loop is written here as what it does.
+    void* const tm = ::dice::hfe::dx9rend::g_textureManager;
     if (tm)
-    {
-        for (int i = 0; i < 112; i += 8)
-        {
-            if (*(tm + i + 40))
-                *reinterpret_cast<int*>(tm + i + 44) = mip;
-        }
-    }
+        textureManagerSetEnabledMipClassValues(mip);
 
     writeIntSetting("GSSkipMipLevels", mip);
 
     // Five records then get a clamped value instead - 2, 3, 5, 8 and 9, by the same arithmetic
-    // five times over. Offsets 60/68/84/108/116 are those records' value fields.
+    // five times over (retail TM+60/68/84/108/116, those records' value fields).
     if (tm)
     {
         const int clamped = clampMinusOne(mip);
-        *reinterpret_cast<int*>(tm + 60)  = clamped;
-        *reinterpret_cast<int*>(tm + 68)  = clamped;
-        *reinterpret_cast<int*>(tm + 84)  = clamped;
-        *reinterpret_cast<int*>(tm + 108) = clamped;
-        *reinterpret_cast<int*>(tm + 116) = clamped;
+        textureManagerSetMipClassValue(2, clamped);
+        textureManagerSetMipClassValue(3, clamped);
+        textureManagerSetMipClassValue(5, clamped);
+        textureManagerSetMipClassValue(8, clamped);
+        textureManagerSetMipClassValue(9, clamped);
     }
 
     // index 7: texture filtering
@@ -449,19 +432,19 @@ void __fastcall videoOptions_apply(void* self, void*)
     if (wanted2 == 1)
     {
         rendererSetShaderPathAndUpdate(renderer, 3);
-        if (effectManager) writeRendererByte(effectManager, 64, 0);
+        if (effectManager) Ra::effectManagerSetFlag40(0);       // retail +0x40
         // vslot +0x00 on ourselves - setQuality(4, 0). Only the lowest setting does this.
         reinterpret_cast<PluginVideoOptions*>(vo)->setQuality(4, 0);
     }
     else if (wanted2 == 2)
     {
         rendererSetShaderPathAndUpdate(renderer, 1);
-        if (effectManager) writeRendererByte(effectManager, 64, 0);
+        if (effectManager) Ra::effectManagerSetFlag40(0);       // retail +0x40
     }
     else if (wanted2 == 3)
     {
         rendererSetShaderPathAndUpdate(renderer, 0);
-        if (effectManager) writeRendererByte(effectManager, 64, 0);
+        if (effectManager) Ra::effectManagerSetFlag40(0);       // retail +0x40
     }
 
     // Terrain quality also updates the road renderer, guarded only by g_Renderer (RW-77).
@@ -477,20 +460,39 @@ void __fastcall videoOptions_apply(void* self, void*)
     void* const skyDome     = ::dice::hfe::geom::g_SkyDome;
     void* const roads       = ::dice::hfe::geom::g_RoadCompiledRenderer;
 
+    // Each arm first sets the terrain's culler LOD switch distance (PE 0x100E2EF0; the culler is
+    // read unguarded once the terrain exists) and its low-quality mode (Terrain::setLowQuality, PE
+    // 0x100DF130; calls at 0x1000FFC3, 0x1000FF54, 0x1000FEE4 for qualities 1, 2, 3).
+    ::dice::hfe::geom::Terrain* const qualityTerrain = ::dice::hfe::geom::terrain();
     if (wanted0 == 1)
     {
+        if (qualityTerrain)
+        {
+            ::dice::hfe::geom::setCullerLodSwitchDistance(qualityTerrain->m_culler RD9_THUNK_ARG, 64);
+            qualityTerrain->setLowQuality(1);
+        }
         if (undergrowth) { undergrowth->setSimpleShaderEnable(true); undergrowth->setViewDistanceScale(0.5f); }
         if (renderer)    { writeRendererByte(renderer, 1700, 0); callSlotInt(roads, 24, 0); }
         if (skyDome)     callSlotInt(skyDome, 148, 0);
     }
     else if (wanted0 == 2)
     {
+        if (qualityTerrain)
+        {
+            ::dice::hfe::geom::setCullerLodSwitchDistance(qualityTerrain->m_culler RD9_THUNK_ARG, 80);
+            qualityTerrain->setLowQuality(0);
+        }
         if (undergrowth) { undergrowth->setSimpleShaderEnable(true); undergrowth->setViewDistanceScale(0.75f); }
         if (renderer)    { writeRendererByte(renderer, 1700, 1); callSlotInt(roads, 24, 1); }
         if (skyDome)     callSlotInt(skyDome, 148, 1);
     }
     else if (wanted0 == 3)
     {
+        if (qualityTerrain)
+        {
+            ::dice::hfe::geom::setCullerLodSwitchDistance(qualityTerrain->m_culler RD9_THUNK_ARG, 100);
+            qualityTerrain->setLowQuality(0);
+        }
         if (undergrowth) { undergrowth->setSimpleShaderEnable(false); undergrowth->setViewDistanceScale(1.0f); }
         if (renderer)    { writeRendererByte(renderer, 1700, 1); callSlotInt(roads, 24, 1); }
         if (skyDome)     callSlotInt(skyDome, 148, 2);
@@ -516,7 +518,8 @@ void __fastcall videoOptions_apply(void* self, void*)
         vo->rowA[1]  = wanted1;
     }
 
-    void* const fogObject = ::dice::hfe::dx9rend::g_OverGrowth;
+    ::dice::hfe::geom::OverGrowth* const fogObject =
+        static_cast< ::dice::hfe::geom::OverGrowth*>(::dice::hfe::dx9rend::g_OverGrowth);
 
     if (wanted1 == 1)
     {
@@ -531,7 +534,7 @@ void __fastcall videoOptions_apply(void* self, void*)
             writeRendererInt  (renderer, 2028, 0);
         }
         // Apply the exact 0.4 fog setting.
-        if (fogObject) writeRendererFloat(fogObject, 244, 0.4f);
+        if (fogObject) fogObject->setQualityScale(0.4f);                // OverGrowth +0xF4
     }
     else if (wanted1 == 2)
     {
@@ -545,7 +548,7 @@ void __fastcall videoOptions_apply(void* self, void*)
             writeRendererInt  (renderer, 2020, 0);
             writeRendererInt  (renderer, 2028, 0);
         }
-        if (fogObject) writeRendererFloat(fogObject, 244, 0.7f);
+        if (fogObject) fogObject->setQualityScale(0.7f);
     }
     else if (wanted1 == 3)
     {
@@ -559,7 +562,7 @@ void __fastcall videoOptions_apply(void* self, void*)
             writeRendererInt  (renderer, 2020, 0);
             writeRendererInt  (renderer, 2028, -1);
         }
-        if (fogObject) writeRendererFloat(fogObject, 244, 1.0f);
+        if (fogObject) fogObject->setQualityScale(1.0f);
     }
 
     // indices 3 and 4: lighting and shadows, both through the LightManager
@@ -601,7 +604,9 @@ void __fastcall videoOptions_apply(void* self, void*)
     ::dice::hfe::geom::IParticleSystemManager* const particles =
         ::dice::hfe::geom::asParticleSystemManager(
             ::dice::hfe::geom::g_ParticleSystemManager);
-    void* const decals    = ::dice::hfe::geom::g_DecalManager;
+    ::dice::hfe::geom::DecalManager* const decals =
+        static_cast< ::dice::hfe::geom::DecalManager*>(
+            static_cast< ::dice::hfe::geom::IDecalManager*>(::dice::hfe::geom::g_DecalManager));
     if (particles)
     {
         // sub_1000FCB0 calls ParticleSystemManager::applySettings (vtable +0x3C) with a pointer into
@@ -620,30 +625,31 @@ void __fastcall videoOptions_apply(void* self, void*)
         };
         particles->applySettings(&s_particleProfiles[vo->quality[5]]);
     }
+    // Retail stores the decals-enabled byte at DecalManager +0x2A6; the native layout moves it.
     if (decals)
-        *(static_cast<unsigned char*>(decals) + 678) = (vo->quality[5] > 1) ? 1 : 0;
+        decals->setEnabledField(vo->quality[5] > 1);
 
     // the Terrain's lighting-dirty byte, every apply
     // 0x10010330..0x10010339, read: `mov eax, dword_1024B930; test; je;
-    // mov byte ptr [eax+41Ch], 1` - Terrain::m_lightingDirty (Terrain.h asserts +0x41C), so the next
+    // mov byte ptr [eax+41Ch], 1` - Terrain::m_lightingDirty (retail +0x41C), so the next
     // frame's applyFrameConstants recomputes the terrain lighting. It was missing here. Only a live
     // terrain sees it: none at boot or in the main menu of a first session.
-    void* const terrain = ::dice::hfe::geom::g_Terrain;
+    ::dice::hfe::geom::Terrain* const terrain = ::dice::hfe::geom::terrain();
     if (terrain)
-        writeRendererByte(terrain, 0x41C, 1);
+        terrain->m_lightingDirty = 1;
 
-    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: rc-login-reset-hold]
-    // Resolution and AA resets remain held; applied-state bookkeeping still advances.
-    // Restore reset calls after the login path survives device reset and resource rebinding.
+    // 0x10010340..0x100103B9: the resolution change runs for the selected mode
+    // (modeCache[selected resolution], retail `[esi+0E4h] + 40*[esi+0DCh]`), then the applied
+    // indices take the selected ones; the AA arm repeats the call with the same mode.
     if (!vo->gameLoaded && vo->minusOneD4 != vo->minusOneDC)
     {
-        noteResChangeHeld(vo->minusOneDC, vo->minusOneD8);                          // 0x10010365 held
+        videoOptionsChangeResolution(vo, vo->modeCache.data() + vo->minusOneDC);   // 0x10010365
         vo->minusOneD4 = vo->minusOneDC;   // applied resolution = selected
         vo->minusOneD0 = vo->minusOneD8;   // applied AA = selected
     }
     if (!vo->gameLoaded && vo->minusOneD0 != vo->minusOneD8)
     {
-        noteResChangeHeld(vo->minusOneDC, vo->minusOneD8);                          // 0x100103AE held
+        videoOptionsChangeResolution(vo, vo->modeCache.data() + vo->minusOneDC);   // 0x100103AE
         vo->minusOneD0 = vo->minusOneD8;   // applied AA = selected
     }
 
@@ -658,6 +664,8 @@ void __fastcall videoOptions_apply(void* self, void*)
     rendererUpdateShaderDefines(renderer);
 }
 
+} // anonymous namespace
+
 
 // The display-mode / dynamic-option builders. buildResolutionList and buildAAList fill the two
 // VideoOptions string lists from the Renderer's Mode40 list; setDynamicOption (+0x1C) selects an entry
@@ -665,10 +673,11 @@ void __fastcall videoOptions_apply(void* self, void*)
 
 namespace {
 
-// VideoOptions is embedded in the base renderer at +1016; recover the base from it.
+// VideoOptions is embedded in the base renderer (retail +1016); recover the base from it.
 inline RendDX9Base* baseOfVo(VideoOptions* vo)
 {
-    return reinterpret_cast<RendDX9Base*>(reinterpret_cast<unsigned char*>(vo) - 1016);
+    return reinterpret_cast<RendDX9Base*>(reinterpret_cast<unsigned char*>(vo) -
+                                          offsetof(RendDX9Base, videoOptions));
 }
 
 // bpp -> a representative D3DFORMAT, as in the Renderer-side enumeration.
@@ -681,11 +690,11 @@ inline D3DFORMAT voFormatFromBpp(unsigned int bpp)
 // 0..16; a supported type stores {type, max(quality-1, 0)}.
 void fillMultiSample(RendDX9Base* b, Mode40* rec)
 {
-    vectorClear<MultiSample8>(&rec->multiSample);
+    rec->multiSample.clear();
     if (!b || !b->d3d9)
         return;
     const D3DFORMAT fmt = voFormatFromBpp(rec->bpp);
-    vc71::vectorRef<MultiSample8> ms(&rec->multiSample);
+    std::vector<MultiSample8>& ms = rec->multiSample;
     for (unsigned int i = 0; i <= 16u; ++i)
     {
         DWORD quality = 0;
@@ -706,44 +715,48 @@ void fillMultiSample(RendDX9Base* b, Mode40* rec)
 // the strings so a chosen string maps back to a type.
 void buildAAList(VideoOptions* vo, Mode40* rec)
 {
-    vectorClear< ::vc71::string >(&vo->aaList);
-    vectorClear<MultiSample8>(&vo->aaDescriptors);
+    vo->aaList.clear();
+    vo->aaDescriptors.clear();
     if (!rec)
         return;
     RendDX9Base* b = baseOfVo(vo);
     fillMultiSample(b, rec);
 
-    vc71::vectorRef< ::vc71::string > strs(&vo->aaList);
-    vc71::vectorRef<MultiSample8>     desc(&vo->aaDescriptors);
-    for (const MultiSample8* d = reinterpret_cast<const MultiSample8*>(rec->multiSample.first);
-         d != reinterpret_cast<const MultiSample8*>(rec->multiSample.last); ++d)
+    std::vector< ::std::string >& strs = vo->aaList;
+    std::vector<MultiSample8>&      desc = vo->aaDescriptors;
+    for (std::vector<MultiSample8>::const_iterator d = rec->multiSample.begin();
+         d != rec->multiSample.end(); ++d)
     {
         if (d->type == 1)
             continue;                       // nonmaskable - not offered
         desc.push_back(*d);
         if (d->type == 0)
         {
-            strs.push_back(::vc71::string("Off"));
+            strs.push_back(::std::string("Off"));
         }
         else
         {
             char buf[32];
             _snprintf(buf, sizeof(buf), "%dSamples", d->type);
             buf[sizeof(buf) - 1] = 0;
-            strs.push_back(::vc71::string(buf));
+            strs.push_back(::std::string(buf));
         }
     }
 }
 
 // sub_10010710 - build the resolution string list. Ask the Renderer for its Mode40 list (vslot +0x3C),
-// keep the modes that support the required depth-stencil format, are 32bpp and >= 800 wide, and format
+// keep the modes that are 32bpp and >= 800 wide (the depth-format test below never rejects), and format
 // each as "%ix%i@%iHz". The Mode40 is cached parallel to the string so setDynamicOption can hand the
 // chosen mode to the AA builder.
 void buildResolutionList(VideoOptions* vo)
 {
     RendDX9Base* b = baseOfVo(vo);
-    vectorClear< ::vc71::string >(&vo->resList);
-    vectorClear<Mode40>(&vo->modeCache);
+    vo->resList.clear();
+    vo->modeCache.clear();
+    // [CHOSEN, not recovered] memory-safety exception (rules.md): retail calls the base's slot +0x3C
+    // through dword_1023B970 without a test (PE 0x10010763..0x10010773), and that slot enumerates
+    // through the IDirect3D9 object; a missing base or Direct3D object faults there. Both stay
+    // tested and leave the two lists empty.
     if (!b || !b->d3d9)
         return;
 
@@ -751,29 +764,40 @@ void buildResolutionList(VideoOptions* vo)
     // than the base vtable because this runs during construction, before the vptr is guaranteed set.
     rendererGetModeList(b);
 
-    // The required depth-stencil format is the base's first depth-stencil candidate (D3DFMT_D24S8).
-    // [INFERRED] the shipped filter reads *(*(base+0xB0)); on modern hardware every 32bpp mode supports it.
+    // The required depth-stencil format is the base's first depth-stencil candidate (D3DFMT_D24S8),
+    // *(*(base+0xB0)) in the PE (PE 0x100107B8 / 0x100107CB, read only for a mode that lists
+    // formats). [CHOSEN, not recovered] memory-safety exception: an empty base list makes retail
+    // read through its null begin pointer; here the read is skipped and D3DFMT_D24S8 stands in.
     unsigned int requiredFmt = D3DFMT_D24S8;
-    if (b->depthFormatsFirst && b->depthFormatsFirst != b->depthFormatsLast)
-        requiredFmt = b->depthFormatsFirst[0];
+    if (!b->depthFormats.empty())
+        requiredFmt = b->depthFormats[0];
 
-    vc71::vectorRef< ::vc71::string > strs(&vo->resList);
-    vc71::vectorRef<Mode40>           cache(&vo->modeCache);
-    for (Mode40* rec = reinterpret_cast<Mode40*>(b->modeList.first);
-         rec != reinterpret_cast<Mode40*>(b->modeList.last); ++rec)
+    // PE 0x100107B2..0x100107DD: std::find over the mode's own depth formats, but the result is
+    // compared with the end of the BASE's depth vector (+0xB4), not with the mode's end. The two
+    // vectors never share storage, so the test passes whether or not the mode lists the format; the
+    // depth gate rejects nothing. Reproduced: with a strict comparison every mode is dropped when
+    // the per-mode CheckDeviceFormat probes fail (fillDepthFormats passes D3DFMT_A8R8G8B8 as the
+    // adapter format, as PE 0x1000CD20 does), the list stays empty and the profile's resolution is
+    // never selected.
+    const unsigned int* baseDepthEnd =
+        b->depthFormats.empty() ? 0 : &b->depthFormats[0] + b->depthFormats.size();
+
+    std::vector< ::std::string >& strs  = vo->resList;
+    std::vector<Mode40>&           cache = vo->modeCache;
+    for (std::vector<Mode40>::const_iterator rec = b->modeList.begin(); rec != b->modeList.end();
+         ++rec)
     {
-        bool supported = false;
-        for (const unsigned int* f = reinterpret_cast<const unsigned int*>(rec->depthFormats.first);
-             f != reinterpret_cast<const unsigned int*>(rec->depthFormats.last); ++f)
-            if (*f == requiredFmt) { supported = true; break; }
+        const unsigned int* first = rec->depthFormats.empty() ? 0 : &rec->depthFormats[0];
+        const unsigned int* last  = first + rec->depthFormats.size();
+        const unsigned int* hit   = std::find(first, last, requiredFmt);
 
-        if (supported && rec->bpp == 32 && rec->width >= 800)
+        if (hit != baseDepthEnd && rec->bpp == 32 && rec->width >= 800)
         {
             char buf[32];
             _snprintf(buf, sizeof(buf), "%ix%i@%iHz",
                       (int)rec->width, (int)rec->height, (int)rec->refresh);
             buf[sizeof(buf) - 1] = 0;
-            strs.push_back(::vc71::string(buf));
+            strs.push_back(::std::string(buf));
             cache.push_back(*rec);
         }
     }
@@ -782,18 +806,64 @@ void buildResolutionList(VideoOptions* vo)
 } // anonymous namespace
 
 #define RD9_VO_SLOT(name, slotOffset, addr)                                                 \
-    void __fastcall name(void* self, void*)                                                 \
+    void RD9_THUNK name(void* self RD9_THUNK_EDX)                                                 \
     {                                                                                       \
         RD9_FRONTIER_AT("dice::hfe::dx9rend::VideoOptions::slot_" #slotOffset                \
                         " (" #addr ")", self, 0x00);                                        \
     }
+
+// The word setQuality compares against: dword `index + 54` of the retail object - the selected AA
+// and resolution indices for 0 and 1, then (2..7) the allocator/first/last/end words of the
+// modeCache and aaDescriptors list headers that follow them there. Every caller discards
+// setQuality's answer; [CHOSEN] the list words are reproduced from the native vectors' pointers
+// (the allocator words were never written, so they read 0).
+inline int pointerWord(const void* p)
+{
+    return static_cast<int>(reinterpret_cast<std::size_t>(p));
+}
+
+template <typename T>
+int listHeaderWord(const std::vector<T>& list, int word)
+{
+    switch (word)
+    {
+    case 1:  return pointerWord(list.data());
+    case 2:  return pointerWord(list.data() + list.size());
+    case 3:  return pointerWord(list.data() + list.capacity());
+    default: return 0;
+    }
+}
+
+int committedQualityWord(const VideoOptions* vo, int index)
+{
+    if (index == 0)
+        return vo->minusOneD8;
+    if (index == 1)
+        return vo->minusOneDC;
+    if (index < 6)
+        return listHeaderWord(vo->modeCache, index - 2);
+    return listHeaderWord(vo->aaDescriptors, index - 6);
+}
+
+// Defines one setting's rows: rowA 4, quality 2, floor `rowC`, rowD and maxQuality both `ceiling`,
+// flag byte `flag`. No bounds check, as shipped. [INFERRED] name; a __thiscall member in retail
+// (`retn 10h`). Unreachable in 1.50: no code or data references. PE 0x1000EDA0.
+void videoOptionsDefineSetting(VideoOptions* vo, int index, int floor, int ceiling, unsigned char flag)
+{
+    vo->rowC[index]       = floor;
+    vo->rowD[index]       = ceiling;
+    vo->maxQuality[index] = ceiling;
+    vo->rowA[index]       = 4;
+    vo->quality[index]    = 2;
+    vo->flags[index]      = flag;
+}
 
 // +0x00, sub_1000F620 - setQuality(index, value). Clamp `value` into [rowC[index], maxQuality[index]]
 // (rowC is the per-setting floor, maxQuality the ceiling), store it in the quality row (this+0x28),
 // and return whether it differs from the committed row at this[index+54] (byte 0xD8). On a first
 // apply that committed row still holds the -1/0 initial values, so every setting reports "changed",
 // which is correct. Out-of-range index is the shipped "Unknown quality setting" guard (returns 0).
-char __fastcall videoOptions_setQuality(void* self, void*, int index, int value)
+char RD9_THUNK videoOptions_setQuality(void* self RD9_THUNK_EDX, int index, int value)
 {
     VideoOptions* vo = static_cast<VideoOptions*>(self);
     if (index < 0 || index >= 8)
@@ -808,24 +878,21 @@ char __fastcall videoOptions_setQuality(void* self, void*, int index, int value)
     {
         v = vo->rowC[index];
     }
-    const int committed =
-        *reinterpret_cast<const int*>(reinterpret_cast<const unsigned char*>(vo) + 216 + index * 4);
+    const int committed = committedQualityWord(vo, index);
     vo->quality[index] = v;
     return (committed == v) ? 0 : 1;
 }
 
 // Returns the setting's minimum quality from its initialized eight-entry row.
-// These wrappers guard indices; the original slots assume indices 0..7.
-int __fastcall videoOptions_slot08(void* self, void*, int index)
+// PE 0x100112C0. The caller supplies an index into the eight-entry row.
+int RD9_THUNK videoOptions_slot08(void* self RD9_THUNK_EDX, int index)
 {
     const VideoOptions* vo = static_cast<const VideoOptions*>(self);
-    if (index < 0 || index > 7)
-        return 0;
     return vo->rowC[index];
 }
 
 // +0x0C, sub_100112D0: `return this[index + 26]` - dword row D at byte 0x68.
-int __fastcall videoOptions_slot0C(void* self, void*, int index)
+int RD9_THUNK videoOptions_slot0C(void* self RD9_THUNK_EDX, int index)
 {
     const VideoOptions* vo = static_cast<const VideoOptions*>(self);
     if (index < 0 || index > 7)
@@ -835,7 +902,7 @@ int __fastcall videoOptions_slot0C(void* self, void*, int index)
 
 // +0x10, sub_100112E0: `return this[index + 34]` - dword maxQuality at byte 0x88. setQuality clamps
 // the requested value up to it, so this is the per-setting maximum.
-int __fastcall videoOptions_slot10(void* self, void*, int index)
+int RD9_THUNK videoOptions_slot10(void* self RD9_THUNK_EDX, int index)
 {
     const VideoOptions* vo = static_cast<const VideoOptions*>(self);
     if (index < 0 || index > 7)
@@ -845,7 +912,7 @@ int __fastcall videoOptions_slot10(void* self, void*, int index)
 
 // +0x14, sub_10011300: `return *(BYTE*)(this + index + 168)` - the byte row `flags` at byte 0xA8.
 // Returned as char (AL), matching the shipped signature.
-char __fastcall videoOptions_slot14(void* self, void*, int index)
+char RD9_THUNK videoOptions_slot14(void* self RD9_THUNK_EDX, int index)
 {
     const VideoOptions* vo = static_cast<const VideoOptions*>(self);
     if (index < 0 || index > 7)
@@ -855,49 +922,93 @@ char __fastcall videoOptions_slot14(void* self, void*, int index)
 
 // +0x18, sub_10011320 - `return this + 16*index + 176`: a pointer to the index-th dynamic-option
 // string list (index 0 = aaList @0xB0, index 1 = resList @0xC0), so the menu can enumerate every
-// option for a dropdown. The list is a vc71::vector_layout (begin @+4), which is what the menu walks.
-const HostDynamicOptionList& __fastcall
-videoOptions_getDynamicOptionList(void* self, void*, int index)
+// option for a dropdown.
+const HostDynamicOptionList& RD9_THUNK
+videoOptions_getDynamicOptionList(void* self RD9_THUNK_EDX, int index)
 {
-#if BF2_PLUGIN_ABI_NATIVE
-    // The shipped body is unguarded pointer arithmetic into the object; that has no meaning once
-    // the host's element type differs from the stored one, so the native branch serves the two
+    // The shipped body is unguarded pointer arithmetic into the object, so this serves the two
     // lists this object actually owns. Both callers (VideoSettings' resolution and antialiasing
     // getters) pass 1 and 0. A copy, not a view: the list is rebuilt whenever the resolution
     // changes, and the caller copies it immediately anyway.
     const int slot = (index == 0) ? 0 : 1;
     VideoOptions* vo = static_cast<VideoOptions*>(self);
-    const vc71::vector_layout* list = (slot == 0) ? &vo->aaList : &vo->resList;
+    const std::vector< ::std::string >& list = (slot == 0) ? vo->aaList : vo->resList;
     s_nativeOptionList[slot].clear();
-    for (const ::vc71::string* s = reinterpret_cast<const ::vc71::string*>(list->first);
-         s && s != reinterpret_cast<const ::vc71::string*>(list->last); ++s)
+    for (std::vector< ::std::string >::const_iterator s = list.begin(); s != list.end(); ++s)
         s_nativeOptionList[slot].push_back(std::string(s->c_str()));
     return s_nativeOptionList[slot];
-#else
-    return *reinterpret_cast<const HostDynamicOptionList*>(
-        reinterpret_cast<const unsigned char*>(self) + 16 * index + 176);
-#endif
 }
+// [CHOSEN, not recovered] https://github.com/kr4uzi/OpenBF2/issues/4: the replacement for a dynamic-option
+// value the lists do not hold (a profile resolution or refresh rate the display no longer offers),
+// so setDynamicOption selects the closest supported entry instead of stopping. Returns the entry
+// index, or -1 when there is nothing to choose from (empty list, unreadable entries).
+// Antialiasing keeps the current selection, otherwise the first entry. A resolution prefers the same
+// size (only the refresh rate is off), otherwise the closest size; on equal distance the lower refresh
+// rate wins. A value without a size falls back to the desktop mode; a size without a rate uses the
+// desktop's rate. Same scoring as the client-side DLL fix the issue names.
+static int closestDynamicOption(VideoOptions* vo, int index, const char* value)
+{
+    const std::vector< ::std::string >& list = (index == 0) ? vo->aaList : vo->resList;
+    if (list.empty())
+        return -1;
+    if (index == 0)
+    {
+        const int selected = vo->minusOneD8;
+        return (selected >= 0 && selected < static_cast<int>(list.size())) ? selected : 0;
+    }
+
+    D3DDISPLAYMODE desktop = {};
+    RendDX9Base* const b = baseOfVo(vo);
+    const bool haveDesktop = b->d3d9 && SUCCEEDED(b->d3d9->GetAdapterDisplayMode(b->adapter, &desktop));
+    int width = 0, height = 0, refresh = 0;
+    const int fields = std::sscanf(value, "%dx%d@%dHz", &width, &height, &refresh);
+    if (fields < 2)
+    {
+        if (!haveDesktop)
+            return -1;
+        width = static_cast<int>(desktop.Width);
+        height = static_cast<int>(desktop.Height);
+    }
+    if (fields < 3)
+        refresh = haveDesktop ? static_cast<int>(desktop.RefreshRate) : 60;
+
+    int best = -1;
+    long long bestScore = 0;
+    int i = 0;
+    for (std::vector< ::std::string >::const_iterator s = list.begin(); s != list.end(); ++s, ++i)
+    {
+        int w = 0, h = 0, hz = 0;
+        if (std::sscanf(s->c_str(), "%dx%d@%dHz", &w, &h, &hz) != 3)
+            continue;
+        const long long sizeDistance = std::abs(w - width) + std::abs(h - height);
+        const long long score = sizeDistance * 100000 + std::abs(hz - refresh) * 2 + (hz > refresh ? 1 : 0);
+        if (best < 0 || score < bestScore)
+        {
+            best = i;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
 // +0x1C, sub_1000FB70 - setDynamicOption(index, value). Prefix-searches the index-th string list
 // (index 0 = anti-aliasing @0xB4, index 1 = resolution @0xC4) for `value` - strnicmp over the search
 // string's length, so "800x600" matches "800x600@60Hz". On a match it records the chosen entry index
 // at this[index+54] (0xD8 for AA, 0xDC for resolution) and, when the resolution changed, rebuilds the
 // AA list for the newly-selected mode. Returns whether the selection changed.
-bool __fastcall videoOptions_setDynamicOption(
-    void* self, void*, int index, const ::renddx9abi::HostString* value)
+bool RD9_THUNK videoOptions_setDynamicOption(void* self RD9_THUNK_EDX, int index, const ::renddx9abi::HostString* value)
 {
     VideoOptions* vo = static_cast<VideoOptions*>(self);
     if (index < 0 || index > 1 || !value)
         return false;
 
-    vc71::vector_layout* list      = (index == 0) ? &vo->aaList : &vo->resList;
+    const std::vector< ::std::string >& list = (index == 0) ? vo->aaList : vo->resList;
     const char*          needle    = value->c_str();
-    const unsigned int   needleLen = value->size();
+    const unsigned int   needleLen = static_cast<unsigned int>(value->size());   // an option string
 
     int found = -1;
     int i = 0;
-    for (const ::vc71::string* s = reinterpret_cast<const ::vc71::string*>(list->first);
-         s != reinterpret_cast<const ::vc71::string*>(list->last); ++s, ++i)
+    for (std::vector< ::std::string >::const_iterator s = list.begin(); s != list.end(); ++s, ++i)
     {
         if (_strnicmp(s->c_str(), needle, needleLen) == 0)
         {
@@ -907,8 +1018,28 @@ bool __fastcall videoOptions_setDynamicOption(
     }
     if (found < 0)
     {
+        // [CHOSEN, not recovered] https://github.com/kr4uzi/OpenBF2/issues/4: select the closest supported entry
+        // instead. Retail stops here (below), which kills a fullscreen client without a message.
+        const int replacement = closestDynamicOption(vo, index, needle);
+        if (replacement >= 0)
+        {
+            ::renddx9abi::logf("VideoOptions::setDynamicOption: unsupported video option %d value '%s' "
+                               "replaced by '%s' [CHOSEN, not recovered] (issue #4)",
+                               index, needle, list[replacement].c_str());
+            found = replacement;
+        }
+    }
+    if (found < 0)
+    {
+        // PE 0x1000FBE4..0x1000FC5E: a miss emits an Error diagnostic (type 6, VideoOptions.cpp:234),
+        // which stops the game with the message; only a filtered Error returns false. The log line
+        // is the port's own.
         ::renddx9abi::logf("VideoOptions::setDynamicOption: '%s' not present in list %d", needle, index);
-        return false;   // the shipped "Unknown DynamicOption value" result
+        ::renddx9abi::Debug(DebugTypeError,
+                            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendDX9\\VideoOptions.cpp",
+                            234, "")
+            << "Unknown DynamicOption value " << needle;
+        return false;
     }
 
     int* selected = (index == 0) ? &vo->minusOneD8 : &vo->minusOneDC;
@@ -917,7 +1048,7 @@ bool __fastcall videoOptions_setDynamicOption(
 
     if (changed && index == 1)   // resolution changed -> rebuild the AA list for the new mode
     {
-        Mode40* rec = reinterpret_cast<Mode40*>(vo->modeCache.first) + found;
+        Mode40* rec = vo->modeCache.data() + found;
         buildAAList(vo, rec);
     }
     return changed;
@@ -928,36 +1059,32 @@ bool __fastcall videoOptions_setDynamicOption(
 // spelling it as an integer was only an ABI disguise and made typed callers unnecessarily fragile.
 // PE 0x10011350 intentionally has no index, empty-list or negative-selection guard: preserve that
 // behavior here.
-const ::renddx9abi::HostString& __fastcall
-videoOptions_getDynamicOption(void* self, void*, int index)
+const ::renddx9abi::HostString& RD9_THUNK
+videoOptions_getDynamicOption(void* self RD9_THUNK_EDX, int index)
 {
     VideoOptions* vo = static_cast<VideoOptions*>(self);
-    vc71::vector_layout* list = (index == 0) ? &vo->aaList : &vo->resList;
-    const ::vc71::string* begin = reinterpret_cast<const ::vc71::string*>(list->first);
+    const std::vector< ::std::string >& list = (index == 0) ? vo->aaList : vo->resList;
+    const ::std::string* begin = list.data();
     const int sel = (index == 0) ? vo->minusOneD8 : vo->minusOneDC;
-#if BF2_PLUGIN_ABI_NATIVE
     const int slot = (index == 0) ? 0 : 1;
     s_nativeOption[slot] = (begin + sel)->c_str();
     return s_nativeOption[slot];
-#else
-    return begin[sel];
-#endif
 }
 // +0x24, sub_1000ED70 - store a float, clamped to [0.5, 1.0], at this+0x100. Its exact role is
 // [UNRESOLVED] (aspect/gamma-ish); applyQualityPreset feeds it 0.75 / 0.9 / 1.0. The shipped body
 // passes the value as the dword bit pattern (1061158912 == 0x3F400000 == 0.75f, etc.), which is the
 // same four stack bytes as passing the float, so this takes a plain float.
-void __fastcall videoOptions_setViewDistanceScale(void* self, void*, float value)
+void RD9_THUNK videoOptions_setViewDistanceScale(void* self RD9_THUNK_EDX, float value)
 {
     float v = value;
     if (v < 0.5f)      v = 0.5f;
     else if (v > 1.0f) v = 1.0f;
-    *reinterpret_cast<float*>(reinterpret_cast<unsigned char*>(self) + 0x100) = v;
+    static_cast<VideoOptions*>(self)->dynFloat = v;
 }
 // +0x28, sub_10011340 - return the +0x100 float (the value slot +0x24 clamps and stores).
 // The PE is one `fld dword ptr [ecx+100h]`; BF2.exe consumes it with an `fstp dword`, matching
 // IVideoOptions::getViewDistanceScale's float contract rather than Hex-Rays' ambiguous x87 double.
-float __fastcall videoOptions_getViewDistanceScale(void* self, void*)
+float RD9_THUNK videoOptions_getViewDistanceScale(void* self RD9_THUNK_EDX)
 {
     return static_cast<VideoOptions*>(self)->dynFloat;
 }
@@ -969,20 +1096,19 @@ unsigned int systemRamMB();   // defined with the detectQualityLevel helpers bel
 int textureQualityForPreset(int preset)
 {
     unsigned int v = 3;
-    if (g_deviceCaps &&
-        *reinterpret_cast<const unsigned int*>(
-            static_cast<const unsigned char*>(g_deviceCaps) + 0x584) < 0xF0u)
+    if (deviceCapsUnknown584() < 0xF0u)              // DeviceCaps +0x584
         v = 2;
     if (preset == 0 && v > 2)
         --v;
-    if (systemRamMB() >= 750u)
+    if (static_cast<int>(systemRamMB()) >= 750)
         return (int)v;
     return 1;
 }
 
 // Applies low/medium/high presets (0/1/2) through virtual quality and dynamic-option setters.
 // HostString must match the receiving ABI; dynamic option 1 is applied before option 0.
-int __fastcall videoOptions_applyQualityPreset(void* self, void*, int preset)
+// PE 0x1000F390.
+int RD9_THUNK videoOptions_applyQualityPreset(void* self RD9_THUNK_EDX, int preset)
 {
     PluginVideoOptions* const options = reinterpret_cast<PluginVideoOptions*>(self);
 
@@ -1011,7 +1137,7 @@ int __fastcall videoOptions_applyQualityPreset(void* self, void*, int preset)
     }
     else if (preset == 2)       // high
     {
-        options->setQuality(2, (systemRamMB() >= 1100u) ? 3 : 2);
+        options->setQuality(2, (static_cast<int>(systemRamMB()) >= 1100) ? 3 : 2);
         options->setQuality(0, 3); options->setQuality(1, 3);
         options->setQuality(3, 3); options->setQuality(4, 3);
         options->setQuality(5, 3);
@@ -1021,16 +1147,65 @@ int __fastcall videoOptions_applyQualityPreset(void* self, void*, int preset)
         options->setDynamicOption(0, ::renddx9abi::HostString("Off"));
         options->setViewDistanceScale(1.0f);
     }
-    // Unknown preset: the shipped body returns `preset - 2`; the value is unused by the caller.
+    // [CHOSEN, not recovered] The existing interface carries an integer result; retail callers
+    // discard EAX. This adapter value does not claim the incidental register value at RET.
     return 0;
 }
 
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Report the actual CPU without inventing x86 CPUID
+// registers or equating a host timer tick with a CPU clock. Until the renderer
+// has native quality calibration, an unavailable frequency refuses this probe.
+// [RETIRE-WHEN: macos-arm-quality-calibration] Replace the frequency proxy and
+// refusal with measured native quality calibration, validated on Intel and M2 renderers.
+double cpuBenchmarkSpeed()
+{
+    bf2macos::CpuInfo cpu;
+    if (!bf2macos::readCpuInfo(cpu) || !cpu.frequencyHz) {
+        // PE 0x1000EF85 returns zero when the shipped measurement is unavailable.
+        std::fprintf(stderr, "[CHOSEN, not recovered] dice::hfe::dx9rend::VideoOptions::cpuBenchmarkSpeed: "
+                             "native CPU frequency unavailable; measurement refused\n");
+        std::fflush(stderr);
+        return 0.0;
+    }
+    std::fprintf(stderr, "[CHOSEN, not recovered] VideoOptions CPU: %s, sysctl frequency %llu Hz\n",
+        cpu.name, static_cast<unsigned long long>(cpu.frequencyHz));
+    return static_cast<double>(cpu.frequencyHz) * 0.000001;
+}
+
+int cpuBenchmarkScore()
+{
+    return bf2x87::toIntTruncate(cpuBenchmarkSpeed() + 0.55000001);
+}
+
+double cpuFamilyMultiplier()
+{
+    bf2macos::CpuInfo cpu;
+    if (!bf2macos::readCpuInfo(cpu)) {
+        // PE 0x1000F13D uses the float 0.2 fallback when CPU identification is unavailable.
+        std::fprintf(stderr, "[CHOSEN, not recovered] dice::hfe::dx9rend::VideoOptions::cpuFamilyMultiplier: "
+                             "native CPU identity unavailable; using unidentified-CPU multiplier\n");
+        std::fflush(stderr);
+    }
+    // The native sysctl probe does not produce the shipped x86 vendor-table key.
+    // Keep the existing port's unknown-vendor multiplier until native calibration.
+    return 0.2f;
+}
+#else
 // Reads the CPU timestamp after a serialization barrier for the quality benchmark.
+// PE 0x1000EE10 (also 0x1000EDE0). The barrier and rdtsc are the separate 0x1000EDE0 body (cpuid, rdtsc); catch-all handler 0x1000EE61.
 inline unsigned __int64 cpuTimestamp()
 {
-    int regs[4];
-    __cpuid(regs, 0);           // the shipped `xor eax,eax; cpuid` barrier
-    return __rdtsc();
+    try
+    {
+        int regs[4];
+        __cpuid(regs, 0);           // the shipped `xor eax,eax; cpuid` barrier
+        return __rdtsc();
+    }
+    catch (...)
+    {
+        return 0;
+    }
 }
 
 // sub_1000EE70: rdtsc ticks per wall-second, measured on a single core across a 1000 ms window, then
@@ -1132,82 +1307,387 @@ double cpuFamilyMultiplier()
     return 0.2;   // unknown vendor - shipped logs and reverts to the low multiplier
 }
 
-// sub_1000F010: total physical RAM in MB, rounded up to a multiple of 4 (GlobalMemoryStatus, the
-// non-Ex 32-bit form the shipped body uses).
+#endif
+
+// Total physical RAM in MB, rounded up to a multiple of 4 (GlobalMemoryStatus, the non-Ex 32-bit
+// form). PE 0x1000F010: the probe runs inside a __try whose handler answers 256; the sum
+// dwTotalPhys + 0x7FFFF is 32-bit (shipped defect: a total near 4 GB wraps to a small value).
 unsigned int systemRamMB()
 {
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Native physical memory; no Win32 MEMORYSTATUS truncation. A failed
+    // query takes the shipped __except answer, 256 (0x1000F072).
+    std::uint64_t bytes = 0;
+    std::size_t length = sizeof(bytes);
+    if (sysctlbyname("hw.memsize", &bytes, &length, nullptr, 0) != 0 || length != sizeof(bytes))
+        return 256u;
+    unsigned int mb = static_cast<unsigned int>((bytes + 0x7FFFF) >> 20);
+    if (mb & 3u) mb += 4u - (mb & 3u);
+    return mb;
+#else
     MEMORYSTATUS ms;
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatus(&ms);
-    unsigned int mb = (unsigned int)(((unsigned __int64)ms.dwTotalPhys + 0x7FFFF) >> 20);
+    unsigned int mb = (static_cast<unsigned int>(ms.dwTotalPhys) + 0x7FFFFu) >> 20;
     if (mb & 3u)
         mb += 4u - (mb & 3u);
     return mb;
+#endif
 }
 
-// [FRONTIER] Legacy GPU whitelist data is absent; always falls through to capability heuristics.
-// Restoring the tables is required for exact quality selection on listed older GPUs.
-// [RETIRE-WHEN: the VideoOptions GPU whitelist tables are extracted]
-bool gpuWhitelistLevel(int* /*outLevel*/)
+// PE data 0x10236A90..0x10237A80: preserve table order and duplicate device IDs.
+struct GpuWhitelistRecord
 {
+    unsigned int deviceId;
+    unsigned int field04; // [UNRESOLVED] Table data; the matching body never reads it.
+    const char* description;
+    int qualityLevel;
+    unsigned int flag;
+};
+
+// PE 0x10236A90
+const GpuWhitelistRecord kAtiWhitelist[] =
+{
+    { 0x3150u, 0x0u, "M24 1P - Radeon Mobility X600", 1, 1u },
+    { 0x3154u, 0x0u, "M24 1T - FireGL", 0, 1u },
+    { 0x3E50u, 0x0u, "RV380 - Radeon X600", 1, 1u },
+    { 0x3E50u, 0x0u, "(RV380) Radeon X600 Pro, X600 XT", 1, 1u },
+    { 0x3E54u, 0x0u, "(RV380) Radeon X600 Pro, X600 XT (GL)", 1, 1u },
+    { 0x3E70u, 0x0u, "(RV380) Radeon X600 Pro, X600 XT (Secondary)", 1, 1u },
+    { 0x3E74u, 0x0u, "(RV380) Radeon X600 Pro, X600 XT (GL Secondary)", 1, 1u },
+    { 0x4137u, 0x0u, "RS200 - Radeon IGP 340", 0, 1u },
+    { 0x4144u, 0x0u, "R300 - Radeon 9500 Series", 0, 1u },
+    { 0x4145u, 0x0u, "R300 - Radeon 9700", 1, 1u },
+    { 0x4146u, 0x0u, "R300 - Radeon 9700", 1, 1u },
+    { 0x4148u, 0x0u, "R350 - Radeon 9800 SE", 1, 1u },
+    { 0x4149u, 0x0u, "R300 - Radeon 9500 Series", 0, 1u },
+    { 0x4150u, 0x0u, "rv350 - Radeon 9600 pro", 1, 1u },
+    { 0x4151u, 0x0u, "RV350 - Radeon 9600", 1, 1u },
+    { 0x4152u, 0x0u, "RV360 - Radeon 9600 XT", 1, 1u },
+    { 0x4153u, 0x0u, "RV350 - Radeon 9550", 0, 1u },
+    { 0x4164u, 0x0u, "R300 - Radeon 9500 Series Sec", 0, 1u },
+    { 0x4168u, 0x0u, "R350 - Radeon 9800 SE - Secondary", 1, 1u },
+    { 0x4169u, 0x0u, "R300 - Radeon 9500 Series Sec", 0, 1u },
+    { 0x4170u, 0x0u, "RV350 - Radeon 9600 - Secondary", 1, 1u },
+    { 0x4171u, 0x0u, "RV350 - Radeon 9600 Secondary", 1, 1u },
+    { 0x4172u, 0x0u, "RV360 - Radeon 9600 XT - Secondary", 1, 1u },
+    { 0x4173u, 0x0u, "RV350 - Radeon 9550 - Secondary", 0, 1u },
+    { 0x4242u, 0x0u, "(All-In-Wonder Radeon 8500DV)", 0, 1u },
+    { 0x4966u, 0x0u, "RV250 - Radeon 9000/9000 Pro", 0, 1u },
+    { 0x4967u, 0x0u, "RV250 - Radeon 9000", 0, 1u },
+    { 0x496Eu, 0x0u, "RV250 - Radeon 9000/9000 Pro - Secondary", 0, 1u },
+    { 0x496Fu, 0x0u, "RV250 - Radeon 9000 - Secondary", 0, 1u },
+    { 0x4A48u, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A49u, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A4Au, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A4Bu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A4Cu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A4Du, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A4Eu, 0x0u, "Mobility Radeon 9800 ( M18 )", 1, 1u },
+    { 0x4A4Eu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE", 2, 1u },
+    { 0x4A68u, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A69u, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A6Au, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A6Bu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A6Cu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A6Du, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A6Eu, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4A70u, 0x0u, "(R420) Radeon X800 SE, X800 Pro, X800 XT PE  (Secondary)", 2, 1u },
+    { 0x4C64u, 0x0u, "??? - Radeon Mobility M9-GL", 0, 1u },
+    { 0x4C66u, 0x0u, "??? - Radeon Mobility M9", 0, 1u },
+    { 0x4E44u, 0x0u, "R300 - Radeon 9700/9500 Series", 1, 1u },
+    { 0x4E45u, 0x0u, "R300 - Radeon 9550", 0, 1u },
+    { 0x4E46u, 0x0u, "RV350 - Radeon 9600", 1, 1u },
+    { 0x4E48u, 0x0u, "R360 - Radeon 9800 Pro", 1, 1u },
+    { 0x4E49u, 0x0u, "R350 - Radeon 9800", 1, 1u },
+    { 0x4E4Au, 0x0u, "R360 - Radeon 9800 XT", 1, 1u },
+    { 0x4E4Bu, 0x0u, "FGL9800XT - ATI FIREGL X2-256T", 1, 1u },
+    { 0x4E50u, 0x0u, "RV350 - Radeon Mobility M10 NP", 1, 1u },
+    { 0x4E52u, 0x0u, "RV350 - Radeon Mobility M10 NP", 1, 1u },
+    { 0x4E54u, 0x0u, "RV350-WS - Radeon Mobility M10 NT", 1, 1u },
+    { 0x4E64u, 0x0u, "R300 - Radeon 9700 Pro", 1, 1u },
+    { 0x4E65u, 0x0u, "R300 - Radeon 9700/9500 Series - Secondary", 1, 1u },
+    { 0x4E66u, 0x0u, "RV350 - Radeon 9600 - Secondary", 1, 1u },
+    { 0x4E68u, 0x0u, "R350 - Radeon 9800 Pro - Secondary", 1, 1u },
+    { 0x4E69u, 0x0u, "R350 - Radeon 9800 - Secondary", 1, 1u },
+    { 0x4E6Au, 0x0u, "R350 - Radeon 9800 XT - Secondary", 1, 1u },
+    { 0x4E6Bu, 0x0u, "FGL9800XT - ATI FIREGL X2-256T Secondary", 1, 1u },
+    { 0x4E46u, 0x0u, "R300 - Radeon 9600TX", 1, 1u },
+    { 0x4E66u, 0x0u, "R300 - Radeon 9600TX - Secondary", 1, 1u },
+    { 0x514Cu, 0x0u, "RADEON 8500 (R200)", 0, 1u },
+    { 0x514Du, 0x0u, "R200 - Redeon 9100 Series", 0, 1u },
+    { 0x514Eu, 0x0u, "RADEON 8500 (R200)", 0, 1u },
+    { 0x514Fu, 0x0u, "RADEON 8500 (R200)", 0, 1u },
+    { 0x516Cu, 0x0u, "??? - Radeon 8500 / 8500LE", 0, 1u },
+    { 0x516Du, 0x0u, "R200 - Redeon 9100 Series - Secondary", 0, 1u },
+    { 0x5548u, 0x0u, "(R423) Radeon X800 XT ", 2, 1u },
+    { 0x554Au, 0x0u, "(R423) Radeon X800 XT", 2, 1u },
+    { 0x5568u, 0x0u, "(R423) Radeon X800 XT (Secondary)", 2, 1u },
+    { 0x556Au, 0x0u, "(R423) Radeon X800 XT (Secondary)", 2, 1u },
+    { 0x5834u, 0x0u, "RS300 - Radeon 9100 IGP", 0, 1u },
+    { 0x5835u, 0x0u, "RS300 - Mobiltiy Radeon 9100 IGP AGP", 0, 1u },
+    { 0x5940u, 0x0u, "RV280 - Radeon 9200 Pro - Secondary", 0, 1u },
+    { 0x5941u, 0x0u, "RV280 - ATI Radeon 9200 - Secondary", 0, 1u },
+    { 0x5960u, 0x0u, "RV280 - Radeon 9200 Pro", 0, 1u },
+    { 0x5961u, 0x0u, "RV280 - ATI RADEON 9200 M9+", 0, 1u },
+    { 0x5963u, 0x0u, "RV280 - ATI RADEON 9200 M9+", 0, 1u },
+    { 0x5964u, 0x0u, "Radeon 9200 - Radeon 9200 SE Series", 0, 1u },
+    { 0x5B60u, 0x0u, "(RV370) Radeon X300 ", 0, 1u },
+    { 0x5B64u, 0x0u, "(RV370) Radeon X300 (GL)", 0, 1u },
+    { 0x5B70u, 0x0u, "(RV370) Radeon X300 (Secondary)", 0, 1u },
+    { 0x5B74u, 0x0u, "(RV370) Radeon X300 (GL Secondary)", 0, 1u },
+    { 0x5C61u, 0x0u, "??? - Mobility Radeon 9200", 0, 1u },
+    { 0x5C63u, 0x0u, "RV280 (M9+) - Mobility Radeon 9200", 0, 1u },
+    { 0x5D44u, 0x0u, "RV280 - Radeon 9200 SE Series - Secondary", 0, 1u },
+    { 0x5D4Du, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE", 2, 1u },
+    { 0x5D4Fu, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE", 2, 1u },
+    { 0x5D52u, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE", 2, 1u },
+    { 0x5D57u, 0x0u, "(R423) Radeon X800 XT ", 2, 1u },
+    { 0x5D6Du, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE (Secondary)", 2, 1u },
+    { 0x5D6Fu, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE (Secondary)", 2, 1u },
+    { 0x5D72u, 0x0u, "(R480) Radeon X850 Pro, X850 XT, X850 XT PE (Secondary)", 2, 1u },
+    { 0x5D77u, 0x0u, "(R423) Radeon X800 XT (Secondary)", 2, 1u },
+    { 0x4A50u, 0x0u, "(R423) Radeon X800 XT Platinum Edition", 2, 1u },
+    { 0x7834u, 0x0u, "Radeon 9000 XT IGP (RS350)", 0, 1u },
+    { 0x7835u, 0x0u, "Mobility Radeon 9200 IGP (RS350M)", 0, 1u },
+};
+
+// PE 0x10237288
+const GpuWhitelistRecord kNvidiaWhitelist[] =
+{
+    { 0x0301u, 0x0u, "GeForce FX 5800 Ultra", 0, 0u },
+    { 0x0302u, 0x0u, "GeForce FX 5800", 0, 0u },
+    { 0x0311u, 0x0u, "GeForce FX 5600 Ultra", 0, 0u },
+    { 0x0312u, 0x0u, "GeForce FX 5600", 0, 0u },
+    { 0x0313u, 0x0u, "NV31", 0, 0u },
+    { 0x0314u, 0x0u, "GeForce FX 5600XT", 0, 0u },
+    { 0x0320u, 0x0u, "GeForce FX 5200", 0, 0u },
+    { 0x0321u, 0x0u, "GeForce FX 5200 Ultra", 0, 0u },
+    { 0x0322u, 0x0u, "GeForce FX 5200", 0, 0u },
+    { 0x0323u, 0x0u, "GeForce FX 5200LE", 0, 0u },
+    { 0x0326u, 0x0u, "GeForce FX 5500", 0, 0u },
+    { 0x0327u, 0x0u, "GeForce FX 5100", 0, 0u },
+    { 0x032Fu, 0x0u, "NV34GL", 0, 0u },
+    { 0x0330u, 0x0u, "GeForce FX 5900 Ultra", 0, 0u },
+    { 0x0331u, 0x0u, "GeForce FX 5900", 0, 0u },
+    { 0x0332u, 0x0u, "GeForce FX 5900XT", 0, 0u },
+    { 0x0333u, 0x0u, "GeForce FX 5950 Ultra", 0, 0u },
+    { 0x0334u, 0x0u, "GeForce FX 5900ZT", 0, 0u },
+    { 0x0341u, 0x0u, "GeForce FX 5700 Ultra", 0, 0u },
+    { 0x0342u, 0x0u, "GeForce FX 5700", 0, 0u },
+    { 0x0343u, 0x0u, "GeForce FX 5700LE", 0, 0u },
+    { 0x0344u, 0x0u, "GeForce FX 5700VE", 0, 0u },
+    { 0x0345u, 0x0u, "NV36", 0, 0u },
+    { 0x034Fu, 0x0u, "NV36GL", 0, 0u },
+    { 0x0040u, 0x0u, "GeForce 6800 Ultra", 2, 1u },
+    { 0x0041u, 0x0u, "GeForce 6800", 2, 1u },
+    { 0x0042u, 0x0u, "GeForce 6800 LE", 2, 1u },
+    { 0x0043u, 0x0u, "NV40", 2, 1u },
+    { 0x0045u, 0x0u, "GeForce 6800 GT", 2, 1u },
+    { 0x0049u, 0x0u, "NV40GL", 2, 1u },
+    { 0x00C0u, 0x0u, "NV41", 2, 1u },
+    { 0x00C1u, 0x0u, "GeForce 6800", 2, 1u },
+    { 0x00C2u, 0x0u, "GeForce 6800 LE", 2, 1u },
+    { 0x0140u, 0x0u, "GeForce 6600 GT", 1, 1u },
+    { 0x0141u, 0x0u, "GeForce 6600", 1, 1u },
+    { 0x0142u, 0x0u, "NV43", 1, 1u },
+    { 0x0143u, 0x0u, "NV43", 1, 1u },
+    { 0x0145u, 0x0u, "GeForce 6610 XL", 1, 1u },
+    { 0x014Bu, 0x0u, "NV43", 1, 1u },
+    { 0x014Cu, 0x0u, "NV43GL", 1, 1u },
+    { 0x014Du, 0x0u, "NV43GL", 1, 1u },
+    { 0x014Fu, 0x0u, "GeForce 6200", 0, 1u },
+    { 0x0160u, 0x0u, "NV44", 0, 1u },
+    { 0x0161u, 0x0u, "GeForce 6200 TurboCache(TM)", 0, 1u },
+    { 0x0162u, 0x0u, "NV44", 0, 1u },
+    { 0x0163u, 0x0u, "NV44", 0, 1u },
+    { 0x016Eu, 0x0u, "NV44GL", 0, 1u },
+    { 0x0220u, 0x0u, "NV44", 0, 1u },
+    { 0x0221u, 0x0u, "NV44", 0, 1u },
+    { 0x0222u, 0x0u, "NV44", 0, 1u },
+    { 0x0211u, 0x0u, "GeForce 6800", 2, 1u },
+    { 0x0212u, 0x0u, "GeForce 6800 LE", 2, 1u },
+    { 0x0215u, 0x0u, "GeForce 6800 GT", 2, 1u },
+    { 0x00F0u, 0x40u, "GeForce 6800 Ultra", 2, 1u },
+    { 0x00F0u, 0x41u, "GeForce 6800", 2, 1u },
+    { 0x00F1u, 0x140u, "GeForce 6600 GT", 1, 1u },
+    { 0x00F1u, 0x0u, "GeForce 6600 GT", 1, 1u },
+    { 0x00F2u, 0x141u, "GeForce 6600", 1, 1u },
+    { 0x00F2u, 0x0u, "GeForce 6600", 1, 1u },
+    { 0x00F3u, 0x14Fu, "GeForce 6200", 0, 1u },
+    { 0x00F3u, 0x0u, "GeForce 6200", 0, 1u },
+    { 0x00F9u, 0x40u, "GeForce 6800 Ultra", 2, 1u },
+    { 0x00F9u, 0x45u, "GeForce 6800 GT", 2, 1u },
+    { 0x00F9u, 0x0u, "GeForce 6800 Series GPU", 2, 1u },
+    { 0x00FAu, 0x341u, "GeForce PCX 5750", 0, 0u },
+    { 0x00FAu, 0x0u, "GeForce PCX 5750", 0, 0u },
+    { 0x00FBu, 0x331u, "GeForce PCX 5900", 0, 0u },
+    { 0x00FBu, 0x0u, "GeForce PCX 5900", 0, 0u },
+    { 0x00FCu, 0x322u, "GeForce PCX 5300", 0, 0u },
+    { 0x00FCu, 0x0u, "GeForce PCX 5300", 0, 0u },
+    { 0x0316u, 0x0u, "NV31M", 0, 0u },
+    { 0x0317u, 0x0u, "NV31M Pro", 0, 0u },
+    { 0x031Au, 0x0u, "GeForce FX Go5600", 0, 0u },
+    { 0x031Bu, 0x0u, "GeForce FX Go5650", 0, 0u },
+    { 0x031Du, 0x0u, "NV31GLM", 0, 0u },
+    { 0x031Eu, 0x0u, "NV31GLM Pro", 0, 0u },
+    { 0x031Fu, 0x0u, "NV31GLM Pro", 0, 0u },
+    { 0x0324u, 0x0u, "GeForce FX Go5200", 0, 0u },
+    { 0x0325u, 0x0u, "GeForce FX Go5250", 0, 0u },
+    { 0x0328u, 0x0u, "GeForce FX Go5200 32M/64M", 0, 0u },
+    { 0x0329u, 0x0u, "NV34MAP", 0, 0u },
+    { 0x032Cu, 0x0u, "GeForce FX Go53xx", 0, 0u },
+    { 0x032Du, 0x0u, "GeForce FX Go5100", 0, 0u },
+    { 0x0347u, 0x0u, "GeForce FX Go5700", 0, 0u },
+    { 0x0348u, 0x0u, "GeForce FX Go5700", 0, 0u },
+    { 0x0349u, 0x0u, "NV36M Pro", 0, 0u },
+    { 0x034Bu, 0x0u, "NV36MAP", 0, 0u },
+    { 0x00C8u, 0x0u, "GeForce Go 6800", 1, 1u },
+    { 0x00C9u, 0x0u, "GeForce Go 6800 Ultra", 1, 1u },
+    { 0x0140u, 0x0u, "NV43", 1, 1u },
+    { 0x0144u, 0x0u, "GeForce Go 6600", 1, 1u },
+    { 0x0147u, 0x0u, "NV43", 1, 1u },
+    { 0x0148u, 0x0u, "GeForce Go 6600", 1, 1u },
+    { 0x0149u, 0x0u, "NV43", 1, 1u },
+    { 0x014Cu, 0x0u, "NV43GL", 1, 1u },
+    { 0x0164u, 0x0u, "GeForce Go 6200", 0, 1u },
+    { 0x0167u, 0x0u, "GeForce Go 6200", 0, 1u },
+    { 0x0169u, 0x0u, "NV44M", 0, 1u },
+    { 0x016Bu, 0x0u, "NV44GLM", 0, 1u },
+    { 0x016Cu, 0x0u, "NV44GLM", 0, 1u },
+    { 0x016Du, 0x0u, "NV44GLM", 0, 1u },
+    { 0x0228u, 0x0u, "NV44M", 0, 1u },
+};
+
+// PE 0x10001290: NVIDIA is tested first; both tables use first-match linear search.
+bool gpuWhitelistFind(const GpuWhitelistRecord** matched)
+{
+    const CapsView* caps = capsOf();
+    const GpuWhitelistRecord* first;
+    const GpuWhitelistRecord* last;
+    if (caps->adapter.VendorId == 0x10DEu)
+    {
+        first = kNvidiaWhitelist;
+        last = kNvidiaWhitelist + sizeof(kNvidiaWhitelist) / sizeof(kNvidiaWhitelist[0]);
+    }
+    else if (caps->adapter.VendorId == 0x1002u)
+    {
+        first = kAtiWhitelist;
+        last = kAtiWhitelist + sizeof(kAtiWhitelist) / sizeof(kAtiWhitelist[0]);
+    }
+    else
+        return false;
+    for (; first != last; ++first)
+    {
+        if (first->deviceId == caps->adapter.DeviceId)
+        {
+            *matched = first;
+            return true;
+        }
+    }
     return false;
 }
 
-// The heuristic. `self` is ignored, matching the shipped no-`this` body. The redundant RAM re-reads
-// the decompiler shows before each return are side-effect-free and omitted.
+// PE 0x10001360. Leave the output untouched when no record matches.
+bool gpuWhitelistLevel(int* outLevel)
+{
+    const GpuWhitelistRecord* matched = 0;
+    if (gpuWhitelistFind(&matched) && matched)
+    {
+        *outLevel = matched->qualityLevel;
+        return true;
+    }
+    return false;
+}
+
+// Hardware quality heuristic; the final RAM query is retained even though its result is discarded.
+// PE 0x1000F6E0.
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] The EDX placeholder is specific to the PE fastcall thunk.
+// PE 0x1000F6E0 (listing read: level thresholds, shader-model, whitelist and ATI branches).
+int videoOptions_slot34(void* /*self*/)
+#else
+// PE 0x1000F6E0 (listing read).
 int __fastcall videoOptions_slot34(void* /*self*/, void*)
+#endif
 {
     const int          benchmark = cpuBenchmarkScore();
-    const int          cpuScore  = (int)(cpuFamilyMultiplier() * (double)benchmark);
-    const unsigned int ramMB     = systemRamMB();
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87 multiply/truncate behavior with the native CPU probe.
+    const int cpuScore = bf2x87::toIntTruncate(
+        bf2x87::mul(bf2x87::wide(cpuFamilyMultiplier()), bf2x87::wide(benchmark)));
+#else
+    const int cpuScore = static_cast<int>(cpuFamilyMultiplier() * static_cast<double>(benchmark));
+#endif
+    const int ramMB = static_cast<int>(systemRamMB());
 
-    const CapsView* c = capsOf();
-    const unsigned int psMajorVer = c ? ((c->caps.PixelShaderVersion >> 8) & 0xFFu) : 0u;
-    const bool isATI = c && c->adapter.VendorId == 0x1002u;
-    const bool isNV  = c && c->adapter.VendorId == 0x10DEu;   // computed by sub_100011C0; unused after, as shipped
+    const unsigned int psMajorVer = static_cast<unsigned int>(deviceCapsPixelShaderMajor());
+    const bool isATI = deviceCapsIsAti();
+    const bool isNV = deviceCapsIsNvidia(); // unused result, but retain the call
     (void)isNV;
 
     int        whitelistLevel = 0;
     const bool inWhitelist    = gpuWhitelistLevel(&whitelistLevel);
 
     int level = 2;
-    if (cpuScore < 2350 || ramMB < 1024u)
+    if (cpuScore < 2350 || ramMB < 1024)
         level = 0;
     else if (cpuScore < 2950)
         level = 1;
 
     if (psMajorVer == 1)                 // pixel shader 1.x -> forced low
-        return 0;
-
-    if (inWhitelist)
+        level = 0;
+    else if (inWhitelist)
     {
-        if (level >= whitelistLevel)
-            return whitelistLevel;
+        if (static_cast<unsigned int>(level) >= static_cast<unsigned int>(whitelistLevel))
+            level = whitelistLevel;
     }
     else if (isATI && psMajorVer >= 3)
     {
         if (level >= 2)
-            return 2;
+            level = 2;
     }
     else
     {
         level = (level != 0) ? 1 : 0;    // not whitelisted and not a PS3 ATI part: cap at medium
     }
+    systemRamMB();
     return level;
 }
-// +0x38, sub_1000F360 - reads a per-GPU byte from the whitelist (sub_10001320 -> matched record +16)
-// and returns it, or 1 when the GPU is not in the list. That is the same fixed 2009 whitelist
-// gpuWhitelistLevel documents; a modern card misses it, so this returns the shipped default 1.
-// applyQualityPreset's medium preset uses it to decide whether setting 4 is 2 (true) or 0.
-// [RETIRE-WHEN: the VideoOptions GPU whitelist tables are extracted]
-char __fastcall videoOptions_slot38(void* self, void*)
+// PE 0x1000F360, 0x10001320: the out-of-line copy of the flag lookup is the same record read (+0x10). Unknown devices use 1.
+char RD9_THUNK videoOptions_slot38(void* self RD9_THUNK_EDX)
 {
     (void)self;
-    return 1;
+    unsigned char flag = 1;
+    const GpuWhitelistRecord* matched = 0;
+    if (gpuWhitelistFind(&matched) && matched)
+        flag = static_cast<unsigned char>(matched->flag);
+    return static_cast<char>(flag);
 }
 
 #undef RD9_VO_SLOT
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kVideoOptionsVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, setQuality, videoOptions_setQuality),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getQuality, videoOptions_getQuality),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getMinQuality, videoOptions_slot08),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getMaxQualityLevel, videoOptions_slot0C),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getMaxQuality, videoOptions_slot10),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getRestartFlag, videoOptions_slot14),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getDynamicOptionList, videoOptions_getDynamicOptionList),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, setDynamicOption, videoOptions_setDynamicOption),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getDynamicOption, videoOptions_getDynamicOption),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, setViewDistanceScale, videoOptions_setViewDistanceScale),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getViewDistanceScale, videoOptions_getViewDistanceScale),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, apply, videoOptions_apply),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, applyQualityPreset, videoOptions_applyQualityPreset),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, detectQualityLevel, videoOptions_slot34),
+    BF2_NATIVE_SLOT(::dice::hfe::IVideoOptions, getPerGpuFlag, videoOptions_slot38),
+};
+#else
 void* const kVideoOptionsVtable[15] =
 {
     reinterpret_cast<void*>(&videoOptions_setQuality),   // +0x00
@@ -1226,50 +1706,92 @@ void* const kVideoOptionsVtable[15] =
     reinterpret_cast<void*>(&videoOptions_slot34),
     reinterpret_cast<void*>(&videoOptions_slot38)
 };
+#endif
 
-// 101DDFFC is exactly one slot, 100103F0. The ECCore subobject is at +04;
-// its void(category, id, EventNode*, userData) call uses four stack words.
-// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: renddx9-video-options-eccore]
-// The complete callback is read, but its geometry/shader cleanup dependencies
-// remain unimplemented. Keep the existing registration boundary unchanged;
-// if this correctly shaped subobject is called, stop before reading arguments.
-void __fastcall videoOptions_handleECCoreEvent(void*, void*, int, unsigned int,
-                                               void*, void*)
+// 101DDFFC is exactly one slot, 100103F0; `self` is the ECCore subobject at VideoOptions +4.
+// ECCore id 2 (a level is being loaded): the game counts as loaded, the shared apply body runs
+// (sub_1000FCB0, without its resolution change), then everything the applied settings marked is
+// rebuilt: the geometry templates (+0x115), the textures (+0x114, with the ResourceManager
+// ready byte raised), the effects and technique gates (+0x117, effects only with +0x116), and
+// the shader defines with the cached-effect reload sweep (+0x118). Id 3 runs the shared body; id
+// 13 clears the loaded flag.
+void RD9_THUNK videoOptions_handleECCoreEvent(void* self RD9_THUNK_EDX, EventCategory category,
+                                               unsigned int id, EventNode*, void*)
 {
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::dx9rend::VideoOptions::handleECCoreEvent reached (PE 0x100103F0)\n");
-    std::fflush(stderr);
-    std::abort();
+    if (category != ECCore)
+        return;
+    // Retail +4; the native layout places the subobject pointer at its own offset.
+    VideoOptions* const vo = reinterpret_cast<VideoOptions*>(
+        static_cast<unsigned char*>(self) - offsetof(VideoOptions, vptrEventHandler));
+    if (id == 2)
+    {
+        vo->gameLoaded = 1;
+        videoOptionsApplyCore(vo);
+        IBase* const gtm = ::dice::hfe::geom::g_GeometryTemplateManager;
+        if (vo->dirty115)
+        {
+            static_cast< ::dice::hfe::geom::IGeometryTemplateManager*>(gtm)->clear();   // +0x28
+            vo->dirty115 = 0;
+        }
+        if (vo->dirty114)
+        {
+            const unsigned char ready = resourceManagerIsReady() ? 1u : 0u;   // sub_1000D950
+            resourceManagerSetReady(1);                                        // sub_1000D960
+            textureManagerSweep();                                             // sub_10018FD0
+            resourceManagerSetReady(ready);
+            vo->dirty114 = 0;
+        }
+        if (vo->dirty117)
+        {
+            if (vo->dirty116)
+                Ra::effectManagerResetEffects();                               // sub_10034210
+            ::dice::hfe::geom::geometryTemplateManagerRearmTechniques(gtm);    // +0x48
+            vo->dirty117 = 0;
+            vo->dirty116 = 0;
+        }
+        if (vo->dirty118)
+        {
+            updateShaderDefines(g_shaderManager, g_rendererBase);              // sub_10023730
+            shaderManagerReloadAllEffects(g_shaderManager);                    // sub_10023540
+            vo->dirty118 = 0;
+        }
+    }
+    else if (id == 3)
+    {
+        videoOptionsApplyCore(vo);
+    }
+    else if (id == 13)
+    {
+        vo->gameLoaded = 0;
+    }
 }
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kVideoOptionsEventVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::IEventListener, handleEvent, videoOptions_handleECCoreEvent),
+};
+#else
 void* const kVideoOptionsEventVtable[1] =
 {
     reinterpret_cast<void*>(&videoOptions_handleECCoreEvent)
 };
+#endif
 
 } // anonymous namespace
 
 // VideoOptions_ctor 10010590, called by base ctor 1000BA84 before D3D setup.
 // The ECCore base's temporary purecall table is superseded by the derived table;
 // no intervening callback observes it. Do not initialize fields the ctor leaves
-// untouched: quality rows, list allocator words, selection indices, dynFloat/padding.
+// untouched: quality rows, selection indices, dynFloat/padding. The placement default-
+// initialization constructs the four std::vector lists (the retail ctor nulls their pointer
+// triples) and writes nothing else; destructD3DHalf (RendDX9Init.cpp) destroys them.
 void videoOptionsConstruct(void* base)
 {
-    VideoOptions* vo = reinterpret_cast<VideoOptions*>(
-        static_cast<unsigned char*>(base) + 0x3F8);
+    VideoOptions* vo = new (&static_cast<RendDX9Base*>(base)->videoOptions) VideoOptions;
     vo->vptr = const_cast<void**>(kVideoOptionsVtable);
     vo->vptrEventHandler = const_cast<void**>(kVideoOptionsEventVtable);
-    vo->aaList.first = nullptr;
-    vo->aaList.last = nullptr;
-    vo->aaList.end = nullptr;
-    vo->resList.first = nullptr;
-    vo->resList.last = nullptr;
-    vo->resList.end = nullptr;
-    vo->modeCache.first = nullptr;
-    vo->modeCache.last = nullptr;
-    vo->modeCache.end = nullptr;
-    vo->aaDescriptors.first = nullptr;
-    vo->aaDescriptors.last = nullptr;
-    vo->aaDescriptors.end = nullptr;
     vo->windowSizeX = 0;
     vo->windowSizeY = 0;
     vo->refreshHz = 0;
@@ -1282,24 +1804,36 @@ void videoOptionsConstruct(void* base)
     vo->gameLoaded = 0;
 }
 
+// Unregisters the embedded listener before destroying its owned option/mode lists.
+// PE 0x10010630.
+void videoOptionsDestruct(void* base)
+{
+    VideoOptions* const vo = &static_cast<RendDX9Base*>(base)->videoOptions;
+    vo->vptr = const_cast<void**>(kVideoOptionsVtable);
+    vo->vptrEventHandler = const_cast<void**>(kVideoOptionsEventVtable);
+    eventManager->unregisterEventHandler(ECCore,
+        reinterpret_cast<IEventListener*>(&vo->vptrEventHandler));
+    vo->~VideoOptions();
+}
+
+// PE 0x10010850 (listing read). The tail calls its own slot +0x34 (detectQualityLevel, result
+// discarded) and then slot +0x30 with the literal 1 (the medium preset), as retail does.
 // Initializes quality tables and hardware-dependent limits for the renderer's VideoOptions.
 // base must be an initialized RendDX9Base. Quality queries use the second eight-entry row;
 // some other row roles remain [UNRESOLVED]. Deferred initialization calls are marked below.
 void videoOptionsInitialize(void* base)
 {
     RendDX9Base* b = static_cast<RendDX9Base*>(base);
-    VideoOptions* vo = reinterpret_cast<VideoOptions*>(
-        reinterpret_cast<unsigned char*>(b) + 1016);
+    VideoOptions* vo = &b->videoOptions;
 
-    // skipped (1 of 3): the ECCore event registration.
-    // The original registers `this + 4` - the ECCoreEventHandler subobject - with the host's
-    // EventManager at priority -1000000, and logs VideoOptions.cpp:129 if that fails. We do not
-    // register while the now-constructed one-slot callback remains a diagnostic stop.
-    // [CHOSEN, not recovered] [RETIRE-WHEN: renddx9-video-options-eccore]
-    // Retire the callback stop and this pre-existing withheld registration together
-    // when the complete callback dependencies and typed registration are recovered.
-    ::renddx9abi::logf("VideoOptions::initialize: not registering as an ECCore handler - "
-                       "VideoOptions::handleECCoreEvent remains a named frontier");
+    // The ECCore registration: the handler subobject at +4, priority -1000000, so it runs after the
+    // other ECCore handlers; a failure logs VideoOptions.cpp:129.
+    if (!::dice::hfe::eventManager->registerEventHandler(
+            ECCore, reinterpret_cast<IEventListener*>(&vo->vptrEventHandler), -1000000))
+        ::renddx9abi::Debug(DebugTypeError,
+                            "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendDX9\\VideoOptions.cpp",
+                            129, "")
+            << "Failed to register VideoOptions as event handler for ECCore.";
 
     // The four settings, with the defaults the body passes.
     vo->windowSizeX    = readIntSetting("GSWindowSizeX",   0);
@@ -1324,7 +1858,7 @@ void videoOptionsInitialize(void* base)
     vo->rowC[4] = 0;
 
     // The hardware ceiling adjustments on row E.
-    if (vsMajor() < 2 || psMajor() < 2)
+    if (deviceCapsVertexShaderMajor() < 2 || deviceCapsPixelShaderMajor() < 2)
     {
         vo->maxQuality[0] = 1;
         vo->maxQuality[2] = 1;
@@ -1342,18 +1876,14 @@ void videoOptionsInitialize(void* base)
         vo->maxQuality[7] = 2;
     }
 
-    // Clear both dynamic-option string lists (aaList @0xB0, resList @0xC0). On a freshly zeroed object
-    // these are empty and this is a no-op; vectorClear also handles a re-initialise by destroying the
-    // strings and freeing the buffer, matching the shipped `if (*v4)` element-destruction guard.
-    vectorClear< ::vc71::string >(&vo->aaList);
-    vectorClear< ::vc71::string >(&vo->resList);
-
-    // ALL four OF these ARE -1, AND apply depends ON IT. The loop writes +0xD8 and +0xDC; the
-    // two explicit stores below write +0xD4 and +0xD0. apply's resolution-change guard compares
-    // +0xD4 against +0xDC and +0xD0 against +0xD8, so four equal values mean both guards are false
-    // and the device-reset path is correctly skipped on a first boot.
+    // PE 0x10010B07..0x10010B75: a two-pass loop that stores -1 into +0xD8 (then +0xDC) and tidies
+    // the dynamic-option string list at +0xB0 (then +0xC0): strings destroyed, storage freed, the
+    // three pointers zeroed. apply's resolution-change guard compares +0xD4 against +0xDC and +0xD0
+    // against +0xD8; with all four at -1 both guards are false on a first boot.
     vo->minusOneD8 = -1;
+    std::vector<std::string>().swap(vo->aaList);
     vo->minusOneDC = -1;
+    std::vector<std::string>().swap(vo->resList);
 
     // sub_10010710 - build the "%ix%i@%iHz" resolution list by enumerating the adapter modes through
     // the base's vslot +0x3C and filtering to 32bpp / >=800-wide / depth-format-supported. The menu's
@@ -1363,11 +1893,16 @@ void videoOptionsInitialize(void* base)
     vo->minusOneD4 = -1;
     vo->minusOneD0 = -1;
 
-    // [CHOSEN, not recovered] Skip automatic detection and preset 1 at initialization.
-    // This avoids the startup benchmark and its 800x600/AA-off reset; profile application
-    // supplies requested settings later.
+    // PE 0x10010B94..0x10010BA1: slot +0x34 runs the hardware heuristic (CPU benchmark, RAM,
+    // shader model, GPU whitelist) and its level is dropped; slot +0x30 then applies preset 1
+    // (medium qualities, "800x600", AA "Off", view distance 0.9). These only stage options; the
+    // profile's settings and the later apply decide what the device uses.
+    PluginVideoOptions* const options = reinterpret_cast<PluginVideoOptions*>(vo);
+    options->detectQualityLevel();
+    options->applyQualityPreset(1);
 
-    ::renddx9abi::logf("VideoOptions::initialize: %dx%d @%dHz skipMip=%d; quality row = all 2 "
+    // [CHOSEN, not recovered] diagnostic line; retail logs nothing here.
+    ::renddx9abi::logf("VideoOptions::initialize: %dx%d @%dHz skipMip=%d; after preset 1 "
                        "(getQuality(0)=%d terrain, getQuality(7)=%d filter); maxQuality[7]=%d",
                        vo->windowSizeX, vo->windowSizeY, vo->refreshHz, vo->skipMipLevels,
                        vo->quality[0], vo->quality[7], vo->maxQuality[7]);

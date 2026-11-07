@@ -89,6 +89,7 @@ private:
     unsigned int insertObject(Node* node);
     void freeNode(Node* node);
     void getPosAndRadiusObjects(Node* node);
+    void getBoxObjects(Node* node);
     void getDirectionObjects(Node* node);
     // The frustum walk - all names attested, all four .
     // The third one the old note called "still unplaced" is at : it is the
@@ -126,8 +127,17 @@ private:
     int                    m_queryPlaneCount;   // retail +0x90
 
     // [INFERRED] Instance scratch for direction queries, shared by recursive traversal.
-    Vec3 m_directionStart;
-    Vec3 m_directionEnd;
+    // PE/ELF +0x94/+0xA0: box limits share the direction-query endpoint scratch.
+    union
+    {
+        Vec3 m_directionStart;
+        Vec3 m_boxMinimum;
+    };
+    union
+    {
+        Vec3 m_directionEnd;
+        Vec3 m_boxMaximum;
+    };
     Vec3 m_directionNormalized;
     Vec3 m_horizontalDirectionNormalized;
     Vec3 m_horizontalCentre;

@@ -2,7 +2,8 @@
 
 This directory builds CPython 2.3.4 and the vendored zlib 1.2.3 as
 `libdice_py.so` for Linux x86-64. It supports a standalone interpreter check and
-the root engine build. See the public
+the root engine build. The same description builds `libdice_py.dylib` for the
+macOS port with the Darwin `pyconfig.h` from [../macos](../macos/README.md). See the public
 [build guide](../../../../../docs/building.md#linux-and-wsl) for the engine targets.
 
 ## Build and check
@@ -85,3 +86,9 @@ upstream release.
 
 Keep the [upstream Python license](../py-src-2.3.4/LICENSE) and source notices
 with the interpreter.
+
+[CHOSEN, not recovered] The owner-requested macOS N1 fix bounds
+`Modules/socketmodule.c:socket_inet_ntop`'s POSIX buffer initialization to
+`sizeof(ip)`, removing the one-byte stack overwrite from `sizeof(ip) + 1`.
+The Windows branch stays unchanged. Preserve this correction on source updates;
+see [N1 validation](../../../../../docs/macos-n1-posix-net.md).

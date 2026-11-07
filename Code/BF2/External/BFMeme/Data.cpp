@@ -1,5 +1,11 @@
 // All instructions read from BF2.exe. No matching dedicated ELF Data class.
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "Data.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "DataFormatting.h"
 #include "TypeDescriptor.h"
@@ -9,6 +15,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#if defined(_WIN32) && !defined(_M_IX86)
+#include <emmintrin.h>
+#endif
 namespace dice { namespace meme {
 namespace {
 char* cloneName(const char* name)
@@ -40,12 +49,14 @@ public:
 // Whole and fractional conversions use different integer widths and overflow behavior.
 void formatStringDataFloat(float value, char* output, int digits)
 {
+#if defined(_WIN32)
     double magnitude = value;
     char* cursor = output;
     if (value < 0.0f) {
         *cursor++ = '-';
         magnitude = -magnitude;
     }
+#if defined(_M_IX86)
     unsigned short oldControl, truncControl;
     __int64 whole;
     int integral;
@@ -63,6 +74,11 @@ void formatStringDataFloat(float value, char* output, int digits)
         mov eax, dword ptr whole
         mov integral, eax
     }
+#else
+    // cvttsd2si truncates like the chopped fistp and yields the same integer-indefinite
+    // value for NaN and out-of-range input; the low dword is kept, as above.
+    const int integral = static_cast<int>(_mm_cvttsd_si64(_mm_set_sd(magnitude)));
+#endif
     int remaining = integral;
     if (remaining == 0) {
         *cursor++ = '0';
@@ -76,6 +92,7 @@ void formatStringDataFloat(float value, char* output, int digits)
         while (length != 0) *cursor++ = reverse[--length];
     }
     *cursor++ = '.';
+#if defined(_M_IX86)
     const double ten = 10.0;
     int digit;
     __asm {
@@ -99,7 +116,54 @@ void formatStringDataFloat(float value, char* output, int digits)
         fstp st(0)
         mov cursor, edi
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // The dec/jnz counter is unsigned: a nonpositive digit count runs 2^32 times, as shipped.
+    {
+        double fraction = magnitude - static_cast<double>(integral);
+        unsigned int count = static_cast<unsigned int>(digits);
+        do {
+            fraction *= 10.0;
+            const int digit = _mm_cvttsd_si32(_mm_set_sd(fraction));
+            *cursor++ = static_cast<char>(static_cast<unsigned char>(digit) + 0x30);
+            fraction -= static_cast<double>(digit);
+        } while (--count != 0);
+    }
+#endif
     *cursor = 0;
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    double magnitude = value;
+    char* cursor = output;
+    if (value < 0.0f) {
+        *cursor++ = '-';
+        magnitude = -magnitude;
+    }
+    unsigned short oldControl, truncControl;
+    __int64 whole;
+    int integral;
+    // [CHOSEN, not recovered] Preserve x87 truncating int64 conversion and low dword.
+    whole = bf2x87::integer<std::int64_t>(bf2x87::wide(magnitude));
+    integral = bf2x87::lowWord(whole);
+    int remaining = integral;
+    if (remaining == 0) {
+        *cursor++ = '0';
+    } else {
+        char reverse[32];
+        int length = 0;
+        do {
+            reverse[length++] = static_cast<char>(remaining % 10 + '0');
+            remaining /= 10; // signed idiv; overflow-derived negative digits stay negative
+        } while (remaining != 0);
+        while (length != 0) *cursor++ = reverse[--length];
+    }
+    *cursor++ = '.';
+    const double ten = 10.0;
+    int digit;
+    // [CHOSEN, not recovered] Preserve x87 retained fractional remainder.
+    bf2x87::fractionalDigits(magnitude, integral, digits, cursor);
+    *cursor = 0;
+#endif
 }
 
 // Plain sprintf through literal89E620 ("%i"); no width, precision or
@@ -280,8 +344,17 @@ bool BoolRefData::bind(System*, bool* value)
 namespace {
 // the wide-character allocation, widening copy and
 // clone the wide reference class uses. Names [INFERRED].
+#if defined(_WIN32)
 wchar_t* allocateWide(unsigned int characters)
 { return static_cast<wchar_t*>(::operator new(characters * 2)); }
+#else
+// [CHOSEN, not recovered] The shipped `characters * 2` is the byte size of a 16-bit
+// Windows wchar_t. POSIX wchar_t is 32 bits, so the same character count needs
+// sizeof(wchar_t) bytes each; `* 2` made every clone/widen write past its allocation
+// (docs/macos-c-asan-heap.md).
+wchar_t* allocateWide(unsigned int characters)
+{ return static_cast<wchar_t*>(::operator new(characters * sizeof(wchar_t))); }
+#endif
 void widenInto(wchar_t* output, const char* text)
 {
     while (*text) *output++ = static_cast<unsigned char>(*text++);
@@ -446,7 +519,11 @@ bool IntRefData::setFloat(System*, float value)
 {
     // Round half away from zero, then the ordinary truncating x86 cast
     // (fnstcw / or 0C00h / fistp / fldcw). A NaN takes the negative arm.
+#if defined(__APPLE__)
+    *m_value = bf2x87::toIntTruncate(value < 0.0f ? value - 0.5f : value + 0.5f);
+#else
     *m_value = static_cast<int>(value < 0.0f ? value - 0.5f : value + 0.5f);
+#endif
     return true;
 }
 bool IntRefData::setString(System* system, const char* value) // 82E110, shared body

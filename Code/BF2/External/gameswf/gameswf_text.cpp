@@ -7,6 +7,9 @@
 
 
 #include "base/utf8.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
+#endif
 #include "base/utility.h"
 #include "gameswf_impl.h"
 #include "gameswf_shape.h"
@@ -602,6 +605,11 @@ namespace gameswf
 		bool	m_password;				// +345
 		int	m_tab_index;				// +348
 		int	m_max_chars;				// +352
+		// [DICE-MOD SwiffPlayer #53] +368 (0x170): the last height sub_10084DE0 was asked for
+		// (0x10084E01 stores its int argument before the scale test), i.e. formatText's laid-out
+		// height in pixels. `textHeight` answers it (vslot 0x10C = 0x10087A90, `mov eax,[ecx+170h]`);
+		// the constructor seeds 666 (0x1008772C).
+		int	m_text_height_px;
 		tu_string	m_restrict;			// +356/+360
 		as_value	m_on_changed;		// +376
 		as_value	m_on_set_focus;		// +408
@@ -626,7 +634,8 @@ namespace gameswf
 			m_lines_dirty(false),
 			m_password(false),
 			m_tab_index(-1),
-			m_max_chars(0)
+			m_max_chars(0),
+			m_text_height_px(666)
 		{
 			assert(parent);
 			assert(m_def);
@@ -684,6 +693,18 @@ namespace gameswf
 			{
 				s_focused_field = NULL;
 			}
+		}
+
+		// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Adds the
+		// field's environment and its two handler values to the base character's values.
+		virtual void	release_script_values(array<as_value>* held)
+		{
+			character::release_script_values(held);
+			m_as_environment.release_values(held);
+			hold_script_value(held, m_on_changed);
+			m_on_changed.set_undefined();
+			hold_script_value(held, m_on_set_focus);
+			m_on_set_focus.set_undefined();
 		}
 
 		void	set_tab_index(int index)	// sub_10087B50
@@ -845,7 +866,12 @@ namespace gameswf
 				//else if (name == "textColor")
 			{	
 				// The arg is 0xRRGGBB format.
+#if defined(__APPLE__)
+				// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+				Uint32	rgb = bf2x87::lowUInt32(val.to_number());
+#else
 				Uint32	rgb = (Uint32) val.to_number();
+#endif
 
 				cxform	cx = get_cxform();
 				cx.m_[0][0] = fclamp(((rgb >> 16) & 255) / 255.0f, 0, 1);
@@ -1025,7 +1051,7 @@ namespace gameswf
 			render::text_set_size(line, width_px, (int) m_def->m_alignment);
 			if (!m_password)
 			{
-				render::text_set(line, (const wchar_t*) &text[0]);
+				render::text_set(line, BF2_DICE_WIDE(&text[0]));	// [CHOSEN, not recovered] POSIX: widen, see dice_wide
 				return;
 			}
 			// A password field shows one asterisk per character (the shipped fills a 512-wide buffer).
@@ -1038,12 +1064,13 @@ namespace gameswf
 			int	n = 0;
 			while (text[n]) n++;
 			if (n > 511) n = 511;
-			render::text_set(line, (const wchar_t*) &s_asterisks[511 - n]);
+			render::text_set(line, BF2_DICE_WIDE(&s_asterisks[511 - n]));
 		}
 
 		// sub_10084DE0: grow the field's y scale so at least `height_px` is visible (auto-size).
 		void	set_height_at_least(float height_px)
 		{
+			m_text_height_px = (int) height_px;		// 0x10084E01, before the test
 			matrix	m = get_matrix();
 			const float	h = TWIPS_TO_PIXELS(get_height());
 			if (h * m.m_[1][1] < height_px && h > 0)
@@ -1242,7 +1269,7 @@ namespace gameswf
 			text_glyph_record	rec;	// one to work on
 			rec.m_style.m_font = m_def->m_font;
 			rec.m_style.m_color = m_def->m_color;
-			rec.m_style.m_x_offset = fmax(0, m_def->m_left_margin + m_def->m_indent);
+			rec.m_style.m_x_offset = tu_util::fmax(0, m_def->m_left_margin + m_def->m_indent);
 			rec.m_style.m_y_offset = m_def->m_text_height
 				+ (m_def->m_font->get_leading() - m_def->m_font->get_descent()) * scale;
 			rec.m_style.m_text_height = m_def->m_text_height;
@@ -1297,7 +1324,7 @@ namespace gameswf
 					m_text_glyph_records.push_back(rec);
 					align_line(m_def->m_alignment, last_line_start_record, x);
 
-					x = fmax(0, m_def->m_left_margin + m_def->m_indent);	// new paragraphs get the indent.
+					x = tu_util::fmax(0, m_def->m_left_margin + m_def->m_indent);	// new paragraphs get the indent.
 					y += m_def->m_text_height + leading;
 
 					// Start a new record on the next line.
@@ -1655,14 +1682,16 @@ namespace gameswf
 				float	x1 = m_drag_x * 0.05f, y1 = m_drag_y * 0.05f;
 				float	x2 = p.m_x * 0.05f, y2 = p.m_y * 0.05f;
 				int	pos = 0;
-				if (render::text_hit(m_lines[0], &pos, (int) x2, (int) y2))
+				// 0x100887A5..0x100887D7: x2/y2 are fstp'd floats pushed unconverted (no fistp).
+				if (render::text_hit(m_lines[0], &pos, x2, y2))
 				{
 					m_caret = (Uint16) pos;
 				}
 				m_blink_time = 0;
 				if (x1 > x2) { float t = x1; x1 = x2; x2 = t; }
 				if (y1 > y2) { float t = y1; y1 = y2; y2 = t; }
-				render::text_set_selection(m_lines[0], (int) x1, (int) y1, (int) x2, (int) y2);
+				// 0x10088823..0x1008883B: the sorted floats are pushed as raw dwords.
+				render::text_set_selection(m_lines[0], x1, y1, x2, y2);
 			}
 			const bool	result = (m_mouse_state & 1) != 0;
 			if (m_mouse_state == m_prev_mouse_state)
@@ -1925,9 +1954,9 @@ namespace gameswf
 		{
 			if (name == "text")
 			{
-				// sub_10089440: a value that is an object goes by its payload - the wide text when
-				// it carries one (DICE's String object from Locale.getString), else its narrow text
-				// value; a plain value goes narrow through to_string().
+				// sub_10089440: a DICE String object always goes through the wide setter with its
+				// wide text, empty when it carries none (the shipped narrow arm at 0x10089599 is
+				// unreachable: it needs a null std::wstring c_str()); any other value goes narrow.
 				as_object_interface*	obj = val.to_object();
 				if (obj)
 				{
@@ -1950,7 +1979,12 @@ namespace gameswf
 			}
 			if (name == "textColor")
 			{
+#if defined(__APPLE__)
+				// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+				const Uint32	rgb = bf2x87::lowUInt32(val.to_number());
+#else
 				const Uint32	rgb = (Uint32) val.to_number();
+#endif
 				const Uint32	cur = ((Uint32) m_text_color.m_r << 16) | ((Uint32) m_text_color.m_g << 8) | m_text_color.m_b;
 				if (rgb != cur)
 				{
@@ -1973,9 +2007,19 @@ namespace gameswf
 				return true;
 			}
 			if (name == "border")          { m_border = val.to_bool(); return true; }
+#if defined(__APPLE__)
+			// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+			if (name == "borderColor")     { const Uint32 c = bf2x87::lowUInt32(val.to_number()); m_border_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
+#else
 			if (name == "borderColor")     { const Uint32 c = (Uint32) val.to_number(); m_border_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
+#endif
 			if (name == "background")      { m_background = val.to_bool(); return true; }
+#if defined(__APPLE__)
+			// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
+			if (name == "backgroundColor") { const Uint32 c = bf2x87::lowUInt32(val.to_number()); m_background_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
+#else
 			if (name == "backgroundColor") { const Uint32 c = (Uint32) val.to_number(); m_background_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
+#endif
 			if (name == "password")        { m_password = val.to_bool(); return true; }
 			if (name == "tabIndex")        { set_tab_index((int) val.to_number()); return true; }
 			if (name == "onChanged")       { m_on_changed = val; return true; }
@@ -2028,7 +2072,11 @@ namespace gameswf
 			}
 			if (name == "_width")          { val->set_double(TWIPS_TO_PIXELS(get_width())); return true; }
 			if (name == "_height")         { val->set_double(TWIPS_TO_PIXELS(get_height())); return true; }
-			if (name == "textHeight")      { val->set_double((double) (int) (m_def->m_text_height * 0.05f)); return true; }
+			// [DICE-MOD #53] sub_10087C60: `textHeight` is vslot 0x10C, the laid-out height formatText
+			// last requested (m_text_height_px), not the font size. The loading screen's label
+			// component sets `_height = textHeight`; with the font size every multi-line field shrank
+			// to one line and the next formatText stopped after the first wrap.
+			if (name == "textHeight")      { val->set_double((double) m_text_height_px); return true; }
 			if (name == "border")          { val->set_bool(m_border); return true; }
 			if (name == "borderColor")     { val->set_double((double) (int) (((Uint32) m_border_color.m_a << 24) | ((Uint32) m_border_color.m_r << 16) | ((Uint32) m_border_color.m_g << 8) | m_border_color.m_b)); return true; }
 			if (name == "background")      { val->set_bool(m_background); return true; }

@@ -2,13 +2,18 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "DecalTemplate.h"
+#include "../../Core/StringUtil.h"           // equalsIgnoreCase (sub_10075080)
 #include "DecalManager.h"
 #include "DecalObject.h"                                  // decal_template_state (below)
 
 #include "../../RendDX9/RendDX9Base.h"                // textureManagerGetTexture
 #include "../../RendDX9/Texture.h"                    // EngineTexture, textureDims, textureReleaseRef
 #include "../../RendDX9/TextureAtlas/TextureAtlas.h"  // TextureAtlasEntry
+#include "../../GeomMisc/Debug.h"
 #include "../../../RendDX9Abi/Frontier.h"             // logf
 #include "../../../RendDX9Abi/HostFileAbi.h"
 #include "../../../RendDX9Abi/PluginAbi.h"
@@ -29,21 +34,10 @@ const Vec3* terrainOriginScratch(const Vec3& in);
 
 namespace {
 
-// sub_10075080 (fastcall, 63 B): two std::strings equal under MSVCR71 `_stricmp`. loadTexture hands
-// it the name and a freshly built std::string(""), so the test is "the name is empty".
-bool equalsNoCase(const char* a, const char* b)
-{
-    return ::_stricmp(a, b) == 0;
-}
-
 // std::operator!=(const string&, const string&) (0x101AF9D0, MSVCP71's): the counted compare.
 bool stringsDiffer(const DecalTemplateString& a, const DecalTemplateString& b)
 {
-#if BF2_PLUGIN_ABI_NATIVE
     return a != b;
-#else
-    return a.size() != b.size() || ::memcmp(a.c_str(), b.c_str(), a.size()) != 0;
-#endif
 }
 
 // `name + ".dds"` - the shipped code inlines MSVCP71's operator+: copy-construct, operator+=, copy
@@ -78,6 +72,7 @@ float unsignedToFloat(unsigned int value)
 // Everything else (+0x04, +0x18..+0x28, +0x80..+0x9C) is left to reset(); nothing is written
 // twice here that the shipped constructor writes once.
 
+// PE 0x101AFA70
 DecalTemplate::DecalTemplate(const DecalTemplateString& name)
     : m_decalTextureName()
     , m_index(0)
@@ -106,6 +101,7 @@ DecalTemplate::DecalTemplate(const DecalTemplateString& name)
 // finds it null. Then ~name (+0x5C) and ~decalTextureName (+0x3C), reverse declaration order.
 // The atlas entry (+0x7C) is borrowed from the manager's atlas and not released.
 
+// PE 0x101AF7B0
 DecalTemplate::~DecalTemplate()
 {
     assignTexture(m_texture, 0);
@@ -116,6 +112,7 @@ DecalTemplate::~DecalTemplate()
 
 // Restores defaults through the virtual setters while preserving the current atlas entry.
 
+// PE 0x101AF6C0
 void DecalTemplate::reset()
 {
     assignTexture(m_texture, 0);
@@ -158,6 +155,7 @@ void DecalTemplate::reset()
 // Updates UV offset and extent from the atlas entry and optional animation-frame scale.
 // Uses virtual setUvExtent; absent atlas data spans the full texture.
 
+// PE 0x101AF4F0
 void DecalTemplate::updateUv()
 {
     Vec2 extent;
@@ -198,15 +196,16 @@ void DecalTemplate::updateUv()
 // Resolves an atlas entry first, then a standalone DDS texture. Returns true when either
 // resolves. Empty names leave state unchanged; other misses clear prior bindings and log.
 
+// PE 0x101AF820
 bool DecalTemplate::loadTexture(const DecalTemplateString& name)
 {
-    if (equalsNoCase(name.c_str(), ""))
+    if (equalsIgnoreCase(std::string(name.c_str()), std::string("")))     // sub_10075080
         return false;
 
     assignTexture(m_texture, 0);
 
     DecalManager* const manager = static_cast<DecalManager*>(g_DecalManager);
-    m_atlasEntry = manager->getAtlasEntry(::renddx9abi::toVc71String(name));
+    m_atlasEntry = manager->getAtlasEntry(::renddx9abi::fromHostString(name));
     if (m_atlasEntry)
         return true;
 
@@ -217,14 +216,13 @@ bool DecalTemplate::loadTexture(const DecalTemplateString& name)
     if (exists)
     {
         assignTexture(m_texture, static_cast<dx9rend::EngineTexture*>(
-            dx9rend::textureManagerGetTexture(::renddx9abi::toVc71String(name))));
+            dx9rend::textureManagerGetTexture(::renddx9abi::fromHostString(name))));
         return m_texture != 0;
     }
 
-    // sub_10074300(6, __FILE__, 107, "") << "File " << name << " not found!"; sub_10074690. Rendered
-    // through logf with dice's file, line and text, as everywhere in this image. [CHOSEN, not
-    // recovered] - the debug-stream dispatcher is not bridged.
-    ::renddx9abi::logf("DecalTemplate.cpp:107 File %s not found!", name.c_str());
+    ::renddx9abi::Debug(DebugTypeError,
+        "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\Geom\\DecalSystem\\DecalTemplate.cpp",
+        107, "") << "File " << name << " not found!";
     return m_texture != 0;
 }
 
@@ -248,11 +246,21 @@ const DecalTemplateString& DecalTemplate::getName() const
 // +0x04, (85 B, retn) - 1 / animationFrameCountX when that count, as a float, compares
 // greater than 0.0 (`fcom 0.0; test ah, 41h; jnz` - less, equal or unordered take the zero arm),
 // else 0; then updateUv(). Every world::DecalTemplate setter in BF2.exe calls it after its set.
+// PE 0x101AFA10
 void DecalTemplate::refresh()
 {
-    const float count = unsignedToFloat(m_animationFrameCountX);          // +0x98
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The unsigned count stays live in x87 until the reciprocal store.
+    const bf2x87::Real count=bf2x87::wide(m_animationFrameCountX);
+#else
+    const double count=static_cast<double>(m_animationFrameCountX);
+#endif
     if (count > 0.0f)
-        m_frameCountXReciprocal = 1.0f / count;                           // fld 1.0; fdiv st, st(1)
+#if defined(__APPLE__)
+        m_frameCountXReciprocal=static_cast<float>(bf2x87::wide(1)/count);
+#else
+        m_frameCountXReciprocal=static_cast<float>(1.0/count);
+#endif
     else
         m_frameCountXReciprocal = 0.0f;
     updateUv();
@@ -268,6 +276,7 @@ float DecalTemplate::getRandomSize() const              { return m_randomSize; }
 void  DecalTemplate::setRandomColorIntensity(float intensity) { m_randomColorIntensity = intensity; }
 float DecalTemplate::getRandomColorIntensity() const    { return m_randomColorIntensity; }
 
+// PE 0x101AF490
 // +0x20, the colour packed with w = 1.0 through sub_1008DD80's shared
 // static Vec4, then copied out of it: +0x08 = x, +0x0C = y, +0x10 = z, +0x14 = 1.0.
 void DecalTemplate::setColor(const Vec3& color)
@@ -279,6 +288,7 @@ void DecalTemplate::setColor(const Vec3& color)
     m_color.w = packed[3];
 }
 
+// PE 0x101AF4C0
 // +0x24, the colour's xyz copied through
 // sub_100E11B0's shared file static, then out of it into the return slot.
 Vec3 DecalTemplate::getColor() const
@@ -290,8 +300,10 @@ Vec3 DecalTemplate::getColor() const
     return *terrainOriginScratch(xyz);                                     // sub_100E11B0(this+8)
 }
 
+// PE 0x101AFB10
 void DecalTemplate::setIsStatic(bool isStatic)          { m_isStatic = isStatic; }      // +0x28
 bool DecalTemplate::getIsStatic() const                 { return m_isStatic; }          // +0x2C
+// PE 0x101AFB30
 void DecalTemplate::setUsedOnTransparentMaterials(bool used)                             // +0x30
 {
     m_usedOnTransparentMaterials = used;
@@ -302,12 +314,14 @@ bool DecalTemplate::getUsedOnTransparentMaterials() const                       
 }
 
 // +0x38 / +0x3C, the Vec2 at +0xA0 (y through the FPU, x as a dword).
+// PE 0x101AF450
 void DecalTemplate::setUvExtent(const Vec2& value)
 {
     m_uvExtent.y = value.y;
     m_uvExtent.x = value.x;
 }
 
+// PE 0x101AF470
 Vec2 DecalTemplate::getUvExtent() const
 {
     return m_uvExtent;
@@ -315,12 +329,14 @@ Vec2 DecalTemplate::getUvExtent() const
 
 void  DecalTemplate::setRandomRotation(float randomRotation) { m_randomRotation = randomRotation; } // +0x40
 float DecalTemplate::getRandomRotation() const          { return m_randomRotation; }    // +0x44
+// PE 0x101AFB60
 void  DecalTemplate::setRotation(float rotation)        { m_rotation = rotation; }      // +0x48
 float DecalTemplate::getRotation() const                { return m_rotation; }          // +0x4C
 
 // +0x50, only a different name (MSVCP71 operator!=) is stored and
 // loaded; a failed load puts "" back. The load is handed the argument, not the member (`push ebx`,
 // ebx = the argument, 0x101AF9E6). The refresh (+0x04, virtual) runs either way.
+// PE 0x101AF9C0
 void DecalTemplate::setDecalTextureName(const DecalTemplateString& name)
 {
     if (stringsDiffer(m_decalTextureName, name))
@@ -338,8 +354,10 @@ const DecalTemplateString& DecalTemplate::getDecalTextureName() const
     return m_decalTextureName;
 }
 
+// PE 0x101AFBA0
 void DecalTemplate::setAnimationEnable(bool enable)     { m_animationEnable = enable; } // +0x58
 bool DecalTemplate::getAnimationEnable() const          { return m_animationEnable; }   // +0x5C
+// PE 0x101AFB80
 void DecalTemplate::setAnimationRandomizedStartFrame(bool randomized)                    // +0x60
 {
     m_animationRandomizedStartFrame = randomized;
@@ -353,46 +371,70 @@ float DecalTemplate::getAnimationSpeed() const          { return m_animationSpee
 
 // +0x70, with a texture bound: frameWidthRel = width / texture width
 // (both unsigned, converted exactly). Without one: nothing.
+// PE 0x101AF570
 void DecalTemplate::setAnimationFrameWidth(unsigned int width)
 {
     if (m_texture)
     {
         const unsigned int* const dims = dx9rend::textureDims(m_texture);
-        m_animationFrameWidthRelative = unsignedToFloat(width) / unsignedToFloat(dims[0]);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Neither unsigned conversion spills before division.
+        m_animationFrameWidthRelative=static_cast<float>(bf2x87::wide(width)/bf2x87::wide(dims[0]));
+#else
+        m_animationFrameWidthRelative=static_cast<float>(static_cast<double>(width)/static_cast<double>(dims[0]));
+#endif
     }
 }
 
 // +0x74, (82 B, retn) - 0 without a texture; else (int)(texture width * frameWidthRel),
 // truncated (the inline control-word switch to round-toward-zero around `fistp dword`).
+// PE 0x101AF5B0
 unsigned int DecalTemplate::getAnimationFrameWidth() const
 {
     if (!m_texture)
         return 0;
     const unsigned int* const dims = dx9rend::textureDims(m_texture);
-    return static_cast<unsigned int>(static_cast<int>(unsignedToFloat(dims[0]) *
+#if defined(__APPLE__)
+    return static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::wide(dims[0]) *
+                                                      bf2x87::wide(m_animationFrameWidthRelative)));
+#else
+    return static_cast<unsigned int>(static_cast<int>(static_cast<double>(dims[0]) *
                                                       m_animationFrameWidthRelative));
+#endif
 }
 
 // +0x78, the height twin; the argument is narrowed to a float in its own
 // stack slot (`fstp [ebp+arg_0]`) before the division, which is what `(float)height` is here.
+// PE 0x101AF610
 void DecalTemplate::setAnimationFrameHeight(unsigned int height)
 {
     if (m_texture)
     {
         const float h = unsignedToFloat(height);
         const unsigned int* const dims = dx9rend::textureDims(m_texture);
-        m_animationFrameHeightRelative = h / unsignedToFloat(dims[1]);
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Only the numerator spills to float in this setter.
+        m_animationFrameHeightRelative=static_cast<float>(bf2x87::wide(h)/bf2x87::wide(dims[1]));
+#else
+        m_animationFrameHeightRelative=static_cast<float>(static_cast<double>(h)/static_cast<double>(dims[1]));
+#endif
     }
 }
 
 // +0x7C, (83 B, retn).
+// PE 0x101AF660
 unsigned int DecalTemplate::getAnimationFrameHeight() const
 {
     if (!m_texture)
         return 0;
     const unsigned int* const dims = dx9rend::textureDims(m_texture);
-    return static_cast<unsigned int>(static_cast<int>(unsignedToFloat(dims[1]) *
+#if defined(__APPLE__)
+    return static_cast<unsigned int>(bf2x87::toIntTruncate(bf2x87::wide(dims[1]) *
+                                                      bf2x87::wide(m_animationFrameHeightRelative)));
+#else
+    return static_cast<unsigned int>(static_cast<int>(static_cast<double>(dims[1]) *
                                                       m_animationFrameHeightRelative));
+#endif
 }
 
 void  DecalTemplate::setAnimationFrameWidthRelative(float width)    { m_animationFrameWidthRelative = width; }   // +0x80
@@ -404,13 +446,27 @@ unsigned int DecalTemplate::getAnimationFrameCount() const          { return m_a
 
 // +0x98, store the count; the reciprocal is 1 / count for a non-zero
 // count (`test eax, eax; jbe`), else 0. No refresh here - the BF2.exe setter calls +0x04 itself.
+// PE 0x101AF3E0
 void DecalTemplate::setAnimationFrameCountX(unsigned int count)
 {
     m_animationFrameCountX = count;
     if (count != 0)
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] FILD's unsigned correction stays in x87 until the reciprocal store.
+        m_frameCountXReciprocal = bf2x87::store(bf2x87::wide(1.0f) / bf2x87::wide(count));
+#else
         m_frameCountXReciprocal = 1.0f / unsignedToFloat(count);          // fdivr 1.0
+#endif
     else
         m_frameCountXReciprocal = 0.0f;
+}
+
+// Stores the argument dword at +0x9C (the 1/frameCountX cache); this setter has no caller.
+// unreachable in 1.50: no code or data references
+// PE 0x101AF430
+void DecalTemplate::setFrameCountXReciprocal(float value)
+{
+    m_frameCountXReciprocal = value;
 }
 
 // +0x9C, 0x101AF420 - `mov eax, [ecx+98h]`.

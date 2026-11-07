@@ -7,6 +7,7 @@
 
 
 #include "gameswf_button.h"
+#include "gameswf_log.h"
 
 #include "gameswf_action.h"
 #include "gameswf_render.h"
@@ -144,6 +145,9 @@ frame loop:
 
 namespace gameswf
 {
+#if !defined(_MSC_VER)
+	const char*	swf_list_trace_path(character* ch);	// [TEMP] gameswf_impl.cpp
+#endif
 	// [DICE-MOD SwiffPlayer #51] generate_mouse_button_events (and the RW-89 tracer that lived in it)
 	// are gone: the shipped player has no root-level dispatcher, every character runs its own mouse
 	// pass - for buttons, button_character_instance::mouse_update below.
@@ -176,6 +180,20 @@ namespace gameswf
 		// m_last_mouse_flags / m_mouse_flags above are its +220 / +224 (bit 0 inside, bit 1 down).
 		bool	m_first_mouse_frame;
 		bool	m_mouse_pressed;
+
+		// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. The state
+		// characters are walked too; the button keeps owning them.
+		virtual void	release_script_values(array<as_value>* held)
+		{
+			character::release_script_values(held);
+			for (int i = 0; i < m_record_character.size(); i++)
+			{
+				if (m_record_character[i] != NULL)
+				{
+					held->push_back(as_value(m_record_character[i].get_ptr()));
+				}
+			}
+		}
 
 		button_character_instance(button_character_definition* def, movie* parent, int id)
 			:
@@ -464,6 +482,14 @@ namespace gameswf
 		// [UNRESOLVED: whether that ordering is observable].
 		void	fire_transition(int c)
 		{
+#if !defined(_MSC_VER)
+			// [TEMP] c-swf-disconnect: a button transition (its actions queue on the parent).
+			if (swf_list_trace_on())
+			{
+				SWF_LIST_TRACE("button cond=0x%x on '%s' (%d action records)", c, swf_list_trace_path(this),
+					m_def->m_button_actions.size());
+			}
+#endif
 			if (m_def->m_sound != NULL)
 			{
 				sound_handler* s = get_sound_handler();

@@ -13,6 +13,7 @@ namespace hfe {
 
 class SoldierNetworkable;      // the wire wrapper - a friend below; see Networkables.h
 class SoldierSound;            // reads the retail ground-contact byte in its movement-sound tick
+namespace ai { class AIObjectPhysical; }   // isInAir reads the ground-contact byte (+0xFA)
 
 namespace ai { class AIObjectPhysical; }   // isInAir reads the ground-contact byte (+0xFA)
 
@@ -80,6 +81,12 @@ protected:
     // GenericFireArm::checkAreaToFireZipline samples +0xFA then +0xF9 directly in both ports
     // (ELF 0x8254940 / PE 0x5847C0). Narrow friend preserves that raw response-physics gate.
     friend class GenericFireArm;
+    // SoldierDeviationComp::updateDeviation reads the +0xFA ground-contact byte directly for an
+    // unparented soldier; the friend keeps that read on the named member.
+    friend class SoldierDeviationComp;
+    // ai::AIObjectPhysical::isInAir (bf2 0x841A0C0) answers the negation of the +0xFA byte for a
+    // soldier.
+    friend class dice::hfe::ai::AIObjectPhysical;
 
     // ai::AIObjectPhysical::isInAir (bf2 0x841A0C0) reads the ground-contact byte.
     friend class dice::hfe::ai::AIObjectPhysical;

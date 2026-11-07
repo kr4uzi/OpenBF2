@@ -1,7 +1,9 @@
-// Full operational instructions read from BF2.exe. Construction and descriptor
-// remain declaration-only while TransformNode identity is unpublished.
+// Full operational instructions read from BF2.exe, including construction and the descriptor.
 // No raw Node suffix dispatch is introduced.
 #include "MovePointer.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "TransformNode.h"
 #include "System.h"
@@ -14,6 +16,8 @@ namespace {
 // bits when the caller selects extended precision (82B302..82B384).
 float moveOffset(float value, float start, float origin)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld value
@@ -22,9 +26,22 @@ float moveOffset(float value, float start, float origin)
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(static_cast<double>(value) - start + origin);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 extended subtract/add.
+    result = bf2x87::offset(value, start, origin);
+    return result;
+#endif
 }
 float outlineThickness(float dimension) // 82B6D9..82B6EF and three repeated arms
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld1
@@ -33,6 +50,17 @@ float outlineThickness(float dimension) // 82B6D9..82B6EF and three repeated arm
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(1.0 - dimension + dimension);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 extended cancellation.
+    result = bf2x87::offset(1.0f, dimension, dimension);
+    return result;
+#endif
 }
 TransformNode* asTransform(Node* node)
 {
@@ -127,7 +155,22 @@ private:
     bool* m_next;
 };
 }
+// The only body is the copy inlined in the descriptor factory 82B4E0: Pointer's constructor
+// (829140), then every MovePointer field zeroed in declaration order.
+MovePointer::MovePointer()
+    : m_selected(nullptr), m_dragging(false), m_relativeX(0.0f), m_relativeY(0.0f),
+      m_startX(0.0f), m_startY(0.0f), m_startPositionX(0.0f), m_startPositionY(0.0f),
+      m_startWidth(0.0f), m_startHeight(0.0f), m_resizing(false)
+{
+}
 MovePointer::~MovePointer() {} // 82B8D0, inherited Pointer owns no graphic
+// 82B900: guarded "dice::meme::MovePointer" descriptor (table 94A04C). Its table 949FF0 overrides
+// exactly the slots declared in MovePointer.h; the rest are Pointer's.
+TypeDescriptor* MovePointer::getClassType()
+{
+    static ClassTypeDescriptor<MovePointer, Pointer> type("dice::meme::MovePointer");
+    return &type;
+}
 TypeDescriptor* MovePointer::getType() { return getClassType(); }
 unsigned int MovePointer::getObjectSize() { return sizeof(MovePointer); }
 bool MovePointer::paint(System* system)
@@ -215,6 +258,8 @@ bool MovePointer::event2(System* system, int, int) // 82B940; no enabled guard
     }
     return true;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(MovePointer) == 64, "Native x86 MovePointer layout");
+#endif
 } }
 #endif

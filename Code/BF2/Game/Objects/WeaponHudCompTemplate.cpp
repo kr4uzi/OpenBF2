@@ -74,9 +74,10 @@ public:
     virtual bool hasUpdate() const { return false; }
     virtual void handleUpdate(float) {}
 
-    virtual int getGuiIndex(bool selected)
+    virtual int getGuiIndex(bool sprinting)
     {
-        if (selected && m_template->getDisplaySelectOnActivation())
+        // ELF 0x822E620: the template's vslot +0x12C, WeaponHudCompTemplate::getDisableOnSprint.
+        if (sprinting && m_template->getDisableOnSprint())
             return 0;
         if (m_template->getAltGuiIndex() == -1)
             return m_template->getGuiIndex();

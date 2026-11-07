@@ -218,7 +218,7 @@ void ControlSettings::updateInputDevices()
 // it is a game input, the output name is emptied, the manager captures into it, and the frame
 // event manager is asked to post event (10, 12) - the engine's EnableEscapeKeyMapping handler,
 // which clears the flag - two seconds later (40000000h). The third argument is never read.
-bool ControlSettings::mapNextInput(int input, bool alternate, int /*unused*/, bool second, bool gameInput)
+int ControlSettings::mapNextInput(int input, bool alternate, int /*unused*/, bool second, bool gameInput)
 {
     m_mappingInput = true;
     bool isAxis = false;
@@ -229,7 +229,7 @@ bool ControlSettings::mapNextInput(int input, bool alternate, int /*unused*/, bo
         }
     }
     m_mappedInputName = "";
-    const bool result = mapManager()->mapNextInput(m_map, input, alternate, isAxis, second, !gameInput, m_mappedInputName);
+    const int result = mapManager()->mapNextInput(m_map, input, alternate, isAxis, second, !gameInput, m_mappedInputName);
     frameEventManager->postEvent(static_cast<EventCategory>(10), 12u, nullptr, 2.0f);
     return result;
 }

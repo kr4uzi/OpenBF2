@@ -2,6 +2,7 @@
 #ifndef MENU_ISWIFFHOST_H
 #define MENU_ISWIFFHOST_H
 #include "../Core/IBase.h"
+#include <stdint.h>
 #include "../Game/IModInfo.h"
 #include "../Game/Persistence/PlayerAwards.h"      // getCachedAwards (+0x228): IPlayerAwards::AwardList
 #include "../Game/Persistence/PlayerRankInfo.h"
@@ -373,9 +374,12 @@ struct ISwiffHost : public IBase
     virtual std::string getCurrentMapGameMode() = 0;                                // +0x05C
     virtual int  getCurrentMapMaxPlayers() = 0;                                     // +0x060
     virtual int  getCurrentMapSize() = 0;                                           // +0x064
-    virtual bool setPlayerRenderCapability0(int value) = 0;                         //  26 +0x068  0x486E10  SwiffPlayer +0x60, then window +0x3B = 0
+// [CHOSEN, not recovered] x64 (https://github.com/B2BF/OpenBF2/issues/7): the render-capability
+// chain (host +0x68/+0x70 -> player +0x60/+0x64 -> render slots 49/50) carries the address of a
+// SwiffPlayer string, so it is intptr_t - int on x86, where signatures and mangling are unchanged.
+    virtual bool setPlayerRenderCapability0(intptr_t value) = 0;                         //  26 +0x068  0x486E10  SwiffPlayer +0x60, then window +0x3B = 0
     virtual void* getCursor(int which) = 0;                                         //  27 +0x06C  0x488960  hcursor: 0 arrow, 1 busy, 2 keybinding
-    virtual bool setPlayerRenderCapability1(int value) = 0;                         //  28 +0x070  0x486E80  SwiffPlayer +0x64
+    virtual bool setPlayerRenderCapability1(intptr_t value) = 0;                         //  28 +0x070  0x486E80  SwiffPlayer +0x64
     virtual void setFlag28(bool value) = 0;                                         //  29 +0x074  0x5DF3C0 (ICF)  [UNRESOLVED] role
     virtual bool getFlag28() = 0;                                                   //  30 +0x078  0x659F70 (ICF)
     virtual IServerBrowser* getServerList(const std::string& name) = 0;             //  31 +0x07C  0x486D10  ServerBrowserManager +0x14
@@ -450,7 +454,7 @@ struct ISwiffHost : public IBase
     virtual bool playSound(const std::string& name) = 0;                            //  98 +0x188  0x493C70  event 6 (dice.bf2.Sound.playSound)
     virtual void slot18C(int a) = 0;                                                //  99 +0x18C  0x488920  ds:0xA23DC0 +0xB4 [UNRESOLVED]
     virtual bool getModCount(int* out) = 0;                                         // 100 +0x190  0x48A260  ModInfo list size
-    virtual bool slot194(int index, int b) = 0;                                     // 101 +0x194  0x4A2B00  0x481490 on the indexed Mod [UNRESOLVED]
+    virtual bool getModAt(int index, IModInfo::Mod* out) = 0;                       // 101 +0x194  0x4A2B00  *out = mods[index] (0x481490); [INFERRED] name, pointer spelling
     virtual bool requestActivateMod(const std::string* mod) = 0;                    // 102 +0x198  0x493CE0  event 11; null -> "no mod specified"
     virtual bool requestBrowseModHomepage(const IModInfo::Mod* mod) = 0;            // 103 +0x19C  0x493E00  event 10 with the mod's url
     virtual bool getVersionString(std::string& out) = 0;                            // 104 +0x1A0  0x486D60  "1.5.3153-802.<hash>"
@@ -571,7 +575,9 @@ struct ISwiffHost : public IBase
     virtual void setIntF4C(int value) = 0;                                          // 215 +0x35C  0x489080  GameLogic sentinel / EndOfRoundEvent
     virtual bool isPlayingDemo() = 0;                                               // +0x360
     virtual std::string getModName() = 0;                                           // 217 +0x364  0x4890B0  GSModDirectory's leaf, lowercased
-    virtual bool slot368(int a, int b, int c) = 0;                                  // 218 +0x368  0x626200  constant true
+    // Argument types from SwiffPlayer 0x1004F91E (Mod.activateModAndJoinServer pushes the addresses of
+    // "mods/"+mod and the address string, then the port); BF2.exe 0x626200 is `mov al,1; ret 0Ch`.
+    virtual bool slot368(const std::string& modPath, const std::string& address, int port) = 0; // 218 +0x368  0x626200  constant true
     virtual int  getExpansionPack(const std::string& modName) = 0;                  // 219 +0x36C  0x4890D0  1 xpack, 2 xpack2
     virtual std::string getLanguageSetting() = 0;                                   // 220 +0x370  0x489190  GSLanguage, "English"
     virtual void parseResolution(const std::string& text, int* width, int* height, int* hz) = 0;   // 221 +0x374  0x489210  "x@Hz" tokens

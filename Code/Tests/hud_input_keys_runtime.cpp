@@ -53,7 +53,7 @@ struct Maps : IControlMapManager {
     void setActive(const std::string&) override { std::abort(); }
     void setActive(const IControlMap*) override { std::abort(); }
     IControlMap* getActive() const override { return activeMap; }
-    bool mapNextInput(IControlMap*, int, bool, bool, bool, bool, std::string&) override { std::abort(); }
+    int mapNextInput(IControlMap*, int, bool, bool, bool, bool, std::string&) override { std::abort(); }
     float getRepeatRate(int, bool) override { std::abort(); }
     void applyActive() override { std::abort(); }
 };
@@ -73,7 +73,7 @@ struct Bindings : IControlSettings {
     bool setDefaults() override { std::abort(); }
     void resetControlMaps() override { std::abort(); }
     void updateInputDevices() override { std::abort(); }
-    bool mapNextInput(int, bool, int, bool, bool) override { std::abort(); }
+    int mapNextInput(int, bool, int, bool, bool) override { std::abort(); }
     bool selectControlMap(const std::string&) override { std::abort(); }
     bool getBindingDescription(IControlMap* map, int id, bool alternate, bool second, bool game,
                                std::string& key, std::wstring& text) override

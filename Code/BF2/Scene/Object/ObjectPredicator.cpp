@@ -30,6 +30,8 @@ bool ObjectFlagPredicator::predicate(IObject* object)
 
 // The four derived predicators
 
+// PE 0x101C7EF0: RendDX9's copy (flags read as the object's +0x04 field); unreachable in 1.50: no code or
+// data references.
 bool ObjectFlagPredicatorEx::predicate(IObject* object)
 {
     if ((m_flags & object->getFlags()) != m_flags)
@@ -38,6 +40,8 @@ bool ObjectFlagPredicatorEx::predicate(IObject* object)
 }
 
 
+// PE 0x101C7FB0: RendDX9's copy (the ignored object first, then the +0x04 flags test); unreachable in
+// 1.50: no code or data references.
 bool ObjectIgnorePredicator::predicate(IObject* object)
 {
     return object != m_ignored && ObjectFlagPredicator::predicate(object);
@@ -55,6 +59,8 @@ bool RootObjectIgnorePredicator::predicate(IObject* object)
 }
 
 // the interface query first (slot 3), then the flags.
+// PE 0x101C8000: RendDX9's copy (queryInterface slot +0x0C with m_iid at +0x0C, then the +0x04 flags
+// test); unreachable in 1.50: no code or data references.
 bool ObjectInterfacePredicator::predicate(IObject* object)
 {
     if (!object->queryInterface(m_iid))
@@ -64,6 +70,8 @@ bool ObjectInterfacePredicator::predicate(IObject* object)
 
 // / This is the inverse-interface sibling, not the positive
 // ObjectInterfacePredicator: projectiles are excluded while ordinary static/vehicle objects pass.
+// PE 0x101C8040: RendDX9's copy (same query, the answer inverted); unreachable in 1.50: no code or data
+// references.
 bool ObjectIgnoreInterfacePredicator::predicate(IObject* object)
 {
     if (object->queryInterface(m_iid))
@@ -74,6 +82,8 @@ bool ObjectIgnoreInterfacePredicator::predicate(IObject* object)
 // the interface query, and nothing else - it does not chain to the flag test the
 // way ObjectInterfacePredicator does. (Its flags are 0 at every use site, so the two agree in
 // practice; the difference is recorded because it is real.)
+// PE 0x101C8220: RendDX9's copy (the answer normalised to 0/1 by neg/sbb/neg); unreachable in 1.50: no
+// code or data references.
 bool PCOPredicator::predicate(IObject* object)
 {
     return object->queryInterface(IID_IPlayerControlObject) != 0;         // slot 3
@@ -82,6 +92,11 @@ bool PCOPredicator::predicate(IObject* object)
 // See the header for what this decides and why. Transcribed branch for branch:
 // the two `armor && armorTemplate` tests really are asked twice on the ELF's paths, and the
 // projectile arm really does fall into the same ignore test rather than returning true.
+// PE 0x101C8130: RendDX9's copy, branch for branch (root through staticMeshRootParent, template slot
+// +0x5C, parachute id 0xC5A8, projectile id 0x94C1, isDestroyed +0x54, the wreck-repair flag +0x100,
+// getDefaultMaterial +0x9C, getDamageMod +0x58). One difference: the PE tests the modifier with
+// `fcomp 0; test ah, 0x41; jnp`, so a NaN modifier reaches the ignore test there, while the ELF-derived
+// `mod > 0.0f` below returns false for NaN. Unreachable in 1.50: no code or data references.
 bool AbilityPredicator::predicate(IObject* object)
 {
     typedef object_detail::LayoutAccess L;

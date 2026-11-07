@@ -149,12 +149,27 @@ namespace gameswf
 
 
 	struct as_object;
+	struct as_object_interface;
+
+	// The registry of live script objects, kept by as_object_interface's constructors and
+	// destructor so the movie teardown (release_script_objects) also reaches objects that only
+	// reference each other. [CHOSEN, not recovered] issue #7
+	// (https://github.com/B2BF/OpenBF2/issues/7).
+	void	register_script_object(as_object_interface* obj);
+	void	unregister_script_object(as_object_interface* obj);
 
 	// This is the base class for all ActionScript-able objects
 	// ("as_" stands for ActionScript).
 	struct as_object_interface : public resource
 	{
-		virtual ~as_object_interface() {}
+		// [CHOSEN, not recovered] issue #7: registration, see register_script_object.
+		as_object_interface() { register_script_object(this); }
+		as_object_interface(const as_object_interface& other) : resource(other) { register_script_object(this); }
+		virtual ~as_object_interface() { unregister_script_object(this); }
+
+		// [CHOSEN, not recovered] issue #7: a safe downcast for the movie teardown; character
+		// answers itself. movie declares the same slot (gameswf_impl.h).
+		virtual character*	cast_to_character() { return 0; }
 
 		// [DICE-MOD SwiffPlayer: a SAFE downcast to as_object, following the cast_to_font /
 		// cast_to_character_def pattern above. Needed by the AS2 `addProperty` builtin, whose
@@ -890,9 +905,10 @@ namespace gameswf
 		virtual void	text_detach(void* /*line*/) {}
 		virtual void	text_draw(void* /*line*/, const matrix* /*m*/, unsigned /*color*/, int /*flags*/) {}
 		virtual bool	text_extent(void* /*line*/, int /*count*/, float* /*w*/, float* /*h*/) { return false; }
-		virtual bool	text_hit(void* /*line*/, int* /*out_pos*/, int /*x*/, int /*y*/) { return false; }
+		// [DICE-MOD SwiffPlayer] float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
+		virtual bool	text_hit(void* /*line*/, int* /*out_pos*/, float /*x*/, float /*y*/) { return false; }
 		virtual bool	text_selection(void* /*line*/, int* a, int* b) { if (a) *a = 0; if (b) *b = 0; return false; }	// [DICE-MOD SwiffPlayer #46] true = a selection exists
-		virtual bool	text_set_selection(void* /*line*/, int, int, int, int) { return false; }
+		virtual bool	text_set_selection(void* /*line*/, float, float, float, float) { return false; }
 		virtual void	text_blur(void* /*line*/) {}
 		virtual void	text_set_size(void* /*line*/, float /*size*/, int /*flag*/) {}
 		virtual void	text_caret(void* /*line*/, int /*pos*/) {}

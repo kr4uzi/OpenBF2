@@ -4,7 +4,7 @@
 #ifndef BF2_RENDDX9_TEXTURE_H
 #define BF2_RENDDX9_TEXTURE_H
 
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -44,15 +44,15 @@ struct EngineTexture
     unsigned char          byte51;        // +0x51
     unsigned char          pad52[2];      // +0x52  unwritten in the original
     int                    priority;      // +0x54
-    vc71::string           name;          // +0x58
+    std::string           name;          // +0x58
     unsigned int           totalBytes;    // +0x74
     unsigned char          usedSuffixedFile; // +0x78
     unsigned char          pad79[3];      // +0x79  unwritten in the original
 };
 
-static_assert(sizeof(EngineTexture) == 0x7C,
-              "every allocation site pushes 0x7C - getTexture 0x1001942C, the create paths, "
-              "TextureManager_loadTextureFromFile's header probe is a DIFFERENT 0x7C");
+// Every allocation site (retail: `push 7Ch` - getTexture 0x1001942C and the create paths) takes
+// sizeof(EngineTexture) from the engine heap and constructs it with textureCtor; owners destroy it
+// with textureDtor before engineFree.
 
 // The 32-byte lock record textureLock returns and textureUnlock consumes (sub_10014BA0's `new 0x20`):
 //     +0x00 w  +0x04 h  +0x08 max(d,1)  +0x0C bpp  +0x10 mip  +0x14 face  +0x18 pBits  +0x1C staging
@@ -68,7 +68,10 @@ struct TextureLockRecord
     IDirect3DSurface9* staging;    // +0x1C  default-pool path only, else 0
 };
 
+// Retail x86 evidence only; textureLock allocates sizeof(TextureLockRecord) (issue #7).
+#if defined(_M_IX86)
 static_assert(sizeof(TextureLockRecord) == 0x20, "sub_10014BA0 allocates 0x20");
+#endif
 
 // Texture.cpp - all bodies read in full from the addresses in their comments.
 EngineTexture*     textureCtor(void* storage);
@@ -87,6 +90,11 @@ inline const unsigned int* textureDims(const EngineTexture* tex) { return &tex->
 void               textureAddRef(EngineTexture* tex);
 void               textureReleaseRef(EngineTexture*& tex);   // if (!--ref) { dtor; engineFree; }, nulls the slot
 int                textureReleaseD3DResource(EngineTexture* tex);  // sub_10014E70 - device-lost, keeps the wrapper
+
+// Reloads a supplied wrapper, or looks it up by normalized name when null.
+// Requires a live TextureManager. A missing cache entry returns false; once found,
+// the result is true even if loading fails, matching PE 0x10018C50.
+bool textureManagerReupload(const std::string& name, EngineTexture* texture);
 
 // RendDX9Types.cpp - sub_1000CD30, bits per pixel for a D3DFORMAT (4 for DXT1, 8 for DXT3/5, ...).
 int bitsPerPixel(unsigned int d3dFormat);

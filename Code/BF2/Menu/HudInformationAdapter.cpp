@@ -15,7 +15,11 @@
 #include "../Scene/Object/PlayerManager.h"
 #include "../External/BFMeme/Data.h"
 #include "../External/BFMeme/System.h"
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "../Platform/macOS/MacSystem.h"   // [CHOSEN, not recovered] MessageBoxA's counterpart
+#endif
 #include <new>
 namespace dice { namespace hfe { namespace world { extern IBase* scoreManager; } } }
 namespace dice { namespace hfe { namespace hud {
@@ -36,7 +40,11 @@ bool registerBoolData(meme::System* system, bool* value,
         return true;
     }
     const std::string caption = formatString("Failed to register: %s in %s", name.c_str(), container.c_str());
+#if defined(__APPLE__)
+    macos::showMessageBox("Error RegisterData", caption.c_str());
+#else
     MessageBoxA(0, "Error RegisterData", caption.c_str(), 0); // caption/text ordering is retail
+#endif
     return false;
 }
 bool __fastcall executeConsoleCommand(const std::string& command)

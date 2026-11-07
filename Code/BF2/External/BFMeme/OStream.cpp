@@ -6,6 +6,9 @@
 #include "TypeDescriptor.h"
 #include <cstring>
 #include <cwchar>
+#if !defined(_WIN32)
+#include <vector>
+#endif
 namespace dice { namespace meme {
 namespace {
 // [INFERRED] Factored identical resource-name write sequences838190/838210/838290.
@@ -19,6 +22,14 @@ bool writeResourceName(OStream* output, const char* name)
 }
 }
 OStream::~OStream() {}
+// 8383E0: guarded "dice::meme::OStream" descriptor, base slot 82B9E0 (RuntimeObject), factory
+// 838420 (four bytes, table 9352A0), size slot 8149E0 (4).
+TypeDescriptor* OStream::getClassType()
+{
+    static ClassTypeDescriptor<OStream, RuntimeObject> type("dice::meme::OStream");
+    return &type;
+}
+TypeDescriptor* OStream::getType() { return getClassType(); }
 unsigned int OStream::getObjectSize() { return sizeof(OStream); }
 bool OStream::streamUByte(unsigned char* value, const char*) { return write(value, 1) == 1; }
 bool OStream::streamByte(char* value, const char*) { return write(value, 1) == 1; }
@@ -48,7 +59,22 @@ bool OStream::streamWideString(wchar_t** value, const char*)
 {
     int length = *value ? static_cast<int>(std::wcslen(*value)) : 0;
     if (!streamInt(&length, "Int")) return false;
+#if defined(_WIN32)
     if (*value && write(*value, 2 * length) != 2 * length) return false;
+#else
+    // [CHOSEN, not recovered] Keep the Windows wire format: `length` UTF-16LE units. Writing
+    // 2 * length raw bytes of a 32-bit POSIX wchar_t buffer would emit half the text, mangled.
+    // Characters above U+FFFF keep their low 16 bits, as the 16-bit getCharacter does.
+    if (*value) {
+        std::vector<unsigned char> units(2u * static_cast<unsigned int>(length));
+        for (int i = 0; i < length; ++i) {
+            const unsigned int unit = static_cast<unsigned int>((*value)[i]) & 0xFFFFu;
+            units[2 * i] = static_cast<unsigned char>(unit);
+            units[2 * i + 1] = static_cast<unsigned char>(unit >> 8);
+        }
+        if (write(units.data(), 2 * length) != 2 * length) return false;
+    }
+#endif
     return true;
 }
 bool OStream::streamCharacter(wchar_t* value, const char* label) // 838170 uses32-bit serialization
@@ -56,9 +82,9 @@ bool OStream::streamCharacter(wchar_t* value, const char* label) // 838170 uses3
     int temporary = *value;
     return streamInt(&temporary, label);
 }
-bool OStream::streamTexture(System* system, int* texture, const char*)
+bool OStream::streamTexture(System* system, TextureHandle* texture, const char*)
 { return writeResourceName(this, system->getTextureName(*texture)); }
-bool OStream::streamFont(System* system, int* font, const char*)
+bool OStream::streamFont(System* system, FontHandle* font, const char*)
 { return writeResourceName(this, system->getFontName(*font)); }
 bool OStream::streamSound(System* system, int* sound, const char*)
 { return writeResourceName(this, system->getSoundName(*sound)); }
@@ -110,6 +136,8 @@ bool writeObject(System* system, Object*& value, OStream* output)
     return true;
 }
 // Descriptor is intentionally unpublished while deeper dependencies stay open.
+#if defined(_M_IX86)
 static_assert(sizeof(OStream) == 4, "BFMeme output stream layout");
+#endif
 } }
 #endif

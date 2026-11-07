@@ -6,7 +6,9 @@
 #include "../../Core/Ids.h"
 #include "../../Game/Main/BF2ClientSeams.h"
 #include "../../Game/Main/BF2Window.h"
+#include "../../Platform/Windows/WinInputScript.h"   // [TEMP] BF2_INPUT_SCRIPT feed
 #include <cmath>
+#include <cstddef>
 
 namespace dice { namespace hfe { namespace io {
 extern IBase* inputDeviceManager;
@@ -89,8 +91,15 @@ bool MouseDevice::activate()
 {
     if (!m_device)
         return false;
-    if (!m_active)
+    if (!m_active) {
         m_active = m_device->Acquire() == DI_OK;
+        // [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT (Platform/Windows/WinInputScript.h): the
+        // scripted feed counts as acquired without focus. [RETIRE-WHEN: client-test-automation-replaced]
+        if (inputscript::winInputScriptActive()) {
+            m_active = true;
+            inputscript::winInputScriptClearMouseData();
+        }
+    }
     return true;                                        // also when Acquire fails
 }
 
@@ -220,10 +229,12 @@ void MouseDevice::updateSamples(float deltaTime)
             break;                                     // equality waits for next sample
         const float age = static_cast<float>(m_pollTime - event.dwTimeStamp) * 0.001f;
         const float latency = age <= 0.033333335f ? age : 0.033333335f;
+        // DIMOFS_X/Y/Z are FIELD_OFFSET(DIMOUSESTATE, lX/lY/lZ); offsetof gives the same
+        // constants without the x64 C4644 macro-offsetof warning.
         switch (event.dwOfs) {
-        case DIMOFS_X: m_axes[0] += static_cast<LONG>(event.dwData); break;
-        case DIMOFS_Y: m_axes[1] += static_cast<LONG>(event.dwData); break;
-        case DIMOFS_Z: m_axes[2] += static_cast<LONG>(event.dwData); break;
+        case offsetof(DIMOUSESTATE, lX): m_axes[0] += static_cast<LONG>(event.dwData); break;
+        case offsetof(DIMOUSESTATE, lY): m_axes[1] += static_cast<LONG>(event.dwData); break;
+        case offsetof(DIMOUSESTATE, lZ): m_axes[2] += static_cast<LONG>(event.dwData); break;
         case DIMOFS_BUTTON0: case DIMOFS_BUTTON1: case DIMOFS_BUTTON2: case DIMOFS_BUTTON3:
         case DIMOFS_BUTTON4: case DIMOFS_BUTTON5: case DIMOFS_BUTTON6: case DIMOFS_BUTTON7: {
             const unsigned int index = event.dwOfs - DIMOFS_BUTTON0;
@@ -261,6 +272,12 @@ void MouseDevice::update(float deltaTime)
     }
     DWORD count;
     HRESULT result;
+    // [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT: scripted device data replaces the real
+    // device's. [RETIRE-WHEN: client-test-automation-replaced]
+    if (inputscript::winInputScriptActive()) {
+        count = inputscript::winInputScriptTakeMouseData(mouseEvents, 128);
+        result = DI_OK;
+    } else
     for (;;) {
         count = 128;
         result = m_device->GetDeviceData(sizeof(DIDEVICEOBJECTDATA), mouseEvents, &count, 0);

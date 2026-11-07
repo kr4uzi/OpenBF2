@@ -255,6 +255,18 @@ bool LocalProfileManager::quickLogin(const std::string& name, const std::string&
 
 // PE4A9440 (80 B): the GlobalSettings file name, then its script, through the profile writer
 // (whose constant true is returned).
+// PE 619360: one load of +34h (the body is shared by identical-code folding).
+int LocalProfileManager::getLoginProfileIndex()
+{
+    return m_field34;
+}
+
+// PE 4A7DB0: a copy of +38h into the caller's return string.
+std::string LocalProfileManager::getLoginPassword()
+{
+    return m_field38;
+}
+
 bool LocalProfileManager::saveGlobalSettings()
 {
     IGlobalSettings* global = static_cast<IGlobalSettings*>(g_globalSettings);

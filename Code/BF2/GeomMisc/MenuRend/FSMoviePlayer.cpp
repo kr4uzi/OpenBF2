@@ -1,14 +1,20 @@
 // Full-screen movie playback through Video. [INFERRED] Source placement.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Compiler-typed native table entries.
+#include "../../../RendDX9Abi/NativeVtable.h"
+#include "../../Game/Main/IFSMoviePlayer.h"
+#endif
 
+#include "../../../RendDX9Abi/ThunkAbi.h"
 #include "../../../RendDX9Abi/HfeAbi.h"
 #include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/BfMemory.h"
 #include "../../../RendDX9Abi/PluginEntry.h"
-#include "../../../RendDX9Abi/D3dxEffect.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../RendDX9/ShaderParameter.h"
+#include "../../../RendDX9Abi/D3dx9Sdk.h"
 
 #include <new>
 #include <cstring>
@@ -20,7 +26,7 @@ namespace dx9rend {
 extern void* g_shaderManager;                       // dword_1023B97C
 void* shaderManagerGetEffect(void*, const char*);   // sub_10022EF0
 class Effect;
-void* effectGetShaderParameter(Effect*, const vc71::string&);   // sub_1001E420
+void* effectGetShaderParameter(Effect*, const std::string&);   // sub_1001E420
 void* effectD3dxHandle(void* effect);
 int   bufferManagerSwapPool(int value);
 void* bufferManagerCreateVertexBuffer(unsigned int count, unsigned int stride,
@@ -66,11 +72,12 @@ public:
     int   release();
     void* queryInterface(unsigned int iid) const;
 
-    bool  load(const vc71::string& path);   // +0x10
+    bool  load(const std::string& path);   // +0x10
     void  releaseAll();                     // +0x14
     void  drawFrame();                      // +0x18
     bool  finished() const { return videoIsDone(m_video) != 0; }
     void  dtor(char flags);                 // +0x20
+    void  destructorBody();
 
 private:
     void*         m_vptr;         // +0x00
@@ -78,7 +85,7 @@ private:
     int           m_refCount;     // +0x08
     void*         m_video;        // +0x0C
     void*         m_videoTarget;  // +0x10, owns a reference separate from Video's
-    vc71::string  m_path;         // +0x14
+    std::string  m_path;         // +0x14
     void*         m_vertexBuffer; // +0x30
     dx9rend::Effect* m_effect;    // +0x34
     dx9rend::ShaderParameter* m_paramTransform; // +0x38
@@ -86,56 +93,58 @@ private:
     void*         m_vertexDeclaration; // +0x40
 };
 
-static_assert(sizeof(FSMoviePlayer) == 0x44,
-              "RefFactory_geom_FSMoviePlayer allocates 0x44 - see 0x1007D030");
+
 
 namespace {
 
-void __fastcall fsm_addRef(void* s, void*) { static_cast<FSMoviePlayer*>(s)->addRef(); }
-int  __fastcall fsm_getRef(void* s, void*) { return static_cast<FSMoviePlayer*>(s)->getRef(); }
-int  __fastcall fsm_release(void* s, void*) { return static_cast<FSMoviePlayer*>(s)->release(); }
+void RD9_THUNK fsm_addRef(void* s RD9_THUNK_EDX) { static_cast<FSMoviePlayer*>(s)->addRef(); }
+int  RD9_THUNK fsm_getRef(void* s RD9_THUNK_EDX) { return static_cast<FSMoviePlayer*>(s)->getRef(); }
+int  RD9_THUNK fsm_release(void* s RD9_THUNK_EDX) { return static_cast<FSMoviePlayer*>(s)->release(); }
 
-void* __fastcall fsm_queryInterface(void* s, void*, unsigned int iid)
+void* RD9_THUNK fsm_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 {
     return static_cast<FSMoviePlayer*>(s)->queryInterface(iid);
 }
 
 // +0x10 - the shipped signature takes the path by value (retn 0x1C); the copy lives inside.
-#if BF2_PLUGIN_ABI_NATIVE
 // [CHOSEN, not recovered] Converts the host's by-value string once at the native movie boundary.
 // [RETIRE-WHEN: fsmovie-native-string-adapter] Replace the internal path with native storage while preserving the host's by-value load contract.
-bool __fastcall fsm_load(void* s, void*, ::renddx9abi::HostString path)
+bool RD9_THUNK fsm_load(void* s RD9_THUNK_EDX, ::renddx9abi::HostString path)
 {
-    const vc71::string internalPath(path.data(), static_cast<unsigned int>(path.size()));
+    const std::string internalPath(path.data(), static_cast<unsigned int>(path.size()));
     return static_cast<FSMoviePlayer*>(s)->load(internalPath);
 }
-#else
-bool __fastcall fsm_load(void* s, void*, const char* pathRaw0, int, int, int, int, int, int)
-{
-    // the by-value string's seven stack dwords: the first is the union/alloc dword, the buffer
-    // or pointer follows. Reconstituting through the layout rather than guessing an overload:
-    const vc71::string* path = reinterpret_cast<const vc71::string*>(&pathRaw0);
-    const bool ok = static_cast<FSMoviePlayer*>(s)->load(*path);
-    path->~string();                                       // callee-destroyed, as shipped
-    return ok;
-}
-#endif
 
-void __fastcall fsm_releaseAll(void* s, void*) { static_cast<FSMoviePlayer*>(s)->releaseAll(); }
+void RD9_THUNK fsm_releaseAll(void* s RD9_THUNK_EDX) { static_cast<FSMoviePlayer*>(s)->releaseAll(); }
 
-void __fastcall fsm_drawFrame(void* s, void*)
+void RD9_THUNK fsm_drawFrame(void* s RD9_THUNK_EDX)
 {
     static_cast<FSMoviePlayer*>(s)->drawFrame();
 }
 
 // Calls the video's playback query. Requires a successfully loaded video; no null guard is provided.
-int __fastcall fsm_videoPassthrough(void* s, void*)
+int RD9_THUNK fsm_videoPassthrough(void* s RD9_THUNK_EDX)
 {
     return static_cast<FSMoviePlayer*>(s)->finished() ? 1 : 0;
 }
 
-void __fastcall fsm_dtor(void* s, void*, char flags) { static_cast<FSMoviePlayer*>(s)->dtor(flags); }
+void RD9_THUNK fsm_dtor(void* s RD9_THUNK_EDX, char flags) { static_cast<FSMoviePlayer*>(s)->dtor(flags); }
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kFSMoviePlayerVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, addRef, fsm_addRef),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, getRef, fsm_getRef),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, release, fsm_release),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, queryInterface, fsm_queryInterface),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, load, fsm_load),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, releaseAll, fsm_releaseAll),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, drawFrame, fsm_drawFrame),
+    BF2_NATIVE_SLOT(::dice::hfe::IFSMoviePlayer, finished, fsm_videoPassthrough),
+    reinterpret_cast<void*>(&fsm_dtor),
+};
+#else
 void* const kFSMoviePlayerVtable[9] =
 {
     reinterpret_cast<void*>(&fsm_addRef),           // +0x00  0x1001A010 (folded at0x8 pair)
@@ -148,8 +157,9 @@ void* const kFSMoviePlayerVtable[9] =
     reinterpret_cast<void*>(&fsm_videoPassthrough), // +0x1C
     reinterpret_cast<void*>(&fsm_dtor)              // +0x20
 };
+#endif
 
-void __fastcall fsm_listenerNoop(void*, void*) { /* all three shipped slots are no-ops */ }
+void RD9_THUNK fsm_listenerNoop(void* RD9_THUNK_EDX) { /* all three shipped slots are no-ops */ }
 
 void* const kFSMoviePlayerListenerVtable[3] =
 {
@@ -194,22 +204,22 @@ void* FSMoviePlayer::queryInterface(unsigned int iid) const
     return 0;
 }
 
-
 // Loads a movie with sound and a full-screen textured quad. Call on a fresh player.
-// Failed loads retain any acquired resources for the caller's final release.
-
-bool FSMoviePlayer::load(const vc71::string& path)
+// Failed loads retain any acquired resources for the caller's final release. A failed Video
+// creation still asks the null Video for its frame target, as shipped.
+// PE 0x100A1FE0
+bool FSMoviePlayer::load(const std::string& path)
 {
     m_effect = static_cast<dx9rend::Effect*>(dx9rend::shaderManagerGetEffect(
         dx9rend::g_shaderManager, "mods/xpack/Shaders/LoadingScreen"));
     if (!m_effect)
         return false;
 
-    m_paramTransform = dx9rend::effectGetShaderParameterTyped(m_effect, vc71::string("TRANSFORM"));
+    m_paramTransform = dx9rend::effectGetShaderParameterTyped(m_effect, std::string("TRANSFORM"));
     if (!m_paramTransform)
         return false;
 
-    m_paramTexture = dx9rend::effectGetShaderParameterTyped(m_effect, vc71::string("TEXTURE"));
+    m_paramTexture = dx9rend::effectGetShaderParameterTyped(m_effect, std::string("TEXTURE"));
     if (!m_paramTexture)
         return false;
 
@@ -259,6 +269,7 @@ bool FSMoviePlayer::load(const vc71::string& path)
 
 // Releases the frame target before Video, then the quad resources. This is terminal cleanup;
 // the retail body leaves member pointers unchanged and must not be called twice.
+// PE 0x100A2200
 void FSMoviePlayer::releaseAll()
 {
     if (m_paramTransform) m_paramTransform->release();
@@ -272,6 +283,7 @@ void FSMoviePlayer::releaseAll()
 
 // Decodes only when Video's clock is ready, renders the current frame, and presents.
 // The effect texture is unbound after drawing so it does not keep the movie alive.
+// PE 0x100A2300 (clear colour {255, 0, 0}, the identity from Mat4::getIdentity 0x100791E0).
 void FSMoviePlayer::drawFrame()
 {
     const unsigned int clearRgb[] = {255, 0, 0};
@@ -284,9 +296,9 @@ void FSMoviePlayer::drawFrame()
         m_paramTransform->setValue(identity, 0);
         videoDoFrame(m_video);
 
-        void* fx = dx9rend::effectD3dxHandle(m_effect);
-        ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxSetTextureFn>(fx, 0xD0)(
-            fx, m_paramTexture->getD3DXParam(), videoTargetD3DTexture(m_videoTarget));
+        ID3DXEffect* fx = static_cast<ID3DXEffect*>(dx9rend::effectD3dxHandle(m_effect));
+        fx->SetTexture(::renddx9abi::d3dxHandle(m_paramTexture->getD3DXParam()),
+                       static_cast<IDirect3DBaseTexture9*>(videoTargetD3DTexture(m_videoTarget)));
         dx9rend::vertexBufferBindStream(m_vertexBuffer, 0);
         dx9rend::vertexDeclarationBind(m_vertexDeclaration);
         dx9rend::effectBegin(m_effect);
@@ -295,21 +307,28 @@ void FSMoviePlayer::drawFrame()
         dx9rend::effectEnd(m_effect);
         dx9rend::stateManagerPop();
 
-        fx = dx9rend::effectD3dxHandle(m_effect);
-        ::renddx9abi::d3dxSlot< ::renddx9abi::D3dxSetTextureFn>(fx, 0xD0)(
-            fx, m_paramTexture->getD3DXParam(), 0);
+        fx = static_cast<ID3DXEffect*>(dx9rend::effectD3dxHandle(m_effect));
+        fx->SetTexture(::renddx9abi::d3dxHandle(m_paramTexture->getD3DXParam()), 0);
         dx9rend::rendererEndScene();
     }
     dx9rend::rendererPresent(2);
 }
 
-// +0x20, 0x100A2460 - restore both vptrs, releaseAll, destroy the path, free when flags & 1.
-void FSMoviePlayer::dtor(char flags)
+// Restores both tables, releases every resource, then destroys the path.
+// PE 0x100A22E0. unreachable in 1.50: no code or data references to this out-of-line copy; the
+// deleting destructor 0x100A2460 inlines it. [INFERRED] Name.
+void FSMoviePlayer::destructorBody()
 {
     m_vptr         = const_cast<void**>(kFSMoviePlayerVtable);
     m_listenerVptr = const_cast<void**>(kFSMoviePlayerListenerVtable);
     releaseAll();
-    m_path.~string();
+    m_path.~basic_string();
+}
+
+// +0x20, 0x100A2460 - restore both vptrs, releaseAll, destroy the path, free when flags & 1.
+void FSMoviePlayer::dtor(char flags)
+{
+    destructorBody();
     if (flags & 1)
         ::renddx9abi::engineFree(this);
 }

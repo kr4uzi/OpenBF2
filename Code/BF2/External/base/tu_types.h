@@ -15,7 +15,9 @@
 #include <stdio.h>
 
 
-#if defined(__i386__) || defined(_WIN32)
+// [BUILD-FIX SwiffPlayer: the 64-bit macOS client (docs/macos-port.md) adds x86-64 and AArch64,
+// both little-endian with 32-bit int and 64-bit long long. Without them base falls back to SDL.]
+#if defined(__i386__) || defined(_WIN32) || defined(__x86_64__) || defined(__aarch64__)
 
 	// On known little-endian platforms, define this stuff.
 	#define _TU_LITTLE_ENDIAN_	1

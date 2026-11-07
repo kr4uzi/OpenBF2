@@ -4,6 +4,25 @@
 
 #include "../../RendDX9Abi/Frontier.h"
 #include "Texture.h"
+#include <ostream>
+
+// PE 0x1000CB80. File-local placement keeps the D3D enum formatter visible to
+// the diagnostic template without exposing a new renderer interface.
+static std::ostream& operator<<(std::ostream& out, D3DFORMAT format)
+{
+    switch (format)
+    {
+    case D3DFMT_X1R5G5B5: out << "X1R5G5B5"; break;
+    case D3DFMT_A8R8G8B8: out << "A8R8G8B8"; break;
+    case D3DFMT_A1R5G5B5: out << "A1R5G5B5"; break;
+    case D3DFMT_DXT1: case D3DFMT_DXT2: out << "DXT1/2"; break;
+    case D3DFMT_DXT3: case D3DFMT_DXT4: case D3DFMT_DXT5: out << "DXT3/4/5"; break;
+    default: out << "Unknown type"; break;
+    }
+    return out;
+}
+
+#include "../GeomMisc/Debug.h"
 
 namespace dice {
 namespace hfe {
@@ -32,6 +51,7 @@ int vertexDeclarationTypeSize(unsigned int type)
 // X1R5G5B5 and G32R32F are unsupported; D24X8 reports 24 despite 32-bit storage.
 // DXT1 reports 4 and DXT3/DXT5 report 8 for mip-size calculations.
 
+// PE 0x1000CD30
 int bitsPerPixel(unsigned int d3dFormat)
 {
     switch (d3dFormat)
@@ -64,10 +84,12 @@ int bitsPerPixel(unsigned int d3dFormat)
         case 894720068: return 8;   // 'DXT5'
 
         default:
-            // The shipped severity-6 diagnostic, RendDX9Types.cpp:151, "Unknown format <n>" -
-            // rendered through the rebuild's log rather than the unread debug-stream family.
-            ::renddx9abi::logf("RendDX9Types.cpp:151: Unknown format %u", d3dFormat);
+        {
+            ::renddx9abi::Debug diagnostic(dice::hfe::DebugTypeError,
+                "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\RendDX9\\RendDX9Types.cpp", 151, "");
+            diagnostic << "Unknown format " << static_cast<D3DFORMAT>(d3dFormat);
             return -1;
+        }
     }
 }
 

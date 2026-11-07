@@ -89,7 +89,8 @@ Vec3 BoundingBox::getMin() const
     return result;
 }
 
-// ELF 0x492F20; engine ELF 0x83AFA40.
+// ELF 0x492F20; engine ELF 0x83AFA40; RendDX9.dll copy PE 0x101C6FB0 (unreachable there: no code or
+// data references; the result is written through a pointer argument).
 Vec3 BoundingBox::getCentre() const
 {
     return {(m_corners[7].x + m_corners[0].x) * 0.5f,
@@ -97,7 +98,9 @@ Vec3 BoundingBox::getCentre() const
             (m_corners[7].z + m_corners[0].z) * 0.5f};
 }
 
-// ELF 0x492F80; engine ELF 0x83AFA90.
+// ELF 0x492F80; engine ELF 0x83AFA90; RendDX9.dll copy PE 0x101C7000 (unreachable there: no code or
+// data references; listing read for its skeleton only: six fsqrt, 24 fabs and 15 comparisons, as
+// below).
 bool BoundingBox::intersect(const BoundingBox& other) const
 {
     Vec3 a[3], b[3];

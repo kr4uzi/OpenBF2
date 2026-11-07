@@ -1,11 +1,15 @@
 // Ability display. [INFERRED] Source split from Menu/BF2HudManager.cpp.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Bf2MenuMapNode.h"
 #include "HudCommander.h"
 #include "HudArtillerySeams.h"
 #include "../AI/AIInterface/AIInstance.h"
 #include "../AI/AIInterface/SingletonServer.h"
+#include "../AI/AIInterface/IAIEventCourier.h"
 #include "../Core/EventManager.h"
 #include "../Core/System.h"
 #include "../Game/IGameLogic.h"
@@ -23,17 +27,32 @@
 #include "../Sound/BfSound.h"
 #include <cfloat>
 #include <new>
+#if !defined(_M_IX86)
+#include <cmath>
+#include <cstring>
+#endif
 
 namespace dice { namespace hfe {
 extern IBase* squadManager;
+namespace ai {
+// BF2.exe launchArtillery 7B25D8..7B2605: the courier (ds:A386C8, filled from the
+// "IAIEventCourier" simple singleton at 809121) is called at +5C, event_incomingArtillery, with the
+// team and the target by value. No courier null check, as shipped.
+void dispatchArtilleryRequest(IAIEventCourier* courier, int team, Vec2 target)
+{
+    courier->event_incomingArtillery(team, target);
+}
+}
 namespace hud {
 namespace {
 // [INFERRED] spelling of Vec2 inequality5EA630. The sum is retained in x87
 // precision, and unordered values take the same arm as a sum above epsilon.
 bool hasAbilityPosition(const Vec2& position)
 {
+#if defined(_WIN32)
     const float sentinel = -4000.0f;
     const float epsilon = FLT_EPSILON;
+#if defined(_M_IX86)
     bool valid;
     __asm {
         mov ecx, position
@@ -50,6 +69,22 @@ bool hasAbilityPosition(const Vec2& position)
         setp valid
     }
     return valid;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Vec2 +4 is y and +0 x. setp after test ah,41h: valid above epsilon or unordered.
+    const double sum = std::fabs(static_cast<double>(position.y) - sentinel)
+                     + std::fabs(static_cast<double>(position.x) - sentinel);
+    return !(sum <= epsilon);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float sentinel = -4000.0f;
+    const float epsilon = FLT_EPSILON;
+    bool valid;
+    // [CHOSEN, not recovered] Preserve x87 positive-or-unordered sentinel comparison.
+    valid = bf2x87::abilityPosition(position.x, position.y);
+    return valid;
+#endif
 }
 
 // Preserve both the unrounded x87 sum and the two producers' distinct store
@@ -57,6 +92,8 @@ bool hasAbilityPosition(const Vec2& position)
 void beginSupplyCooldown(double now, const float& duration, float& remaining,
                          bool& reloading, float& deadline)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     __asm {
         fld now
         mov eax, duration
@@ -69,11 +106,27 @@ void beginSupplyCooldown(double now, const float& duration, float& remaining,
         mov ecx, deadline
         fstp dword ptr [ecx]
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Duration is read once, before the raw copy; the shipped store order is kept.
+    const float length = duration;
+    const double sum = now + length;
+    std::memcpy(&remaining, &length, sizeof remaining);
+    reloading = true;
+    deadline = static_cast<float>(sum);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    // [CHOSEN, not recovered] Preserve x87 sum and supply store ordering.
+    bf2x87::beginCooldown(now, duration, remaining, reloading, deadline, true);
+#endif
 }
 
 void beginVehicleCooldown(double now, const float& duration, float& remaining,
                           float& deadline, bool& reloading)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     __asm {
         fld now
         mov eax, duration
@@ -86,6 +139,20 @@ void beginVehicleCooldown(double now, const float& duration, float& remaining,
         mov ecx, reloading
         mov byte ptr [ecx], 1
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Duration is read once, before the raw copy; the shipped store order is kept.
+    const float length = duration;
+    const double sum = now + length;
+    std::memcpy(&remaining, &length, sizeof remaining);
+    deadline = static_cast<float>(sum);
+    reloading = true;
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    // [CHOSEN, not recovered] Preserve x87 sum and vehicle store ordering.
+    bf2x87::beginCooldown(now, duration, remaining, reloading, deadline, false);
+#endif
 }
 }
 

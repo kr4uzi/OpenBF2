@@ -13,6 +13,7 @@
 #include "../../../Core/Debug.h"
 #include "../../../Core/ClassManager.h"
 #include "../../../Geom/XpLightManager.h"
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -215,8 +216,8 @@ void LightSource::handleFrameUpdate(float)
     const float flicker = m_template->getFlicker();              // template +0x1F8
     if (flicker > 0.0f)
     {
-        // [PLATFORM] Scale by this platform's RAND_MAX to preserve the full [0, 1] flicker range.
-        const float r = static_cast<float>(rand()) * (1.0f / RAND_MAX);
+        // [PLATFORM] Scale by the CRT generator's RAND_MAX (bf2crt) to preserve the full [0, 1] flicker range.
+        const float r = static_cast<float>(bf2crt::rand()) * (1.0f / bf2crt::kRandMax);
         m_attenuationRange1 = m_template->getAttenuationRange1() * ((r - 1.0f) * flicker + 1.0f);   // +0x148
         m_attenuationRange2 = m_template->getAttenuationRange2() * ((r - 1.0f) * flicker + 1.0f);   // +0x14C
     }

@@ -1,7 +1,13 @@
 // Batches menu quads, clips geometry and flushes on rendering-state changes.
 
 #ifdef BF2_IMAGE_RENDDX9
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Compiler-typed native table entries.
+#include "../../../RendDX9Abi/NativeVtable.h"
+#include "IQuadDrawer.h"
+#endif
 
+#include "../../../RendDX9Abi/ThunkAbi.h"
 #include "../../../RendDX9Abi/HfeAbi.h"
 #include "../../../RendDX9Abi/ModuleCommon.h"
 #include "../../../RendDX9Abi/BfMemory.h"
@@ -10,8 +16,14 @@
 #include "../../Core/EventManager.h"
 #include "../../RendDX9/RendDX9Base.h"
 #include "../../RendDX9/ShaderParameter.h"
+#include "../../RendDX9/QueueProfiler.h"
+#include "../Debug.h"                         // renddx9abi::Debug, PE 0x10074300 / 0x10074690
 #include "../../RendMisc/IRenderView.h"
+#if !defined(_MSC_VER)
+#include "../../Platform/X87Compat.h"
+#endif
 
+#include <stddef.h>
 #include <string.h>
 #include <new>
 
@@ -20,10 +32,10 @@ namespace hfe {
 namespace dx9rend {
 extern void* g_shaderManager;                       // dword_1023B97C
 void* shaderManagerGetEffect(void*, const char*);   // sub_10022EF0
-void  effectBeginTechniqueStates(void*, const vc71::string&);
-void  effectEndTechniqueStates(void*, const vc71::string&);
+void  effectBeginTechniqueStates(void*, const std::string&);
+void  effectEndTechniqueStates(void*, const std::string&);
 class Effect;
-void* effectGetShaderParameter(Effect*, const vc71::string&);   // sub_1001E420
+void* effectGetShaderParameter(Effect*, const std::string&);   // sub_1001E420
 int   bufferManagerSwapPool(int value);             // sub_100113B0 - BufferManager+0x08
 void* bufferManagerCreateVertexBuffer(unsigned int count, unsigned int stride,
                                       unsigned int usage, const char* name);
@@ -41,7 +53,7 @@ void  vertexBufferBindStream(void* wrapper, unsigned int stream);   // sub_10014
 void  rendererDrawPrimitive(unsigned int primCount, unsigned int type,
                             unsigned int startVertex);              // sub_10005870
 IRenderView* rendererGetRenderView();                // Renderer::getRenderView (0x1000CAF0)
-bool  effectSetTechniqueByName(void* effect, const vc71::string& name);
+bool  effectSetTechniqueByName(void* effect, const std::string& name);
 unsigned int effectBegin(void* effect);              // sub_1001D780
 void  effectBeginPass(void* effect, unsigned int index);   // sub_1001DBB0
 void  effectEnd(void* effect);                       // sub_1001D7E0
@@ -49,6 +61,7 @@ void  effectEnd(void* effect);                       // sub_1001D7E0
 namespace geom {
 
 class MemeTexture;   // MenuRend/MemeTexture.cpp - the virtual dims/uv getters the batcher calls
+void* memeTextureEngineTexture(const MemeTexture* texture);   // its +0x2C EngineTexture
 
 extern const unsigned int CID_QuadDrawer  = 81031u;  // dword_1020AEF0
 extern const unsigned int IID_IQuadDrawer = 80031u;  // queryInterface, 0x1008CA80
@@ -80,7 +93,15 @@ struct QuadDrawRequest
     QuadCorner    corner[4];    // +0x40 / +0x60 / +0x80 / +0xA0
 };
 
+#if defined(_M_IX86)
 static_assert(sizeof(QuadDrawRequest) == 0xC0, "the corners end at +0xC0; submit reads none beyond");
+#else
+// [PLATFORM] x64: the client's native dice::meme::Quad (External/BFMeme/Quad.h) - a pointer clip,
+// an intptr_t texture2 and eight dwords before the corners.
+static_assert(offsetof(QuadDrawRequest, texture2) == 0x20, "x64 Quad texture2 at +0x20");
+static_assert(offsetof(QuadDrawRequest, corner) == 0x48, "x64 Quad corners at +0x48");
+static_assert(sizeof(QuadDrawRequest) == 0xC8, "x64 Quad is 0xC8 bytes");
+#endif
 
 // One batch vertex - 44 bytes, 11 dwords, read from the immediate-mode append:
 struct QuadVertex
@@ -117,7 +138,27 @@ public:
     void  onDeviceReset() { m_basePos = 0; m_suspended = 0; }
     void  dtor();
 
+    // [CHOSEN, not recovered] Named native access for QuadOutputCache's shared capture state.
+    unsigned char& captureMode() { return m_captureMode; }
+    unsigned int& captureVertexCount() { return m_vertexCount; }
+    void* capturedTexture() { return m_cachedTexture; }
+    const QuadVertex& captureVertex(unsigned int i) { return m_vertices[i]; }
+
+    // The listener thunks receive a subobject: the device listener (shipped this + 4) or the ECCore
+    // listener (shipped this + 8).
+    static QuadDrawer* fromDeviceListener(void* sub)
+    {
+        return reinterpret_cast<QuadDrawer*>(static_cast<char*>(sub)
+                                             - offsetof(QuadDrawer, m_deviceLostVptr));
+    }
+    static QuadDrawer* fromECCoreListener(void* sub)
+    {
+        return reinterpret_cast<QuadDrawer*>(static_cast<char*>(sub)
+                                             - offsetof(QuadDrawer, m_ecCoreVptr));
+    }
+
 private:
+    void  initialize();
     void  cacheState(MemeTexture* tex, QuadDrawRequest* req);
     void  uploadStateParams();                      // sub_1008B290
 
@@ -155,25 +196,41 @@ private:
     void*          m_vertexBuffer;
 };
 
+#if defined(_M_IX86)
 static_assert(sizeof(QuadDrawer) == 0x108098,
               "RefFactory_geom_Meme_QuadDrawer allocates 0x108098 - see 0x1007C950");
+#endif
 
 namespace {
 
-void __fastcall qd_addRef(void* s, void*) { static_cast<QuadDrawer*>(s)->addRef(); }
-int  __fastcall qd_getRef(void* s, void*) { return static_cast<QuadDrawer*>(s)->getRef(); }
-int  __fastcall qd_release(void* s, void*) { return static_cast<QuadDrawer*>(s)->release(); }
+void RD9_THUNK qd_addRef(void* s RD9_THUNK_EDX) { static_cast<QuadDrawer*>(s)->addRef(); }
+int  RD9_THUNK qd_getRef(void* s RD9_THUNK_EDX) { return static_cast<QuadDrawer*>(s)->getRef(); }
+int  RD9_THUNK qd_release(void* s RD9_THUNK_EDX) { return static_cast<QuadDrawer*>(s)->release(); }
 
-void* __fastcall qd_queryInterface(void* s, void*, unsigned int iid)
+void* RD9_THUNK qd_queryInterface(void* s RD9_THUNK_EDX, unsigned int iid)
 {
     return static_cast<QuadDrawer*>(s)->queryInterface(iid);
 }
 
-void __fastcall qd_flush(void* s, void*)      { static_cast<QuadDrawer*>(s)->flush(); }
-void __fastcall qd_beginFrame(void* s, void*) { static_cast<QuadDrawer*>(s)->beginFrame(); }
-void __fastcall qd_resetState(void* s, void*) { static_cast<QuadDrawer*>(s)->resetState(); }
-void __fastcall qd_endFrame(void* s, void*)   { static_cast<QuadDrawer*>(s)->endFrame(); }
+void RD9_THUNK qd_flush(void* s RD9_THUNK_EDX)      { static_cast<QuadDrawer*>(s)->flush(); }
+void RD9_THUNK qd_beginFrame(void* s RD9_THUNK_EDX) { static_cast<QuadDrawer*>(s)->beginFrame(); }
+void RD9_THUNK qd_resetState(void* s RD9_THUNK_EDX) { static_cast<QuadDrawer*>(s)->resetState(); }
+void RD9_THUNK qd_endFrame(void* s RD9_THUNK_EDX)   { static_cast<QuadDrawer*>(s)->endFrame(); }
 
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kQuadDrawerVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, addRef, qd_addRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, getRef, qd_getRef),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, release, qd_release),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, queryInterface, qd_queryInterface),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, flush, qd_flush),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, beginFrame, qd_beginFrame),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, resetState, qd_resetState),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IQuadDrawer, endFrame, qd_endFrame),
+};
+#else
 void* const kQuadDrawerVtable[8] =
 {
     reinterpret_cast<void*>(&qd_addRef),          // +0x00  0x10132630  ICF_incrementDwordAt0xC
@@ -185,18 +242,19 @@ void* const kQuadDrawerVtable[8] =
     reinterpret_cast<void*>(&qd_resetState),      // +0x18
     reinterpret_cast<void*>(&qd_endFrame)         // +0x1C
 };
+#endif
 
 // Suspends drawing on device loss and resets the vertex cursor before resuming.
 // BufferManager recreates GPU resources at priority 3, before this listener at priority 4.
-void __fastcall qd_onDeviceLost(void* s, void*)
+void RD9_THUNK qd_onDeviceLost(void* s RD9_THUNK_EDX)
 {
-    reinterpret_cast<QuadDrawer*>(static_cast<char*>(s) - 4)->onDeviceLost();
+    QuadDrawer::fromDeviceListener(s)->onDeviceLost();
 }
-void __fastcall qd_onDeviceReset(void* s, void*)
+void RD9_THUNK qd_onDeviceReset(void* s RD9_THUNK_EDX)
 {
-    reinterpret_cast<QuadDrawer*>(static_cast<char*>(s) - 4)->onDeviceReset();
+    QuadDrawer::fromDeviceListener(s)->onDeviceReset();
 }
-void __fastcall qd_listenerNullsub(void*, void*) { /* 0x1008AF70: ret */ }
+void RD9_THUNK qd_listenerNullsub(void* RD9_THUNK_EDX) { /* 0x1008AF70: ret */ }
 
 void* const kQuadDrawerListenerVtable[3] =
 {
@@ -206,18 +264,25 @@ void* const kQuadDrawerListenerVtable[3] =
 };
 
 // Forwards the event from its listener subobject; userData is the fourth event argument.
-void __fastcall qd_handleECCoreEvent(void* s, void*, int category, unsigned int id,
+void RD9_THUNK qd_handleECCoreEvent(void* s RD9_THUNK_EDX, int category, unsigned int id,
                                      void* /*node*/, unsigned char* payload)
 {
-    reinterpret_cast<QuadDrawer*>(static_cast<char*>(s) - 8)
-        ->handleECCoreEvent(category, id, payload);
+    QuadDrawer::fromECCoreListener(s)->handleECCoreEvent(category, id, payload);
 }
 
 // The core-event interface has one virtual slot; the adjacent table belongs to the device listener.
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] Match the shared consumer interface under the native ABI.
+void* const kQuadDrawerECCoreVtable[] =
+{
+    BF2_NATIVE_SLOT(::dice::hfe::IEventListener, handleEvent, qd_handleECCoreEvent),
+};
+#else
 void* const kQuadDrawerECCoreVtable[1] =
 {
     reinterpret_cast<void*>(&qd_handleECCoreEvent),  // +0x00
 };
+#endif
 
 // Shared clipping scratch: paired position/color and UV buffers plus triangle-fan output.
 // Initialization keeps each position/color vertex's unused eighth word at 1.0.
@@ -243,6 +308,7 @@ extern IBase* g_QuadDrawer;
 
 // Creates shader parameters and a dynamic default-pool vertex buffer, then registers device and core listeners.
 
+// PE 0x1008B0E0
 QuadDrawer::QuadDrawer()
     : m_vptr(const_cast<void**>(kQuadDrawerVtable))
     , m_deviceLostVptr(const_cast<void**>(kQuadDrawerListenerVtable))
@@ -268,6 +334,13 @@ QuadDrawer::QuadDrawer()
     , m_halfTexelV2(0.0f)
     , m_vertexBuffer(0)
 {
+#if defined(_M_IX86)
+    static_assert(offsetof(QuadDrawer, m_deviceLostVptr) == 4
+                      && offsetof(QuadDrawer, m_ecCoreVptr) == 8,
+                  "the listener thunks are handed this + 4 and this + 8");
+#endif
+    // [CHOSEN, not recovered] Retain defined native padding/pass-index storage;
+    // PE 0x1008B0E0 leaves those bytes unwritten before the initialization call.
     m_pad12[0] = 0; m_pad12[1] = 0;
     m_pad55[0] = 0; m_pad55[1] = 0; m_pad55[2] = 0;
     m_pad5D[0] = 0; m_pad5D[1] = 0; m_pad5D[2] = 0;
@@ -277,7 +350,15 @@ QuadDrawer::QuadDrawer()
 
     ::memset(m_vertices, 0, sizeof(m_vertices));   // the shipped 24576-iteration zeroing loop
 
-    // The tail, sub_1008AC10
+    initialize();
+}
+
+// Looks up the menu effect and its 14 parameters, creates the dynamic default-pool vertex
+// buffer, then registers the device-lost/reset listener and the ECCore handler. Called once,
+// as the constructor's last action.
+// PE 0x1008AC10
+void QuadDrawer::initialize()
+{
     m_effect = ::dice::hfe::dx9rend::shaderManagerGetEffect(
         ::dice::hfe::dx9rend::g_shaderManager, "mods/xpack/shaders/PortedMenuShader");
 
@@ -287,10 +368,13 @@ QuadDrawer::QuadDrawer()
         "ALPHATEST", "ALPHAFUNC", "ALPHAREF", "ZMODE", "ZFUNC", "ZWRITEENABLE",
         "TEXLAYER0", "TEXLAYER1"
     };
+    // [CHOSEN, not recovered] The null-effect and null-event-manager guards below are native
+    // additions: PE 0x1008AC10 calls lookupParameterOnce (0x1001E420) on the effect and the event
+    // manager's slot +0x2C unguarded, a null dereference when either is missing.
     for (int i = 0; i < 14; ++i)
         m_params[i] = m_effect
             ? ::dice::hfe::dx9rend::effectGetShaderParameter(
-                  static_cast<::dice::hfe::dx9rend::Effect*>(m_effect), vc71::string(kParamNames[i]))
+                  static_cast<::dice::hfe::dx9rend::Effect*>(m_effect), std::string(kParamNames[i]))
             : 0;
 
     const int savedPool = ::dice::hfe::dx9rend::bufferManagerSwapPool(0);   // default
@@ -310,11 +394,10 @@ QuadDrawer::QuadDrawer()
     }
     m_registered = 1;
 
-    ::renddx9abi::logf("QuadDrawer: built at 0x%08X - effect=0x%08X, 14 params, dynamic VB "
-                       "wrapper=0x%08X (pool swapped DEFAULT for usage 0x208), ECCore handler "
+    ::renddx9abi::logf("QuadDrawer: built at 0x%p - effect=0x%p, 14 params, dynamic VB "
+                       "wrapper=0x%p (pool swapped DEFAULT for usage 0x208), ECCore handler "
                        "registered LIVE at priority 0",
-                       ::renddx9abi::addr(this), ::renddx9abi::addr(m_effect),
-                       ::renddx9abi::addr(m_vertexBuffer));
+                       static_cast<const void*>(this), m_effect, m_vertexBuffer);
 }
 
 // Meme_QuadDrawer_release (0x1008CAB0): --refcount(+0x0C); at zero, Meme_QuadDrawer_dtor + free.
@@ -330,6 +413,8 @@ int QuadDrawer::release()
 }
 
 // Releases shader parameters, effect and vertex buffer before unregistering core and device listeners.
+// PE 0x1008B1C0
+// PE 0x1008B460: the table-restoring wrapper is folded into this native body.
 void QuadDrawer::dtor()
 {
     m_vptr           = const_cast<void**>(kQuadDrawerVtable);
@@ -341,14 +426,12 @@ void QuadDrawer::dtor()
         if (m_params[i])
         {
             static_cast<::dice::hfe::dx9rend::ShaderParameter*>(m_params[i])->release();
-            m_params[i] = 0;
         }
     }
     if (m_effect)
     {
         ::dice::hfe::dx9rend::effectRelease(
             static_cast<::dice::hfe::dx9rend::Effect*>(m_effect));
-        m_effect = 0;
     }
     if (m_vertexBuffer)
     {
@@ -357,7 +440,6 @@ void QuadDrawer::dtor()
         // The shipped release is unguarded; the guard stays [CHOSEN] for the harness host, whose
         // device-less createVertexBuffer answers null (the same reason as the parameter guards).
         ::dice::hfe::dx9rend::vertexBufferRelease(m_vertexBuffer);
-        m_vertexBuffer = 0;
     }
     if (::dice::hfe::eventManager)
     {
@@ -381,6 +463,7 @@ void* QuadDrawer::queryInterface(unsigned int iid) const
 
 // Updates draw enable from the application-active byte and suspends on deactivation.
 // Only device reset clears suspension, so reactivation requires the renderer's reset sequence.
+// PE 0x1008B0B0
 void QuadDrawer::handleECCoreEvent(int category, unsigned int id, unsigned char* payload)
 {
     if (category == 5 && id == 15)
@@ -396,13 +479,14 @@ void QuadDrawer::handleECCoreEvent(int category, unsigned int id, unsigned char*
 // technique map, not ShaderManager's effect cache. No null-effect guard exists.
 void QuadDrawer::beginFrame()
 {
-    ::dice::hfe::dx9rend::effectBeginTechniqueStates(m_effect, vc71::string("Menu"));
+    ::dice::hfe::dx9rend::effectBeginTechniqueStates(m_effect, std::string("Menu"));
     m_basePos = 0;
 }
 
+// PE 0x1008AF10
 void QuadDrawer::endFrame()
 {
-    ::dice::hfe::dx9rend::effectEndTechniqueStates(m_effect, vc71::string("Menu"));
+    ::dice::hfe::dx9rend::effectEndTechniqueStates(m_effect, std::string("Menu"));
 }
 
 // 1008B410, previously omitted from the primary table. Deliberately does not
@@ -429,19 +513,19 @@ namespace {
 void cacheHalfTexels(QuadDrawer* self, MemeTexture* tex, MemeTexture* tex2,
                      float* u1, float* v1, float* u2, float* v2)
 {
-    typedef int (__fastcall* GetDimFn)(void*, void*);
+    typedef int (__thiscall* GetDimFn)(void*);
     if (tex)
     {
         void** vtbl = *reinterpret_cast<void***>(tex);
-        const int w = reinterpret_cast<GetDimFn>(vtbl[0x3C / 4])(tex, 0);
-        const int h = reinterpret_cast<GetDimFn>(vtbl[0x40 / 4])(tex, 0);
+        const int w = reinterpret_cast<GetDimFn>(vtbl[0x3C / 4])(tex);
+        const int h = reinterpret_cast<GetDimFn>(vtbl[0x40 / 4])(tex);
         *u1 = 0.5f / static_cast<float>(w);
         *v1 = 0.5f / static_cast<float>(h);
         if (tex2)
         {
             void** vtbl2 = *reinterpret_cast<void***>(tex2);
-            const int w2 = reinterpret_cast<GetDimFn>(vtbl2[0x3C / 4])(tex2, 0);
-            const int h2 = reinterpret_cast<GetDimFn>(vtbl2[0x40 / 4])(tex2, 0);
+            const int w2 = reinterpret_cast<GetDimFn>(vtbl2[0x3C / 4])(tex2);
+            const int h2 = reinterpret_cast<GetDimFn>(vtbl2[0x40 / 4])(tex2);
             *u2 = 0.5f / static_cast<float>(w2);
             *v2 = 0.5f / static_cast<float>(h2);
         }
@@ -498,16 +582,14 @@ void QuadDrawer::submit(MemeTexture* tex, QuadDrawRequest* req,
         bool texChanged;
         if (m_cachedTexture)
             texChanged = !tex
-                || *reinterpret_cast<void**>(reinterpret_cast<char*>(tex) + 0x2C)
-                   != *reinterpret_cast<void**>(reinterpret_cast<char*>(m_cachedTexture) + 0x2C);
+                || memeTextureEngineTexture(tex) != memeTextureEngineTexture(m_cachedTexture);
         else
             texChanged = tex != 0;
 
         bool tex2Changed;
         MemeTexture* rt2 = static_cast<MemeTexture*>(req->texture2);
         if (rt2 && m_cachedTexture2)
-            tex2Changed = *reinterpret_cast<void**>(reinterpret_cast<char*>(rt2) + 0x2C)
-                       != *reinterpret_cast<void**>(reinterpret_cast<char*>(m_cachedTexture2) + 0x2C);
+            tex2Changed = memeTextureEngineTexture(rt2) != memeTextureEngineTexture(m_cachedTexture2);
         else
             tex2Changed = (rt2 != 0) != (m_cachedTexture2 != 0);
 
@@ -660,11 +742,11 @@ void QuadDrawer::submit(MemeTexture* tex, QuadDrawRequest* req,
     {
         MemeTexture* t2 = static_cast<MemeTexture*>(req->texture2);
         void** vtbl = *reinterpret_cast<void***>(t2);
-        typedef float (__fastcall* GetF)(void*, void*);
-        const float uOff = reinterpret_cast<GetF>(vtbl[0x4C / 4])(t2, 0);
-        const float vOff = reinterpret_cast<GetF>(vtbl[0x50 / 4])(t2, 0);
-        const float uW   = reinterpret_cast<GetF>(vtbl[0x54 / 4])(t2, 0);
-        const float uH   = reinterpret_cast<GetF>(vtbl[0x58 / 4])(t2, 0);
+        typedef float (__thiscall* GetF)(void*);
+        const float uOff = reinterpret_cast<GetF>(vtbl[0x4C / 4])(t2);
+        const float vOff = reinterpret_cast<GetF>(vtbl[0x50 / 4])(t2);
+        const float uW   = reinterpret_cast<GetF>(vtbl[0x54 / 4])(t2);
+        const float uH   = reinterpret_cast<GetF>(vtbl[0x58 / 4])(t2);
         for (int i = 0; i < count; ++i)
         {
             fan[i][9]  = uOff + uW * ((fan[i][0] - req->clipRect[0]) / req->clipRect[2]);
@@ -751,16 +833,14 @@ void QuadDrawer::uploadStateParams()
 {
     void* engineTex = 0;
     if (m_cachedTexture)
-        engineTex = *reinterpret_cast<void**>(
-            reinterpret_cast<unsigned char*>(m_cachedTexture) + 0x2C);
+        engineTex = memeTextureEngineTexture(m_cachedTexture);          // +0x2C
 
     if (m_cachedTexture && engineTex)
     {
         paramSetValue(m_params[12], engineTex, 0);                      // TEXLAYER0
         if (m_cachedTexture2)
         {
-            paramSetValue(m_params[13], *reinterpret_cast<void**>(
-                reinterpret_cast<unsigned char*>(m_cachedTexture2) + 0x2C), 0);   // TEXLAYER1
+            paramSetValue(m_params[13], memeTextureEngineTexture(m_cachedTexture2), 0);   // TEXLAYER1
             m_passIndex = 2;
         }
         else
@@ -819,9 +899,18 @@ void QuadDrawer::uploadStateParams()
 }
 
 
-// Uploads and draws queued vertices, then resets the batch. Disabled or suspended drawing is skipped.
-// Uses discard or no-overwrite locking according to the vertex-buffer cursor.
+namespace {
+// .rdata 0x1020B6E8, the file name of this TU's Debug emitters.
+const char kQuadDrawerFile[] =
+    "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF2\\GeomMisc\\MenuRend\\QuadDrawer.cpp";
+}
 
+// PE 0x1008C7D0, slot +0x10. Uploads and draws queued vertices, then resets the batch; disabled or
+// suspended drawing drops the batch. Uses discard or no-overwrite locking according to the
+// vertex-buffer cursor, inside the "QuadDrawer" profiler scope (PE 0x1024AAA8, guard 0x1024AD10).
+// Flushing while capturing emits Debug type 6 (QuadDrawer.cpp:521), fatal in retail (see
+// MemeTexture::unsupportedOperation). A count of exactly 0x6000 leaves the batch untouched; only a
+// larger one reports (type 1, line 562) and clears it (shipped quirk).
 void QuadDrawer::flush()
 {
     if (m_suspended || !m_enabled)
@@ -830,18 +919,23 @@ void QuadDrawer::flush()
         return;
     }
     if (m_captureMode)
-        ::renddx9abi::logf("QuadDrawer.cpp:521: try to flush between begin/end capture");
+        ::renddx9abi::Debug(DebugTypeError, kQuadDrawerFile, 521, "")
+            << "try to flush between begin/end capture";
+
+    static dx9rend::QueueProfiler profiler(std::string("QuadDrawer"));
+    profiler.begin();
 
     const unsigned int count = m_vertexCount;
-    if (!count)
-        return;
-
-    if (count >= 0x6000)
+    if (!count || count >= 0x6000)
     {
-        // QuadDrawer.cpp:562, severity 1 - the "Dynamic VertexBuffer overrun detected" arm.
-        ::renddx9abi::logf("QuadDrawer.cpp:562: %u Dynamic VertexBuffer overrun detected, "
-                           "dropping the batch", count);
-        m_vertexCount = 0;
+        if (count > 0x6000)
+        {
+            ::renddx9abi::Debug(DebugTypeInfo, kQuadDrawerFile, 562, "")
+                << count << " > " << 0x6000
+                << " Dynamic VertexBuffer overrun detected, setting vertexCount to zero...";
+            m_vertexCount = 0;
+        }
+        dx9rend::QueueProfiler::end();
         return;
     }
 
@@ -859,7 +953,7 @@ void QuadDrawer::flush()
 
     ::dice::hfe::dx9rend::stateManagerPush();
 
-    ::dice::hfe::dx9rend::effectSetTechniqueByName(m_effect, vc71::string("QuadWithTexture"));
+    ::dice::hfe::dx9rend::effectSetTechniqueByName(m_effect, std::string("QuadWithTexture"));
     uploadStateParams();
     ::dice::hfe::dx9rend::effectBegin(m_effect);
     ::dice::hfe::dx9rend::effectBeginPass(m_effect, m_passIndex);
@@ -873,6 +967,7 @@ void QuadDrawer::flush()
 
     ::dice::hfe::dx9rend::effectEnd(m_effect);
     ::dice::hfe::dx9rend::stateManagerPop();
+    dx9rend::QueueProfiler::end();
 }
 
 
@@ -885,6 +980,44 @@ void quadDrawerSubmit(void* drawer, void* memeTexture, void* request,
     static_cast<QuadDrawer*>(drawer)->submit(
         static_cast<MemeTexture*>(memeTexture),
         static_cast<QuadDrawRequest*>(request), u0, v0, u1, v1);
+}
+
+// [CHOSEN, not recovered] Owner-TU seams for QuadOutputCache's capture bracket.
+unsigned char& quadDrawerCaptureMode(void* drawer)
+{
+    return static_cast<QuadDrawer*>(drawer)->captureMode();
+}
+unsigned int& quadDrawerCaptureVertexCount(void* drawer)
+{
+    return static_cast<QuadDrawer*>(drawer)->captureVertexCount();
+}
+void* quadDrawerCapturedTexture(void* drawer)
+{
+    return static_cast<QuadDrawer*>(drawer)->capturedTexture();
+}
+void quadDrawerCopyCaptureVertex(void* drawer, unsigned int index, float* output)
+{
+    const QuadVertex& vertex = static_cast<QuadDrawer*>(drawer)->captureVertex(index);
+    memcpy(output, &vertex, sizeof(vertex));
+    // The original FLD/FSTP copies quiet signaling NaNs in these seven fields.
+    const unsigned int loaded[] = {1, 2, 4, 5, 6, 8, 10};
+    for (unsigned int field : loaded)
+    {
+#if !defined(_MSC_VER)
+        output[field] = bf2x87::store(bf2x87::wide(output[field]));
+#elif defined(_M_IX86)
+        float* const value = &output[field];
+        __asm {
+            mov eax, value
+            fld dword ptr [eax]
+            fstp dword ptr [eax]
+        }
+#else
+        // [CHOSEN, not recovered] SSE has no floating load/store conversion.
+        volatile float one = 1.0f;
+        output[field] *= one;
+#endif
+    }
 }
 
 // RefFactory_geom_Meme_QuadDrawer, 0x1007C950.

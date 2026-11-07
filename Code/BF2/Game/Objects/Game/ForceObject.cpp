@@ -1,5 +1,8 @@
 // Force-object lifecycle and input-driven force application.
 
+#if defined(__APPLE__)
+#include "../../../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
+#endif
 #include "ForceObject.h"
 
 #include <cfloat>                                       // FLT_EPSILON - the engine normalise rule
@@ -85,8 +88,13 @@ void ForceObject::handleUpdate(float, unsigned int)
         {
             // getTickCount() is called before the multiply in the image (0x82A77F3), and the
             // cast is the ordinary truncating float->int (fistp under a round-to-zero control word).
+#if defined(__APPLE__)
+            m_dword144 = WorldPref::getTickCount()
+                       + bf2x87::toIntTruncate(30.0f * m_template->startDelay);
+#else
             m_dword144 = WorldPref::getTickCount()
                        + static_cast<int>(30.0f * m_template->startDelay);
+#endif
             return;
         }
         if (m_dword144 > WorldPref::getTickCount())

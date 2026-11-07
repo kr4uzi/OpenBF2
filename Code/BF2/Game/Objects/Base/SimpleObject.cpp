@@ -2,6 +2,7 @@
 // Contents: recovered SimpleObject construction, teardown, and bounded overrides.
 
 #include "SimpleObject.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "SimpleObjectTemplate.h"
 
 #include "../../../AI/AIInterface/AIInstance.h"
@@ -17,7 +18,7 @@
 #include "../../../Geom/DecalSystem/DecalObjectAccess.h"  // ~SimpleObject's DecalObject slot 10 (release)
 #include "../../../Geom/DecalSystem/IDecalManager.h"      // the ctor's object decal (createClient +0x14)
 #include "../../../Geom/IGeometryTemplate.h"
-#if !DEDICATED && BF2_PLUGIN_ABI_NATIVE && defined(_M_IX86)
+#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
 #include "../../../Geom/GeometryTemplateManager.h"
 #endif
 #include "../../../Physics/CollisionManager.h"
@@ -57,11 +58,13 @@ namespace {
 #  define BF2_SIMPLE_VCALL
 #endif
 
+#if defined(_MSC_VER)
 template <class Fn>
 inline Fn simpleVslot(void* object, unsigned int byteOffset)
 {
     return reinterpret_cast<Fn>((*reinterpret_cast<void***>(object))[byteOffset / 4]);
 }
+#endif
 
 // The two renderer-geometry operations the animated-UV update drives. [INFERRED] names - the server
 // tree has no IGeometry declaration and neither slot is otherwise reachable, so only the physical
@@ -70,22 +73,22 @@ void setGeometryAnimatedUVTranslation(void* geometry, int index, float first, fl
 {
 #if defined(_MSC_VER)
     const unsigned int slot = 0x90;
-#else
-    const unsigned int slot = 0x94;
-#endif
     typedef void (BF2_SIMPLE_VCALL* Fn)(void*, int, float, float);
     simpleVslot<Fn>(geometry, slot)(geometry, index, first, second);
+#else
+    geometry_part::setUvTranslation(geometry, index, first, second);             // ELF +0x94
+#endif
 }
 
 void setGeometryAnimatedUVRotation(void* geometry, int index, const Mat4& transform)
 {
 #if defined(_MSC_VER)
     const unsigned int slot = 0x98;
-#else
-    const unsigned int slot = 0x9C;
-#endif
     typedef void (BF2_SIMPLE_VCALL* Fn)(void*, int, const Mat4&);
     simpleVslot<Fn>(geometry, slot)(geometry, index, transform);
+#else
+    geometry_part::setUvTransformation(geometry, index, &transform);             // ELF +0x9C
+#endif
 }
 
 // Leaves nearly unit vectors unchanged and collapses nearly zero vectors to zero.
@@ -144,7 +147,8 @@ bool setGeometry(IObject* object, const std::string& geometry)
     if (!::dice::hfe::g_geometryTemplateManager)
         return false;
 
-#if BF2_PLUGIN_ABI_NATIVE && defined(_M_IX86)
+#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
+    // Native static builds call the audited IGeometryTemplateManager view (+0x18).
     geom::IGeometryTemplate* const geometryTemplate =
         static_cast<geom::IGeometryTemplateManager*>(
             ::dice::hfe::g_geometryTemplateManager)->getTemplate(geometry);
@@ -173,9 +177,13 @@ bool setGeometry(IObject* object, const std::string& geometry)
     // The geometry instance's +0x9C, handed the object it now belongs to.  The geometry instance
     // interface is not modelled anywhere in this tree, so this stays a documented raw slot - the
     // same policy as ObjectDrawer's +0x18 and +0xCC.
+#if defined(_MSC_VER)
     typedef void (__thiscall* SetGeometryOwnerFn)(void*, IObject*);
     reinterpret_cast<SetGeometryOwnerFn>(
-        (*reinterpret_cast<void***>(instance))[0x9C / sizeof(void*)])(instance, object);
+        (*reinterpret_cast<void***>(instance))[0x9C / 4])(instance, object);
+#else
+    geometry_part::setOwnerObject(instance, object);                             // PE +0x9C
+#endif
 
     instance->release();
     return true;

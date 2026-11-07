@@ -2,6 +2,9 @@
 
 #include "SpawnGroup.h"
 
+#include <cstdio>     // [TEMP] BF2_SPAWNGROUP_TRACE
+#include <cstdlib>
+
 #include "../../../Core/Ids.h"
 #include "../../../Core/SettingsRepostitory.h"      // settings - GLSWorldSizeX/Z
 #include "../../../Core/System.h"                   // WorldPref::getTickCount
@@ -15,6 +18,7 @@
 
 
 #include <cstdlib>                                  // rand - getSpawnPoint's pick
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -147,7 +151,7 @@ ISpawnPoint* SpawnGroup::getSpawnPoint(bool isAI) const
     }
     ISpawnPoint* picked = 0;
     if (!candidates.empty())
-        picked = candidates[static_cast<unsigned int>(std::rand()) % candidates.size()];
+        picked = candidates[static_cast<unsigned int>(bf2crt::rand()) % candidates.size()];
     return picked;
 }
 
@@ -364,7 +368,7 @@ bool SpawnGroup::getNetUpdate(io::BitStream& stream, io::BaseLineData* /*baselin
 }
 
 // Reads changed spawn-group fields into the next baseline, carrying forward unsent values.
-// Position and squad are both decoded, but a position change takes precedence when applying them.
+// Position and squad are both decoded and both applied (position first).
 // Decoded positions have zero Y. World-size settings are reread for each update;
 // odd world sizes retain the writer/reader quantization difference.
 void SpawnGroup::setNetUpdate(io::BitStream& stream, float /*time*/, bool ghostActive,
@@ -433,7 +437,7 @@ void SpawnGroup::setNetUpdate(io::BitStream& stream, float /*time*/, bool ghostA
     if (stateMask == 0)                                 // nothing changed - no apply
         return;
 
-    // 6: the apply. A second pass, AND NOT IN THE read'S order - see the note.
+    // 6: the apply. A second pass, AND NOT IN THE read'S order.
     const int worldSizeX = settings->intGet(std::string("GLSWorldSizeX"), 0);
     const int worldSizeZ = settings->intGet(std::string("GLSWorldSizeZ"), 0);
 
@@ -456,10 +460,24 @@ void SpawnGroup::setNetUpdate(io::BitStream& stream, float /*time*/, bool ghostA
                      - static_cast<float>(worldSizeZ / 2);
         setPos(position);                                                 // +0x30, BY value
     }
-    else if (stateMask & 0x20)                          // else, not a second if - see the note
+    // A second if, not an else: retail lays the setPos block out of line and returns from it to
+    // the squad test (0x811222D call +0x30, 0x8112230 jmp 0x811211C `and edi, 0x20`). An else
+    // dropped the squad of every group whose first update also carried its position, leaving the
+    // constructor's -1 ("no squad", offered to the whole team): squad-leader spawn points appeared
+    // for players outside the squad (docs/macos-c-handplay-1.md).
+    if (stateMask & 0x20)
     {
         setSquad(record.squad);                                           // +0x20
     }
+#if defined(__APPLE__)
+    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: squad-spawn-filter-validated]
+    // BF2_SPAWNGROUP_TRACE=1: each applied client spawn-group update (docs/macos-c-handplay-1.md).
+    static const bool trace = std::getenv("BF2_SPAWNGROUP_TRACE") != 0;
+    if (trace)
+        std::fprintf(stderr, "[SPAWNGROUP] %p mask=0x%02x team=%d squad=%d active=%d points=%d aiOnly=%d\n",
+                     (void*) this, stateMask, getTeam(), getSquad(), m_active ? 1 : 0, m_hasSpawnPoints ? 1 : 0,
+                     m_onlyForAI ? 1 : 0);
+#endif
 }
 
 } // namespace hfe

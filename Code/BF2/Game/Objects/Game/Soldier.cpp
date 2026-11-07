@@ -5,6 +5,7 @@
 
 
 #include "Soldier.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 
 #include <cmath>
 #include <algorithm>
@@ -335,20 +336,26 @@ anim::IAnimationSystem* animationSystemCreateInstance(void* animationSystemTempl
 
 // Forwards field of view to the renderer-owned geometry.
 // Uses the PE calling convention and slot because the full geometry interface is not declared here.
+#if defined(_MSC_VER)
 void geometrySlot10(void* geometry, float fov)
 {
-    typedef void(__fastcall* SetFovFn)(void*, void*, float);
+    typedef void(__thiscall* SetFovFn)(void*, float);
     reinterpret_cast<SetFovFn>(
-        (*reinterpret_cast<void***>(geometry))[0x10 / sizeof(void*)])(geometry, 0, fov);
+        (*reinterpret_cast<void***>(geometry))[0x10 / 4])(geometry, fov);
 }
 
 void geometrySlotD8(void* geometry, bool flag)
 {
-    typedef void(__fastcall* Fn)(void*, void*, unsigned int);
+    typedef void(__thiscall* Fn)(void*, unsigned int);
     reinterpret_cast<Fn>(
-        (*reinterpret_cast<void***>(geometry))[0xD4 / sizeof(void*)])(
-            geometry, 0, flag ? 1u : 0u);
+        (*reinterpret_cast<void***>(geometry))[0xD4 / 4])(
+            geometry, flag ? 1u : 0u);
 }
+#else
+// Non-MSVC: the named geometry_part operations (PE +0x10 / +0xD4).
+void geometrySlot10(void* geometry, float fov) { geometry_part::setFov(geometry, fov); }
+void geometrySlotD8(void* geometry, bool flag) { geometry_part::setFirstPerson(geometry, flag ? 1u : 0u); }
+#endif
 
 // Registers animation templates by name; file loading is deferred to the core event.
 void* animationSystemManagerGet(const std::string& name)
@@ -362,20 +369,26 @@ void  animationSystemManagerRelease(void* systemTemplate)
 }
 
 // Supplies a borrowed bone-transform palette to the kit geometry through its renderer interface.
+#if defined(_MSC_VER)
 void geometrySetBoneTransforms(void* geometry, const Mat4* transforms, int boneCount)  // PE +0x54
 {
-    typedef void(__fastcall* SetBonesFn)(void*, void*, const Mat4*, unsigned int);
+    typedef void(__thiscall* SetBonesFn)(void*, const Mat4*, unsigned int);
     reinterpret_cast<SetBonesFn>(
-        (*reinterpret_cast<void***>(geometry))[0x54 / sizeof(void*)])(
-            geometry, 0, transforms, static_cast<unsigned int>(boneCount));
+        (*reinterpret_cast<void***>(geometry))[0x54 / 4])(
+            geometry, transforms, static_cast<unsigned int>(boneCount));
 }
 
 void geometrySlot7C(void* geometry, int a)                                             // PE +0x78
 {
-    typedef void*(__fastcall* SetLodFn)(void*, void*, int);
+    typedef void*(__thiscall* SetLodFn)(void*, int);
     reinterpret_cast<SetLodFn>(
-        (*reinterpret_cast<void***>(geometry))[0x78 / sizeof(void*)])(geometry, 0, a);
+        (*reinterpret_cast<void***>(geometry))[0x78 / 4])(geometry, a);
 }
+#else
+void geometrySetBoneTransforms(void* geometry, const Mat4* transforms, int boneCount)
+{ geometry_part::setBoneTransforms(geometry, transforms, boneCount); }                 // PE +0x54
+void geometrySlot7C(void* geometry, int a) { geometry_part::setLod(geometry, a); }    // PE +0x78
+#endif
 
 // AI events are available only when a published AI instance reports a bots game.
 inline bool aiConnectionIsUp()
@@ -3852,6 +3865,20 @@ void Soldier::handlePlayerInput(IPlayer* player, const io::PlayerInput& input,
     m_pitchDeltaThisTick = pitchDelta;                                // +0x298
     m_yawDeltaThisTick = yawDelta;                                    // +0x294
     m_lookUpDownAngle += pitchDelta;
+#if !defined(_WIN32)
+    {
+        // [TEMP] BF2_LOOK_TRACE=1: per-call pitch inputs (sustained-fire view climb diagnosis).
+        // [RETIRE-WHEN: view-climb-diagnosed]
+        static const bool lookTrace = std::getenv("BF2_LOOK_TRACE") != 0;
+        if (lookTrace && getOccupingPlayer() && (pitchDelta != 0.0f || yawDelta != 0.0f))
+        {
+            std::fprintf(stderr, "[LOOK] tick=%d flags=%u lookY=%.4f recoilP=%.4f lookX=%.4f recoilY=%.4f -> upDown=%.3f camPitch=%.3f\n",
+                         (int) WorldPref::getTickCount(), flags, (double) lookY, (double) (pitchDelta - lookY),
+                         (double) lookX, (double) (yawDelta - lookX), (double) m_lookUpDownAngle, (double) m_cameraPitch);
+            std::fflush(stderr);
+        }
+    }
+#endif
 
     // 11. the yaw pipeline
     // the vehicle's own yaw limits, if he is riding one

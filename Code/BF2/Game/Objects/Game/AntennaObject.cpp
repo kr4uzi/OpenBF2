@@ -1,6 +1,7 @@
 // Antenna-object lifecycle and visual simulation.
 
 #include "AntennaObject.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 
 #include <cfloat>
 #include <cmath>
@@ -21,15 +22,16 @@ namespace {
 #if defined(_MSC_VER)
 #define BF2_ANTENNA_GEOM_CALL __thiscall
 const unsigned int setBoneTransformsSlot = 0x54;
-#else
-#define BF2_ANTENNA_GEOM_CALL
-const unsigned int setBoneTransformsSlot = 0x58;
 #endif
 void geometrySetBoneTransforms(void* geometry, const Mat4* transforms, int boneCount)
 {
+#if defined(_MSC_VER)
     typedef void (BF2_ANTENNA_GEOM_CALL* F)(void*, const Mat4*, int);
     reinterpret_cast<F>(
         (*static_cast<void***>(geometry))[setBoneTransformsSlot / 4])(geometry, transforms, boneCount);
+#else
+    geometry_part::setBoneTransforms(geometry, transforms, boneCount);           // ELF +0x58
+#endif
 }
 #undef BF2_ANTENNA_GEOM_CALL
 

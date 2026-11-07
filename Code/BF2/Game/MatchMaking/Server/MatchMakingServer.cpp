@@ -14,6 +14,7 @@ extern "C" {
 #include "MMBackend.h"
 #include "GameSpyBackend.h"
 #include "ServerQueryCache.h"      // serverQueryCache - MatchMakingServer::update ticks it
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -78,7 +79,7 @@ const char* GameSpyCDKeyAuthenticator::getChallengeString()
     if (!challenge[0])
     {
         for (unsigned int i = 0; i < 8; ++i)
-            challenge[i] = alphabet[std::rand() % (sizeof(alphabet) - 1)];
+            challenge[i] = alphabet[bf2crt::rand() % (sizeof(alphabet) - 1)];
         challenge[8] = 0;
     }
     return challenge;

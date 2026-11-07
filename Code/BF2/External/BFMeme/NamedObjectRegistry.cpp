@@ -312,11 +312,13 @@ bool NameTreeObjectEntry::stream(System* system, Stream* output)
     if (m_object && !output->streamObject(system, m_object, "Object", nullptr)) return false;
     return next ? next->stream(system, output) : true;
 }
-// [FRONTIER] saveNamedObject82AB60 and specialized visitor descriptor defaults
-// are still deeper dependencies. No registry/System factory is published.
+// saveNamedObject is defined in ClassOStream.cpp; System::init owns registry creation.
+// [FRONTIER] Specialized visitor descriptor defaults remain outside this registry.
+#if defined(_M_IX86)
 static_assert(sizeof(NameTreeNode) == 8, "name-tree node layout");
 static_assert(sizeof(NameTreeContainer) == 16, "name-tree container layout");
 static_assert(sizeof(NameTreeRoot) == 16, "name-tree root layout");
 static_assert(sizeof(NameTreeObjectEntry) == 12, "name-tree object entry layout");
+#endif
 } }
 #endif

@@ -25,8 +25,9 @@ class SurroundingPatchEditable : public SurroundingPatch
 public:
     explicit SurroundingPatchEditable(TerrainEditable* owner);
     virtual ~SurroundingPatchEditable();                                    // slot +0x00: 0x101A5F80 -> body 0x101A24E0
-    // Slot +0x04 the ring patch's editor draw; TerrainEditable's ring draw (0x101098B0)
-    // calls it with 0 after binding the shared ring buffers. The argument is not read.
+    // Slot +0x04 the ring patch's editor draw; TerrainEditable's ring draw
+    // (drawEditorSurrounding) calls it with 0 after binding the shared ring buffers. The argument
+    // is not read.
     virtual void draw(int unused);
 
     void init(int slot);
@@ -41,12 +42,19 @@ public:
                        float* out, int* cursor, int flags);                 // (`retn 24h`)
     void normalSubGrid(int x0, int z0, int x1, int z1, int stepX, int stepZ,
                        Vec3* out, int* cursor, int flags);                  // (`retn 24h`; flags unread)
+    // Slot-dependent orientation maps of (x, z); non-virtual, unreachable in 1.50 (PE 0x101A1F30 / 0x101A2010).
+    float orientedX(float x, float z);               // (`retn 8`) [INFERRED] name
+    float orientedZ(float x, float z);               // (`retn 8`) [INFERRED] name
     void drawForLightmapGeneration();
     // TerrainLightSampling's read: (originX, 0, originZ) .. (endX, 0, endZ); only min and max are
     // written. [INFERRED] name.
     void getWorldBounds(TerrainAabb& box);
     void makeColormapEditCopy();
     void commitColormapEdit();
+    // Non-virtual, unreachable in 1.50 (PE 0x101A2360 / 0x101A29F0 / 0x101A2A40). [INFERRED] names.
+    void clearColormapEdit();
+    void releaseTexture178();
+    void releaseTexture17C();
     void reloadLightmap();
     void paintColor(float x, float z, float radius, int strength, unsigned int color);
     void paintDetail(float x, float z, float radius, int strength, unsigned int color);
@@ -59,7 +67,7 @@ public:
     void saveLowDetailMap();
     void compileLowDetailMap();
     void saveEditedColormap();
-    void burnColormap(const vc71::string& base);                            // (`retn 4`; `base` read only when not ready)
+    void burnColormap(const std::string& base);                            // (`retn 4`; `base` read only when not ready)
 
     // Owned editable textures; destruction releases low-detail/overlay resources before colormaps.
     dx9rend::EngineTexture* m_colormapEdit;        // +0x168  the brushes' edit copy (makeColormapEditCopy), committed by alpha

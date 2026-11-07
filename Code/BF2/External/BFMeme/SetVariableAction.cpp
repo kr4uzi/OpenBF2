@@ -5,18 +5,37 @@
 #include "Data.h"
 #include "Stream.h"
 #include "TypeDescriptor.h"
+#if defined(__APPLE__) && defined(__LP64__)
+#include "NativeSavedDispatch.h"
+#endif
 namespace dice { namespace meme {
 namespace {
 // MSVC x86 dispatch captures the destination table before reading the source, then reloads the receiver.
 // Preserve the saved table: a normal virtual call could select a replacement receiver's implementation.
 // Helper names and isolation are [INFERRED].
+#if defined(__APPLE__) && defined(__LP64__)
+// [CHOSEN, not recovered] Select the compiler's native slot while retaining the saved table.
+using DataMethodTable = native_dispatch::SavedVirtual<decltype(&Data::setFloat)>;
+DataMethodTable captureDataMethods(Data* data)
+{ return DataMethodTable(data, &Data::setFloat); }
+#else
 using DataSetFloatMethod = bool (__thiscall*)(Data*, System*, float);
 using DataMethodTable = void* const*;
 DataMethodTable captureDataMethods(Data* data)
 { return *reinterpret_cast<DataMethodTable const*>(data); }
+// Slot 0x4C/4 is setFloat in both MSVC table layouts (one destructor slot); on x64 the
+// __thiscall spelling is ignored and the same table index is read.
+#endif
 void callCapturedSetFloat(DataMethodTable methods, Data* receiver, System* system, float value)
+#if defined(__APPLE__) && defined(__LP64__)
+// [CHOSEN, not recovered] Native ABI counterpart of the unchanged PE arm below.
+{ methods(receiver, system, value); }
+#else
 { reinterpret_cast<DataSetFloatMethod>(methods[0x4C / 4])(receiver, system, value); }
+#if defined(_M_IX86)
 static_assert(sizeof(void*) == 4, "PE Data dispatch is x86");
+#endif
+#endif
 }
 SetVariableAction::SetVariableAction() : m_variable(nullptr), m_data(nullptr) {}
 SetVariableAction::~SetVariableAction() {}
@@ -47,6 +66,8 @@ bool SetVariableAction::execute(System* system, const Rect*, const NodeState*, c
     }
     return false; // The destination setter's result is discarded in retail.
 }
+#if defined(_M_IX86)
 static_assert(sizeof(SetVariableAction) == 12, "client SetVariableAction");
+#endif
 } }
 #endif

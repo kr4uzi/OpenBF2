@@ -1,6 +1,9 @@
 // Menu transform node. [INFERRED] Source placement.
 // Inherited unimplemented Node operations retain their diagnostic stops.
 #include "BfTransformNode.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "../External/BFMeme/Data.h"
 #include "../External/BFMeme/NodeState.h"
@@ -34,6 +37,8 @@ public:
 
 float decodedState(float value) // 7D2FBD..7D2FFC /838F40, binary32 store
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld value
@@ -48,6 +53,20 @@ float decodedState(float value) // 7D2FBD..7D2FFC /838F40, binary32 store
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Only an ordered negative value is decoded; zero, positive and NaN pass through the
+    // double round trip, which quiets a signalling NaN as fld/fstp does.
+    const double loaded = value;
+    return static_cast<float>(value < 0.0f ? -(loaded + 1.0) : loaded);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 negative-state decoding and float store.
+    result = bf2x87::store(bf2x87::decoded(value));
+    return result;
+#endif
 }
 float stateRate(const NodeState& state) // 838F40 ->82BD30; unused receivers
 {
@@ -59,6 +78,8 @@ float stateRate(const NodeState& state) // 838F40 ->82BD30; unused receivers
 }
 bool sumNotLess(float first, float second, float limit)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     bool result;
     __asm {
         fld first
@@ -69,9 +90,24 @@ bool sumNotLess(float first, float second, float limit)
         setp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // setp after test ah,5: false only for an ordered sum below the limit.
+    const double sum = static_cast<double>(first) + second;
+    return !(sum < limit);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    bool result;
+    // [CHOSEN, not recovered] Preserve x87 unordered-or-not-less sum.
+    result = bf2x87::sumNotLess(first, second, limit);
+    return result;
+#endif
 }
 bool stateEnabled(float value) // 7D3230..7D325E; no float spill before comparison
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     const float one = 1.0f;
     bool result;
     __asm {
@@ -90,6 +126,20 @@ bool stateEnabled(float value) // 7D3230..7D325E; no float spill before comparis
         setp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // The decoded value is compared unrounded; unordered compares pass.
+    const double decoded = value < 0.0f ? -(static_cast<double>(value) + 1.0) : value;
+    return !(decoded < 1.0);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float one = 1.0f;
+    bool result;
+    // [CHOSEN, not recovered] Preserve x87 unspilled decoded state comparison.
+    result = bf2x87::notLess(bf2x87::decoded(value), bf2x87::wide(one));
+    return result;
+#endif
 }
 }
 
@@ -194,6 +244,8 @@ bool BfTransformNode::updateSelf(System* system, const NodeState*, const Rect*, 
     sampleData(system);
     return true;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(BfTransformNode) == 80, "client BfTransformNode layout");
+#endif
 } }
 #endif

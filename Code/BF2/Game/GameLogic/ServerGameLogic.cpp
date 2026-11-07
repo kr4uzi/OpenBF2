@@ -3,6 +3,9 @@
 // Keep the retail event order and unchecked assumptions at each call site.
 
 #include "ServerGameLogic.h"
+#if defined(__APPLE__)
+#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 
 #include <list>
 #include <map>
@@ -545,6 +548,33 @@ void ServerGameLogic::uPlaying(float deltaTime)
 
     if (getBeginRoundState() == 3 && m_shouldUpdateTicketSystem)                     // +0x28C
         uPlayingTicketSystem(deltaTime);
+
+#if !defined(_WIN32)
+    // [TEMP] [CHOSEN, not recovered] BF2_ROUND_TRACE=1: one stderr line per BeginRoundState
+    // change and every 30 s of play (tickets, alive humans, players), so loopback runs can
+    // confirm the round start from the server log. Off by default; reads only.
+    // [RETIRE-WHEN: the macOS loopback round checks move to a query tool]
+    static const bool roundTrace = std::getenv("BF2_ROUND_TRACE") != 0;
+    if (roundTrace)
+    {
+        static int lastState = -1;
+        static unsigned int lastTick = 0;
+        const int now = static_cast<int>(getBeginRoundState());
+        const unsigned int tick = static_cast<unsigned int>(WorldPref::getTickCount());
+        if (now != lastState || (now == 3 && tick - lastTick >= 900))
+        {
+            std::fprintf(stderr,
+                         "[round] state %d -> %d tick %u aliveHumans %d players %d needed %d "
+                         "tickets %u/%u ai %d\n",
+                         lastState, now, tick, world::playerManager->getNumberOfAliveHumanPlayers(),
+                         world::playerManager->getNumberOfPlayers(),
+                         serverSettings->getNumPlayersNeededToStart(), getNumberOfTickets(1),
+                         getNumberOfTickets(2), ai::g_aiInstance != 0 ? 1 : 0);
+            lastState = now;
+            lastTick = tick;
+        }
+    }
+#endif
 }
 
 
@@ -1324,6 +1354,20 @@ void ServerGameLogic::checkSpecialForcesTriggers(world::IPlayer* player, world::
         soldier->handleMessage(static_cast<TemplateMessage>(26), player, false);
 }
 
+#if !defined(_WIN32)
+// [TEMP] BF2_ENTRY_TRACE=1: which step of the vehicle entry refuses (diagnosis only, no behaviour).
+// [RETIRE-WHEN: vehicle-entry-diagnosed]
+static bool entryTraceArmed()
+{
+    static const bool armed = std::getenv("BF2_ENTRY_TRACE") != 0;
+    return armed;
+}
+#define BF2_ENTRY_TRACE(...) do { if (entryTraceArmed()) { std::fprintf(stderr, "[ENTRY] " __VA_ARGS__); \
+    std::fputc('\n', stderr); std::fflush(stderr); } } while (0)
+#else
+#define BF2_ENTRY_TRACE(...) do { } while (0)
+#endif
+
 // Processes a player's per-tick fire, vehicle, seat, device and camera input.
 // Dead players proceed only while using their free camera. The drop-key path requires a vehicle.
 // Entering or leaving rereads the current vehicle for later actions; repeated queries are intentional.
@@ -1340,6 +1384,8 @@ void ServerGameLogic::checkPlayerTriggers(world::IPlayer* player, world::IObject
     // 2. PIUse - the enter / exit key
     if (inputPressed(input, io::PIUse))
     {
+        BF2_ENTRY_TRACE("PIUse p%d holdsSelectable=%d", player->getId(),
+                        playerHoldsSelectableWeapon(effectiveControlObject(player)) ? 1 : 0);
         if (!playerHoldsSelectableWeapon(effectiveControlObject(player)))
         {
             toggleEntryPoint(player, true);
@@ -1589,9 +1635,13 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
 
     world::IPlayer* const player = getPlayer(playerArg);        // the identity
 
+    BF2_ENTRY_TRACE("toggle p%d enter=%d", player->getId(), enter ? 1 : 0);
     // gate 1: a spectator toggles nothing
     if (player->getVehicle() == player->getFreeCamera())         // +0x48 / +0xA8
+    {
+        BF2_ENTRY_TRACE("refused: free camera");
         return;
+    }
 
     // gate 2: a dead or wrecked body
     // the template is read raw (+0x14) and dereferenced with NO null check, unlike the enter half.
@@ -1602,18 +1652,28 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
         world::IArmorGLComp* const armor = static_cast<world::IArmorGLComp*>(
             world::object_detail::LayoutAccess::armorComponent(player->getVehicle()));   // +0x3C
         if (armor && armor->getStatus())                         // +0x5C: 0 alive, 1 wreck, 2 gone
+        {
+            BF2_ENTRY_TRACE("refused: armor status %d", (int) armor->getStatus());
             return;
+        }
     }
 
     // gate 3: the one-second world-time cooldown
     if (WorldPref::getWorldTime() - static_cast<Player*>(player)->m_worldTime < 1.0f)     // +0xE4
+    {
+        BF2_ENTRY_TRACE("refused: cooldown (now %.2f last %.2f)", (double) WorldPref::getWorldTime(),
+                        (double) static_cast<Player*>(player)->m_worldTime);
         return;
+    }
 
     world::IObject* vehicle = player->getVehicle();              // +0x48
     world::IPlayerControlObject* const pco = static_cast<world::IPlayerControlObject*>(
         vehicle->queryInterface(world::IID_IPlayerControlObject));                        // +0x0C
     if (!pco)
+    {
+        BF2_ENTRY_TRACE("refused: vehicle has no PCO");
         return;
+    }
 
     // `proceed` is decided before the exit half runs and is not recomputed afterwards: a player
     // whose seat forbids entering another vehicle still gets to leave it, they just do not get the
@@ -1694,6 +1754,7 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
         }
     }
 
+    BF2_ENTRY_TRACE("inVehicle=%d proceed=%d", inVehicle ? 1 : 0, proceed ? 1 : 0);
     if (!proceed)
         return;
 
@@ -1704,7 +1765,10 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
             world::object_detail::LayoutAccess::objectTemplate(vehicle);                  // +0x14
         if (vt && vt->getClassID() == world::CID_SoldierTemplate &&
             !static_cast<world::Soldier*>(vehicle)->isNotFireingOrHaveRecoil())           // +0x298
+        {
+            BF2_ENTRY_TRACE("refused: soldier firing or recoiling");
             return;
+        }
     }
 
     const float radius = enter ? 3.0f : 5.0f;      // cmovnz flt_888E6B8 (3.0) over 0x40A00000 (5.0)
@@ -1736,6 +1800,8 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
         entry = world::BFfindEntryPoint(position, radius, player->getTeam(),              // +0xE8
                                         player, enter, true, true);
     }
+    BF2_ENTRY_TRACE("search at %.1f/%.1f/%.1f r=%.1f team=%d -> entry=%p", (double) position.x,
+                    (double) position.y, (double) position.z, (double) radius, player->getTeam(), (void*) entry);
 
     if (entry)
     {
@@ -1746,7 +1812,9 @@ void ServerGameLogic::toggleEntryPoint(world::IPlayer* playerArg, bool enter)
 
         world::IObject* const target = static_cast<world::IObject*>(
             entry->queryInterface(world::IID_IObject));                                   // +0x0C
-        if (game->enterVehicle(player, target, false))                                 // +0xA4
+        const bool entered = game->enterVehicle(player, target, false);                // +0xA4
+        BF2_ENTRY_TRACE("enterVehicle -> %d", entered ? 1 : 0);
+        if (entered)
             static_cast<Player*>(player)->m_worldTime = static_cast<float>(WorldPref::getWorldTime());
     }
     else
@@ -1933,6 +2001,14 @@ void ServerGameLogic::spawnPlayer(world::IPlayer* playerArg, std::pair<Vec3, Vec
     {
         if (settings->boolGet(std::string("UseAI"), false) == 1)
             refuseBecauseAI = (player->getIsAIPlayer() == 1);           // +0x64
+#if !defined(_WIN32)
+        // [TEMP] [CHOSEN, not recovered] AI test aid: BF2_AI_SPAWN_WITHOUT_HUMAN=1 lets bots
+        // take the first spawn wave without a human, so AI runs need no client (server-only
+        // loopback). Off by default; the shipped rule above is unchanged.
+        // [RETIRE-WHEN: AI recovery reaches G6]
+        if (refuseBecauseAI && std::getenv("BF2_AI_SPAWN_WITHOUT_HUMAN"))
+            refuseBecauseAI = false;
+#endif
     }
     if (refuseBecauseAI)
         return;
@@ -2434,7 +2510,12 @@ PyObject* sgl_setParam(PyObject*, PyObject* args)
     // four keys to the game logic, five to the score manager - and each narrows the double
     //    differently. See the note above.
     if (key.compare("tickets") == 0)
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] Keep the x86 wrap of a negative value (arm64 saturates): docs/macos-c-arm64-client.md.
+        sgl->setNumberOfTickets(team, bf2x87::lowUInt32(value));
+#else
         sgl->setNumberOfTickets(team, static_cast<unsigned int>(value));
+#endif
     else if (key.compare("ticketLimit") == 0)
         // GameLogic.py passes (team, limitId, threshold) here: the generic `value` is
         // the limit ID and the generic `id` argument is its threshold. Keep their order.

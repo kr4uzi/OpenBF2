@@ -51,6 +51,38 @@ struct Vec2
     float x, y;
 };
 
+// Component arithmetic the RendDX9 image emits as separate functions (the callers in this source spell
+// the components inline). [INFERRED] names; each is one float operation per component.
+// PE 0x100513A0: rhs + self, per component.
+inline Vec3 vec3Sum(const Vec3& self, const Vec3& rhs)
+{
+    Vec3 result = { rhs.x + self.x, rhs.y + self.y, rhs.z + self.z };
+    return result;
+}
+
+// PE 0x10030D50: self scaled by `scale`, per component.
+inline Vec3 vec3Scaled(const Vec3& self, float scale)
+{
+    Vec3 result = { scale * self.x, scale * self.y, scale * self.z };
+    return result;
+}
+
+// PE 0x1000BDD0: copies the four components of `rhs` into `self`.
+inline void vec4Assign(Vec4& self, const Vec4& rhs)
+{
+    self.x = rhs.x;
+    self.y = rhs.y;
+    self.z = rhs.z;
+    self.w = rhs.w;
+}
+
+// PE 0x100513D0: self scaled by `scale`, per component.
+inline Vec4 vec4Scaled(const Vec4& self, float scale)
+{
+    Vec4 result = { scale * self.x, scale * self.y, scale * self.z, scale * self.w };
+    return result;
+}
+
 // Colour plus intensity in one token group - four numbers, not three. Console metadata declares
 // this type for `color`, `speccolor` and the sun colour properties.
 struct Vec3ColorFloatIntensity

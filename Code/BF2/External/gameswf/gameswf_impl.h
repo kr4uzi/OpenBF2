@@ -57,6 +57,10 @@ namespace gameswf
 		// body is not located; the rule reproduces the golden.] False when no exported font matches.]
 		virtual bool	get_exported_font_name(const font* f, tu_string* out) { return false; }
 		virtual character_def*	get_character_def(int id) = 0;
+		// Movie teardown: drops the classes Object.registerClass bound to this definition's
+		// exports, so a definition kept in the library for the next player holds no function of
+		// the released movie. [CHOSEN, not recovered] issue #7; see release_script_objects.
+		virtual void	release_registered_classes() {}
 
 		virtual bool	get_labeled_frame(const char* label, int* frame_number) = 0;
 
@@ -427,6 +431,25 @@ namespace gameswf
 		// generic_character::m_def_owner); a sprite already owns its definition through m_def.
 		virtual void	hold_definition(character_def* /*def*/) {}
 
+		// Movie teardown (release_script_objects): appends every object or function this character
+		// references from script state (event handlers, the mask; overrides add their environment
+		// and children) to *held, then clears its own references, so clips of a released movie no
+		// longer keep each other alive. Runs no ActionScript.
+		// [CHOSEN, not recovered] issue #7 (https://github.com/B2BF/OpenBF2/issues/7).
+		virtual void	release_script_values(array<as_value>* held)
+		{
+			for (hash<event_id, as_value>::iterator it = m_event_handlers.begin(); it != m_event_handlers.end(); ++it)
+			{
+				hold_script_value(held, it->second);
+			}
+			m_event_handlers.clear();
+			if (m_mask != NULL)
+			{
+				held->push_back(as_value(m_mask.get_ptr()));
+				m_mask = NULL;
+			}
+		}
+
 		character(movie* parent, int id)
 			:
 			m_id(id),
@@ -595,6 +618,16 @@ namespace gameswf
 			{
 				return;
 			}
+			release_mouse_capture_within();
+		}
+
+		// The capture walk set_visible ends with (sub_1007F030), also inlined by the display list's
+		// remove_display_object (0x100A7A20: 0x100A7A67..0x100A7AAA) and replace_display_object
+		// (0x100A8080: 0x100A80B3..0x100A80ED) for the character leaving the list: when the root's
+		// active entity is this character or lies beneath it, the capture is dropped. Both list
+		// bodies fetch the root through sub_10071710 (the global root, see the [CHOSEN] note above).
+		void	release_mouse_capture_within()
+		{
 			movie*	owner = this;	// the nearest sprite: only a sprite answers get_root()
 			while (owner != NULL && owner->get_root() == NULL)
 			{

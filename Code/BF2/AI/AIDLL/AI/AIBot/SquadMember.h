@@ -54,11 +54,11 @@ public:
     void reset();                            // ELF 0x1B1930
     void removeRequest();                     // ELF 0x1B1990
     void squadMemberKilled();                 // ELF 0x1B1E60
-    bool avoidArtillery(Vec3 position, double sinceStart, int side);   // ELF 0x1B2840 [FRONTIER]
+    bool avoidArtillery(Vec3 position, double sinceStart, int side);   // ELF 0x1B2840
     bool getPosition(Vec3& position);         // copies even if invalid
-    bool isAllowedInFormation();             // nonnull vehicle [FRONTIER]
-    void updateMemberPos();                  // nonnull vehicle [FRONTIER]
-    bool isMobile();                         // owner query [FRONTIER]
+    bool isAllowedInFormation();             // ELF 0x1B5380
+    void updateMemberPos();                  // ELF 0x1B1A70
+    bool isMobile();                         // ELF 0x1B5560
     void moveWithFormation();                // ELF 0x1B3AC0
     void moveToSlotPos(const Vec3& position, Information* information);   // ELF 0x1B3FF0
     void moveWithoutFormation();             // ELF 0x1B3E20

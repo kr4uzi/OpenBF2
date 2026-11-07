@@ -97,7 +97,7 @@ struct FixtureManager : IControlMapManager {
     void setActive(const std::string& name) override { unexpected(); }
     void setActive(const IControlMap* map) override { unexpected(); }
     IControlMap* getActive() const override { ++calls; return map; }
-    bool mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d, std::string& out) override { unexpected(); }
+    int mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d, std::string& out) override { unexpected(); }
     float getRepeatRate(int id, bool b) override { unexpected(); }
     void applyActive() override { unexpected(); }
 };

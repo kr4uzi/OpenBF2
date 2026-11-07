@@ -45,6 +45,7 @@
 #include "../RotationalBundleTemplate.h"
 #include "RotationalBundle.h"                                  // getCurrentRotation
 #include "Kit.h"                                               // reviveAnimations' geometry gate
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -59,38 +60,37 @@ typedef object_detail::LayoutAccess L;     // the raw Object offsets, as Soldier
 // reviveAnimations tells the carried kit's geometry that the soldier has returned to the prone
 // pose. geom::IGeometry is still unrecovered, but this one seam is bounded in both shipped x86
 // images: handleMessage is PE/MSVC +0x60 and ELF/Itanium +0x64 (the destructor-pair shift).
+// The slot follows the compiler's destructor ABI, so native MSVC x64 takes the PE arm too.
 void geometryHandleMessage(void* geometry, TemplateMessage message, void* payload)
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if defined(_MSC_VER)
     typedef void (__thiscall *Method)(void*, TemplateMessage, void*);
-    const unsigned int slot = 0x60 / sizeof(void*);
-#else
-    typedef void (*Method)(void*, TemplateMessage, void*);
-    const unsigned int slot = 0x64 / sizeof(void*);
-#endif
+    const unsigned int slot = 0x60 / 4;
     void** const vtable = *reinterpret_cast<void***>(geometry);
     reinterpret_cast<Method>(vtable[slot])(geometry, message, payload);
+#else
+    // RendDX9 SkinnedMesh +0x60 (0x101A67E0) is (int part, byte flag): `cmp byte [ebp+0xC],0`,
+    // then +0x17C = part or -1. The second dword's low byte is the flag (ELF +0x64).
+    geometry_part::setExcludedPart(geometry, static_cast<int>(message),
+                                   (reinterpret_cast<uintptr_t>(payload) & 0xFFu) != 0);
+#endif
 }
 
 // Renderer dispatch for field of view, geometry selection and bone palettes.
-// Explicit PE/ELF slot constants account for their differing destructor layouts.
-#if defined(_MSC_VER) && defined(_M_IX86)
+// Explicit PE/ELF slot constants account for their differing destructor layouts; MSVC x64 keeps
+// the MSVC (PE) table order.
+#if defined(_MSC_VER)
 #define BF2_SOLDIER_GEOM_CALL __thiscall
 const unsigned int kGeometrySetFovSlot            = 0x10;
 const unsigned int kGeometrySetGeomIndexSlot      = 0x6C;
 const unsigned int kGeometrySetBoneTransformsSlot = 0x54;
 const unsigned int kGeometryGatherUsedBonesSlot   = 0x58;
-#else
-#define BF2_SOLDIER_GEOM_CALL
-const unsigned int kGeometrySetFovSlot            = 0x10;
-const unsigned int kGeometrySetGeomIndexSlot      = 0x70;
-const unsigned int kGeometrySetBoneTransformsSlot = 0x58;
-const unsigned int kGeometryGatherUsedBonesSlot   = 0x5C;
 #endif
+#if defined(_MSC_VER)
 
 template<class F> F geometrySlot(void* geometry, unsigned int offset)
 {
-    return reinterpret_cast<F>((*static_cast<void***>(geometry))[offset / sizeof(void*)]);
+    return reinterpret_cast<F>((*static_cast<void***>(geometry))[offset / 4]);
 }
 
 void geometrySetFov(void* geometry, float fov)
@@ -119,6 +119,14 @@ void geometryGatherUsedBones(void* geometry, std::vector<int>* out)
     geometrySlot<F>(geometry, kGeometryGatherUsedBonesSlot)(geometry, out);
 }
 #undef BF2_SOLDIER_GEOM_CALL
+#else
+// Non-MSVC: the named geometry_part operations (ELF +0x10 / +0x70 / +0x58 / +0x5C).
+void geometrySetFov(void* geometry, float fov) { geometry_part::setFov(geometry, fov); }
+void geometrySetGeomIndex(void* geometry, int geom) { geometry_part::setSubgeom(geometry, geom); }
+void geometrySetBoneTransforms(void* geometry, const Mat4* transforms, unsigned int boneCount)
+{ geometry_part::setBoneTransforms(geometry, transforms, static_cast<int>(boneCount)); }
+void geometryGatherUsedBones(void* geometry, std::vector<int>* out) { geometry_part::gatherUsedBones(geometry, out); }
+#endif
 
 // Soldier animation and physics console tuning values.
 float* const rd_expForceMod                 = Vars::getFloat("rd_expForceMod", 1.0f);                  // applyExplosionForce
@@ -900,12 +908,12 @@ void Soldier::updateThirdPersonAnimations(float dt, bool updateGeometry)
             }
             else
             {
-                const float roll = static_cast<float>(rand() % 16) * 0.0625f;
+                const float roll = static_cast<float>(bf2crt::rand() % 16) * 0.0625f;
                 m_soldierLookIdleTime = roll * *soldier_lookIdleTime;
                 if (roll >= 0.5f)
                 {
                     m_headPosition.z = *soldier_lookIdleAngle;
-                    if ((rand() & 1) != 0)
+                    if ((bf2crt::rand() & 1) != 0)
                         m_headPosition.z = -m_headPosition.z;
                 }
                 else

@@ -15,7 +15,8 @@ rem   The shipped TextureAtlasBuilder.dll in the reference game directory is the
 rem   Sources: Code\BF2\RendDX9\TextureAtlas\TextureAtlasBuilder\ (every TU is guarded by
 rem   BF2_IMAGE_TEXTUREATLASBUILDER and compiles to nothing anywhere else).
 rem
-rem   usage:  textureatlasbuilder.cmd [native]   CRT heap, no Memory.dll
+rem   usage:  textureatlasbuilder.cmd [native]   CRT heap, no Memory.dll, x86
+rem           textureatlasbuilder.cmd x64        the native x64 client's atlas DLL
 rem   BF2_TEXTUREATLAS_OUT and BF2_TEXTUREATLAS_BIN override the output paths.
 rem [CHOSEN, not recovered] Native-only builds: https://github.com/B2BF/OpenBF2/issues/7
 rem
@@ -34,11 +35,22 @@ rem returns 0 without building). Failures leave through :fail - an `exit /b 1` i
 rem a `cmd /c` caller as 0.
 rem ===========================================================================
 if not "%~2"=="" goto :usage
+set "ARCH=x86"
 if "%~1"=="" goto :args_ok
 if /i "%~1"=="native" goto :args_ok
+set "ARCH=x64"
+if /i "%~1"=="x64" goto :args_ok
 goto :usage
 :args_ok
-call "%~dp0vsdevcmd.cmd" x86
+call "%~dp0vsdevcmd.cmd" %ARCH%
+if errorlevel 1 goto :fail
+rem The exact SDK generation the shipped image was built with (D3DX_SDK_VERSION 25 = April 2005):
+rem its d3dx9.lib names d3dx9_25.dll, and its DxErr9.lib is the very DXGetErrorString9A the shipped
+rem image linked (third-party code). dxsdk.cmd refuses any other SDK.
+rem [CHOSEN, not recovered] Without the SDK, dxsdk.cmd's fallback (BF2_D3DX) sets BF2_D3DX_FALLBACK:
+rem d3dx9_25.lib comes from RendDX9Abi\D3dx9_25.def, <d3dx9.h>/<dxerr9.h> from
+rem RendDX9Abi\D3dxFallbackInclude, and DXGetErrorString9A from RendDX9Abi\DxErr9StandIn.cpp.
+call "%~dp0dxsdk.cmd" %ARCH% fallback
 if errorlevel 1 goto :fail
 
 for %%I in ("%~dp0..") do set CODE=%%~fI
@@ -47,40 +59,21 @@ set BF2=%CODE%\BF2
 set SRC=%CODE%\BF2\RendDX9\TextureAtlas\TextureAtlasBuilder
 set OUT=%~dp0obj_textureatlasbuilder_native
 set BIN=%~dp0bin_textureatlasbuilder_native
+if "%ARCH%"=="x64" set OUT=%~dp0obj_textureatlasbuilder_x64
+if "%ARCH%"=="x64" set BIN=%~dp0bin_textureatlasbuilder_x64
 rem Preserve agent/CI output isolation.
 if defined BF2_TEXTUREATLAS_OUT set "OUT=%BF2_TEXTUREATLAS_OUT%"
 if defined BF2_TEXTUREATLAS_BIN set "BIN=%BF2_TEXTUREATLAS_BIN%"
 for %%I in ("%OUT%") do set "OUT=%%~fI"
 for %%I in ("%BIN%") do set "BIN=%%~fI"
 
-rem The exact SDK generation the shipped image was built with (D3DX_SDK_VERSION 25 = April 2005):
-rem its d3dx9.lib names d3dx9_25.dll, and its DxErr9.lib is the very DXGetErrorString9A the shipped
-rem image linked (third-party code). Same detection as renddx9.cmd. Without it, d3dx9_25.lib is made
-rem from RendDX9Abi\D3dx9_25.def and DxErr9StandIn.cpp ([CHOSEN], error TEXT only) stands in.
-set "DXSDK_2005_ROOT="
-set "DXSDK_CANDIDATE="
-if defined DXSDK_DIR for %%I in ("%DXSDK_DIR%\.") do set "DXSDK_CANDIDATE=%%~fI"
-if defined DXSDK_CANDIDATE if exist "%DXSDK_CANDIDATE%\Include\d3dx9core.h" (
-    findstr /c:"#define D3DX_SDK_VERSION 25" "%DXSDK_CANDIDATE%\Include\d3dx9core.h" >nul 2>&1
-    if not errorlevel 1 if exist "%DXSDK_CANDIDATE%\Lib\x86\d3dx9.lib" set "DXSDK_2005_ROOT=%DXSDK_CANDIDATE%"
-)
-if not defined DXSDK_2005_ROOT if exist "C:\Program Files (x86)\Microsoft DirectX 9.0 SDK (April 2005)\Include\d3dx9core.h" (
-    findstr /c:"#define D3DX_SDK_VERSION 25" "C:\Program Files (x86)\Microsoft DirectX 9.0 SDK (April 2005)\Include\d3dx9core.h" >nul 2>&1
-    if not errorlevel 1 if exist "C:\Program Files (x86)\Microsoft DirectX 9.0 SDK (April 2005)\Lib\x86\d3dx9.lib" set "DXSDK_2005_ROOT=C:\Program Files (x86)\Microsoft DirectX 9.0 SDK (April 2005)"
-)
-rem BF2_TEXTUREATLAS_NO_SDK=1 forces the no-SDK fallback (to test it on a machine that has the SDK).
-if defined BF2_TEXTUREATLAS_NO_SDK set "DXSDK_2005_ROOT="
-set "D3DX25_LIB=%OUT%\d3dx9_25.lib"
-set "DXERR_LIBS="
-set DXERR_STANDIN=1
-if defined DXSDK_2005_ROOT set "D3DX25_LIB=%DXSDK_2005_ROOT%\Lib\x86\d3dx9.lib"
+set "D3DX25_LIB=%BF2_DXSDK_LIB%\d3dx9.lib"
 rem DxErr9.lib is a VC7.1 object: its DXTrace references __vsnprintf (legacy_stdio_definitions.lib)
 rem and MessageBox (user32.lib). /OPT:REF drops DXTrace, so neither reaches the import table - the
 rem ABI check below holds that.
-if defined DXSDK_2005_ROOT if exist "%DXSDK_2005_ROOT%\Lib\x86\DxErr9.lib" (
-    set DXERR_LIBS="%DXSDK_2005_ROOT%\Lib\x86\DxErr9.lib" legacy_stdio_definitions.lib user32.lib
-    set DXERR_STANDIN=0
-)
+set DXERR_LIBS="%BF2_DXSDK_LIB%\DxErr9.lib" legacy_stdio_definitions.lib user32.lib
+if defined BF2_D3DX_FALLBACK set "D3DX25_LIB=%OUT%\d3dx9_25.lib"
+if defined BF2_D3DX_FALLBACK set "DXERR_LIBS="
 
 rem /MT                       - the static CRT and STL (see the header).
 rem /DBF2_IMAGE_TEXTUREATLASBUILDER - admits the TUs (they compile to nothing without it) and makes
@@ -92,13 +85,15 @@ rem No /Gr: the conventions the ABI needs are spelled out in ITextureAtlas.h.
 set FLAGS=/nologo /c /MT /O2 /std:c++14 /permissive /EHsc /W4 /wd4100 /wd4127 /Zi /FS ^
  /DBF2_IMAGE_TEXTUREATLASBUILDER /DDEDICATED=0 /FI"%BF2%\Core\BuildConfig.h" /DWIN32 /D_WINDOWS /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_DEPRECATE ^
  /Fd"%OUT%\TextureAtlasBuilder.pdb"
+if "%ARCH%"=="x64" set FLAGS=%FLAGS% /we4311 /we4312
+if defined BF2_D3DX_FALLBACK set FLAGS=%FLAGS% /I"%ABI%\D3dxFallbackInclude"
 
 echo   Native atlas heap, CRT=/MT
 echo   CODE=%CODE%
 echo   OUT=%OUT%
 echo   BIN=%BIN%
-if defined DXSDK_2005_ROOT (echo   D3DX: the April 2005 SDK's d3dx9.lib) else (echo   D3DX: no April 2005 SDK - d3dx9_25.lib from D3dx9_25.def)
-if "%DXERR_STANDIN%"=="1" (echo   DXGetErrorString9A: the [CHOSEN] stand-in, DxErr9StandIn.cpp) else (echo   DXGetErrorString9A: the SDK's DxErr9.lib)
+if not defined BF2_D3DX_FALLBACK echo   D3DX: the April 2005 SDK's d3dx9.lib and DxErr9.lib
+if defined BF2_D3DX_FALLBACK echo   D3DX: no SDK - d3dx9_25.lib from D3dx9_25.def, DXGetErrorString9A stand-in
 if not exist "%OUT%" mkdir "%OUT%"
 if not exist "%OUT%" goto :fail
 if not exist "%BIN%" mkdir "%BIN%"
@@ -107,17 +102,14 @@ del /q "%OUT%\*.obj" >nul 2>&1
 del /q "%OUT%\*.log" >nul 2>&1
 
 rem ---------------------------------------------------------------------------
-rem STEP 1 - import library for d3dx9_25.dll when the matching SDK is absent.
+rem STEP 1 - import libraries: the DirectX SDK's, selected above, or without it the D3DX library
+rem generated from D3dx9_25.def.
 rem ---------------------------------------------------------------------------
 echo [1/4] import libraries
-type nul > "%OUT%\lib.log"
-set LIB_BAD=0
-if not defined DXSDK_2005_ROOT (
-    lib /nologo /def:"%ABI%\D3dx9_25.def" /machine:x86 /out:"%D3DX25_LIB%" >>"%OUT%\lib.log" 2>&1
-    if errorlevel 1 set LIB_BAD=1
-)
-if "%LIB_BAD%"=="0" goto :libs_ok
-echo   FAILED - see "%OUT%\lib.log"
+echo   "%D3DX25_LIB%"
+if not defined BF2_D3DX_FALLBACK goto :libs_ok
+lib /nologo /def:"%ABI%\D3dx9_25.def" /machine:%ARCH% /out:"%D3DX25_LIB%" >"%OUT%\lib.log" 2>&1
+if not errorlevel 1 goto :libs_ok
 type "%OUT%\lib.log"
 goto :fail
 :libs_ok
@@ -135,7 +127,7 @@ set SOURCES=^
  "%SRC%\DllMain.cpp" ^
  "%SRC%\TextureAtlasConfiguration.cpp" ^
  "%SRC%\TextureAtlasD3D9.cpp"
-if "%DXERR_STANDIN%"=="1" set SOURCES=!SOURCES! "%SRC%\DxErr9StandIn.cpp"
+if defined BF2_D3DX_FALLBACK set SOURCES=%SOURCES% "%ABI%\DxErr9StandIn.cpp"
 
 set OK=0
 set BAD=0
@@ -161,8 +153,14 @@ rem legacy_stdio_float_rounding.obj - VC7.1's round-half-up for %g ties (see the
 rem No d3d9.lib: the shipped image has no d3d9 import; the device arrives through create().
 rem ---------------------------------------------------------------------------
 echo [3/4] linking
-link /nologo /DLL /MACHINE:X86 /BASE:0x10000000 /DEBUG /OPT:REF /OPT:ICF ^
-     /DEF:"%ABI%\TextureAtlasBuilderExports.def" ^
+rem x64: no /BASE (the shipped x86 base) and no ordinal-pinning .def (its names are the x86
+rem decorations); the dllexport classes in ITextureAtlas.h export the same twelve x64 names.
+set "LINK_BASE=/BASE:0x10000000"
+set "EXPORTS_DEF=/DEF:"%ABI%\TextureAtlasBuilderExports.def""
+if "%ARCH%"=="x64" set "LINK_BASE="
+if "%ARCH%"=="x64" set "EXPORTS_DEF="
+link /nologo /DLL /MACHINE:%ARCH% %LINK_BASE% /DEBUG /OPT:REF /OPT:ICF ^
+     %EXPORTS_DEF% ^
      /OUT:"%BIN%\TextureAtlasBuilder.dll" ^
      /PDB:"%BIN%\TextureAtlasBuilder.pdb" ^
      /IMPLIB:"%OUT%\TextureAtlasBuilder.lib" ^
@@ -195,6 +193,7 @@ if errorlevel 1 (
     echo   exports:      not exactly twelve functions - the shipped image has twelve
     set /a ABI_BAD+=1
 )
+if "%ARCH%"=="x64" goto :abi_x64_exports
 for /f "usebackq eol=; tokens=1,2" %%A in ("%ABI%\TextureAtlasBuilderExports.def") do (
     set "ORD=%%B"
     if "!ORD:~0,1!"=="@" (
@@ -214,6 +213,19 @@ if not "!EXPECTED!"=="12" (
     echo   exports:      read !EXPECTED! names from TextureAtlasBuilderExports.def, expected 12
     set /a ABI_BAD+=1
 )
+goto :abi_imports
+:abi_x64_exports
+rem x64: the two creates RendDX9 imports by name (RendDX9Abi\TextureAtlasBuilder_x64.def).
+for /f "usebackq eol=; tokens=1" %%A in ("%ABI%\TextureAtlasBuilder_x64.def") do (
+    if "%%A" NEQ "LIBRARY" if "%%A" NEQ "EXPORTS" (
+        findstr /l /c:" %%A" "%OUT%\exports.txt" >nul
+        if errorlevel 1 (
+            echo   exports:      %%A MISSING - RendDX9 x64 imports it by name
+            set /a ABI_BAD+=1
+        )
+    )
+)
+:abi_imports
 findstr /i /c:"d3dx9_25.dll" "%OUT%\dependents.txt" >nul
 if errorlevel 1 (
     echo   imports:      d3dx9_25.dll MISSING
@@ -242,12 +254,13 @@ if not errorlevel 1 (
 for %%D in (D3DXCreateTexture D3DXCreateTextureFromFileExA D3DXGetImageInfoFromFileA D3DXLoadSurfaceFromSurface D3DXSaveTextureToFileA) do (
     findstr /l /e /c:" %%D" "%OUT%\imports.txt" >nul
     if errorlevel 1 (
-        echo   imports:      d3dx9_25 %%D MISSING ^(or decorated - see D3dx9Imports.h^)
+        echo   imports:      d3dx9_25 %%D MISSING
         set /a ABI_BAD+=1
     )
 )
 if not "!ABI_BAD!"=="0" goto :abi_fail
-echo   twelve exports at the shipped ordinals; d3dx9_25 by name; heap/CRT imports OK
+if "%ARCH%"=="x86" echo   twelve exports at the shipped ordinals; d3dx9_25 by name; heap/CRT imports OK
+if "%ARCH%"=="x64" echo   twelve x64 exports incl. the two creates RendDX9 imports; d3dx9_25 by name; heap/CRT imports OK
 
 echo.
 echo   built: %BIN%\TextureAtlasBuilder.dll
@@ -261,5 +274,5 @@ echo   textureatlasbuilder.cmd FAILED
 exit /b 1
 
 :usage
-echo Usage: textureatlasbuilder.cmd [native]
+echo Usage: textureatlasbuilder.cmd [native^|x64]
 exit /b 2
