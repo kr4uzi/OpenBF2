@@ -21,8 +21,8 @@ public:
     bool streamString(char**, const char*) override;
     bool streamWideString(wchar_t**, const char*) override;
     bool streamCharacter(wchar_t*, const char*) override;
-    bool streamTexture(System*, int*, const char*) override;
-    bool streamFont(System*, int*, const char*) override;
+    bool streamTexture(System*, TextureHandle*, const char*) override;
+    bool streamFont(System*, FontHandle*, const char*) override;
     bool streamSound(System*, int*, const char*) override;
     bool streamCollection(System*, ObjectCollection*, const char*) override;
     bool streamEnum(int*, EnumNext, EnumName, const char*) override;
@@ -40,15 +40,16 @@ protected:
 class ClassIStream : public ForwardingIStream
 {
 public:
-    explicit ClassIStream(IStream* input);          // 83BFF0, owns input
+    // 83BFF0, owns input. The descriptor factory 83C1E0 inlines the same body with a null input.
+    explicit ClassIStream(IStream* input = nullptr);
     ~ClassIStream() override;
-    TypeDescriptor* getType() override;             // 83C2B0 [FRONTIER] factory closure
+    TypeDescriptor* getType() override;             // 83C2B0, descriptor table 94F2BC
     unsigned int getObjectSize() override;
     int getPosition() override;                    // 83C140, relative to payload
     bool setPosition(int) override;
     bool readShortString(System*, char*, int, const char*) override;
     bool init(System*);
-    static TypeDescriptor* getClassType();          // [FRONTIER] no partial publication
+    static TypeDescriptor* getClassType();          // 83C2B0, base slot 83C1D0 -> IStream
 private:
     int m_payloadStart;                            // +10
     char* m_strings[512];                          // +14, only first null initialized

@@ -1,6 +1,9 @@
 // [INFERRED] split in the attested BF2HudManager.cpp family. Complete PE755870
 // and every local helper read.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Ref2System.h"
 #include "../Core/ClassManager.h"
@@ -54,11 +57,15 @@ public:
             && world::getRootParent(object) == object;
     }
 };
+#if defined(_M_IX86)
 static_assert(sizeof(SpottedRayPredicator)==16 && sizeof(SpottedPcoPredicator)==16,
               "native client spotted-query predicate storage");
+#endif
 
 float multiplyAdd(float value, float factor, float translation)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld value
@@ -67,15 +74,28 @@ float multiplyAdd(float value, float factor, float translation)
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(static_cast<double>(value) * factor + translation);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 retained multiply/add.
+    result = bf2x87::multiplyAdd(value, factor, translation);
+    return result;
+#endif
 }
 
 // PE755A60/755B1E retain all differences through sqrt; helper464660 instead
 // stores the X difference first. Both sums are Z^2 + X^2 + Y^2.
 float targetDistance(const Vec3& from, const Vec3& to, float scale, bool storeX)
 {
+#if defined(_WIN32)
     const float fromX=from.x, fromY=from.y, fromZ=from.z;
     const float toX=to.x, toY=to.y, toZ=to.z;
     float x, result;
+#if defined(_M_IX86)
     if (storeX) {
         __asm {
             fld toX
@@ -115,7 +135,35 @@ float targetDistance(const Vec3& from, const Vec3& to, float scale, bool storeX)
             fstp result
         }
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Sum order Z^2 + X^2 + Y^2; only the storeX arm rounds the X difference to float first.
+    const double dz = static_cast<double>(toZ) - fromZ;
+    double dx = static_cast<double>(toX) - fromX;
+    if (storeX) {
+        x = static_cast<float>(dx);
+        dx = x;
+    }
+    const double dy = static_cast<double>(toY) - fromY;
+    result = static_cast<float>(std::sqrt(dz * dz + dx * dx + dy * dy) * scale);
+#endif
     return result;
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float fromX=from.x, fromY=from.y, fromZ=from.z;
+    const float toX=to.x, toY=to.y, toZ=to.z;
+    float x, result;
+    if (storeX) {
+        // [CHOSEN, not recovered] Preserve x87 explicit X difference float store.
+        x = bf2x87::store(bf2x87::sub(bf2x87::wide(toX), bf2x87::wide(fromX)));
+        // [CHOSEN, not recovered] Preserve x87 Z/X/Y squared sum with rounded X.
+        result = bf2x87::distanceWithX(bf2x87::wide(x), fromY, fromZ, toY, toZ, scale);
+    } else {
+        // [CHOSEN, not recovered] Preserve x87 Z/X/Y squared sum without rounded X.
+        result = bf2x87::distance(fromX, fromY, fromZ, toX, toY, toZ, scale);
+    }
+    return result;
+#endif
 }
 
 // PE755D11..755DCA biases from the captured shared zero, not the camera.
@@ -123,10 +171,12 @@ float targetDistance(const Vec3& from, const Vec3& to, float scale, bool storeX)
 // differences are stored floats, X's difference is retained until its product.
 void pullHitTowardOrigin(const Vec3& hit, const Vec3& origin, Vec3& output)
 {
+#if defined(_WIN32)
     const float hx=hit.x, hy=hit.y, hz=hit.z;
     const float ox=origin.x, oy=origin.y, oz=origin.z;
     const float bias=0.2f;
     float dy, dz, magnitude, scale, offsetX;
+#if defined(_M_IX86)
     float* result=&output.x;
     __asm {
         fld hz
@@ -169,6 +219,35 @@ void pullHitTowardOrigin(const Vec3& hit, const Vec3& origin, Vec3& output)
         fstp dword ptr [edx+8]
     pullDone:
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Z and Y differences are stored as floats; X stays unrounded until its product. Only an
+    // ordered root above the bias writes the output (x, y, z = +0/+4/+8).
+    const double diffZ = static_cast<double>(hz) - oz;
+    dz = static_cast<float>(diffZ);
+    const double diffY = static_cast<double>(hy) - oy;
+    dy = static_cast<float>(diffY);
+    const double diffX = static_cast<double>(hx) - ox;
+    const double root = std::sqrt(diffZ * diffZ + diffY * diffY + diffX * diffX);
+    magnitude = static_cast<float>(root);
+    if (root > bias) {
+        scale = static_cast<float>(bias / static_cast<double>(magnitude));
+        offsetX = static_cast<float>(diffX * scale);
+        output.x = static_cast<float>(static_cast<double>(hx) - offsetX);
+        output.y = static_cast<float>(hy - static_cast<double>(dy) * scale);
+        output.z = static_cast<float>(hz - static_cast<double>(dz) * scale);
+    }
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float hx=hit.x, hy=hit.y, hz=hit.z;
+    const float ox=origin.x, oy=origin.y, oz=origin.z;
+    const float bias=0.2f;
+    float dy, dz, magnitude, scale, offsetX;
+    float* result=&output.x;
+    // [CHOSEN, not recovered] Preserve x87 ordered bias test and staged float stores.
+    bf2x87::pullPoint(hx, hy, hz, ox, oy, oz, result);
+#endif
 }
 }
 

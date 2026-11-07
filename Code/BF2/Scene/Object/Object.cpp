@@ -1,6 +1,7 @@
 // Object lifetime, identity, component routing, hierarchy, and dirty-state propagation.
 
 #include "../../Game/Objects/Object.h"
+#include "../../Game/Objects/GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "../../Game/Objects/ObjectLayoutAccess.h"
 #include "../../Game/Objects/IObjectTemplate.h"
 #include "../../Game/IGameLogic.h"
@@ -10,6 +11,7 @@
 #include "../../Core/StringUtil.h"
 #include "ObjectManager.h"
 #include "../../Core/EventManager.h"
+#include "../../Core/Debug.h"
 #include "../../Core/Ids.h"
 #include "../../Physics/PhysicsNodeManager.h"
 #include "../../Physics/ResponsePhysicsManager.h"
@@ -26,6 +28,9 @@
 #include <cstdlib>
 #include <sstream>
 #include <vector>
+#if !defined(_MSC_VER)
+#include "../../Platform/X87Compat.h"
+#endif
 
 #if defined(_MSC_VER) && defined(_M_IX86)
 #  define BF2_OBJECT_VCALL __thiscall
@@ -52,11 +57,13 @@ ObjectManager* Object::mObjectManager = 0;
 
 namespace {
 
+#if defined(_MSC_VER)
 template <typename Fn>
 Fn objectRawSlot(void* object, unsigned int byteOffset)
 {
     return reinterpret_cast<Fn>((*reinterpret_cast<void***>(object))[byteOffset / 4]);
 }
+#endif
 
 void setResponseCacheToDirty(IObject* object)
 {
@@ -88,10 +95,11 @@ void setTransformationIsDirty(IObject* object)
     }
 }
 
+// PE 0x0071E4E0 (inlined); ELF 0x083079C0. Roots require a live global manager.
 void transformationWasUpdated(IObject* object)
 {
     setTransformationIsDirty(object);
-    if (object && !object_detail::LayoutAccess::parent(object) && objectManager)
+    if (!object_detail::LayoutAccess::parent(object))
         objectManager->refreshGridObject(object);
 }
 
@@ -276,12 +284,13 @@ IObject* findFirstMatchingChild(IObject* object, unsigned int classId)
 // Tests transformed LOD-1 mesh vertex rays against the object's LOD-2 front faces.
 // Requires a nonnull mesh; absent response physics, LODs, or vertices return false.
 // Rays use transformed directions, and the first accepted vertex hit returns true.
+// PE 0x0071B430; ELF 0x0831C100.
 bool checkIfObjectIntersects(ICollisionMesh* mesh, const Mat4& transform, IObject* object)
 {
     if (!object_detail::LayoutAccess::responsePhysics(object))          // +0x48
         return false;
     if (!mesh)
-        std::abort();
+        objectLifecycleInvariantFailure();
     if (!mesh->hasLod(1))                                                // slot 11
         return false;
     if (!object->hasCollisionLod(2))                                     // slot 51
@@ -290,16 +299,22 @@ bool checkIfObjectIntersects(ICollisionMesh* mesh, const Mat4& transform, IObjec
     getRootParent(object);                                               // called, result unused - as shipped
     const Mat4& objectToWorld = object->getAbsoluteTransformation();     // slot 33
     const Mat4& worldToObject = object->getInvAbsoluteTransformation();  // slot 34
-    const unsigned int vertexCount = mesh->getVertexCount(1);            // slot 16
+    const int vertexCount = static_cast<int>(mesh->getVertexCount(1));    // signed loop bound in both images
     if (vertexCount == 0)
         return false;
-    Vec3 rayStart;
-    rayStart.x = transform.m[12]; rayStart.y = transform.m[13]; rayStart.z = transform.m[14];
+    const Vec3& rayStart = *reinterpret_cast<const Vec3*>(&transform.m[12]);
     Vec3 hitNormal = Vec3::getZero();
     Vec3 hitPosition = Vec3::getZero();
-    float planeDist = 0.0f, along = 0.0f;
+    float planeDist, along;
     int material = 1;
-    for (unsigned int i = 0; i < vertexCount; ++i)
+    // Both callers zero one four-byte output record (PE +0x08 on the stack;
+    // ELF -0x118). CollisionMesh writes LOD/geometry bytes 0/1 and its template
+    // writes the face index at +2. [UNRESOLVED] source-level field names; retain
+    // the attested carrier until Physics publishes CollisionFaceInfo's declaration.
+    // [RETIRE-WHEN: scene-collision-face-info] Use that verified type, then rerun
+    // client/server builds and the spawn-collision checks with the coordinator.
+    unsigned int faceInfoStorage = 0;
+    for (int i = 0; i < vertexCount; ++i)
     {
         const float* v = static_cast<const float*>(mesh->getVertexVector(1)) + 3 * i;   // slot 17, re-fetched per vertex as shipped
         Vec3 rayDelta;
@@ -307,7 +322,8 @@ bool checkIfObjectIntersects(ICollisionMesh* mesh, const Mat4& transform, IObjec
         rayDelta.y = transform.m[5] * v[1] + transform.m[1] * v[0] + transform.m[9] * v[2];
         rayDelta.z = transform.m[6] * v[1] + transform.m[2] * v[0] + transform.m[10] * v[2];
         if (objectMesh->getDistance(2, false, objectToWorld, worldToObject, rayStart, rayDelta,
-                                    hitNormal, hitPosition, planeDist, along, &material, 0, true, false))
+                                    hitNormal, hitPosition, planeDist, along, &material,
+                                    reinterpret_cast<CollisionFaceInfo*>(&faceInfoStorage), true, false))
             return true;
     }
     return false;
@@ -568,15 +584,14 @@ Object::Object(const IObjectTemplate* objectTemplate)
         const_cast<IObjectTemplate*>(m_template)->objectCreated(this);
 }
 
+// PE 0x007200D0; ELF 0x083084C0. Cached or undestroyed objects fail the shipped invariants.
 Object::~Object()
 {
     if ((m_flags & 0x20u) != 0 || m_objectCacheId != 0 || !m_isObjectDestroyed)
-        std::abort();
+        objectLifecycleInvariantFailure();
     updateFlags(0, 0x17C18u);
-    if (mObjectManager)
-        mObjectManager->unregisterObject(this);
-    if (m_template)
-        const_cast<IObjectTemplate*>(m_template)->objectDestroyed(this);
+    mObjectManager->unregisterObject(this);
+    const_cast<IObjectTemplate*>(m_template)->objectDestroyed(this);
     delete m_mineBoundingBox;
     delete m_fullBoundingBox;
     ::operator delete(m_invertedAbsoluteTransformation);
@@ -734,6 +749,7 @@ void Object::enableCachedObject()
         m_sibling->enableCachedObject();
 }
 
+// PE 0x0071D4E0; ELF 0x083092D0. A second nonzero cache assignment is fatal.
 void Object::setObjectCacheID(unsigned int id)
 {
     m_objectCacheId = id;
@@ -742,14 +758,15 @@ void Object::setObjectCacheID(unsigned int id)
         m_cacheFlags = 0;
         return;
     }
-    if (m_cacheFlags != 0) std::abort();
+    if (m_cacheFlags != 0) objectLifecycleInvariantFailure();
     m_cacheFlags = (m_flags & 0x8FC3FFDFu) | 0x40000000u;
 }
 
+// PE 0x0071FB80; ELF 0x08309FE0. Cached/parked objects cannot enter this destruction path.
 void Object::destroy(bool force)
 {
     if (getObjectCacheID() != 0 || (m_flags & 0x20u) != 0)
-        std::abort();
+        objectLifecycleInvariantFailure();
     if (m_isObjectDestroyed)
         return;
 
@@ -779,10 +796,11 @@ void Object::destroy(bool force)
     mObjectManager->addObjectToDestroyList(this);
 }
 
+// PE 0x0071D680; ELF 0x0830A270. The reserved dirty bits cannot be set through this API.
 void Object::updateFlags(unsigned int set, unsigned int clear)
 {
     if ((set & 0x303C0000u) != 0)
-        std::abort();
+        objectLifecycleInvariantFailure();
 
     const unsigned int oldFlags = m_flags;
     unsigned int newlySet = ~oldFlags & set;
@@ -1159,6 +1177,7 @@ const Mat4& Object::getVisualAbsoluteTransformation() const
     return getAbsoluteTransformation();
 }
 
+// PE 0x0071EBB0; ELF 0x0830A610. Nonpositive loaded geometry bounds fail the shipped invariant.
 float Object::getVisualBoundingRadius() const
 {
     Object* self = const_cast<Object*>(this);
@@ -1179,10 +1198,6 @@ float Object::getVisualBoundingRadius() const
 #if defined(_MSC_VER)
         const unsigned int getTemplateSlot = 0x38;
         const unsigned int getRadiusSlot = 0x44;
-#else
-        const unsigned int getTemplateSlot = 0x3C;
-        const unsigned int getRadiusSlot = 0x48;
-#endif
         typedef geom::IGeometryTemplate* (BF2_OBJECT_VCALL *GetGeometryTemplateFn)(void*);
         typedef float (BF2_OBJECT_VCALL *GetGeometryRadiusFn)(void*);
         // An unloaded geometry template has no queryable bounds and returns zero here.
@@ -1192,6 +1207,14 @@ float Object::getVisualBoundingRadius() const
             return 0.0f;
         candidate = objectRawSlot<GetGeometryRadiusFn>(
             self->m_geometry, getRadiusSlot)(self->m_geometry);
+#else
+        // Non-MSVC: the named geometry_part operations (ELF +0x3C / +0x48).
+        geom::IGeometryTemplate* geometryTemplate =
+            static_cast<geom::IGeometryTemplate*>(world::geometry_part::getTemplate(self->m_geometry));
+        if (!geometryTemplate->isLoaded())
+            return 0.0f;
+        candidate = world::geometry_part::getBoundingRadius(self->m_geometry);
+#endif
         if (!(candidate > 0.0f))
         {
             // Shipped invariant, preserved: BF2.exe 0x71EBB0 reaches INT3 at 0x71EC2F;
@@ -1213,8 +1236,23 @@ float Object::getVisualBoundingRadius() const
             continue;
         const float childRadius = child->getVisualBoundingRadius();
         if (childRadius > 0.0f)
+        {
+#if defined(_MSC_VER)
             candidate = std::max(candidate,
                                  vectorLength(child->getRelativePosition()) + childRadius);
+#else
+            // [CHOSEN, not recovered] Preserve the native x87 length through the radius
+            // addition and comparison; only the selected candidate is stored as a float.
+            const Vec3& position = child->getRelativePosition();
+            const bf2x87::Real x = bf2x87::wide(position.x);
+            const bf2x87::Real y = bf2x87::wide(position.y);
+            const bf2x87::Real z = bf2x87::wide(position.z);
+            const bf2x87::Real radius = bf2x87::squareRoot((x * x + y * y) + z * z)
+                + bf2x87::wide(childRadius);
+            if (radius > bf2x87::wide(candidate))
+                candidate = bf2x87::store(radius);
+#endif
+        }
     }
 
     if (std::fabs(candidate - self->m_visualBoundingRadius) > 0.0001f)
@@ -1367,10 +1405,6 @@ void Object::SetActiveLod(ObjectLodType lod)
 #if defined(_MSC_VER)
         const unsigned int setSlot = 0x6C;
         const unsigned int countSlot = 0x74;
-#else
-        const unsigned int setSlot = 0x70;
-        const unsigned int countSlot = 0x78;
-#endif
         typedef int (BF2_OBJECT_VCALL *GetLodCountFn)(void*);
         typedef void (BF2_OBJECT_VCALL *SetGeometryLodFn)(void*, int);
         const int count = objectRawSlot<GetLodCountFn>(geometry, countSlot)(geometry);
@@ -1385,6 +1419,19 @@ void Object::SetActiveLod(ObjectLodType lod)
                 geometry, refreshedCount -
                     (lod == static_cast<ObjectLodType>(1) ? 1 : 2));
         }
+#else
+        // Non-MSVC: the named geometry_part operations (ELF +0x70 / +0x78).
+        const int count = world::geometry_part::getSubgeomCount(geometry);
+        if (count <= 1)
+            updateFlags(lod == static_cast<ObjectLodType>(1) ? 1u : 0u,
+                        lod == static_cast<ObjectLodType>(1) ? 0u : 1u);
+        else
+        {
+            const int refreshedCount = world::geometry_part::getSubgeomCount(geometry);
+            world::geometry_part::setSubgeom(geometry, refreshedCount -
+                    (lod == static_cast<ObjectLodType>(1) ? 1 : 2));
+        }
+#endif
     }
     setBoundRadiusIsDirty(this);
 }
@@ -1394,16 +1441,13 @@ void Object::updateGeometry()
     if (!m_geometry || (m_flags & 0x40000000u) == 0)
         return;
 
+#if defined(_MSC_VER)
     typedef void (BF2_OBJECT_VCALL *SetGeometryTransformationFn)(void*, const Mat4&);
     objectRawSlot<SetGeometryTransformationFn>(m_geometry, 0x50)(
         m_geometry, getVisualAbsoluteTransformation());
     m_flags &= ~0x40000000u;
 
-#if defined(_MSC_VER)
     const unsigned int nextSlot = 0xCC;
-#else
-    const unsigned int nextSlot = 0xD0;
-#endif
     typedef void* (BF2_OBJECT_VCALL *GetNextGeometryFn)(void*);
     for (void* geometry = objectRawSlot<GetNextGeometryFn>(m_geometry, nextSlot)(m_geometry);
          geometry;
@@ -1412,6 +1456,14 @@ void Object::updateGeometry()
         objectRawSlot<SetGeometryTransformationFn>(geometry, 0x50)(
             geometry, getVisualAbsoluteTransformation());
     }
+#else
+    // Non-MSVC: the named geometry_part operations (both ports +0x50; next ELF +0xD0).
+    world::geometry_part::setGeometryTransform(m_geometry, &getVisualAbsoluteTransformation());
+    m_flags &= ~0x40000000u;
+    for (void* geometry = world::geometry_part::getNextGeometry(m_geometry); geometry;
+         geometry = world::geometry_part::getNextGeometry(geometry))
+        world::geometry_part::setGeometryTransform(geometry, &getVisualAbsoluteTransformation());
+#endif
 }
 
 const Vec3& Object::getRelativePosition() const
@@ -1526,18 +1578,32 @@ void Object::addSibling(IObject* object)
     if (m_sibling) m_sibling->addSibling(object);
     else m_sibling = object;
 }
+// PE 0x0071EE00; ELF 0x0830AC10. A missing sibling emits the shipped type-7 diagnostic.
 void Object::removeSibling(IObject* object)
 {
     if (m_sibling == object)
     {
-        m_sibling = object ? object_detail::LayoutAccess::sibling(object) : 0;
-        if (object) object->setParent(0);
+        m_sibling = object_detail::LayoutAccess::sibling(object);
+        object->setParent(0);
     }
     else if (m_sibling)
         m_sibling->removeSibling(object);
     else
-        std::abort();
+    {
+#if defined(_MSC_VER)
+        // [PLATFORM] PE fetches the template name after constructing the diagnostic.
+        const IObjectTemplate* const objectTemplate = object->getTemplate();
+        Debug diagnostic(DEBUGTYPE_7, "Scene/Object/Object.cpp", 1136);
+        diagnostic << "RemoveChild/Sibling: The child or sibling can not be find:"
+                   << objectTemplate->getName();
+#else
+        const std::string& name = object->getTemplate()->getName();
+        Debug(DEBUGTYPE_7, "Scene/Object/Object.cpp", 1136)
+            << "RemoveChild/Sibling: The child or sibling can not be find:" << name;
+#endif
+    }
 }
+// PE 0x0071E3D0; ELF 0x0830AD70. Detaching republishes through the object's static manager.
 void Object::setParent(IObject* parent)
 {
     if (m_parent == parent)
@@ -1554,7 +1620,8 @@ void Object::setParent(IObject* parent)
     }
     else
     {
-        if (m_relativeTransformation == &Mat4::getIdentity()) std::abort();
+        if (m_relativeTransformation == &Mat4::getIdentity())
+            Debug(DEBUGTYPE_7, "Scene/Object/Object.cpp", 1158) << "Should not free &identyTrans";
         delete m_relativeTransformation;
         m_relativeTransformation = const_cast<Mat4*>(&Mat4::getIdentity());
         m_flags |= 0x01000000u;
@@ -1565,8 +1632,8 @@ void Object::setParent(IObject* parent)
     if (!parent)
         updateFlags(0x8000u, 0x10u);
     transformationWasUpdated(this);
-    if (!parent && (m_flags & 0x400u) != 0 && objectManager)
-        objectManager->addObjectToGrid(this);
+    if (!parent && (m_flags & 0x400u) != 0)
+        mObjectManager->addObjectToGrid(this);
     setBoundRadiusIsDirty(this);
 }
 void Object::resetCachedRootParents()
@@ -1614,11 +1681,11 @@ void Object::setLightSourceMask(int mask)
         return;
 #if defined(_MSC_VER)
     const unsigned int slot = 0xE0;
-#else
-    const unsigned int slot = 0xE4;
-#endif
     typedef void (BF2_OBJECT_VCALL *SetLightSourceMaskFn)(void*, int);
     objectRawSlot<SetLightSourceMaskFn>(m_geometry, slot)(m_geometry, mask);
+#else
+    world::geometry_part::setLightSourceMask(m_geometry, mask);                  // ELF +0xE4
+#endif
 }
 
 int Object::getLightSourceMask() const
@@ -1627,11 +1694,11 @@ int Object::getLightSourceMask() const
         return 7;
 #if defined(_MSC_VER)
     const unsigned int slot = 0xE4;
-#else
-    const unsigned int slot = 0xE8;
-#endif
     typedef int (BF2_OBJECT_VCALL *GetLightSourceMaskFn)(void*);
     return objectRawSlot<GetLightSourceMaskFn>(m_geometry, slot)(m_geometry);
+#else
+    return world::geometry_part::getLightSourceMask(m_geometry);                 // ELF +0xE8
+#endif
 }
 
 bool Object::getDisableChildren() { return m_disableChildren; }
@@ -1696,13 +1763,13 @@ void Object::updateFlagsRecursive(unsigned int set, unsigned int clear)
     updateDescendantFlags(this, set, clear);
 }
 
+// PE 0x0071EB50; ELF 0x0830A1D0. Null is not accepted; flag 0x200 is required before release.
 void Object::internalDestroyObject(IObject* object)
 {
-    if (!object) return;
     if (object_detail::LayoutAccess::parent(object))
         object_detail::LayoutAccess::parent(object)->removeChild(object);
     while (object->getChild()) internalDestroyObject(object->getChild());
-    if ((object->getFlags() & 0x200u) == 0) std::abort();
+    if ((object->getFlags() & 0x200u) == 0) objectLifecycleInvariantFailure();
     object->updateFlags(1u, 0x17E18u);
     object->release();
 }

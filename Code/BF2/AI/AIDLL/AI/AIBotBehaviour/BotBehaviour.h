@@ -53,11 +53,6 @@ public:
     UrgeCurve* getUrgeCurve() const { return m_urgeCurve; }
 
 protected:
-    // [TEMP] [CHOSEN, not recovered] S0 only: lets the generated derived constructor stubs compile;
-    // it stops by name. [RETIRE-WHEN: ai-behaviour-skeleton-ctors] every derived constructor is recovered.
-    BotBehaviour();
-
-protected:
     // BotBehaviour(float*, UrgeCurve*, int count) 0x225250: +8 = +0xC = 0, the three arrays of
     // `count` (checkPointer each), activeUrgency[i] = 1e-5f, targetChanged[i] = true; urgency[] is
     // left uninitialised. BotBehaviour(float*, UrgeCurve*) 0x2259D0: all three arrays 0.

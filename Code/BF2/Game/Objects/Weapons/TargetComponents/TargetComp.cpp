@@ -3,6 +3,7 @@
 // cross-checked against the BF2 1.50 Win32 dedicated-server image.
 
 #include "TargetComp.h"
+#include "../../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 
 #include <algorithm>
 #include <cmath>
@@ -44,17 +45,18 @@ IPlayerControlObject* findPlayerControlObject(IObject* object)
 
 // IGeometry is not reconstructed far enough to name this slot yet. Both shipped x86 tables were
 // read: the same operation is ELF +0xD8 and PE +0xD4 (the Itanium destructor-pair shift).
+// The slot follows the compiler's destructor ABI, so native MSVC x64 takes the PE arm too.
 void geometrySetConnectionEffect(void* geometry, int enabled)
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if defined(_MSC_VER)
     typedef void (__thiscall *Method)(void*, int);
-    const unsigned int slot = 0xD4 / sizeof(void*);
-#else
-    typedef void (*Method)(void*, int);
-    const unsigned int slot = 0xD8 / sizeof(void*);
-#endif
+    const unsigned int slot = 0xD4 / 4;
     void** const vtable = *reinterpret_cast<void***>(geometry);
     reinterpret_cast<Method>(vtable[slot])(geometry, enabled);
+#else
+    // The same one-dword entry the renderer's MeshParticleMesh names setFirstPerson (ELF +0xD8).
+    geometry_part::setFirstPerson(geometry, static_cast<unsigned int>(enabled));
+#endif
 }
 
 } // namespace

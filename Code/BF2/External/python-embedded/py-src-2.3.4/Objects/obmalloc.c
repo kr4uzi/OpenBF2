@@ -409,8 +409,15 @@ static poolp freepools = NULL;		/* free list for cached pools */
  * and only grows by appending at the end.  For now we never return an arena
  * to the OS.
  */
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+/* [CHOSEN, not recovered] POSIX: publish the vector before its count, including to
+   frees without the GIL (see new_arena). C11 implicit accesses are sequentially consistent. */
+static _Atomic(uptr *) arenas = NULL;
+static _Atomic uint narenas = 0;
+#else
 static uptr *volatile arenas = NULL;	/* the pointer itself is volatile */
 static volatile uint narenas = 0;
+#endif
 static uint maxarenas = 0;
 
 /* Number of pools still available to be allocated in the current arena. */

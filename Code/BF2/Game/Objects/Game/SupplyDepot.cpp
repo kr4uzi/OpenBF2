@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice { namespace hfe { namespace world {
 namespace {
@@ -123,9 +124,9 @@ SupplyDepot::SupplyDepot(const SupplyDepotTemplate* objectTemplate)
     {
 #if defined(_MSC_VER)
         // [PLATFORM] PE 0x573A96 multiplies by float bits 0x3D088889; ELF divides by 30.
-        m_lastUpdate = static_cast<float>(std::rand() % 30) * 0.033333335f;
+        m_lastUpdate = static_cast<float>(bf2crt::rand() % 30) * 0.033333335f;
 #else
-        m_lastUpdate = static_cast<float>(std::rand() % 30) / 30.0f;
+        m_lastUpdate = static_cast<float>(bf2crt::rand() % 30) / 30.0f;
 #endif
         Object::updateFlags(0x800, 2);
     }
@@ -367,9 +368,9 @@ void SupplyDepot::reset()
     m_hasRepair = !m_repair.empty();
 #if defined(_MSC_VER)
     // uses the same multiply as its constructor; ELF uses division.
-    m_lastUpdate = static_cast<float>(std::rand() % 30) * 0.033333335f;
+    m_lastUpdate = static_cast<float>(bf2crt::rand() % 30) * 0.033333335f;
 #else
-    m_lastUpdate = static_cast<float>(std::rand() % 30) / 30.0f;
+    m_lastUpdate = static_cast<float>(bf2crt::rand() % 30) / 30.0f;
 #endif
 }
 bool SupplyDepot::getWorkOnVehicles() { return m_depotTemplate->m_workOnVehicles; }

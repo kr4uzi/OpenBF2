@@ -1,5 +1,8 @@
 // World-to-HUD projection. [INFERRED] Source split from Menu/BF2HudManager.cpp.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Ref2System.h"
 #include "../RendMisc/IRenderView.h"
@@ -13,6 +16,8 @@ namespace {
 float affineComponent(float a, float ma, float b, float mb,
                       float c, float mc, float translation)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld a
@@ -27,6 +32,18 @@ float affineComponent(float a, float ma, float b, float mb,
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(static_cast<double>(a) * ma + static_cast<double>(b) * mb
+                              + static_cast<double>(c) * mc + translation);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 retained products and additions.
+    result = bf2x87::affine(a, ma, b, mb, c, mc, translation);
+    return result;
+#endif
 }
 
 Vec3 affineInOrder(const Mat4& matrix, const Vec3& point, int first, int second, int third)
@@ -44,6 +61,8 @@ Vec3 affineInOrder(const Mat4& matrix, const Vec3& point, int first, int second,
 
 float screenCoordinate(float numerator, float denominator)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     float result;
     __asm {
         fld numerator
@@ -51,10 +70,22 @@ float screenCoordinate(float numerator, float denominator)
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(static_cast<double>(numerator) / denominator);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 division before float store.
+    result = bf2x87::store(bf2x87::div(bf2x87::wide(numerator), bf2x87::wide(denominator)));
+    return result;
+#endif
 }
 
 void projectToScreen(const Vec3& clip, float halfWidth, float height, Vec3& result)
 {
+#if defined(_WIN32)
     const float half = 0.5f;
     // The PE divides by transformed Z, not by a homogeneous W. Unordered,
     // zero and negative Z take the same hidden-point arm; X/Y stay zero.
@@ -64,6 +95,7 @@ void projectToScreen(const Vec3& clip, float halfWidth, float height, Vec3& resu
     }
     const float x = clip.x, y = clip.y, z = clip.z;
     float outputX, outputY, outputZ;
+#if defined(_M_IX86)
     __asm {
         fld height
         fmul half
@@ -80,9 +112,34 @@ void projectToScreen(const Vec3& clip, float halfWidth, float height, Vec3& resu
         fstp outputY
         fstp outputZ
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    const double halfHeight = static_cast<double>(height) * half;
+    const double inverse = 1.0 / z;
+    outputX = static_cast<float>(x * inverse * halfWidth);
+    outputY = static_cast<float>(-halfHeight * y * inverse);
+    outputZ = static_cast<float>(inverse);
+#endif
     result.x = outputX;
     result.y = outputY;
     result.z = outputZ;
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float half = 0.5f;
+    // The PE divides by transformed Z, not by a homogeneous W. Unordered,
+    // zero and negative Z take the same hidden-point arm; X/Y stay zero.
+    if (!(clip.z > 0.0f)) {
+        result.z = -1.0f;
+        return;
+    }
+    const float x = clip.x, y = clip.y, z = clip.z;
+    float outputX, outputY, outputZ;
+    // [CHOSEN, not recovered] Preserve x87 retained reciprocal and projection products.
+    bf2x87::project(x, y, z, height, halfWidth, outputX, outputY, outputZ);
+    result.x = outputX;
+    result.y = outputY;
+    result.z = outputZ;
+#endif
 }
 }
 

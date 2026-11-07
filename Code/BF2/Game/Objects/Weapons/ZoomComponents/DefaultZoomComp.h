@@ -1,6 +1,6 @@
 // Path:     [INFERRED] beside the attested weapon-component families.
 // Contents: server-reachable DefaultZoom runtime and complete template leaf recovered from both
-// shipped x86 ports; the client-only WeaponHud notification tail remains named in .cpp.
+// shipped x86 ports, including the client-side WeaponHud notification in changeZoom.
 
 #ifndef GAME_OBJECTS_WEAPONS_ZOOMCOMPONENTS_DEFAULTZOOMCOMP_H
 #define GAME_OBJECTS_WEAPONS_ZOOMCOMPONENTS_DEFAULTZOOMCOMP_H

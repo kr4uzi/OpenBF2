@@ -3,7 +3,6 @@
 
 #include "BFObjectEnvironment.h"
 
-#include "AIFrontier.h"
 
 #include "../../AIDLL/AI/Main/CommonSingletonServer.h"
 #include "../../AIDLL/AI/AIUtils/IAimerHelper.h"

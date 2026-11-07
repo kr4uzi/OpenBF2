@@ -11,6 +11,7 @@
 #include <cmath>                        // sqrt - playSoldierVO's range test
 #include <cstdlib>                      // rand - getSpeechId
 #include <cstring>                      // memset - the speech table
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -386,7 +387,7 @@ int VoiceMessages::getSpeechId(int message, int voice)
     if (cell.first < 0 || cell.count <= 0)
         return -1;
     if (cell.count > 1)
-        return cell.first + std::rand() % cell.count;
+        return cell.first + bf2crt::rand() % cell.count;
     return cell.first;
 }
 

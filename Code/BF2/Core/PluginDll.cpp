@@ -12,6 +12,9 @@
 #endif
 
 #include "ClassManager.h"
+#if defined(BF2_STATIC_PLUGINS)
+#include "../../StaticPlugins/StaticPlugins.h"
+#endif
 
 #if !defined(_WIN32)
 // [PLATFORM] Global-namespace library wrappers for ELF; placement is [INFERRED].
@@ -24,18 +27,43 @@ void* LoadLibrary(const char* name)
     const char* const dot = std::strrchr(name, '.');
     if (!dot)
         return 0;
+#if defined(BF2_STATIC_PLUGINS)
+    // [CHOSEN, not recovered] The macOS client links its plugin images statically
+    // (Code/StaticPlugins/StaticPlugins.h); a linked image is answered before dlopen is tried.
+    if (void* image = bf2staticplugins::find(std::string(name, dot).c_str()))
+        return image;
+#endif
     std::string file = std::string("lib") + std::string(name, dot);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] The macOS port's shared-library suffix (docs/macos-port.md).
+    file.append(".dylib");
+#else
     file.append(".so");
+#endif
     return ::dlopen(file.c_str(), RTLD_LAZY);
 }
 
 void* GetProcAddress(void* handle, const char* name)
 {
+#if defined(BF2_STATIC_PLUGINS)
+    if (bf2staticplugins::isStaticHandle(handle))
+        return bf2staticplugins::symbol(handle, name);
+#endif
     return ::dlsym(handle, name);
 }
 
 bool FreeLibrary(void* handle)
 {
+#if defined(BF2_STATIC_PLUGINS)
+    // A statically linked image stays mapped for the life of the process; there is nothing to close.
+    // It is only marked released, so the next load can rebuild its module table
+    // (StaticPlugins.h, menu re-entry).
+    if (bf2staticplugins::isStaticHandle(handle))
+    {
+        bf2staticplugins::release(handle);
+        return true;
+    }
+#endif
     if (handle)
         return ::dlclose(handle) == 0;
     return false;
@@ -114,12 +142,35 @@ bool FreeLibraryBf(void* handle, const char* diagnosticName)
     }
 #else
     (void)diagnosticName;
-#if defined(__linux__)
-    // [CHOSEN, not recovered] Native-port design, not retail: unregister AI/console singletons before dlclose
-    // so a map reload cannot reuse stale objects. Retail ELF 0x83C3400 only closes the library;
-    // Win32 BF2.exe 0x446CE0 calls deinitDll first. AIModule::close (ELF 0x3EECB0)
-    // unregisters the AI singleton; preserve that teardown before unmapping native libaidll.so.
-    if (handle)
+#if defined(BF2_STATIC_PLUGINS)
+    // [CHOSEN, not recovered] A linked image that retail unloads per use (SwiffPlayer, on every
+    // menu exit) gets the Win32 body's deinitDll before the release, so its modules are closed,
+    // unregistered and released as BF2.exe 0x446CE0 does before FreeLibrary (StaticPlugins.h).
+    if (bf2staticplugins::isStaticHandle(handle) && bf2staticplugins::unloadsWithDeinit(handle))
+    {
+        DeinitDllFn deinitDll = reinterpret_cast<DeinitDllFn>(::GetProcAddress(handle, "deinitDll"));
+        if (deinitDll)
+            deinitDll();
+    }
+#endif
+#if defined(__APPLE__) || defined(__linux__)
+    // [PLATFORM] [CHOSEN, not recovered] Native-port design, not retail: a dlopen'ed image
+    // (libaidll.dylib, libaidll.so) gets the Win32 body's deinitDll before dlclose. The ELF body (bf2 0x83C3400 -> FreeLibrary 0x83D3170) is the bare
+    // dlclose, so AIModule::close (libaidll.so 0x3EECB0) never runs and the "AI" simple singleton
+    // that the IAI constructor (0x3EE430) registered stays in the host registry. The next load's
+    // IAI constructor then finds "AI" taken and leaves the new BF2AI unregistered, and
+    // AIConnection::init hands back the old object. [INFERRED] Retail Linux survives this only
+    // while dlopen maps the reloaded image at the closed one's address, which makes the old vtable
+    // pointer valid again (not observed on a retail run). dyld does not reuse the address: dlclose unmaps the dylib and the old vtable
+    // pointer dangles (the second singleplayer game faulted with pc=0 at GameServer::loadPath's
+    // aiSingleton->init()). The Win32 body (BF2.exe 0x446CE0) calls deinitDll first; AIModule::close
+    // then unregisters "AI" and the module's console lists, and the reload registers fresh ones.
+    // Request R4, docs/ai-reconstruct/HANDOFF-client-track.md.
+    bool dlopened = handle != 0;
+#if defined(BF2_STATIC_PLUGINS)
+    dlopened = dlopened && !bf2staticplugins::isStaticHandle(handle);
+#endif
+    if (dlopened)
     {
         DeinitDllFn deinitDll = reinterpret_cast<DeinitDllFn>(::GetProcAddress(handle, "deinitDll"));
         if (deinitDll)

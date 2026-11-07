@@ -5,6 +5,7 @@
 #include "../Core/SmartItf.h"
 #include "../Menu/ISwiffHost.h"
 #include "../Menu/IServerBrowser.h"
+#include "../Core/MsvcCrtCompat.h"          // [CHOSEN, not recovered] __time32_t/_time32 outside MSVC
 #if !DEDICATED
 #include "Main/BF2ClientSeams.h"          // hudManager (ds:0xA10890)
 #include "../Scene/Object/PlayerManager.h"  // world::playerManager (ds:0xA08F60), +0x30 getLocalHumanPlayer

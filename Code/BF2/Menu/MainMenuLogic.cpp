@@ -1,7 +1,11 @@
 // Client main-menu lifecycle and input handling. [INFERRED] Source placement.
 #include "../Core/BuildConfig.h"
 #if !DEDICATED
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "../Platform/macOS/CocoaHost.h"   // [CHOSEN, not recovered] cursor, modifiers, clipboard
+#endif
 #include "MainMenuLogic.h"
 #include "IMenuTeamManager.h"
 #include "ISwiffHost.h"
@@ -167,8 +171,13 @@ bool MainMenuLogic::init()
     m_scaleY = movieHeight / static_cast<float>(height);
     io::IInputDevice* mouse = static_cast<io::IInputDeviceManager*>(io::inputDeviceManager)->getInputDevice(io::IDFMouse);
     mouse->deActivate();                                                      // +0x20, unguarded in the binary
+#if defined(__APPLE__)
+    macos::CocoaHost::instance().showCursor(true);                            // [CHOSEN] ShowCursor(TRUE)
+    macos::CocoaHost::instance().setCursor(m_host->getCursor(0));             // +0x6C, SetCursor
+#else
     ShowCursor(TRUE);
     SetCursor(static_cast<HCURSOR>(m_host->getCursor(0)));                    // +0x6C
+#endif
     io::g_falconMouseMode = 1;                                                // ds:0x978FC4
     if (!s_firstInitDone)
     {
@@ -199,8 +208,13 @@ void MainMenuLogic::deactivate()
     }
     m_swiffActive = false;
     m_frameActive = false;
+#if defined(__APPLE__)
+    macos::CocoaHost::instance().setCursor(0);                                // [CHOSEN] SetCursor(0)
+    macos::CocoaHost::instance().showCursor(false);                           //   ShowCursor(FALSE)
+#else
     SetCursor(0);
     ShowCursor(FALSE);
+#endif
 }
 
 ui::ISwiffPlayer* MainMenuLogic::getSwiffPlayer() const { return m_player; }
@@ -219,7 +233,11 @@ bool MainMenuLogic::beginFrame()
 {
     ui::ISwiffHost* host = m_host;
     const int busy = host->getBusy();                                         // +0x2B8
+#if defined(__APPLE__)
+    macos::CocoaHost::instance().setCursor(host->getCursor(busy));            // +0x6C, [CHOSEN] SetCursor
+#else
     SetCursor(static_cast<HCURSOR>(host->getCursor(busy)));                   // +0x6C
+#endif
     if (!m_render->beginFrame() || !m_player->isMovieLoaded())                // +0xCC / +0x20
         return false;
     m_frameActive = true;
@@ -282,6 +300,38 @@ bool MainMenuLogic::handleInput(io::GameInput&)
 
 // 0x4A2E10 (263 B): with Ctrl held (and not Alt), 'v' pastes CF_TEXT into the player's text
 // input, 'c' and 'x' copy the player's text out; any other Ctrl character is swallowed.
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] macOS: the same arms on the Cocoa host. Control or Command counts as
+// Ctrl and Option as Alt (BF2.cpp's controlKeyDown/altKeyDown); the clipboard text is
+// Windows-1252, the CF_TEXT counterpart. A clipboard the host cannot open or read is skipped, as
+// a failed OpenClipboard or an absent CF_TEXT is.
+bool MainMenuLogic::handleClipboardShortcut(char character)
+{
+    macos::CocoaHost& host = macos::CocoaHost::instance();
+    const unsigned int modifiers = host.modifierFlags();
+    const bool control = (modifiers & (macos::HostModControl | macos::HostModCommand)) != 0;
+    const bool alt = (modifiers & macos::HostModOption) != 0;
+    if (!control || (control && alt))
+        return false;
+    if (character != 'v')
+    {
+        if (character == 'c' || character == 'x')
+        {
+            std::string text;
+            if (character == 'c')
+                m_player->getTextInput0(text);                                // +0x50
+            else
+                m_player->getTextInput1(text);                                // +0x54
+            host.setClipboardText(std::string(text.c_str()));                 // up to the terminator
+        }
+        return true;
+    }
+    std::string text;
+    if (host.getClipboardText(text))
+        m_player->setTextInput(text.c_str());                                 // +0x4C
+    return true;
+}
+#else
 bool MainMenuLogic::handleClipboardShortcut(char character)
 {
     if (!GetAsyncKeyState(VK_CONTROL) || (GetAsyncKeyState(VK_CONTROL) && GetAsyncKeyState(VK_MENU)))
@@ -332,6 +382,7 @@ bool MainMenuLogic::handleClipboardShortcut(char character)
     CloseClipboard();
     return true;
 }
+#endif
 
 // the console pointer, and the console taken inactive when one is given.
 void MainMenuLogic::setConsole(BF2Console* console)

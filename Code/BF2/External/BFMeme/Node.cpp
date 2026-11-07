@@ -6,9 +6,11 @@
 #if !DEDICATED
 #include "Stream.h"
 #include "TypeDescriptor.h"
+#include "System.h"
 // Concrete menu node types permit event-20 dispatch while the shared Node suffix remains untyped.
 #include "../../Menu/Bf2ButtonNode.h"
 #include "../../Menu/Bf2ObjectMarkerNode.h"
+#include "../../Menu/Bf2EditNode.h"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -37,7 +39,9 @@ private:
     static int instanceCount;
 };
 int NodeTypeDescriptor::instanceCount = 0;
+#if defined(_M_IX86)
 static_assert(sizeof(NodeTypeDescriptor) == 16, "Node metadata stores its counter separately");
+#endif
 }
 
 TypeDescriptor* Node::getClassType() // 82C190, shared by the virtual getter
@@ -199,9 +203,20 @@ bool dispatchNodeEvent15(Node*, System*, const Rect*, const NodeState*)
     // [CHOSEN, not recovered] [RETIRE-WHEN: node-suffix-call-frontiers]
     return false;
 }
-bool dispatchNodeEvent16(Node*, System*, const Rect*, const NodeState*)
+bool dispatchNodeEvent16(Node* node, System* system, const Rect*, const NodeState*)
 {
-    // [FRONTIER] [TEMP] [CHOSEN, not recovered] Event 16 stops because edit and path nodes have nonempty handlers.
+    // Match exact descriptors while the remaining Node suffix is untyped. BfEditNode/Bf2EditNode
+    // +A0 (7AA9B0): drop focus and unlock the pointer, then the 455410 false default.
+    TypeDescriptor* const type = node->getType();
+    if (type == BfEditNode::getClassType() || type == Bf2EditNode::getClassType()) {
+        BfEditNode* const edit = static_cast<BfEditNode*>(node);
+        if (edit->m_focused) {
+            edit->m_focused = false;
+            system->unlockPointer();
+        }
+        return false;
+    }
+    // [FRONTIER] [TEMP] [CHOSEN, not recovered] The other edit and path handlers remain unrecovered.
     // [RETIRE-WHEN: node-suffix-call-frontiers] Implement the typed virtual handlers before replacing this stop.
     std::fprintf(stderr, "[FRONTIER] dice::meme::dispatchNodeEvent16 reached (Node virtual+A0 - NOT a false default: 5 of 74 tables override it, BfEditNode/Bf2EditNode 7AA9B0, BfEditNodeInt 7AACF0, PathNode/StackPathNode 836A80)\n");
     std::fflush(stderr);
@@ -274,10 +289,14 @@ void resetNodeSelf(Node*)
 {
 }
 
+#if defined(_M_IX86)
 static_assert(sizeof(Node) == 8, "client BFMeme Node");
+#endif
 static_assert(sizeof(NodeState) == 8, "client BFMeme interaction state");
 static_assert(sizeof(NodeInputEvent) == 20, "client BFMeme input payload");
+#if defined(_M_IX86)
 static_assert(sizeof(RenderContext) == 28, "client BFMeme effect chain context");
 static_assert(sizeof(NodeVisitor) == 8, "client BFMeme three-slot visitor");
+#endif
 } }
 #endif

@@ -12,6 +12,7 @@
 #include <cstdlib>                        // rand - Random / Idle triggers
 #include <sstream>
 #include "../../IO/Stream/IStream.h"
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace anim {
@@ -267,7 +268,7 @@ void RandomTrigger::applyAnimations(AnimationSystem& system)
 {
     if (m_bundles.empty())
         return;
-    const unsigned int pick = static_cast<unsigned int>(rand()) % static_cast<unsigned int>(m_bundles.size());
+    const unsigned int pick = static_cast<unsigned int>(bf2crt::rand()) % static_cast<unsigned int>(m_bundles.size());
     system.playBundle(this, m_bundles[pick], m_prio, -1.0f, 1.0f);
 }
 
@@ -283,12 +284,12 @@ bool IdleTrigger::update(AnimationSystem& system)
         if (m_nextIdleTime > system.getIdleTime() || system.getIdleTime() > m_idleTimeMax)
             return true;
 
-        m_nextIdleTime = static_cast<float>(rand() % 100) / 100.0f * (m_idleTimeMax - m_idleTimeMin)
+        m_nextIdleTime = static_cast<float>(bf2crt::rand() % 100) / 100.0f * (m_idleTimeMax - m_idleTimeMin)
                        + m_idleTimeMin;
         if (!m_bundles.empty())
         {
             const unsigned int pick =
-                static_cast<unsigned int>(rand()) % static_cast<unsigned int>(m_bundles.size());
+                static_cast<unsigned int>(bf2crt::rand()) % static_cast<unsigned int>(m_bundles.size());
             system.playBundle(this, m_bundles[pick], m_prio, -1.0f, 1.0f);
         }
         return Trigger::update(system);

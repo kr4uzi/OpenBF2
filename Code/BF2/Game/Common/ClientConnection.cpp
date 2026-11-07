@@ -23,6 +23,7 @@
 #include "../../IO/Network/NetworkManager.h"    // io::networkManager - transmitMsgs' local-latency arm
 #include "../../Physics/LatencyCompensation.h"  // world::LatencyCompensation::getLocalLatency (local only)
 #include "../GameServer/ServerSettings.h"       // sv.demoQuality - demoQualityFromSettings' single read
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -243,7 +244,7 @@ const char* ClientConnection::initChallengeString(const char* fixed)
     else
     {
         for (int j = 0; j <= 9; ++j)
-            m_challengeString[j] = static_cast<char>(rand() % 26 + 97);
+            m_challengeString[j] = static_cast<char>(bf2crt::rand() % 26 + 97);
         m_challengeString[9] = 0;                    // the tenth byte becomes the terminator
     }
     return m_challengeString;

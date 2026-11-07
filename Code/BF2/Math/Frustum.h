@@ -31,11 +31,11 @@ public:
     void expandToEncapsulate(const Frustum& other);
     void reSetup();
     void transform(const Mat4& m);
-    float getFov() { return m_fov; }
+    float getFov() { return m_fov; }                  // RendDX9.dll inline copy PE 0x10079790: float +0x1CC
     void  setFov(float fov);
     float getNearDist() const { return m_nearDist; }
     void  setNearDist(float d);
-    float getFarDist() const { return m_farDist; }
+    float getFarDist() const { return m_farDist; }    // RendDX9.dll inline copy PE 0x100797B0: float +0x1E0
     void  setFarDist(float d);
     // Returns one of four corners for a plane; invalid input emits an error.
     const Vec3& getCornerForPlane(unsigned int corner, FrustumPlane plane) const;

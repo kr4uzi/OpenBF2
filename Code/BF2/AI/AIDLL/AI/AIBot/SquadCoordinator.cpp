@@ -1,6 +1,9 @@
 // [INFERRED] Source placement.
 // [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the remaining SquadCoordinator operations.
 
+#if defined(__APPLE__)
+#include "../../../../Platform/X87Compat.h" // [CHOSEN, not recovered]
+#endif
 #include "SquadCoordinator.h"
 
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
@@ -91,9 +94,16 @@ static bool maneuverMemberWithinRange(const Vec3& position, const Vec3& squadPos
     const long double dy = static_cast<float>(static_cast<long double>(squadPosition.y) - position.y);
     const long double dz = static_cast<float>(static_cast<long double>(squadPosition.z) - position.z);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dx = static_cast<bf2x87::Real>(squadPosition.x) - position.x;
+    const bf2x87::Real dy = static_cast<bf2x87::Real>(squadPosition.y) - position.y;
+    const bf2x87::Real dz = static_cast<bf2x87::Real>(squadPosition.z) - position.z;
+#else
     const long double dx = static_cast<long double>(squadPosition.x) - position.x;
     const long double dy = static_cast<long double>(squadPosition.y) - position.y;
     const long double dz = static_cast<long double>(squadPosition.z) - position.z;
+#endif
 #endif
 #if defined(_WIN32)
     return (dx * dx + dy * dy) + dz * dz < 8100.0L;
@@ -143,10 +153,21 @@ static bool shooterMovedAway(const Vec3& firePosition, const Vec3& position)
 #if defined(_WIN32)
     const long double dx = static_cast<float>(static_cast<long double>(firePosition.x) - position.x);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dx = static_cast<bf2x87::Real>(firePosition.x) - position.x;
+#else
     const long double dx = static_cast<long double>(firePosition.x) - position.x;
 #endif
+#endif
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dy = static_cast<bf2x87::Real>(firePosition.y) - position.y;
+    const bf2x87::Real dz = static_cast<bf2x87::Real>(firePosition.z) - position.z;
+#else
     const long double dy = static_cast<long double>(firePosition.y) - position.y;
     const long double dz = static_cast<long double>(firePosition.z) - position.z;
+#endif
 #if defined(_WIN32)
     return (dz * dz + dy * dy) + dx * dx > 25.0L;
 #else
@@ -193,9 +214,16 @@ static float leaderGotoDistanceSq(const Vec3& position, const Vec3& gotoPosition
     const long double dy = static_cast<float>(static_cast<long double>(position.y) - gotoPosition.y);
     const long double dz = static_cast<float>(static_cast<long double>(position.z) - gotoPosition.z);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dx = static_cast<bf2x87::Real>(gotoPosition.x) - position.x;
+    const bf2x87::Real dy = static_cast<bf2x87::Real>(gotoPosition.y) - position.y;
+    const bf2x87::Real dz = static_cast<bf2x87::Real>(gotoPosition.z) - position.z;
+#else
     const long double dx = static_cast<long double>(gotoPosition.x) - position.x;
     const long double dy = static_cast<long double>(gotoPosition.y) - position.y;
     const long double dz = static_cast<long double>(gotoPosition.z) - position.z;
+#endif
 #endif
     return static_cast<float>((dx * dx + dy * dy) + dz * dz);
 #endif
@@ -246,10 +274,18 @@ static bool insideControlPointRadius(const Vec3& controlPoint, const Vec3& posit
     const long double dz = static_cast<float>(static_cast<long double>(controlPoint.z) - position.z);
     return (dx * dx + dy * dy) + dz * dz < static_cast<long double>(radiusSq);
 #else
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Retain x87-width values on both Mac architectures.
+    const bf2x87::Real dx = static_cast<bf2x87::Real>(position.x) - controlPoint.x;
+    const bf2x87::Real dy = static_cast<bf2x87::Real>(position.y) - controlPoint.y;
+    const bf2x87::Real dz = static_cast<bf2x87::Real>(position.z) - controlPoint.z;
+    return (dy * dy + dx * dx) + dz * dz < static_cast<bf2x87::Real>(radiusSq);
+#else
     const long double dx = static_cast<long double>(position.x) - controlPoint.x;
     const long double dy = static_cast<long double>(position.y) - controlPoint.y;
     const long double dz = static_cast<long double>(position.z) - controlPoint.z;
     return (dy * dy + dx * dx) + dz * dz < static_cast<long double>(radiusSq);
+#endif
 #endif
 #endif
 }

@@ -2,7 +2,12 @@
 #include "IStream.h"
 #if !DEDICATED
 #include "System.h"
+#include "TypeDescriptor.h"
 #include <new>
+#if !defined(_WIN32)
+#include <cstdint>
+#include <vector>
+#endif
 namespace dice { namespace meme {
 namespace {
 // [INFERRED] Factored identical resource-name read sequences839E00/839EB0/839F60.
@@ -17,6 +22,15 @@ bool readResourceName(IStream* input, char* name)
 }
 IStream::IStream(IStream* source) : m_source(source ? source : this) {}
 IStream::~IStream() {} // 794CA0, borrowed source is not deleted
+// 83A160 is both the +04 slot and the class getter: a guarded "dice::meme::IStream" descriptor
+// whose base slot jumps to RuntimeObject's (82B9E0) and whose factory 83A1C0 builds a
+// self-sourced eight-byte IStream.
+TypeDescriptor* IStream::getClassType()
+{
+    static ClassTypeDescriptor<IStream, RuntimeObject> type("dice::meme::IStream");
+    return &type;
+}
+TypeDescriptor* IStream::getType() { return getClassType(); }
 unsigned int IStream::getObjectSize() { return sizeof(IStream); }
 IStream* IStream::getSource() // 839B60; repeated forwarding, no cycle/null guard
 {
@@ -28,8 +42,28 @@ bool IStream::streamUByte(unsigned char* value, const char*) { return getSource(
 bool IStream::streamByte(char* value, const char*) { return getSource()->read(value, 1) == 1; }
 bool IStream::streamUShort(unsigned short* value, const char*) { return getSource()->read(value, 2) == 2; }
 bool IStream::streamShort(short* value, const char*) { return getSource()->read(value, 2) == 2; }
+#if defined(_WIN32)
 bool IStream::streamULong(unsigned long* value, const char*) { return getSource()->read(value, 4) == 4; }
 bool IStream::streamLong(long* value, const char*) { return getSource()->read(value, 4) == 4; }
+#else
+// [CHOSEN, not recovered] The wire Long is 32 bits (Windows long). LP64 long is 64 bits, so
+// reading 4 bytes into it left the upper half uninitialized: readObject's frame end and its
+// "reading differs" check used garbage. Read the 32-bit value and sign/zero-extend it.
+bool IStream::streamULong(unsigned long* value, const char*)
+{
+    std::uint32_t wire;
+    if (getSource()->read(&wire, 4) != 4) return false;
+    *value = wire;
+    return true;
+}
+bool IStream::streamLong(long* value, const char*)
+{
+    std::int32_t wire;
+    if (getSource()->read(&wire, 4) != 4) return false;
+    *value = wire;
+    return true;
+}
+#endif
 bool IStream::streamFloat(float* value, const char*) { return getSource()->read(value, 4) == 4; }
 bool IStream::streamBool(bool* value, const char* label) // 839C10, clear before attempted read
 {
@@ -64,9 +98,23 @@ bool IStream::streamWideString(wchar_t** value, const char*)
     int length;
     if (!getSource()->streamInt(&length, "Int")) return false;
     if (length) {
+#if defined(_WIN32)
         *value = static_cast<wchar_t*>(::operator new((static_cast<unsigned int>(length) + 1) * 2));
         if (getSource()->read(*value, 2 * length) != 2 * length) return false;
         (*value)[length] = 0;
+#else
+        // [CHOSEN, not recovered] The wire holds `length` 16-bit Windows wchar_t units
+        // (UTF-16LE); POSIX wchar_t is 32 bits. Allocate native characters, read the units
+        // separately and widen each one, so the count and terminator index stay the shipped
+        // ones. No surrogate pairing: one unit stays one character, as in the Windows buffer.
+        const unsigned int count = static_cast<unsigned int>(length);
+        *value = static_cast<wchar_t*>(::operator new((count + 1) * sizeof(wchar_t)));
+        std::vector<unsigned char> units(2u * count);
+        if (getSource()->read(units.data(), 2 * length) != 2 * length) return false;
+        for (unsigned int i = 0; i < count; ++i)
+            (*value)[i] = static_cast<wchar_t>(units[2 * i] | (units[2 * i + 1] << 8));
+        (*value)[length] = 0;
+#endif
     }
     return true;
 }
@@ -77,7 +125,7 @@ bool IStream::streamCharacter(wchar_t* value, const char* label) // 839DC0, wire
     *value = static_cast<wchar_t>(temporary);
     return true;
 }
-bool IStream::streamTexture(System* system, int* texture, const char*)
+bool IStream::streamTexture(System* system, TextureHandle* texture, const char*)
 {
     *texture = 0;
     char name[256];
@@ -85,7 +133,7 @@ bool IStream::streamTexture(System* system, int* texture, const char*)
     *texture = system->loadTexture(name, true);
     return true;
 }
-bool IStream::streamFont(System* system, int* font, const char*)
+bool IStream::streamFont(System* system, FontHandle* font, const char*)
 {
     *font = 0;
     char name[256];
@@ -123,6 +171,8 @@ bool IStream::readShortString(System*, char* buffer, int capacity, const char*)
     buffer[length] = 0; // equality is allowed above: caller needs space for the terminator
     return true;
 }
+#if defined(_M_IX86)
 static_assert(sizeof(IStream) == 8, "BFMeme input stream layout");
+#endif
 } }
 #endif

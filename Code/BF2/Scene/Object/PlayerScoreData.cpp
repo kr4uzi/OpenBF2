@@ -37,7 +37,6 @@ PlayerScoreData::PlayerScoreData()
 }
 
 // Clears per-round counters/maps while retaining rank and m_field54/58/5C.
-// The former reset [FRONTIER] is implemented here.
 void PlayerScoreData::reset()
 {
     m_score             = 0;              // +0x00

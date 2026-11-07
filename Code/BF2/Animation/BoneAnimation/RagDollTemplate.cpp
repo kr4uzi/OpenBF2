@@ -47,6 +47,12 @@ inline unsigned long long rdtsc()
 {
 #if defined(_WIN32)
     return __rdtsc();
+#elif defined(__aarch64__)
+    // [CHOSEN, not recovered] arm64 macOS port (untested): the generic timer's virtual count is
+    // the constant-rate counter that stands in for the TSC; callers calibrate its frequency.
+    unsigned long long count;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(count));
+    return count;
 #else
     unsigned int lo, hi;
     __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));

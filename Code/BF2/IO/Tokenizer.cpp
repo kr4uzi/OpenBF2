@@ -6,10 +6,11 @@
 #include "../../RendDX9Abi/PluginEntry.h"
 #include "../../RendDX9Abi/HostFileAbi.h"
 #include "../../RendDX9Abi/BfMemory.h"
-#include "../../RendDX9Abi/Vc71String.h"
+#include <string>
 #include "Tokenizer.h"
 
 #include <cstddef>
+#include <cstdlib>
 
 namespace dice {
 namespace hfe {
@@ -17,7 +18,6 @@ namespace hfe {
 namespace {
 
 // Select the file-info representation required by the host ABI.
-#if BF2_PLUGIN_ABI_NATIVE
 
 // The native host's own record - this image shares the host's STL and CRT.
 typedef ::dice::hfe::io::FileInfo TokenizerFileInfo;
@@ -27,37 +27,14 @@ inline ::dice::hfe::io::FileInfo& hostFileInfo(TokenizerFileInfo& info)
     return info;
 }
 
-#else
-
-// Retail file-info carrier. Its filename uses the VC7.1 string allocator and lifecycle.
-struct TokenizerFileInfo
-{
-    vc71::string  name;            // +0   the only member the shipped frame constructs
-    unsigned char isDirectory;     // +28
-    unsigned char pad29[3];
-    unsigned int  size;            // +32  the buffer size and the read size
-    unsigned int  pad36;           // +36  MSVC 8-aligns the FILETIMEs
-    unsigned int  times[6];        // +40..+63  creation, last access, last write
-};
-
-#if defined(_M_IX86)
-static_assert(sizeof(TokenizerFileInfo) == 64, "the PE io::FileInfo the shipped frame reserves");
-static_assert(offsetof(TokenizerFileInfo, size) == 32, "sub_10076C90 reads the size at +0x20");
-#endif
-
-inline ::renddx9abi::HostFileInfo& hostFileInfo(TokenizerFileInfo& info)
-{
-    return reinterpret_cast< ::renddx9abi::HostFileInfo&>(info);
-}
-
-#endif // BF2_PLUGIN_ABI_NATIVE
 
 // End-of-input token text: ASCII ETX followed by the string terminator.
 const char kEndTokenText[] = "\x03";
 
 } // anonymous namespace
 
-// owner 0, index -1, the text constructed empty, line and column 0xFFFF, type 0, in
+// PE 0x10076450 (the out-of-line copy; unreachable in 1.50: no code or data references) / ELF
+// 0x8438A60. owner 0, index -1, the text constructed empty, line and column 0xFFFF, type 0, in
 // declaration order. RendDX9 inlines it (0x1007688F.. in clean(), 0x10076913.. in the scan).
 Token::Token()
     : owner(0),
@@ -68,7 +45,7 @@ Token::Token()
 {
 }
 
-// Advances to the next token and returns this cursor. Advancing the end token leaves it at the end.
+// PE 0x10076490. Advances to the next token and returns this cursor. Advancing the end token leaves it at the end.
 Token& Token::operator++()
 {
     Tokenizer* const tokenizer = owner;
@@ -76,6 +53,57 @@ Token& Token::operator++()
         ++index;
     *this = tokenizer->m_tokens[index];
     return *this;
+}
+
+// PE 0x100764F0 / ELF 0x8438B10. Steps back one token unless at the first, then copies that token.
+// Unreachable in 1.50: no code or data references.
+Token& Token::operator--()
+{
+    if (index > 0)
+        --index;
+    *this = owner->m_tokens[index];
+    return *this;
+}
+
+// PE 0x10076550 / ELF 0x8438B80. A target at or past the token count takes the end token's own
+// index (the record at m_count), else the target; then the cursor copies that token. Unreachable in
+// 1.50: no code or data references.
+Token& Token::operator+=(unsigned int count)
+{
+    Tokenizer* const tokenizer = owner;
+    const unsigned int target = index + count;
+    if (target >= tokenizer->m_count)
+        index = tokenizer->m_tokens[tokenizer->m_count].index;
+    else
+        index = target;
+    *this = tokenizer->m_tokens[index];
+    return *this;
+}
+
+// PE 0x100765D0 / ELF 0x8438C10. Both images compare signed (`jl`), so the clamp is done on int.
+// Unreachable in 1.50: no code or data references.
+const Token& Token::operator[](unsigned int count) const
+{
+    const Tokenizer* const tokenizer = owner;
+    int target = static_cast<int>(index + count);
+    const int end = static_cast<int>(tokenizer->m_count);
+    if (target >= end)
+        target = end;
+    return tokenizer->m_tokens[target];
+}
+
+// PE 0x100767C0 (the token in ECX, the result in EDX:EAX) / ELF 0x84398D0. getIntNumber's sign rule,
+// converted with _atoi64. Unreachable in 1.50: no code or data references.
+long long Tokenizer::getInt64Number(Token& token)
+{
+    std::string number(token.text.c_str());
+    ++token;
+    if (number == "-" || number == "+")
+    {
+        number += token.text.c_str();
+        ++token;
+    }
+    return _atoi64(number.c_str());
 }
 
 // ELF 0x8438C90 / sub_10076860, 27 B - see the header: the vector empty, the name empty, the count
@@ -98,7 +126,7 @@ void Tokenizer::clean()
     m_count = 0;
 }
 
-// Loads and tokenizes fileName through FileManager. Returns the scan result.
+// PE 0x10076C90 (FileManager vtable +0x38 getFileInfo, +0x2C readFile). Loads and tokenizes fileName through FileManager. Returns the scan result.
 // Requires FileManager; records the name after successful file access even when scanning fails.
 bool Tokenizer::init(const char* fileName)
 {

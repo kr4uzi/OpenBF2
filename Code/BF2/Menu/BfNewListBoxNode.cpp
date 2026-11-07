@@ -1,4 +1,7 @@
 #include "BfNewListBoxNode.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "BfListBoxData.h"
 #include "DifFontMetadata.h"
@@ -13,6 +16,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+// [CHOSEN, not recovered] SSE2 is used only by the Windows x64 arm; arm64 has no emmintrin.h.
+#if defined(_WIN32) && !defined(_M_IX86)
+#include <emmintrin.h>
+#endif
 namespace dice { namespace hfe { namespace io {
 extern IBase* inputDeviceManager;
 } } }
@@ -21,7 +28,9 @@ namespace {
 // Floors then converts to int with truncating x87 control, preserving NaN and out-of-range results.
 int floorToInt(double value)
 {
+#if defined(_WIN32)
     const double floored = std::floor(value);
+#if defined(_M_IX86)
     unsigned short original, truncating;
     int result;
     __asm {
@@ -35,6 +44,19 @@ int floorToInt(double value)
         fldcw original
     }
     return result;
+#else
+    // cvttsd2si truncates like the chopped fistp, including the 0x80000000 indefinite result.
+    return _mm_cvttsd_si32(_mm_set_sd(floored));
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const double floored = std::floor(value);
+    unsigned short original, truncating;
+    int result;
+    // [CHOSEN, not recovered] Preserve x87 truncating int32 with integer indefinite.
+    result = bf2x87::integer<int>(bf2x87::wide(floored));
+    return result;
+#endif
 }
 int floorFloatToInt(float value) { return floorToInt(static_cast<double>(value)); }
 }
@@ -54,7 +76,7 @@ BfNewListBoxNode::BfNewListBoxNode()
       m_field108(false), m_field109(false), m_field128(false)
 {
     for (auto& word : m_field10c) word = 0;
-    for (int& font : m_fonts) font = 0;
+    for (FontHandle& font : m_fonts) font = 0;
 }
 BfNewListBoxNode::~BfNewListBoxNode() {} // list destruction, then Node/Object
 unsigned int BfNewListBoxNode::getObjectSize() { return sizeof(BfNewListBoxNode); }
@@ -122,13 +144,39 @@ bool BfNewListBoxNode::scrollDownOneRow(System*)
     return true;
 }
 
-// [FRONTIER] [TEMP] [CHOSEN, not recovered] Remaining stream and event methods stop on invocation.
-// [RETIRE-WHEN: hud-list-box-frame] Replace after all remaining list-box stream and event operations are implemented and validated.
-bool BfNewListBoxNode::streamProperties(System*, Stream*)
+// Streams the list box's properties after Node's. The deletion visitor runs it when the HUD tree is
+// destroyed. "Font" and "Select action" both stream the +48 word, as shipped; nothing streams +4C.
+// A data object, once streamed, gets this node as its back-pointer.
+bool BfNewListBoxNode::streamProperties(System* system, Stream* stream)
 {
-    std::fprintf(stderr, "[FRONTIER] dice::meme::BfNewListBoxNode::streamProperties reached\n");
-    std::fflush(stderr);
-    std::abort();
+    if (!Node::streamProperties(system, stream)) return false;
+    if (!stream->streamData(system, reinterpret_cast<Data*&>(m_data), "Listbox data",
+                            ListBoxData::getClassType())) return false;
+    if (m_data) m_data->m_node = this;
+    if (!stream->streamFont(system, &m_font048, "Font")) return false;
+    if (!stream->streamAction(system, m_selectAction, "Select action", nullptr)) return false;
+    if (!stream->streamAction(system, m_focusAction, "Focus action", nullptr)) return false;
+    if (!stream->streamSound(system, &m_sound068, "Step sound")) return false;
+    if (!stream->streamSound(system, &m_sound06c, "Select sound")) return false;
+    if (!stream->streamSound(system, &m_sound070, "Failed select sound")) return false;
+    if (!stream->streamFloat(&m_rowHeight, "Row height")) return false;
+    if (!stream->streamBool(&m_selectable, "IsSelectable")) return false;
+    if (!stream->streamBool(&m_border, "Border or not")) return false;
+    if (!stream->streamFloat(&m_background.r, "Background color red")) return false;
+    if (!stream->streamFloat(&m_background.g, "Background color green")) return false;
+    if (!stream->streamFloat(&m_background.b, "Background color blue")) return false;
+    if (!stream->streamFloat(&m_background.a, "Background color alpha")) return false;
+    if (!stream->streamFloat(&m_scrollWidth, "Scrollbar width")) return false;
+    if (!stream->streamFloat(&m_frame.r, "Frame color red")) return false;
+    if (!stream->streamFloat(&m_frame.g, "Frame color green")) return false;
+    if (!stream->streamFloat(&m_frame.b, "Frame color blue")) return false;
+    if (!stream->streamFloat(&m_frame.a, "Frame color alpha")) return false;
+    if (!stream->streamFloat(&m_selection.r, "Select color red")) return false;
+    if (!stream->streamFloat(&m_selection.g, "Select color green")) return false;
+    if (!stream->streamFloat(&m_selection.b, "Select color blue")) return false;
+    if (!stream->streamFloat(&m_selection.a, "Select color alpha")) return false;
+    if (!stream->streamBool(&m_field109, "Show tooltip")) return false;
+    return stream->streamFloat(&m_scrollOffset, "Scrollbar offset from border") != false;
 }
 bool BfNewListBoxNode::updateSelf(System* system, const NodeState* state,
                                   const Rect* bounds, float delta)
@@ -1009,12 +1057,16 @@ bool BfNewListBoxNode::onEvent2(System* system, const Rect* bounds, const NodeSt
     m_field064 = -1;
     return false;
 }
+// [FRONTIER] [TEMP] [CHOSEN, not recovered] The remaining event method stops on invocation.
+// [RETIRE-WHEN: hud-list-box-frame] Replace after the remaining list-box event operations are implemented and validated.
 bool BfNewListBoxNode::onEvent3(System*, const Rect*, const NodeState*, int, int)
 {
     std::fprintf(stderr, "[FRONTIER] dice::meme::BfNewListBoxNode::onEvent3 reached\n");
     std::fflush(stderr);
     std::abort();
 }
+#if defined(_M_IX86)
 static_assert(sizeof(BfNewListBoxNode) == 296, "native BfNewListBoxNode storage");
+#endif
 } }
 #endif

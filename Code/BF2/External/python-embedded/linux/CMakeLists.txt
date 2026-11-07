@@ -28,17 +28,33 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(dice_py LANGUAGES C CXX)
 endif()
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# [CHOSEN, not recovered] The same description also builds libdice_py.dylib for the macOS port.
+# Only the configure output differs: ../macos/pyconfig.h is the vendored configure's answer on
+# Darwin (see ../macos/README.md); config.c, the source list and every flag are shared.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(DICE_PY_MACOS OFF)
+    set(DICE_PY_PYCONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        message(FATAL_ERROR
+            "dice_py/linux: pyconfig.h here is configure's output for Linux x86-64 (LP64, "
+            "little-endian, 16-byte fpos_t); this is ${CMAKE_SYSTEM_PROCESSOR} with "
+            "${CMAKE_SIZEOF_VOID_P}-byte pointers. Regenerate pyconfig.h for the platform first - "
+            "README.md says how.")
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(DICE_PY_MACOS ON)
+    get_filename_component(DICE_PY_PYCONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../macos" ABSOLUTE)
+    # The Darwin pyconfig.h holds for both x86_64 and arm64 (LP64, little-endian, same libSystem
+    # sizes); see ../macos/README.md. [CHOSEN, not recovered] Universal builds use the
+    # compiler's per-slice architecture macros for the va_list override, not the CMake host.
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "dice_py/macos: only 64-bit macOS is supported.")
+    endif()
+else()
     message(FATAL_ERROR
-        "dice_py/linux: this directory builds libdice_py.so for Linux only (this is "
-        "${CMAKE_SYSTEM_NAME}). The Windows dice_py.dll is built by "
+        "dice_py/linux: this directory builds libdice_py.so for Linux and libdice_py.dylib for "
+        "macOS only (this is ${CMAKE_SYSTEM_NAME}). The Windows dice_py.dll is built by "
         "Code/Build/python/build_python.cmd.")
-endif()
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    message(FATAL_ERROR
-        "dice_py/linux: pyconfig.h here is configure's output for Linux x86-64 (LP64, little-endian, "
-        "16-byte fpos_t); this is ${CMAKE_SYSTEM_PROCESSOR} with ${CMAKE_SIZEOF_VOID_P}-byte "
-        "pointers. Regenerate pyconfig.h for the platform first - README.md says how.")
 endif()
 
 # Where libdice_py.so and dice_py_check land. The root project points this at the `bf2` directory.
@@ -163,7 +179,7 @@ set_target_properties(dice_py PROPERTIES
 )
 target_include_directories(dice_py
     PUBLIC
-        "${CMAKE_CURRENT_SOURCE_DIR}"           # pyconfig.h (configure's output, see README.md)
+        "${DICE_PY_PYCONFIG_DIR}"               # pyconfig.h (configure's output, see README.md)
         "${DICE_PY_SRC}/Include"
     PRIVATE
         "${DICE_PY_ZLIB}"                       # zlib.h for Modules/zlibmodule.c
@@ -211,10 +227,23 @@ endforeach()
 # build never is. PYTHONPATH/PLATFORM say linux2 where this kernel's configure says linux6:
 # [CHOSEN, not recovered] sys.platform is the retail-era value, the only one 2004 scripts could
 # have tested; see README.md.
+# [CHOSEN, not recovered] macOS keeps "linux2" too: the game's Python scripts were only ever run
+# on win32 and linux2, so reporting the retail Linux value keeps their platform tests on the
+# path the retail Linux server took. See ../macos/README.md.
 set_source_files_properties("${DICE_PY_SRC}/Modules/getpath.c" PROPERTIES COMPILE_DEFINITIONS
     "PREFIX=\"/usr/local\";EXEC_PREFIX=\"/usr/local\";VERSION=\"2.3\";VPATH=\"\";PYTHONPATH=\":plat-linux2:lib-tk\"")
 set_source_files_properties("${DICE_PY_SRC}/Python/getplatform.c" PROPERTIES COMPILE_DEFINITIONS
     "PLATFORM=\"linux2\"")
+
+# [CHOSEN, not recovered] macOS: Modules/_localemodule.c's __APPLE__ branch includes Mac/Include's
+# macglue.h and calls PyMac_getscript from Python/mactoolboxglue.c, the Carbon toolbox glue that
+# upstream links only into a framework build. That glue is not part of this build, so the unit is
+# compiled as the generic POSIX module it is on Linux: setlocale/localeconv/nl_langinfo, and no
+# _getdefaultlocale (locale.py then reads the LANG/LC_* environment, as on the Linux server).
+if(DICE_PY_MACOS)
+    set_property(SOURCE "${DICE_PY_SRC}/Modules/_localemodule.c" APPEND PROPERTY COMPILE_OPTIONS
+        "-U__APPLE__")
+endif()
 
 # System libraries: libm (mathmodule, timemodule), libdl (dynload_shlib), pthreads (thread.c) and,
 # where glibc still ships it separately (before 2.34), libutil for posixmodule's openpty/forkpty.
@@ -229,7 +258,10 @@ if(NOT DICE_PY_OPENPTY_IN_LIBC)
 endif()
 # A shared object links even with unresolved symbols; refuse that, so a missing system library or
 # a module compiled without its dependency fails HERE rather than when `bf2` first dlopens it.
-target_link_options(dice_py PRIVATE -Wl,--no-undefined)
+# ld64 (macOS) already rejects undefined symbols in a dylib by default and has no --no-undefined.
+if(NOT DICE_PY_MACOS)
+    target_link_options(dice_py PRIVATE -Wl,--no-undefined)
+endif()
 
 # -------------------------------------------------------------------------------------------------
 # The runtime check: the same pycheck.cpp the Windows build runs, linked against libdice_py.so and
@@ -239,10 +271,15 @@ add_executable(dice_py_check "${DICE_PY_CHECK_SOURCE}")
 target_link_libraries(dice_py_check PRIVATE dice_py)
 target_compile_definitions(dice_py_check PRIVATE DEDICATED=1)
 target_compile_options(dice_py_check PRIVATE "-include${DICE_PY_BUILDCONFIG_H}")
+if(DICE_PY_MACOS)
+    set(DICE_PY_RPATH "@loader_path")             # the Mach-O spelling of $ORIGIN
+else()
+    set(DICE_PY_RPATH "\$ORIGIN")
+endif()
 set_target_properties(dice_py_check PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${BF2_DICE_PY_OUTPUT_DIR}"
-    BUILD_RPATH "\$ORIGIN"
-    INSTALL_RPATH "\$ORIGIN"
+    BUILD_RPATH "${DICE_PY_RPATH}"
+    INSTALL_RPATH "${DICE_PY_RPATH}"
     BUILD_WITH_INSTALL_RPATH TRUE
     CXX_STANDARD 14                             # the engine's standard; Python.h is consumed from C++14
     CXX_STANDARD_REQUIRED ON

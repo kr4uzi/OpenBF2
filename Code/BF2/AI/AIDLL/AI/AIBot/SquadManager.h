@@ -72,8 +72,7 @@ public:
     void clearPlayerValidPositions();
     void unAssignSquads(int side);               // ELF 0x1AF800
     int unAssignSquads(int areaIndex, int side); // ELF 0x1AF750
-    // [FRONTIER] declared by ai-strategic for SAI::checkCommanderUseArtillery; owner ai-bot
-    // (coord/ai-requests.md). getArtillerySafeDistance is recovered (ELF 0x1AEE60: +0x98).
+    // Used by SAI::checkCommanderUseArtillery. getArtillerySafeDistance: ELF 0x1AEE60 (+0x98).
     bool  haveCampingHumans(int side, Vec2& position);            // ELF 0x1B0610
     bool  haveHumanPlayerOnOwnSide(int side);                     // ELF 0x1AE5B0
     float getArtillerySafeDistance();                             // ELF 0x1AEE60

@@ -1,6 +1,9 @@
 // [INFERRED] split in the attested BF2HudManager.cpp family. Complete653-byte
 // PE752B00 and its helpers read. Filters stay separate.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "Ref2System.h"
 #include "../External/BFMeme/Pointer.h"
@@ -11,7 +14,9 @@ namespace dice { namespace hfe { namespace hud {
 namespace {
 float centeredInputOrigin(float origin, float dimension)
 {
+#if defined(_WIN32)
     const float half = 0.5f;
+#if defined(_M_IX86)
     float result;
     __asm {
         fld dimension
@@ -20,13 +25,27 @@ float centeredInputOrigin(float origin, float dimension)
         fstp result
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    return static_cast<float>(origin - static_cast<double>(dimension) * half);
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float half = 0.5f;
+    float result;
+    // [CHOSEN, not recovered] Preserve x87 extended centering before float store.
+    result = bf2x87::center(origin, dimension);
+    return result;
+#endif
 }
 
 void moveInputPointer(float* position, float x, float y, int sensitivity,
                       bool absolute, float width, float height)
 {
+#if defined(_WIN32)
     const float half = 0.5f;
     if (absolute) {
+#if defined(_M_IX86)
         __asm {
             mov eax, position
             fld x
@@ -38,8 +57,14 @@ void moveInputPointer(float* position, float x, float y, int sensitivity,
             fmul half
             fstp dword ptr [eax+4]
         }
+#else
+        // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+        position[0] = static_cast<float>(static_cast<double>(x) * width * half);
+        position[1] = static_cast<float>(static_cast<double>(y) * height * half);
+#endif
     } else {
         // fild preserves all bits of the signed sensitivity until multiplication.
+#if defined(_M_IX86)
         __asm {
             mov eax, position
             fild sensitivity
@@ -51,12 +76,33 @@ void moveInputPointer(float* position, float x, float y, int sensitivity,
             fadd dword ptr [eax+4]
             fstp dword ptr [eax+4]
         }
+#else
+        // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates); the int is
+        // exact in double, its product with a float is rounded to 53 bits.
+        const double scale = sensitivity;
+        position[0] = static_cast<float>(x * scale + position[0]);
+        position[1] = static_cast<float>(scale * y + position[1]);
+#endif
     }
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    const float half = 0.5f;
+    if (absolute) {
+        // [CHOSEN, not recovered] Preserve x87 absolute scaled float stores.
+        bf2x87::movePointer(position, x, y, sensitivity, true, width, height);
+    } else {
+        // fild preserves all bits of the signed sensitivity until multiplication.
+        // [CHOSEN, not recovered] Preserve x87 signed integer sensitivity before multiply/add.
+        bf2x87::movePointer(position, x, y, sensitivity, false, width, height);
+    }
+#endif
 }
 
 void clampInputCoordinate(float& value, float origin, float extent)
 {
+#if defined(_WIN32)
     // Keep the unrounded upper-bound sum and the shipped unordered comparisons.
+#if defined(_M_IX86)
     __asm {
         mov edx, value
         fld dword ptr [edx]
@@ -80,6 +126,23 @@ void clampInputCoordinate(float& value, float origin, float extent)
         fstp st(0)
     clamp_done:
     }
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates).
+    // Only an ordered value below the origin is raised (raw copy); otherwise only an ordered
+    // unrounded upper bound below the value lowers it. Unordered compares change nothing.
+    if (value < origin) {
+        value = origin;
+    } else {
+        const double upper = static_cast<double>(extent) + origin;
+        if (upper < value) value = static_cast<float>(upper);
+    }
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    // Keep the unrounded upper-bound sum and the shipped unordered comparisons.
+    // [CHOSEN, not recovered] Preserve x87 ordered clamps with retained upper sum.
+    bf2x87::clampCoordinate(value, origin, extent);
+#endif
 }
 }
 

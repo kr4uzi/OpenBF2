@@ -251,6 +251,10 @@ cl %FLAGS% "%~dp0..\BF2\Game\Objects\Game\OrderMarker.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Math\Mat4.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Math\Mat3.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Math\Intersect.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Math\LocalBoundingBox.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Math\Vec3.cpp"
@@ -413,6 +417,8 @@ cl %FLAGS% "%~dp0..\BF2\Game\Objects\Weapons\FireComponents\ExplosivesFireComp.c
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Core\Random.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% /DBF2_IMAGE_AIDLL=1 "%~dp0..\BF2\Core\Random.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Game\Soldier.cpp"
 if errorlevel 1 set /a RC+=1
 @rem ADDED 2026-09-22 with Rotor::handleVisualUpdate and AntennaObject::handleVisualUpdate. The
@@ -533,6 +539,7 @@ cl %FLAGS% "%~dp0..\BF2\Game\Objects\Weapons\ModuleWeapon.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Game\Parachute.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Core\DllStlAllocator.cpp"
 cl %FLAGS% "%~dp0..\BF2\IO\Input\InputMapStream.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Vehicle\ModuleWorldObjTemplVehicle.cpp"
@@ -638,6 +645,8 @@ cl %FLAGS% "%~dp0..\BF2\Game\DemoRecorder\DemoHeader.cpp"
 if errorlevel 1 set /a RC+=1
 @rem The growable memory stream ZipArchive::open inflates small entries into (CID_MemStream).
 cl %FLAGS% "%~dp0..\BF2\IO\Stream\MemStream.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\IO\Stream\BoundingBox.cpp"
 if errorlevel 1 set /a RC+=1
 @rem The RAII file handle OldConsole::run drives. Recovering it also promoted io::IFile from a
 @rem forward declaration to a real polymorphic interface - see IFileSystem.h.
@@ -748,6 +757,19 @@ if errorlevel 1 set /a RC+=1
 @rem POSIX-guarded like StatusMonitorImpl\posix.cpp - listed so a broken guard is caught.
 cl %FLAGS% "%~dp0..\BF2\IO\File\UnixFileSystem.cpp"
 if errorlevel 1 set /a RC+=1
+@rem [CHOSEN, not recovered] macOS-only client paths; empty on other platforms/images.
+cl %FLAGS% "%~dp0..\BF2\Platform\macOS\ClientPaths.cpp"
+if errorlevel 1 set /a RC+=1
+@rem [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT test tool; empty in the server image.
+cl %FLAGS% "%~dp0..\BF2\Platform\InputScript.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Platform\Windows\WinInputScript.cpp"
+if errorlevel 1 set /a RC+=1
+@rem [CHOSEN, not recovered] macOS renderer backend boundary; empty on Windows.
+cl %FLAGS% "%~dp0..\BF2\Platform\Gfx\Metal\Frontiers.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Platform\Gfx\Metal\Device.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\IO\SettingsManager.cpp"
 if errorlevel 1 set /a RC+=1
 
@@ -838,6 +860,10 @@ cl %FLAGS% "%~dp0..\BF2\Physics\BasicPhysicsSystem.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Scene\Object\WorldObjTemplPortal\PortalManager.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Scene\Object\WorldObjTemplPortal\PortalPassing.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Scene\Object\WorldObjTemplPortal\Sector.cpp"
+if errorlevel 1 set /a RC+=1
 
 @rem Chunk 01's sixteen engine-side AI adapters plus the event listener (2026-09-08).
 @rem ENGINE members - unlike the AIDLL block below, these DO enter bf2_w32ded.exe.
@@ -900,10 +926,20 @@ if errorlevel 1 set /a RC+=1
 @rem
 set FLAGS0=/nologo /Zs /std:c++14 /permissive /EHsc /MD /D_ITERATOR_DEBUG_LEVEL=0 /DBF2_PLUGIN_ABI_NATIVE=1 %PYINC% %ZIPINC% /DDEDICATED=0 /FI"%~dp0..\BF2\Core\BuildConfig.h"
 @echo == client configuration: /DDEDICATED=0 ==
+@rem The renderer and atlas TUs below compile against the April 2005 DirectX SDK's D3DX headers
+@rem (Code\Build\dxsdk.cmd), or without it against the D3DX fallback declarations
+@rem (RendDX9Abi\D3dxFallbackInclude, BF2_D3DX; docs\building.md "D3DX without the DirectX SDK").
+@rem With BF2_D3DX=sdk and no SDK they are skipped and counted as one failure, so this gate never
+@rem passes while omitting them.
+call "%~dp0..\Build\dxsdk.cmd" x86 fallback
+if errorlevel 1 goto :renderer_tus_no_dxsdk
+if defined BF2_D3DX_FALLBACK set FLAGS0=%FLAGS0% /I"%~dp0..\RendDX9Abi\D3dxFallbackInclude"
 @rem Bundled meshes and their reflection dependency are renderer-owned client sources.
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\BundledMesh.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\BundledMeshDraw.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\RaQuadPatchAdapter.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\BundledMeshHeight.cpp"
 if errorlevel 1 set /a RC+=1
@@ -938,7 +974,17 @@ cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\UndergrowthSystemRender.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\UndergrowthSystemConsole.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\LightningManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\WeatherManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\Rain\RainManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\WeatherManagerConsole.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\DecalSystem\DecalManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\DecalSystem\DecalShadowManager.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\DecalSystem\DecalObject.cpp"
 if errorlevel 1 set /a RC+=1
@@ -964,11 +1010,51 @@ cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\RoadTemplate.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\RoadEditableRenderer.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\LightGeometry.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\MeshOptimizer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\BundledMeshOptimizer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\StaticMeshOptimizer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\LightMerger.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\PerlinNoise.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\MenuRend\QuadOutputCache.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugBlockGraphD3D.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\LoadingScreen\LoadingScreen.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\SplineControlPoint.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\EditorSpline.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\Debug.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugBoxMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugCylinderMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugSphereMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugPlaneMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugPolygonMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugTorusMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugXMesh.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugRenderer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugTextDrawer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugCircleDrawer.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\GeomMisc\DebugLineDrawer.cpp"
 if errorlevel 1 set /a RC+=1
 @rem Roads step 3 (2026-10-01): RoadEditable and its tessellator (RoadEditableTessellate.inl is
 @rem part of the same translation unit; renddx9.cmd builds it).
@@ -998,8 +1084,19 @@ cl %FLAGS0% /DBF2_IMAGE_RENDDX9 /DBF2_IMAGE_EDITOR=1 "%~dp0..\BF2\Geom\LightmapG
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\StaticMeshRendererConsole.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\Geom\TerrainCullerConsole.cpp"
+if errorlevel 1 set /a RC+=1
 @rem IO/Tokenizer.cpp (RW-240): dice::hfe::Tokenizer, whose bodies compile only under BF2_IMAGE_RENDDX9 (renddx9.cmd builds it).
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\IO\Tokenizer.cpp"
+if errorlevel 1 set /a RC+=1
+@rem RendDX9/MovieRenderer.cpp: the demo movie recorder (Renderer slots +0x64/+0x68; renddx9.cmd builds it).
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\RendDX9\MovieRenderer.cpp"
+if errorlevel 1 set /a RC+=1
+@rem RendDX9/ResourceTracer.cpp: the unreachable D3D resource tracer (renddx9.cmd builds it).
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\RendDX9\ResourceTracer.cpp"
+if errorlevel 1 set /a RC+=1
+@rem RendDX9/DiceEffect.cpp: DiceEffect::compile and its builders (renddx9.cmd builds it).
+cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\RendDX9\DiceEffect.cpp"
 if errorlevel 1 set /a RC+=1
 @rem TextureAtlasBuilder.dll (2026-10-01): its six TUs compile only under BF2_IMAGE_TEXTUREATLASBUILDER
 @rem (Code\Build\textureatlasbuilder.cmd builds them); RendDX9's TextureAtlas.cpp drives the DLL.
@@ -1017,6 +1114,11 @@ cl %FLAGS0% /DBF2_IMAGE_TEXTUREATLASBUILDER "%~dp0..\BF2\RendDX9\TextureAtlas\Te
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% /DBF2_IMAGE_RENDDX9 "%~dp0..\BF2\RendDX9\TextureAtlas\TextureAtlas.cpp"
 if errorlevel 1 set /a RC+=1
+goto :renderer_tus_done
+:renderer_tus_no_dxsdk
+@echo == renderer and TextureAtlasBuilder TUs SKIPPED - no April 2005 DirectX SDK ==
+set /a RC+=1
+:renderer_tus_done
 cl %FLAGS0% "%~dp0..\BF2\Game\Main\BF2.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Main\BF2Engine.cpp"
@@ -1427,6 +1529,11 @@ cl %FLAGS0% "%~dp0..\BF2\IO\Input\KeyboardDevice.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\IO\Input\MouseDevice.cpp"
 if errorlevel 1 set /a RC+=1
+@rem [TEMP] [CHOSEN, not recovered] BF2_INPUT_SCRIPT test tool (client images only).
+cl %FLAGS0% "%~dp0..\BF2\Platform\InputScript.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Windows\WinInputScript.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\IO\Input\ControlMapConsole.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\IO\Input\GameControllerDevice.cpp"
@@ -1516,6 +1623,22 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Visual\LightSourceTemplate.cpp"
 if errorlevel 1 set /a RC+=1
 
+@rem [CHOSEN, not recovered] macOS D3DX helper TUs must remain empty on MSVC.
+@rem Keep the explicit full gate in step with recursive build discovery.
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXMath.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXPixels.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXImages.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXTextures.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXGeometry.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXLine.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\Metal\D3DXMesh.cpp"
+if errorlevel 1 set /a RC+=1
 @rem AI manifests: every engine AI TU and every AIDLL-only TU.
 cl %FLAGS% /DBF2_IMAGE_AIDLL=1 "%~dp0..\BF2\AI\AIDLL\AI\AIBotActionPlan\Aimer.cpp"
 if errorlevel 1 set /a RC+=1

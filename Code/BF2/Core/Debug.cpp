@@ -88,6 +88,8 @@ Debug::~Debug()
 }
 
 // No bounds check, no locking.
+// RendDX9.dll copy PE 0x10074340 (type/callback in ECX/EDX, data on the stack; unreachable in 1.50:
+// no code or data references).
 void setDebugCallback(DebugType type, DebugCallback callback, void* data)
 {
     bfGlobal_callback[type]     = callback;
@@ -96,6 +98,7 @@ void setDebugCallback(DebugType type, DebugCallback callback, void* data)
 
 // (the clear() is inlined here and called out of line in turnOffAllDebug -
 // compiler variance, same source). plain `int` parameter, attested by the mangling.
+// RendDX9.dll copy PE 0x10074850 (clear() as a tail jump to the Hash clear).
 void turnOnAllDebug(int type)
 {
     debugOn[type] = true;
@@ -103,6 +106,7 @@ void turnOnAllDebug(int type)
 }
 
 
+// RendDX9.dll copy PE 0x10074870.
 void turnOffAllDebug(int type)
 {
     debugOn[type] = false;
@@ -111,6 +115,9 @@ void turnOffAllDebug(int type)
 
 // Enables debugging for module. The exception list is an exclusion list when the type is on
 // and an inclusion list when it is off; insertion avoids duplicate entries.
+// RendDX9.dll copy PE 0x10074890 (fastcall type/module). Its exists-then-insert is one out-of-line
+// Hash member there, PE 0x10074940: bucket, exists(), then a node with the key and an empty value
+// pushed on the chain, answering whether it inserted; the same operations as below.
 void turnOnDebug(int type, const std::string& module)
 {
     if (debugOn[type])
@@ -119,7 +126,7 @@ void turnOnDebug(int type, const std::string& module)
         debugModules[type].insert(module, std::string());
 }
 
-// Exact mirror, same caller-side guard.
+// Exact mirror, same caller-side guard. RendDX9.dll copy PE 0x100748C0.
 void turnOffDebug(int type, const std::string& module)
 {
     if (!debugOn[type])

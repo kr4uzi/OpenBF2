@@ -8,6 +8,9 @@
 #include <deque>
 #include <list>
 #include <map>
+#if !defined(_WIN32)
+#include <atomic>
+#endif
 
 #include "../../../Core/Mutex.h"                     // three by-value Mutexes, sizeof 4 each
 #include "../PacketFilter.h"                         // by-value member at +0x4F0
@@ -243,9 +246,14 @@ public:
     /* +0x474 */ BitStream*   m_bitStreamOut;             // = 0  - built by init()
     /* +0x478 */ BitStream*   m_bitStreamIn;              // = 0  - built by init()
     /* +0x47C */ bool         m_bInit;                    // = 0
+#if defined(_WIN32)
     /* +0x47D */ bool         m_shuttingDown;             // the receive
                                                           //   thread's exit flag, read under m_mutex.
                                                           //   endReceiveThread sets it first.
+#else
+    // [CHOSEN, not recovered] POSIX: shutdown writes outside m_mutex while the worker reads it.
+    std::atomic<bool> m_shuttingDown;
+#endif
     /* +0x480 */ std::string  m_name;                     // = "" - init() sets "<address>:<port>"
     /* +0x484 */ unsigned int m_version;                  // = 0  - the protocol compatibility gate
     /* +0x488 */ unsigned int m_connectionTimeOut;        // = 10000

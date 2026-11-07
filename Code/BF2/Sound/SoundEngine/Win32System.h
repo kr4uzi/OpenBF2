@@ -3,6 +3,10 @@
 #ifndef SOUND_SOUNDENGINE_WIN32SYSTEM_H
 #define SOUND_SOUNDENGINE_WIN32SYSTEM_H
 
+#if !defined(_WIN32)
+#include <atomic>
+#endif
+
 namespace dice {
 namespace hfe {
 namespace win32 {
@@ -20,7 +24,12 @@ void  outputDebugString(const char* text);
 void  sleep(unsigned int milliseconds);
 
 // InterlockedExchange. The music thread's volume and fade words are written this way.
+#if defined(_WIN32)
 long  exchange(volatile long* target, long value);
+#else
+// [CHOSEN, not recovered] POSIX music hand-offs use C++ atomics, including their readers.
+long  exchange(std::atomic<long>* target, long value);
+#endif
 
 // Worker thread raises its priority to THREAD_PRIORITY_TIME_CRITICAL before calling entry(this).
 struct Thread
@@ -30,7 +39,12 @@ struct Thread
     // +0x04
     void*          handle;              // +0x08
     unsigned long  id;                  // +0x0C
+#if defined(_WIN32)
     volatile long  stopRequested;
+#else
+    // [CHOSEN, not recovered] POSIX worker stop request; no retail layout crosses this boundary.
+    std::atomic<long> stopRequested;
+#endif
     // +0x10
 };
 

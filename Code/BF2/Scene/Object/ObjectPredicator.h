@@ -38,6 +38,7 @@ public:
 class ObjectFlagPredicatorEx : public ObjectPredicator
 {
 public:
+    // PE 0x101C7ED0: RendDX9's copy of this constructor; unreachable in 1.50: no code or data references.
     ObjectFlagPredicatorEx(unsigned int flags, unsigned int clearFlags)
         : m_flags(flags), m_clearFlags(clearFlags) {}
     virtual bool         predicate(IObject* object);
@@ -51,6 +52,7 @@ public:
 class ObjectIgnorePredicator : public ObjectFlagPredicator
 {
 public:
+    // PE 0x101C7F90: RendDX9's copy of this constructor; unreachable in 1.50: no code or data references.
     ObjectIgnorePredicator(unsigned int flags, IObject* ignored)
         : ObjectFlagPredicator(flags), m_ignored(ignored) {}
     virtual bool predicate(IObject* object);
@@ -70,6 +72,7 @@ public:
 class ObjectInterfacePredicator : public ObjectFlagPredicator
 {
 public:
+    // PE 0x101C7FE0: RendDX9's copy of this constructor; unreachable in 1.50: no code or data references.
     ObjectInterfacePredicator(unsigned int flags, unsigned int iid)
         : ObjectFlagPredicator(flags), m_iid(iid) {}
     virtual bool predicate(IObject* object);

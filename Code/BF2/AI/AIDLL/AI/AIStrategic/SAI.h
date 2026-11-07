@@ -76,12 +76,12 @@ public:
     CommanderInterface();                                     // - (empty)
     ~CommanderInterface();                                    // - (empty)
 
-    void giveAttackOrder(const Vec3& position, SquadCoordinator* squad);   // [FRONTIER]
-    void giveMoveOrder(const Vec3& position, SquadCoordinator* squad);     // [FRONTIER]
-    void giveDefendOrder(const Vec3& position, SquadCoordinator* squad);   // [FRONTIER]
-    void giveAttackOrder(const Vec3& position, Bot* bot);                  // [FRONTIER]
-    void giveMoveOrder(const Vec3& position, Bot* bot);                    // [FRONTIER]
-    void giveDefendOrder(const Vec3& position, Bot* bot);                  // [FRONTIER]
+    void giveAttackOrder(const Vec3& position, SquadCoordinator* squad);   // ELF 0x323180
+    void giveMoveOrder(const Vec3& position, SquadCoordinator* squad);     // ELF 0x3231F0
+    void giveDefendOrder(const Vec3& position, SquadCoordinator* squad);   // ELF 0x323260
+    void giveAttackOrder(const Vec3& position, Bot* bot);                  // ELF 0x3232D0
+    void giveMoveOrder(const Vec3& position, Bot* bot);                    // ELF 0x323340
+    void giveDefendOrder(const Vec3& position, Bot* bot);                  // ELF 0x3233B0
 };
 
 // Strategic AI interface, including human-commander ability requests and their rate limits.

@@ -3024,7 +3024,12 @@ socket_inet_ntop(PyObject *self, PyObject *args)
 #endif
 	
 	/* Guarantee NUL-termination for PyString_FromString() below */
+#ifdef MS_WINDOWS
 	memset((void *) &ip[0], '\0', sizeof(ip) + 1);
+#else
+	/* [CHOSEN, not recovered] Bound initialization to the actual POSIX buffer. */
+	memset((void *) &ip[0], '\0', sizeof(ip));
+#endif
 
 	if (!PyArg_ParseTuple(args, "is#:inet_ntop", &af, &packed, &len)) {
 		return NULL;

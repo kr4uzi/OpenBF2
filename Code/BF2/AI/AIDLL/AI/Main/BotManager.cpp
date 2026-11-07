@@ -54,6 +54,15 @@ int BotManager::s_tabLevel = 0;
 // ELF 0x3DD580
 void BotManager::action(const double& budget)
 {
+#if !defined(_WIN32)
+    // [TEMP] [CHOSEN, not recovered] BF2_AI_SPAWN_ONLY=1: bots spawn and stay in the game but
+    // run no per-tick AI (no plans, sensing, decisions), so a round with bots runs while the AI
+    // reconstruction (branch ai-reconstruct) is incomplete. Off by default.
+    // [RETIRE-WHEN: ai-reconstruct reaches a full round without stops]
+    static const bool spawnOnly = std::getenv("BF2_AI_SPAWN_ONLY") != 0;
+    if (spawnOnly)
+        return;
+#endif
     IBFTimer* const timer = static_cast<IBFTimer*>(CommonSingletonServer::m_iBFTimer);
     const double deadline = timer->getUpdateTime() + budget;
 

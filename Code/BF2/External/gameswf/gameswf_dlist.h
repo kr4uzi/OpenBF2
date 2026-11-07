@@ -97,6 +97,11 @@ namespace gameswf
 		// reset the references to the display list.
 		void	reset();
 
+		// Movie teardown (release_script_objects): appends every character, removed ones included, to
+		// *held and empties the list without sending UNLOAD, so no ActionScript runs.
+		// [CHOSEN, not recovered] issue #7.
+		void	release_characters(array<as_value>* held);
+
 		// remove unreferenced objects.
 		void	update();
 

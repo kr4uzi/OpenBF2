@@ -9,7 +9,7 @@ namespace dice { namespace hfe { namespace world {
 class PortalEvent
 {
 public:
-    // Declaration-only construction/destruction; the AI callback only borrows events.
+    // Borrows both object pointers; callbacks borrow the event.
     PortalEvent(PortalEventType type, IObject* passingObject, IObject* portalObject,
                 unsigned int portalId);
     virtual ~PortalEvent();

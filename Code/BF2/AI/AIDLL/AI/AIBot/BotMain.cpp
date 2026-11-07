@@ -244,8 +244,6 @@ unsigned char BotMain::mu8NBehaviours = 0;
 // ELF .bss 0x4CDFEC. Set by prepareBehaviourPool, not per bot.
 float* BotMain::maBasicWeights = 0;
 
-// [FRONTIER] Remaining bot lifecycle operations stop by name.
-// [RETIRE-WHEN: aidll-02-skeleton] Complete and validate the corresponding BotMain operation.
 // ELF 0x187A50 (D2). In order: the waypoint list (+124, deleting dtor), the behaviour and urgency
 // arrays (delete[]), the memory (+76; the constructor's argument, deleted here), the death and
 // spawn callbacks (deleting dtors), the BAP context, the player (IAIPlayer +0x78

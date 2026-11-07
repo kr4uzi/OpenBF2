@@ -2,6 +2,7 @@
 #ifndef MENU_ISWIFFRENDER_H
 #define MENU_ISWIFFRENDER_H
 #include "../Core/IBase.h"
+#include <stdint.h>
 #include <string>
 #if !DEDICATED
 namespace dice { namespace hfe { namespace ui {
@@ -12,7 +13,13 @@ struct ISwiffRender : public IBase
     virtual int   shutdown() = 0;                                                          // +0x14
     virtual int   slot6() = 0;                                                             // +0x18
     virtual int   uploadAlpha(unsigned int w, unsigned int h, const void* data) = 0;       //  7 +0x1C
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] SwiffPlayer 0x10005B56 passes its image::rgb*; RendDX9
+    // 0x101529D0 ignores it and answers -1 (docs/macos-c-swiff-re.md).
+    virtual int   slot8(void* rgbImage) = 0;
+#else
     virtual int   slot8(int a) = 0;                                                        // +0x20
+#endif
     virtual int   uploadRgba(unsigned int* desc) = 0;                                      //  9 +0x24
     virtual int   loadTexture(const char* name, unsigned int* outW, unsigned int* outH) = 0;   // 10 +0x28
     virtual int   releaseTexture(int id) = 0;                                              // +0x2C
@@ -35,13 +42,26 @@ struct ISwiffRender : public IBase
                             unsigned int e) = 0;                                           // 25 +0x64  0x10152DE0 retn 14h
     virtual void* createFont(const char* name, int size) = 0;                              // +0x68
     virtual void  releaseFontHandle(void* font) = 0;                                       // +0x6C
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] The native renderer thunk consumes text, not a 32-bit carrier.
+    virtual int fontForward16(void* font, const wchar_t* text) = 0;
+#else
     virtual int   fontForward16(void* font, int arg) = 0;                                  // +0x70
+#endif
     virtual int   destroyFont(void* font) = 0;                                             // +0x74
     virtual void  drawGlyphBitmap(void* font, const float* m2x3, unsigned int rgba,
                                   int unused) = 0;                                         // 30 +0x78
     virtual char  fontGetExtent(void* font, int arg, float* outW, float* outH) = 0;        // +0x7C
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] Shipped text hit / selection outs are pointers: SwiffPlayer
+    // 0x10005E20/0x10005E50 push stack-slot addresses; RendDX9 0x100A48C0 and 0x10152080 store
+    // through them (docs/macos-c-swiff-re.md).
+    virtual char  fontForward32(void* font, int* outPos, float x, float y) = 0;
+    virtual char  fontForward40(void* font, int* outA, int* outB) = 0;
+#else
     virtual char  fontForward32(void* font, int arg, float x, float y) = 0;                // +0x80
     virtual char  fontForward40(void* font, int a, int b) = 0;                             // +0x84
+#endif
     virtual char  fontForward44(void* font, float x1, float y1, float x2, float y2) = 0;   // +0x88
     virtual int   fontForward48(void* font) = 0;                                           // +0x8C
     virtual int   fontSetSize(void* font, float size, int flag) = 0;                       // +0x90
@@ -57,8 +77,8 @@ struct ISwiffRender : public IBase
     virtual void  setMouseState(int x, int y, int buttons) = 0;                            // +0xB8
     virtual int   slot47(int a) = 0;                                                       // +0xBC
     virtual void  nullsub48(int a) = 0;                                                    // 48 +0xC0  0x10153380 retn 4
-    virtual char  slot49(int a) = 0;                                                       // +0xC4
-    virtual char  slot50(int a) = 0;                                                       // +0xC8
+    virtual char  slot49(intptr_t a) = 0;                                                  // +0xC4
+    virtual char  slot50(intptr_t a) = 0;                                                  // +0xC8
     virtual int   beginFrame() = 0;                                                        // 51 +0xCC  BF2.exe 0x4A2C26's call
     virtual int   endFrame() = 0;                                                          // 52 +0xD0  MainMenuLogic::endFrame
     virtual void* setTextureTechnique(const std::string& name, int index) = 0;            // 53 +0xD4

@@ -89,9 +89,7 @@ $PyInc  = @("/I$External\python-embedded\py-src-2.3.4\Include", "/I$External\pyt
 $ZipInc = @("/I$External\zlib-1.2.3", "/I$External\zlib-1.2.3\contrib\minizip")
 
 # RELEASE CHANGE 1: /O2 (build.cmd passes no /O flag, i.e. /Od). /Gy so /OPT:ICF has comdats to fold.
-# RELEASE CHANGE 2: /DNDEBUG. This is the repository's own production marker, not just an assert
-#   switch - see Game\GameServer\ServerSettingsConsole.cpp, whose svNumPlayersNeededToStartSet
-#   floors the value at 2 under NDEBUG. It also drops the 129 assert() call sites, and with them the
+# RELEASE CHANGE 2: /DNDEBUG. It drops the 129 assert() call sites, and with them the
 #   __FILE__ path and the assertion text each one bakes into the image.
 # RELEASE CHANGE 3: no /Zi, no /FS, no /Fd - no PDB is produced at any stage of this build.
 # RELEASE CHANGE 4: /MP, safe here precisely because there is no shared PDB to serialise on. Objects

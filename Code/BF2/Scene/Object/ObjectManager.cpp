@@ -10,6 +10,15 @@
 // preserve the existing caller ordering rather than adding a silent null fallback.
 
 #include "ObjectManager.h"
+#include "../../Game/Objects/GeometryPartAccess.h"   // named geometry operations (non-MSVC)
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] One native scale-interface declaration in every image.
+#include "../../Geom/IScaleable.h"
+#endif
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+// [CHOSEN, not recovered] Native static geometry tables retain PE slot order.
+#include "../../Geom/NativeGeometrySlots.h"
+#endif
 #include "../../Geom/GeometryInstanceData.h"
 #include "../../Geom/IGeometryTemplate.h"
 #include "ICuller.h"
@@ -22,6 +31,11 @@
 #include <cstdlib>              // abort - deleteAllRegisteredObjects' integrity checks
 #include <cmath>
 #include "../../Core/Debug.h"         // the five culler-failure aborts
+#include "../../Core/Random.h"
+#include <algorithm>
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../../Platform/X87Compat.h"
+#endif
 
 #include "../../Game/IGameLogic.h"   // hfe::gameLogic - the ds:0x8ACBFA0 global
 #include "../../Core/System.h"         // WorldPref::getTickCount - the client update path
@@ -73,12 +87,16 @@ extern IBase* heightmapCluster;              // ds:0x8ABAF24, defined in Core/Gl
 
 namespace {
 
+#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+using IScaleable = geom::IScaleable;
+#else
 class IScaleable : public IBase
 {
 public:
     virtual void setScale(const Vec3&) = 0;       // +0x10
     virtual const Vec3& getScale() const = 0;     // +0x14
 };
+#endif
 
 // IGeometry remains opaque. Its destructor adds one table entry on Itanium.
 inline geom::IGeometryTemplate* geometryTemplate(IBase* geometry)
@@ -87,12 +105,12 @@ inline geom::IGeometryTemplate* geometryTemplate(IBase* geometry)
     // The MSVC destructor occupies one slot on both x86 and native x64.
     enum { GetTemplateIndex = 14 }; // retail PE +0x38 / four-byte slot
     typedef geom::IGeometryTemplate* (__thiscall *GetTemplateFn)(void*);
-#else
-    enum { GetTemplateIndex = 15 }; // retail ELF +0x3C / four-byte slot
-    typedef geom::IGeometryTemplate* (*GetTemplateFn)(void*);
-#endif
     void** const vtable = *reinterpret_cast<void***>(geometry);
     return reinterpret_cast<GetTemplateFn>(vtable[GetTemplateIndex])(geometry);
+#else
+    // Non-MSVC: the named geometry_part operation (ELF +0x3C).
+    return static_cast<geom::IGeometryTemplate*>(world::geometry_part::getTemplate(geometry));
+#endif
 }
 
 // IGeometryTemplate +0x94 in both shipped ports.  The semantic name is [UNRESOLVED]; the two
@@ -567,6 +585,7 @@ void ObjectManager::clearGetObjectsFromGrid()
 // Grid and culler queries
 // The init and radius-query chain used by response physics is recovered. Unimplemented overloads
 // remain marked at their individual definitions so they are not confused with this production path.
+// PE 0x00721330; ELF 0x083101C0. A nonzero release result is a shipped invariant failure.
 void ObjectManager::initGrid(const Vec2& minimum2, const Vec2& maximum2,
                              int, const Vec3&)
 {
@@ -1125,9 +1144,73 @@ void ObjectManager::getNoCollisionObjectsFromGrid(const Frustum& frustum,
                                unused, fadeStep);
 }
 
-// [FRONTIER] getObjectsFromGridNoCullConstInternal remains unimplemented. Its separate
-// query omits distance/fade parameters and must not be routed through the culling overload.
-void ObjectManager::getObjectsFromGridNoCullConst(const Frustum&, std::vector<IObject*>&, ObjectPredicator*, bool, float, float) {}
+// PE 0x00727F20; ELF 0x08314630.
+void ObjectManager::getObjectsFromGridNoCullConst(const Frustum& frustum,
+                                                 std::vector<IObject*>& out,
+                                                 ObjectPredicator* predicator,
+                                                 bool frustumTestEachObject,
+                                                 float unused, float unusedFadeStep)
+{
+    getObjectsFromGridNoCullConstInternal(true, frustum, out, predicator,
+                                          frustumTestEachObject, unused, unusedFadeStep);
+}
+
+// Collects root culler hits without distance fading or child expansion.
+// PE 0x00726840; ELF 0x08314680. Neither trailing float is read in either image.
+void ObjectManager::getObjectsFromGridNoCullConstInternal(bool collisionObjects,
+                                                         const Frustum& frustum,
+                                                         std::vector<IObject*>& out,
+                                                         ObjectPredicator* predicator,
+                                                         bool frustumTestEachObject,
+                                                         float, float)
+{
+    m_rendAllVisibleObjects.resize(0);
+    m_rendVisibleObjects.resize(0);
+
+    if (collisionObjects)
+    {
+        m_gridCuller->getObjects(frustum, m_rendVisibleObjects,
+                                 m_rendAllVisibleObjects, predicator);
+        m_quadTreeCuller->getObjects(frustum, m_rendVisibleObjects,
+                                     m_rendAllVisibleObjects, predicator);
+    }
+    else
+    {
+        m_noCollisionGridCuller->getObjects(frustum, m_rendVisibleObjects,
+                                            m_rendAllVisibleObjects, predicator);
+        m_noCollisionQuadTreeCuller->getObjects(frustum, m_rendVisibleObjects,
+                                                m_rendAllVisibleObjects, predicator);
+    }
+
+    g_rendWhollyVisibleCount += static_cast<unsigned int>(m_rendAllVisibleObjects.size());
+
+    for (std::vector<IObject*>::const_iterator it = m_rendAllVisibleObjects.begin();
+         it != m_rendAllVisibleObjects.end(); ++it)
+    {
+        IObject* const object = *it;
+        if (frustumTestEachObject)
+        {
+            const float radius = object->getVisualBoundingRadius();
+            if (!frustum.inside(object->getAbsolutePosition(), radius))
+                continue;
+        }
+        m_rendVisibleObjects.push_back(object);
+    }
+
+    if (predicator && (predicator->getFlags() & 0x01000000u) != 0)
+    {
+        out.resize(0);
+        for (std::vector<IObject*>::const_iterator it = m_rendVisibleObjects.begin();
+             it != m_rendVisibleObjects.end(); ++it)
+        {
+            out.push_back(*it);
+        }
+    }
+    else
+    {
+        out.assign(m_rendVisibleObjects.begin(), m_rendVisibleObjects.end());
+    }
+}
 // Appends swept-line candidates in culler order, without sorting or deduplication.
 // testCollisionMesh enables exact intersection; firstHit stops after the first accepted result.
 // [PLATFORM] Use typed dispatch because the logical method has different caller-facing slots across ports.
@@ -1188,6 +1271,7 @@ void ObjectManager::getObjectsFromGrid(const Vec3& from, const Vec3& direction,
 // Collects positive-latency projectile candidates from the static culler, then the
 // expanded dynamic culler, retaining duplicates. Applies the predicate afterward,
 // without child expansion or mesh intersection.
+// PE 0x00726AA0; ELF 0x08314F10. Disabled compensation is a shipped invariant failure.
 void ObjectManager::getObjectsFromGridWithLatency(const Vec3& from, const Vec3& direction,
                                                   std::vector<IObject*>& out,
                                                   ObjectPredicator* predicator)
@@ -1216,17 +1300,27 @@ void ObjectManager::getObjectsFromGridWithLatency(const Vec3& from, const Vec3& 
     }
     m_lineCandidates.resize(0);
 }
+// PE 0x00724CF0; ELF 0x08315170.
 void ObjectManager::getObjectsFromGridWithLatency(const Vec3& centre, float radius,
                                                   std::vector<IObject*>& out,
                                                   ObjectPredicator* predicator)
 {
     getObjectsFromGridByRadiusInternal(true, true, centre, radius, out, predicator);
 }
-void ObjectManager::getObjectsInBoxFromGrid(const Vec3&, const Vec3&, std::vector<IObject*>&, ObjectPredicator*) {}
+// PE 0x00721070; ELF 0x08315540. Appends all four categories without clearing the output.
+void ObjectManager::getObjectsInBoxFromGrid(const Vec3& minimum, const Vec3& maximum,
+                                            std::vector<IObject*>& out,
+                                            ObjectPredicator* predicator)
+{
+    m_gridCuller->getObjects(minimum, maximum, out, predicator);
+    m_quadTreeCuller->getObjects(minimum, maximum, out, predicator);
+    m_noCollisionGridCuller->getObjects(minimum, maximum, out, predicator);
+    m_noCollisionQuadTreeCuller->getObjects(minimum, maximum, out, predicator);
+}
 
 // Render queries keep culler output categories distinct; mode 0 appends wholly visible objects directly.
 // The final bool selects collision boxes with bit-23 child recursion or visual spheres without recursion.
-// The former concrete frustum [FRONTIER] walkers are now implemented in the culler files.
+// The concrete frustum walkers live in the culler files.
 void ObjectManager::getStaticObjectsFromGridRend(const Frustum& frustum,
                                                  std::vector<IObject*>& out,
                                                  LocalBoundingBox* bounds,
@@ -1783,37 +1877,382 @@ bool ObjectManager::intersectLine(IObject*& hitObject, Vec3& hitPoint, Vec3& hit
     return nearestObject != 0;
 }
 
-// RW-4 intersection operations remain unimplemented. Known callable boundaries must
-// report and stop until their full collision behavior is available.
-bool ObjectManager::intersectPill(std::vector<Vec3>&, std::vector<Vec3>&, const Vec3&, const Vec3&,
-                                  float, ObjectPredicator*, bool)
+void getChilds(IObject* object, std::vector<IObject*>& out, ObjectPredicator* include,
+               ObjectPredicator* stop);
+
+namespace {
+// [INFERRED] Packaging for the scalar/vector expressions in the queries below.
+#if defined(_MSC_VER) && defined(_M_IX86)
+typedef float QueryReal;
+inline QueryReal queryWide(float value) { return value; }
+inline float queryStore(QueryReal value) { return value; }
+inline QueryReal querySqrt(QueryReal value) { return std::sqrt(value); }
+inline QueryReal queryAbs(QueryReal value) { return std::fabs(value); }
+#elif defined(_MSC_VER)
+// [CHOSEN, not recovered] Native MSVC x64 has binary64 long double. Follow the
+// existing native numeric policy rather than entering the extended-precision-only arm.
+typedef double QueryReal;
+inline QueryReal queryWide(float value) { return static_cast<double>(value); }
+inline float queryStore(QueryReal value) { return static_cast<float>(value); }
+inline QueryReal querySqrt(QueryReal value) { return std::sqrt(value); }
+inline QueryReal queryAbs(QueryReal value) { return std::fabs(value); }
+#else
+// [CHOSEN, not recovered] Native ports retain the inspected x87 intermediates until
+// an explicit float store. Apple silicon uses the existing ExtendedFloat policy.
+typedef bf2x87::Real QueryReal;
+inline QueryReal queryWide(float value) { return bf2x87::wide(value); }
+inline float queryStore(QueryReal value) { return bf2x87::store(value); }
+inline QueryReal querySqrt(QueryReal value) { return bf2x87::squareRoot(value); }
+inline QueryReal queryAbs(QueryReal value) { return bf2x87::abs(value); }
+#endif
+
+inline QueryReal queryLengthSquared(const Vec3& value)
 {
-    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: RW-4-intersect-pill]
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::world::ObjectManager::intersectPill reached\n");
-    std::fflush(stderr);
-    std::abort();
+    const QueryReal x = queryWide(value.x), y = queryWide(value.y), z = queryWide(value.z);
+    return (x * x + y * y) + z * z;
 }
-bool ObjectManager::intersectLineWithSpheres(IObject*&, Vec3&, Vec3&, int&, const Vec3&, const Vec3&,
-                                             ObjectPredicator*, ObjectPredicator*, float)
+
+// PE 0x004639B0; inlined in ELF 0x08318070. Both leave unit vectors unchanged.
+void normaliseQueryVector(Vec3& value, bool roundedDeviation = true)
 {
-    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: RW-4-line-with-spheres]
-    std::fprintf(stderr,
-                 "[FRONTIER] dice::hfe::world::ObjectManager::intersectLineWithSpheres reached\n");
-    std::fflush(stderr);
-    std::abort();
+    QueryReal lengthSquared = queryLengthSquared(value);
+#if defined(_MSC_VER)
+    lengthSquared = queryWide(queryStore(lengthSquared));
+    (void)roundedDeviation;
+    const QueryReal deviation = lengthSquared - queryWide(1.0f);
+#else
+    // [PLATFORM] ELF retains the squared length; its two input normalisations store
+    // the deviation as a float, whereas the output-normal normalisation does not.
+    const QueryReal deviation = roundedDeviation
+        ? queryWide(queryStore(lengthSquared - queryWide(1.0f)))
+        : lengthSquared - queryWide(1.0f);
+#endif
+    // Both images send unordered comparisons through the normalisation arm.
+    if (!(queryAbs(deviation) < queryWide(FLT_EPSILON)))
+    {
+        if (!(queryAbs(lengthSquared) < queryWide(FLT_EPSILON)))
+        {
+            const QueryReal inverseLength = queryWide(1.0f) / querySqrt(lengthSquared);
+            value.x = queryStore(queryWide(value.x) * inverseLength);
+            value.y = queryStore(queryWide(value.y) * inverseLength);
+            value.z = queryStore(queryWide(value.z) * inverseLength);
+        }
+        else
+            value.x = value.y = value.z = 0.0f;
+    }
 }
-IObject* ObjectManager::raycast(const Vec3&, const Vec3&, ObjectPredicator*, ObjectPredicator*,
-                                unsigned int*)
+
+// PE 0x007210E0; inlined in ELF 0x08316EC0 and 0x08318940.
+// Tangents and spheres wholly behind the origin are rejected.
+bool querySphereInterval(const Vec3& offset, const Vec3& direction, float radius,
+                          QueryReal& nearDistance, QueryReal& farDistance)
 {
-    // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: RW-4-raycast]
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::world::ObjectManager::raycast reached\n");
-    std::fflush(stderr);
-    std::abort();
+    const QueryReal x = queryWide(offset.x), y = queryWide(offset.y), z = queryWide(offset.z);
+#if defined(_MSC_VER)
+    // [PLATFORM] PE's out-of-line helper stores the doubled dot product; ELF retains it.
+    const float doubled = queryStore(((z * queryWide(direction.z)
+        + y * queryWide(direction.y)) + x * queryWide(direction.x)) * queryWide(2.0f));
+    const QueryReal projection = queryWide(doubled);
+#else
+    const QueryReal dot = (y * queryWide(direction.y) + x * queryWide(direction.x))
+        + z * queryWide(direction.z);
+    const QueryReal projection = dot + dot;
+#endif
+    const QueryReal r = queryWide(radius);
+    const QueryReal discriminant = projection * projection
+        - queryWide(4.0f) * (((x * x + y * y) + z * z) - r * r);
+    if (!(discriminant > queryWide(0.0f)))
+        return false;
+    const QueryReal root = querySqrt(discriminant);
+    const QueryReal farValue = (root - projection) * queryWide(0.5f);
+    farDistance = queryWide(queryStore(farValue));
+    if (!(farValue > queryWide(0.0f)))
+        return false;
+    nearDistance = (-projection - root) * queryWide(0.5f);
+#if defined(_MSC_VER)
+    nearDistance = queryWide(queryStore(nearDistance));
+#endif
+    return true;
+}
+
+inline Vec3 queryPoint(const Vec3& from, const Vec3& direction, QueryReal distance)
+{
+    const Vec3 result = {
+        queryStore(queryWide(from.x) + queryWide(direction.x) * distance),
+        queryStore(queryWide(from.y) + queryWide(direction.y) * distance),
+        queryStore(queryWide(from.z) + queryWide(direction.z) * distance)
+    };
+    return result;
+}
+
+inline Vec3 queryClippedDelta(const Vec3& from, const Vec3& direction,
+                              QueryReal distance, const Vec3& clippedStart)
+{
+#if defined(_MSC_VER)
+    const Vec3 end = queryPoint(from, direction, distance);
+    const Vec3 result = { end.x - clippedStart.x, end.y - clippedStart.y, end.z - clippedStart.z };
+#else
+    // [PLATFORM] ELF retains each end coordinate across the vector subtraction.
+    const Vec3 result = {
+        queryStore((queryWide(from.x) + queryWide(direction.x) * distance) - queryWide(clippedStart.x)),
+        queryStore((queryWide(from.y) + queryWide(direction.y) * distance) - queryWide(clippedStart.y)),
+        queryStore((queryWide(from.z) + queryWide(direction.z) * distance) - queryWide(clippedStart.z))
+    };
+#endif
+    return result;
+}
+} // anonymous namespace
+
+// PE 0x00723BE0; ELF 0x08316EC0. The first radius call is deliberately discarded.
+bool intersectPillWithObject(std::vector<Vec3>& hitPoints, std::vector<Vec3>& hitNormals,
+                             IObject* object, Vec3 from, Vec3 direction, float radius,
+                             float length, ObjectPredicator* predicator, int collisionLod)
+{
+    const Vec3& position = object->getAbsolutePosition();
+    const Vec3 offset = { from.x - position.x, from.y - position.y, from.z - position.z };
+    object->getPhysicBoundingRadius();
+    if (!predicator->predicate(object))
+        return false;
+    if (collisionLod == -1)
+        collisionLod = 0;
+    const bool hasLod = object->hasCollisionLod(collisionLod);
+    const bool soldier = object->getTemplate()->getClassID() == CID_SoldierTemplate;
+    if (!hasLod && !soldier)
+        return false;
+
+    QueryReal nearDistance, farDistance;
+    const float objectRadius = object->getPhysicBoundingRadius();
+    if (!querySphereInterval(offset, direction, objectRadius, nearDistance, farDistance))
+        return false;
+    if (!(nearDistance < queryWide(length)) || !(farDistance > queryWide(0.0f)))
+        return false;
+    if (nearDistance < queryWide(0.0f)) nearDistance = queryWide(0.0f);
+    if (farDistance > queryWide(length)) farDistance = queryWide(length);
+    if (nearDistance == farDistance)
+        return false;
+    const Vec3 clippedStart = nearDistance > queryWide(0.0f)
+        ? queryPoint(from, direction, nearDistance) : from;
+    const Vec3 clippedDelta = queryClippedDelta(from, direction, farDistance, clippedStart);
+    std::vector<float> planeDistances;
+    std::vector<float> alongDistances;
+#if defined(_MSC_VER)
+    // [PLATFORM] PE captures the mesh before either transform getter; ELF reads it after both.
+    ICollisionMesh* const mesh = static_cast<ICollisionMesh*>(
+        object_detail::LayoutAccess::collisionMesh(object));
+#endif
+    const Mat4& inverse = object->getInvAbsoluteTransformation();
+    const Mat4& absolute = object->getAbsoluteTransformation();
+#if !defined(_MSC_VER)
+    ICollisionMesh* const mesh = static_cast<ICollisionMesh*>(
+        object_detail::LayoutAccess::collisionMesh(object));
+#endif
+    return mesh->getDistanceToSphere(collisionLod, true, absolute, inverse, clippedStart,
+        clippedDelta, radius, hitNormals, hitPoints, planeDistances, alongDistances, 0);
+}
+
+// PE 0x00727390; ELF 0x08317C20. Success means broad-phase candidates existed,
+// even if no narrow-phase test appends an intersection.
+bool ObjectManager::intersectPill(std::vector<Vec3>& hitPoints, std::vector<Vec3>& hitNormals,
+                                  const Vec3& from, const Vec3& direction, float radius,
+                                  ObjectPredicator* predicator, bool includeDynamic)
+{
+    if (!predicator)
+        return false;
+    const float length = queryStore(querySqrt(queryLengthSquared(direction)));
+    if (length == 0.0f)
+        return false;
+    const QueryReal inverseLength = queryWide(1.0f) / queryWide(length);
+    const Vec3 unit = { queryStore(queryWide(direction.x) * inverseLength),
+                        queryStore(queryWide(direction.y) * inverseLength),
+                        queryStore(queryWide(direction.z) * inverseLength) };
+    m_lineCandidates.resize(0);
+    m_gridCuller->getObjects(from, direction, m_lineCandidates);
+    if (includeDynamic)
+        m_quadTreeCuller->getObjects(from, direction, m_lineCandidates);
+    if (m_lineCandidates.empty())
+        return false;
+
+    const bool includeChildren = (predicator->getFlags() & 0x01000000u) == 0;
+    m_objectTempVector.resize(0);
+    const auto end = m_lineCandidates.end();
+    for (auto it = m_lineCandidates.begin(); it != end; ++it)
+    {
+        IObject* const object = it->second;
+        if (object)
+        {
+            m_objectTempVector.push_back(object);
+            if (includeChildren)
+                _getChildren(object, predicator->getFlags(), m_objectTempVector);
+        }
+    }
+    const auto objectsEnd = m_objectTempVector.end();
+    for (auto it = m_objectTempVector.begin(); it != objectsEnd; ++it)
+        intersectPillWithObject(hitPoints, hitNormals, *it, from, unit, radius, length,
+                                predicator, m_overrideLineTestLod);
+    m_lineCandidates.resize(0);
+    return true;
+}
+
+// PE 0x00727560; ELF 0x08318070. hitPart is never written; candidates remain cached.
+bool ObjectManager::intersectLineWithSpheres(IObject*& hitObject, Vec3& hitPoint, Vec3& hitNormal,
+                                             int& hitPart, const Vec3& from, const Vec3& direction,
+                                             ObjectPredicator* include, ObjectPredicator* stop,
+                                             float probabilityScale)
+{
+    (void)hitPart;
+    m_objectTempVector.resize(0);
+    const Vec3 origin = from;
+#if !defined(_MSC_VER)
+    // [PLATFORM] ELF also normalises an unused copy before querying the cullers.
+    Vec3 unusedUnit = direction;
+    normaliseQueryVector(unusedUnit);
+#endif
+    m_lineCandidates.resize(0);
+    m_gridCuller->getObjects(origin, direction, m_lineCandidates);
+    m_quadTreeCuller->getObjects(origin, direction, m_lineCandidates);
+    std::sort(m_lineCandidates.begin(), m_lineCandidates.end(),
+        [](const std::pair<float, IObject*>& a, const std::pair<float, IObject*>& b) {
+            return a.first < b.first;
+        });
+    if (m_lineCandidates.empty())
+        return false;
+    hitObject = 0;
+    Vec3 unit = direction;
+    normaliseQueryVector(unit);
+    std::vector<IObject*> objects;
+    for (auto it = m_lineCandidates.begin(); it != m_lineCandidates.end(); ++it)
+    {
+        objects.resize(0);
+        IObject* const object = it->second;
+        if (include && (include->getFlags() & 0x01000000u) != 0)
+        {
+            if (include->predicate(object)) objects.push_back(object);
+        }
+        else
+            getChilds(object, objects, include, stop);
+        for (auto child = objects.begin(); child != objects.end(); ++child)
+        {
+            IObject* const candidate = *child;
+            const float radius = candidate->getPhysicBoundingRadius();
+            if (radius <= 0.0f)
+                continue;
+            const Vec3& position = candidate->getAbsolutePosition();
+            // shipped defect: direction, rather than origin, is subtracted here and
+            // used as the unnormalised projection axis.
+            QueryReal offsetX = queryWide(position.x) - queryWide(direction.x);
+            QueryReal offsetY = queryWide(position.y) - queryWide(direction.y);
+            QueryReal offsetZ = queryWide(position.z) - queryWide(direction.z);
+            const Vec3 offset = { queryStore(offsetX), queryStore(offsetY), queryStore(offsetZ) };
+#if defined(_MSC_VER)
+            // [PLATFORM] PE stores all offset coordinates before taking the dot product.
+            offsetX = queryWide(offset.x);
+            offsetY = queryWide(offset.y);
+            offsetZ = queryWide(offset.z);
+#endif
+            const QueryReal projection = (offsetY * queryWide(direction.y)
+                + offsetZ * queryWide(direction.z)) + offsetX * queryWide(direction.x);
+            const QueryReal x = queryWide(unit.x) * projection;
+            const QueryReal y = queryWide(unit.y) * projection;
+            const QueryReal z = queryWide(unit.z) * projection;
+            const QueryReal ratio = ((z * z + y * y) + x * x)
+                / (queryWide(radius) * queryWide(radius));
+            if (!(ratio < queryWide(1.0f)))
+                continue;
+            QueryReal threshold = ((queryWide(1.0f) - ratio) * queryWide(0.75f)
+                + queryWide(0.25f)) * queryWide(probabilityScale);
+#if defined(_MSC_VER)
+            // [PLATFORM] PE stores the threshold before calling Random::getRaw.
+            threshold = queryWide(queryStore(threshold));
+#endif
+            const unsigned int random = Rand.getRaw();
+            const float sample = static_cast<float>(((random >> 7) | 1u) + 1u);
+            if (!(queryWide(sample) * queryWide(5.9604644775390625e-8f) > threshold))
+                continue;
+            hitObject = candidate;
+            hitPoint = candidate->getAbsolutePosition();
+            hitNormal = { -offset.x, -offset.y, -offset.z };
+            normaliseQueryVector(hitNormal, false);
+            const float normalX = hitNormal.x;
+            hitNormal.x = -hitNormal.z;
+            hitNormal.z = normalX;
+            return true;
+        }
+    }
+    return false;
+}
+
+// PE 0x00727850; ELF 0x08318940. Returns the first mesh hit in culler/hierarchy order.
+// The optional part output is unused in both images.
+bool ObjectManager::raycast(const Vec3& from, const Vec3& direction, ObjectPredicator* include,
+                            ObjectPredicator* stop, unsigned int* outPart)
+{
+    (void)outPart;
+    const Vec3 origin = from;
+    const float length = queryStore(querySqrt(queryLengthSquared(direction)));
+    if (length == 0.0f)
+        return false;
+    const QueryReal inverseLength = queryWide(1.0f) / queryWide(length);
+    const Vec3 unit = { queryStore(queryWide(direction.x) * inverseLength),
+                        queryStore(queryWide(direction.y) * inverseLength),
+                        queryStore(queryWide(direction.z) * inverseLength) };
+    m_lineCandidates.resize(0);
+    m_gridCuller->getObjects(origin, direction, m_lineCandidates);
+    m_quadTreeCuller->getObjects(origin, direction, m_lineCandidates);
+    if (m_lineCandidates.empty())
+        return false;
+    Vec3 clippedStart = { 0.0f, 0.0f, 0.0f };
+    Vec3 normal = { 0.0f, 0.0f, 0.0f };
+    Vec3 point = { 0.0f, 0.0f, 0.0f };
+    float planeDistance, alongDistance;
+    std::vector<IObject*> objects;
+    for (auto it = m_lineCandidates.begin(); it != m_lineCandidates.end(); ++it)
+    {
+        objects.resize(0);
+        IObject* const object = it->second;
+        if (include && (include->getFlags() & 0x01000000u) != 0)
+        {
+            if (include->predicate(object)) objects.push_back(object);
+        }
+        else
+            getChilds(object, objects, include, stop);
+        for (auto child = objects.begin(); child != objects.end(); ++child)
+        {
+            IObject* const candidate = *child;
+            if (!candidate->hasCollisionLod(0))
+                continue;
+            ICollisionMesh* const mesh = static_cast<ICollisionMesh*>(
+                object_detail::LayoutAccess::collisionMesh(candidate));
+            const Vec3& position = candidate->getAbsolutePosition();
+            const Vec3 offset = { from.x - position.x, from.y - position.y, from.z - position.z };
+            QueryReal nearDistance, farDistance;
+            const float radius = candidate->getVisualBoundingRadius();
+            if (!querySphereInterval(offset, unit, radius, nearDistance, farDistance)
+                || !(nearDistance < queryWide(length)) || !(farDistance > queryWide(0.0f)))
+                continue;
+            if (nearDistance < queryWide(0.0f)) nearDistance = queryWide(0.0f);
+            if (farDistance > queryWide(length)) farDistance = queryWide(length);
+            if (nearDistance == farDistance)
+                continue;
+            clippedStart = nearDistance > queryWide(0.0f) ? queryPoint(from, unit, nearDistance) : from;
+            const Vec3 delta = queryClippedDelta(from, unit, farDistance, clippedStart);
+            const Mat4& inverse = candidate->getInvAbsoluteTransformation();
+            const Mat4& absolute = candidate->getAbsoluteTransformation();
+            if (mesh->getDistance(0, false, absolute, inverse, clippedStart, delta,
+                                  normal, point, planeDistance, alongDistance, 0, 0, true, false))
+            {
+                m_lineCandidates.resize(0);
+                return true;
+            }
+        }
+    }
+    m_lineCandidates.resize(0);
+    return false;
 }
 
 std::vector<IObject*>& ObjectManager::getObjectTempVector() { return m_objectTempVector; }
 
 // Ignores null; destroys uncached objects immediately or queues cached objects for deferred destruction.
+// PE 0x00724590; ELF 0x08311280. Cached soldiers must have no kit before queueing.
 void ObjectManager::destroyObject(IObject* object)
 {
     typedef object_detail::LayoutAccess L;
@@ -1885,6 +2324,7 @@ IObject* ObjectManager::getRegisteredObject(int id)
 // Drain queued destruction between passes; registry iterators stay live during the walks.
 // A surviving parent or nonempty registry/update set/culler is fatal before reset completes.
 // Clears the primary static culler, verifies the other four are empty, and resets IDs and active state.
+// PE 0x00728400; ELF 0x08310C00. The remaining registry/update/culler checks are shipped invariants.
 void ObjectManager::deleteAllRegisteredObjects()
 {
     m_clientUpdateTick    = 0;                                           // +0x10C
@@ -2120,6 +2560,7 @@ void ObjectManager::updateObjects(float deltaTime, UpdateFreqencyType type, unsi
 
 // the three shipped asserts (a cached object, a flag-0x20 object, or one that has
 // not been destroy()ed cannot be queued - abort), mark, append to the current buffer.
+// PE 0x00724690; ELF 0x08311470.
 void ObjectManager::addObjectToDestroyList(IObject* object)
 {
     if ((object_detail::LayoutAccess::flags(object) & 0x20u) != 0
@@ -2231,6 +2672,7 @@ bool g_checkObjectCacheDisabledVariable = true;   // the function-static "read t
 bool g_objectCacheDisabled = false;               // ds:0x8AB0A80 - the file static the setting sets
 } // namespace
 
+// PE 0x00723220; ELF 0x083110B0. Null templates fail the shipped invariant.
 IObject* ObjectManager::createObject(const IObjectTemplate* objectTemplate, unsigned int id, const Mat4* transform)
 {
     if (!objectTemplate)
@@ -2245,8 +2687,9 @@ IObject* ObjectManager::createObject(const IObjectTemplate* objectTemplate, unsi
     }
     if (g_objectCacheDisabled)
         useCache = false;
-    const unsigned int cid = objectTemplate->getClassID();
-    if (cid == CID_OverheadCameraTemplate || cid == CID_ZiplineTemplate || cid == CID_GrapplingHookRopeTemplate)
+    if (objectTemplate->getClassID() == CID_OverheadCameraTemplate
+        || objectTemplate->getClassID() == CID_ZiplineTemplate
+        || objectTemplate->getClassID() == CID_GrapplingHookRopeTemplate)
         useCache = false;
 
     // The cache is constructed with the manager and must exist before this lookup.
@@ -2270,6 +2713,7 @@ IObject* ObjectManager::createObject(const IObjectTemplate* objectTemplate, unsi
 
 // The four non-virtual helpers the recovered bodies call.
 void ObjectManager::drawStats() {}
+// PE 0x00721790; ELF 0x08312990. Existing membership is a shipped invariant failure.
 void ObjectManager::addObjectToCuller(IObject* object)
 {
     if (object->getGridCullerObject())
@@ -2324,6 +2768,7 @@ void ObjectManager::addObjectToCuller(IObject* object)
     }
 }
 
+// PE 0x00720F20; ELF 0x08312D70. Missing membership is a shipped invariant failure.
 void ObjectManager::updateObjectInCuller(IObject* object)
 {
     if (object->isObjectDestroyed())
@@ -2333,8 +2778,15 @@ void ObjectManager::updateObjectInCuller(IObject* object)
     if (!cullerObject)
         std::abort();
 
+#if defined(_MSC_VER)
+    // [PLATFORM] PE obtains the transformation before querying the radius; ELF reverses them.
+    const Mat4& transform = object->getAbsoluteTransformation();
+    const float visualRadius = object->getVisualBoundingRadius();
+    const Vec3 position = { transform.m[12], transform.m[13], transform.m[14] };
+#else
     const float visualRadius = object->getVisualBoundingRadius();
     const Vec3 position = objectPosition(object);
+#endif
     object->setGridCullerObject(cullerObject->updateObject(position, visualRadius));
 
     CullerObject* latencyObject = object->getLatencyCullerObject();
@@ -2369,6 +2821,7 @@ void ObjectManager::removeObjectFromCuller(IObject* object)
 
 // Requires live objects to be drained, then destroys the cache and releases five cullers
 // in order. Member containers release their own storage.
+// PE 0x00729190; ELF 0x0830F650. Nonempty cullers and outstanding references remain fatal.
 ObjectManager::~ObjectManager()
 {
     if (!m_allRegisteredObjects.empty()

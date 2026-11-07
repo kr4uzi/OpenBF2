@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../../Core/IBase.h"
+#include "../../Core/Ids.h"            // the io:: filesystem-change IDs
 #include "IFileSystem.h"                // dice::hfe::NoCaseStringCompare, io::FileInfo, IFileSystem
 
 namespace dice {
@@ -171,12 +172,11 @@ private:
 // do not define it here.
 extern FileChangeManager* fileChangeManager;
 
-// Filesystem-change IDs belong to dice::hfe::io; keep namespace declarations consistent.
-extern const unsigned int IID_IFileChangeManager;       // 2985214972u
-extern const unsigned int IID_IFileChangeListener;      // 1014715647u
-extern const unsigned int IID_IDirectoryChangeListener; // 3032597244u
-extern const unsigned int IID_IDirectoryChangeNotifier; // 1193638398u
-extern const unsigned int CID_FileChangeManager;        //  862549759u
+// The filesystem-change IDs (IID_IFileChangeManager, IID_IFileChangeListener,
+// IID_IDirectoryChangeListener, IID_IDirectoryChangeNotifier, CID_FileChangeManager) are the
+// dice::hfe::io constants in Core/Ids.h, included above. They used to be declared extern here,
+// which gave Ids.h's definitions external linkage in every TU that included this header first:
+// FileChangeManager.cpp and the client's BF2Engine.cpp then defined them twice.
 
 } // namespace io
 } // namespace hfe

@@ -8,6 +8,7 @@
 #include <cstdio>       // vsnprintf / sprintf
 #include <cwchar>
 #include <vector>
+#include "MsvcCrtCompat.h"   // [CHOSEN, not recovered] _vsnwprintf/_swprintf outside MSVC
 
 #ifdef _MSC_VER
 #  include <string.h>
@@ -20,6 +21,7 @@
 namespace {
 
 // ELF 0x48BE30 (string), 0x48C420 (wstring); engine ELF 0x83D1510/0x83D1A40.
+// PE 0x100757A0, 0x10075580: the wstring and string instantiations.
 template <typename String>
 String extractFileExt_internal(const String& path)
 {
@@ -31,6 +33,7 @@ String extractFileExt_internal(const String& path)
 }
 
 // ELF 0x48BEF0 (string), 0x48C4E0 (wstring); engine ELF 0x83D15B0/0x83D1AE0.
+// PE 0x10075800, 0x10075600: the wstring and string instantiations.
 template <typename String>
 String extractFileName_internal(const String& path)
 {
@@ -42,6 +45,7 @@ String extractFileName_internal(const String& path)
 }
 
 // ELF 0x48BFB0 (string), 0x48C5A0 (wstring); engine ELF 0x83D1660/0x83D1B90.
+// PE 0x10075870, 0x10075680: the wstring and string instantiations.
 template <typename String, typename Char>
 String extractFilePath_internal(const String& path, Char delimiter)
 {
@@ -52,7 +56,8 @@ String extractFilePath_internal(const String& path, Char delimiter)
     return path.substr(0, last) + delimiter;
 }
 
-// ELF 0x48C0A0 (string), 0x48C690 (wstring); engine ELF 0x83D1740/0x83D1C70.
+// ELF 0x48C0A0 (string), 0x48C690 (wstring); engine ELF 0x83D1740/0x83D1C70; RendDX9.dll PE 0x10075970 (string).
+// PE 0x100759E0: wstring.
 template <typename String>
 String extractFileNameWithoutExt_internal(const String& path)
 {
@@ -62,6 +67,7 @@ String extractFileNameWithoutExt_internal(const String& path)
 }
 
 // ELF 0x48C160 (string), 0x48C750 (wstring); engine ELF 0x83D17F0/0x83D1D20.
+// PE 0x10075B50: wstring.
 template <typename String>
 String extractEverythingExceptExt_internal(const String& path)
 {
@@ -71,7 +77,8 @@ String extractEverythingExceptExt_internal(const String& path)
     return dot == -1 ? normalized : normalized.substr(0, dot);
 }
 
-// ELF 0x48C230 (string), 0x48C820 (wstring); engine ELF 0x83D18A0/0x83D1DD0.
+// ELF 0x48C230 (string), 0x48C820 (wstring); engine ELF 0x83D18A0/0x83D1DD0; RendDX9.dll PE 0x100752C0 (string).
+// PE 0x10075350: wstring.
 template <typename String, typename Char>
 void fixPath_internal(String& path, Char delimiter)
 {
@@ -84,6 +91,7 @@ void fixPath_internal(String& path, Char delimiter)
 }
 
 // ELF 0x48C2D0 (string), 0x48C8A0 (wstring); engine ELF 0x83D1920/0x83D1E50.
+// PE 0x10075910: wstring.
 template <typename String, typename Char>
 void fixPathDelimiters_internal(String& path, Char delimiter)
 {
@@ -94,6 +102,7 @@ void fixPathDelimiters_internal(String& path, Char delimiter)
 }
 
 // ELF 0x48C380 (string), 0x48C950 (wstring); engine ELF 0x83D19C0/0x83D1EF0.
+// PE 0x10075AE0, 0x10075BE0: string and wstring instantiations.
 template <typename String, typename Char>
 String getFixPath_internal(const String& path, Char delimiter)
 {
@@ -103,6 +112,7 @@ String getFixPath_internal(const String& path, Char delimiter)
 }
 
 // ELF 0x48C3D0 (string), 0x48C9A0 (wstring); engine ELF 0x83D1A00/0x83D1F30.
+// PE 0x10075300, 0x10075390: string and wstring instantiations.
 template <typename String, typename Char>
 String getFixPathDelimiters_internal(const String& path, Char delimiter)
 {
@@ -124,7 +134,7 @@ const std::string& getEmptyString()
     return empty;
 }
 
-// ELF 0x48BA40. Converts wide text using the active C locale. The existing error check tests count + 1,
+// ELF 0x48BA40; RendDX9.dll PE 0x10075430. Converts wide text using the active C locale. The existing error check tests count + 1,
 // so callers must not rely on it to reject every invalid conversion.
 std::string makeNarrow(const std::wstring& source)
 {
@@ -155,7 +165,16 @@ std::wstring makeWide(const std::string& source)
     return result;
 }
 
-// ELF 0x48A990. Formats into a shared 4-KB buffer and returns a string copy; not reentrant or thread-safe.
+// Engine ELF 0x83D0340 (dice::hfe::stringToFloat(std::string const&): atof(c_str()), narrowed
+// through fstps/flds); RendDX9.dll PE 0x1007B290 (atof on the SSO buffer or the heap pointer by
+// capacity +0x18 >= 16, ST0 returned without a narrowing store: VC7.1 keeps the float return in
+// the x87 register, the caller narrows at its store).
+float stringToFloat(const std::string& s)
+{
+    return static_cast<float>(std::atof(s.c_str()));
+}
+
+// ELF 0x48A990; RendDX9.dll PE 0x10074AB0 (the same body over .data 0x10244AF8). Formats into a shared 4-KB buffer and returns a string copy; not reentrant or thread-safe.
 // A negative vsnprintf result replaces the message with a warning. Successful formatting writes
 // the terminator at the reported length. Preserve the original runtime-dependent overflow behavior.
 std::string formatString(const char* fmt, ...)
@@ -199,6 +218,7 @@ std::wstring formatWstring(const wchar_t* fmt, ...)
 #if !DEDICATED
 // Client PE 431130, all 29 instructions read. Buffer 99C158 is shared, and
 // _vsnwprintf's -1 result replaces the whole message with the shipped warning.
+// PE 0x10074B10: own buffer 0x10245AF8.
 std::wstring formatString(const wchar_t* fmt, ...)
 {
     static wchar_t buffer[4096];
@@ -222,6 +242,7 @@ int compareIgnoreCase(const char* a, const char* b)
 }
 
 // ELF 0x48ABD0.
+// PE 0x10074B80
 int compareIgnoreCase(const char* a, const char* b, int n)
 {
     if (n == 0)
@@ -236,18 +257,20 @@ int compareIgnoreCase(const std::string& a, const std::string& b)
 }
 
 // ELF 0x48AB60.
+// PE 0x10075040
 int compareIgnoreCase(const std::string& a, const std::string& b, int n)
 {
     return compareIgnoreCase(a.c_str(), b.c_str(), n);
 }
 
-// ELF 0x48AC10.
+// ELF 0x48AC10; RendDX9.dll PE 0x10075080 (the compare inlined: `_stricmp` on the two c_str()s).
 bool equalsIgnoreCase(const std::string& a, const std::string& b)
 {
     return compareIgnoreCase(a, b) == 0;
 }
 
 // ELF 0x48AC50.
+// PE 0x100750C0
 bool equalsIgnoreCase(const std::string& a, const std::string& b, int n)
 {
     return compareIgnoreCase(a, b, n) == 0;
@@ -263,7 +286,7 @@ std::string::size_type lowerCaseFind(const std::string& text, const std::string&
     return loweredText.find(loweredPattern);
 }
 
-// ELF 0x48AD60; engine ELF 0x83D06B0.
+// ELF 0x48AD60; engine ELF 0x83D06B0; RendDX9.dll PE 0x10074BA0.
 void eraseSubString(std::string& text, const std::string& pattern)
 {
     const std::string::size_type at = text.find(pattern);
@@ -272,6 +295,7 @@ void eraseSubString(std::string& text, const std::string& pattern)
 }
 
 // ELF 0x48B9A0; engine ELF 0x83D10F0. Both images explicitly return the input pointer.
+// PE 0x10074F60
 std::string* replaceAll(std::string* text, const std::string& pattern, const std::string& replacement)
 {
     std::string::size_type at = 0;
@@ -345,6 +369,7 @@ std::string getFixPathDelimiters(const std::string& s, char c)
 }
 
 // ELF 0x48B410.
+// PE 0x100753E0: hidden-result wrapper over 0x10075AE0.
 std::string getFixPath(const std::string& s, char c)
 {
     return getFixPath_internal(s, c);
@@ -355,6 +380,7 @@ void fixPath(std::wstring& s, wchar_t c) { fixPath_internal(s, c); }
 // ELF 0x48B630; engine ELF 0x83D0E00.
 void fixPathDelimiters(std::wstring& s, wchar_t c) { fixPathDelimiters_internal(s, c); }
 // ELF 0x48B660; engine ELF 0x83D0E10.
+// PE 0x10075410: hidden-result wrapper over 0x10075BE0.
 std::wstring getFixPath(const std::wstring& s, wchar_t c) { return getFixPath_internal(s, c); }
 // ELF 0x48B6B0; engine ELF 0x83D0E40.
 std::wstring getFixPathDelimiters(const std::wstring& s, wchar_t c) { return getFixPathDelimiters_internal(s, c); }
@@ -439,7 +465,7 @@ std::string getUpperCase(const std::string& s)
     return result;
 }
 
-// ELF 0x48B220.
+// ELF 0x48B220; RendDX9.dll PE 0x10074E80.
 std::string getLowerCase(const std::string& s)
 {
     std::string result(s);
@@ -449,12 +475,14 @@ std::string getLowerCase(const std::string& s)
 
 // ELF 0x48B2E0. Returns the directory through the last slash of either kind, using delimiter for the trailing separator.
 // Returns an empty string when no separator exists.
+// PE 0x100751A0: hidden-result wrapper over 0x10075680.
 std::string extractFilePath(const std::string& path, char delimiter)
 {
     return extractFilePath_internal(path, delimiter);
 }
 
-// ELF 0x48B260. Returns text after the last dot, or empty for no dot/trailing dot.
+// ELF 0x48B260; RendDX9.dll PE 0x10075180 (hidden-result wrapper over 0x10075580). Returns text
+// after the last dot, or empty for no dot/trailing dot.
 // A preceding dot suppresses extensions only when the last dot is at index 2 or later:
 // ..x yields x, while a..x yields empty.
 std::string extractFileExt(const std::string& path)
@@ -462,7 +490,7 @@ std::string extractFileExt(const std::string& path)
     return extractFileExt_internal(path);
 }
 
-// ELF 0x48B870; engine ELF 0x83D0FD0.
+// ELF 0x48B870; engine ELF 0x83D0FD0; RendDX9.dll PE 0x10074EC0 (the recursion is a loop there).
 void removeDoubleSlashes(std::string& path)
 {
     const std::string::size_type at = path.find("//");
@@ -474,7 +502,7 @@ void removeDoubleSlashes(std::string& path)
 }
 
 namespace {
-// ELF 0x48B700; engine ELF 0x83D0E70.
+// ELF 0x48B700; engine ELF 0x83D0E70; RendDX9.dll PE 0x10075220.
 void goUpInPath_worker(std::string& path)
 {
     removeDoubleSlashes(path);
@@ -518,12 +546,13 @@ void goUpInPath(std::string& path)
         path.insert(0, "/");
 }
 
-// ELF 0x48B330. Returns the final path component without its last extension. Names without a dot remain unchanged.
+// ELF 0x48B330; RendDX9.dll PE 0x100752B0 (hidden-result wrapper over 0x10075970). Returns the final path component without its last extension. Names without a dot remain unchanged.
 std::string extractFileNameWithoutExt(const std::string& path)
 {
     return extractFileNameWithoutExt_internal(path);
 }
 // ELF 0x48B2A0. Returns the component after the last slash of either kind. A trailing slash produces an empty name.
+// PE 0x10075190: hidden-result wrapper over 0x10075600.
 std::string extractFileName(const std::string& path)
 {
     return extractFileName_internal(path);
@@ -532,16 +561,22 @@ std::string extractFileName(const std::string& path)
 // ELF 0x48B370; engine ELF 0x83D0C30.
 std::string extractEverythingExceptExt(const std::string& path) { return extractEverythingExceptExt_internal(path); }
 // ELF 0x48B4B0; engine ELF 0x83D0D00.
+// PE 0x100751D0: hidden-result wrapper over 0x100757A0.
 std::wstring extractFileExt(const std::wstring& path) { return extractFileExt_internal(path); }
 // ELF 0x48B4F0; engine ELF 0x83D0D30.
+// PE 0x100751E0: hidden-result wrapper over 0x10075800.
 std::wstring extractFileName(const std::wstring& path) { return extractFileName_internal(path); }
 // ELF 0x48B530; engine ELF 0x83D0D60.
+// PE 0x100751F0: hidden-result wrapper over 0x10075870.
 std::wstring extractFilePath(const std::wstring& path, wchar_t c) { return extractFilePath_internal(path, c); }
 // ELF 0x48B580; engine ELF 0x83D0D90.
+// PE 0x10075340: hidden-result wrapper over 0x100759E0.
 std::wstring extractFileNameWithoutExt(const std::wstring& path) { return extractFileNameWithoutExt_internal(path); }
 // ELF 0x48B5C0; engine ELF 0x83D0DC0.
+// PE 0x10075400: hidden-result wrapper over 0x10075B50.
 std::wstring extractEverythingExceptExt(const std::wstring& path) { return extractEverythingExceptExt_internal(path); }
 // Converts multibyte text to wide characters; failed conversion returns an empty string.
+// PE 0x100754F0
 std::wstring toWideString(const std::string& s)
 {
     const size_t count = mbstowcs(0, s.c_str(), 0) + 1;         // + terminator; 0 on an invalid sequence

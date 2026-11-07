@@ -28,9 +28,18 @@ const char* const kFile = "C:\\dice\\Projects\\BF2Branches\\Patch_1_50\\Code\\BF
 SoundFile*             s_musicFile    = 0;      // ds:10046D84
 win32::Thread*         s_musicThread  = 0;      // ds:10046D88
 bool                   s_musicPlaying = false;  // ds:10046D8C
+#if defined(_WIN32)
 volatile long          s_fadeMillis   = 0;      // ds:InterlockedExchange target
+#else
+// [CHOSEN, not recovered] POSIX volume/fade publication to the music worker is sequentially consistent.
+std::atomic<long>      s_fadeMillis{0};
+#endif
 std::list<std::string> s_errors;
+#if defined(_WIN32)
 volatile long          s_volumeMilli  = 0;      // ds:1003F1F0 ("Target") - group 1 volume x 1000
+#else
+std::atomic<long>      s_volumeMilli{0};
+#endif
 
 // every collected line as an error, then a summary line.
 void reportErrors(std::list<std::string>* errors)
@@ -113,6 +122,13 @@ void __cdecl musicThreadMain(win32::Thread* thread)
         what += (char) ('0' + j);
         threadError(errors, what.c_str());
     }
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] macOS port: Apple's OpenAL.framework keeps buffers that were queued
+    // on a source attached after they are unqueued, so alDeleteBuffers fails with
+    // AL_INVALID_OPERATION and the twelve buffers leak, until the source's AL_BUFFER is cleared.
+    // Clearing it is a no-op for the OpenAL implementations the Win32 image loads.
+    al_Sourcei(source, AL_BUFFER, 0);
+#endif
     al_DeleteBuffers(12, buffers);
     threadError(errors, "alDeleteBuffers");
     al_DeleteSources(1, &source);

@@ -11,7 +11,11 @@
 #include "../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
 #include <cfloat>
 #include <cmath>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include "../Core/PosixRegistry.h"
+#endif
 namespace dice { namespace hfe { namespace hud {
 namespace {
 bool invalidSpottedPosition(const Vec3& position) // complete Vec3 comparison53C200
@@ -60,10 +64,23 @@ void BF2HudManager::sendSpottedMessage(bool announce, world::VehicleType type)
             if (occupant && occupant->getIsManDown()) {
                 // Shipped BF2142-install check. The opened handle is leaked and
                 // this arm bypasses spam filtering and radio announcement.
+#if defined(_WIN32)
                 HKEY installedKey;
-                if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+#if defined(_M_IX86)
+                const REGSAM installedAccess = KEY_QUERY_VALUE;
+#else
+                // [CHOSEN, not recovered] x64 (issue #7): the 32-bit installer's registry view.
+                const REGSAM installedAccess = KEY_QUERY_VALUE | KEY_WOW64_32KEY;
+#endif
+                const bool bf2142Installed = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                         "SOFTWARE\\Electronic Arts\\EA Games\\Battlefield 2142\\InstallDir",
-                        0, KEY_QUERY_VALUE, &installedKey) == ERROR_SUCCESS) {
+                        0, installedAccess, &installedKey) == ERROR_SUCCESS;
+#else
+                // [CHOSEN, not recovered] The install-key probe uses the same local file.
+                const bool bf2142Installed = posixRegistry::keyExists(RegKeyLocalMachine,
+                        "SOFTWARE\\Electronic Arts\\EA Games\\Battlefield 2142\\InstallDir");
+#endif
+                if (bf2142Installed) {
                     if (m_field1e4 || !invalidSpottedPosition(m_field1e8))
                         game->sendSpottedMessage(local, m_field1e4,
                             Vec2{m_field1e8.x, m_field1e8.z}, type);

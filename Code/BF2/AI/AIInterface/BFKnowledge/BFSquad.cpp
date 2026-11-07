@@ -1,13 +1,7 @@
 // [INFERRED] Source placement.
-// [FRONTIER] Remaining methods stop by name until implemented.
-// [TEMP] Temporary implementation boundaries remain.
-// [CHOSEN, not recovered] Temporary implementation boundaries remain.
-// [RETIRE-WHEN: aidll-01-adapters] Complete and validate the remaining BFSquad operations.
 
 #include "BFSquad.h"
 #include "AIPlayer.h"
-
-#include "AIFrontier.h"
 
 #include "../../AIDLL/AI/Main/CommonSingletonServer.h"
 #include "../../../Core/ClassManager.h"

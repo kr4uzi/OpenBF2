@@ -3,6 +3,16 @@
 #define IO_INPUT_FALCONDEVICE_H
 #include "../../Core/BuildConfig.h"
 #if !DEDICATED
+#if !defined(_WIN32)
+// [CHOSEN, not recovered] Native POSIX clients: the Novint HFX SDK is a Windows-only DLL and no
+// Falcon is ever present, so neither the SDK header nor FalconDevice exists there; the device
+// manager reports IDFFalcon as not opened (MacInputDeviceManager). Only the menu's mouse-mode
+// global, which the menu and HUD code write on every platform, is declared. See
+// docs/macos-port.md, "Bink, Novint and VoIP capture (S2.8)".
+namespace dice { namespace hfe { namespace io {
+extern int g_falconMouseMode; // [INFERRED] name, PE978FC4 initialized1; HUD/updateCurrentState writers
+} } }
+#else
 #include "Input.h"
 #include "../../External/NovintHFX/NovintHFX.h"
 #include <list>
@@ -71,5 +81,6 @@ private:
     DWORD m_field100;                       // [UNRESOLVED] initialized zero
 };
 } } }
+#endif // _WIN32
 #endif
 #endif

@@ -209,7 +209,8 @@ namespace gameswf
 		{
 			return s_render_handler ? s_render_handler->text_extent(line, count, w, h) : false;
 		}
-		bool	text_hit(void* line, int* out_pos, int x, int y)
+		// 0x1009A8E0: ecx = line, edx = out_pos, the two float dwords passed on to handler +0x6C.
+		bool	text_hit(void* line, int* out_pos, float x, float y)
 		{
 			return s_render_handler ? s_render_handler->text_hit(line, out_pos, x, y) : false;
 		}
@@ -222,9 +223,10 @@ namespace gameswf
 			if (b) *b = 0;
 			return false;
 		}
-		bool	text_set_selection(void* line, int a, int b, int c, int d)
+		// 0x1009A940: the four float dwords passed on to handler +0x74.
+		bool	text_set_selection(void* line, float x1, float y1, float x2, float y2)
 		{
-			return s_render_handler ? s_render_handler->text_set_selection(line, a, b, c, d) : false;
+			return s_render_handler ? s_render_handler->text_set_selection(line, x1, y1, x2, y2) : false;
 		}
 		void	text_blur(void* line)
 		{

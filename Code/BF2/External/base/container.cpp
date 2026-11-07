@@ -173,7 +173,13 @@ void tu_string::encode_utf8_from_wchar(tu_string* result, const uint16* wstr)
 #ifdef _WIN32
 	return ::stricmp(a, b);
 #else
-	return strcasecmp(a, b);
+	// [CHOSEN, not recovered] Qualified: Core/PlatformCompat.h (force-included on POSIX) defines
+	// `stricmp` as `strcasecmp`, which renames this member to tu_string::strcasecmp. An
+	// unqualified call then found the member itself (unbounded self-recursion, which -O2
+	// folded into a garbage result), so every tu_stringi comparison failed and no
+	// stringi_hash lookup ever matched: _global.Object/Array/ASSetPropFlags and all
+	// menu namespaces were "absent" to ActionScript (docs/macos-c-asan-heap.md).
+	return ::strcasecmp(a, b);
 #endif
 }
 

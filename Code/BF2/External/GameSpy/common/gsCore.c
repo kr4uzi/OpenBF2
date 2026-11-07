@@ -9,6 +9,13 @@
 #include "gsAssert.h"
 #include "../ghttp/ghttp.h"
 
+/* [CHOSEN, not recovered] C SDK publication flags on POSIX use the same sequentially
+   consistent operations as its Interlocked reference count. Keep the SDK's scalar layout. */
+#if defined(_MACOSX) || defined(_LINUX)
+#define GSI_CORE_LOAD(word) __atomic_load_n(&(word), __ATOMIC_SEQ_CST)
+#define GSI_CORE_STORE(word, value) __atomic_store_n(&(word), (value), __ATOMIC_SEQ_CST)
+#endif
+
 
 
 
@@ -51,14 +58,22 @@ void gsCoreInitialize()
 	GSCoreMgr* aCore = gsiGetStaticCore();
 
 	// Is someone else shutting down the core?
+#if defined(_MACOSX) || defined(_LINUX)
+	while(gsi_is_true(GSI_CORE_LOAD(aCore->mIsShuttingDown)))
+#else
 	while(gsi_is_true(aCore->mIsShuttingDown))
+#endif
 		msleep(GSI_CORE_INIT_YIELD_MS); // yield to other thread
 
 	// If we're the first reference, initialize the core
 	if (gsiInterlockedIncrement(&aCore->mRefCount) == 1)
 	{
 		// Are we the first ever?
+#if defined(_MACOSX) || defined(_LINUX)
+		if (gsi_is_false(GSI_CORE_LOAD(aCore->mIsStaticInitComplete)))
+#else
 		if (gsi_is_false(aCore->mIsStaticInitComplete))
+#endif
 		{
 			// perform one-time initialization of core critical section
 			gsiInitializeCriticalSection(&aCore->mQueueCrit);
@@ -69,7 +84,11 @@ void gsCoreInitialize()
 			#endif
 
 			// one time init completed
+#if defined(_MACOSX) || defined(_LINUX)
+			GSI_CORE_STORE(aCore->mIsStaticInitComplete, gsi_true);
+#else
 			aCore->mIsStaticInitComplete = gsi_true;
+#endif
 		}
 
 		// take the critical section to begin initialization
@@ -79,7 +98,11 @@ void gsCoreInitialize()
 
 		// wait here if another thread is concurrently shutting down the core
 		// we may need to wait a few times if the shutdown does not complete immediately
+#if defined(_MACOSX) || defined(_LINUX)
+		while(gsi_is_true(GSI_CORE_LOAD(aCore->mIsShuttingDown)))
+#else
 		while(gsi_is_true(aCore->mIsShuttingDown))
+#endif
 			msleep(GSI_CORE_INIT_YIELD_MS);
 
 		// Setup the task array
@@ -95,14 +118,22 @@ void gsCoreInitialize()
 
 		// release other threads that may have blocked during init
 		//     - this must be the last thing done at end of init
+#if defined(_MACOSX) || defined(_LINUX)
+		GSI_CORE_STORE(aCore->mIsInitialized, gsi_true);
+#else
 		aCore->mIsInitialized = gsi_true;
+#endif
 	}
 	else
 	{
 		// Core is already initialized -OR- another thread will initialize the core
 		
 		// make sure critical section has been initialized
+#if defined(_MACOSX) || defined(_LINUX)
+		while(gsi_is_false(GSI_CORE_LOAD(aCore->mIsStaticInitComplete)))
+#else
 		while(gsi_is_false(aCore->mIsStaticInitComplete))
+#endif
 			msleep(GSI_CORE_INIT_YIELD_MS);
 
 		// take the critical section
@@ -111,7 +142,11 @@ void gsCoreInitialize()
 		gsiLeaveCriticalSection(&aCore->mQueueCrit);
 
 		// wait for other thread to initial core
+#if defined(_MACOSX) || defined(_LINUX)
+		while(gsi_is_false(GSI_CORE_LOAD(aCore->mIsInitialized)))
+#else
 		while(gsi_is_false(aCore->mIsInitialized))
+#endif
 			msleep(GSI_CORE_INIT_YIELD_MS); 
 	}
 }
@@ -231,7 +266,11 @@ void gsCoreThink(gsi_time theMS)
 	gsi_time aStartTime = 0;
 	gsi_i32 allTasksAreDead = 1;
 
+#if defined(_MACOSX) || defined(_LINUX)
+	if (gsi_is_false(GSI_CORE_LOAD(aCore->mIsInitialized)))
+#else
 	if (gsi_is_false(aCore->mIsInitialized))
+#endif
 		return;
 
 	// enter queue critical section
@@ -273,7 +312,11 @@ void gsCoreThink(gsi_time theMS)
 	#endif
 
 	// shutting down?
+#if defined(_MACOSX) || defined(_LINUX)
+	if (GSI_CORE_LOAD(aCore->mIsShuttingDown) && allTasksAreDead)
+#else
 	if (aCore->mIsShuttingDown && allTasksAreDead)
+#endif
 	{
 		ghttpCleanup();
 
@@ -285,7 +328,11 @@ void gsCoreThink(gsi_time theMS)
         }
 #endif
 
+#if defined(_MACOSX) || defined(_LINUX)
+		GSI_CORE_STORE(aCore->mIsShuttingDown, 0);
+#else
 		aCore->mIsShuttingDown = 0;
+#endif
 	}
 
 	// leave queue critical section
@@ -303,7 +350,11 @@ void gsCoreShutdown()
 	int i=0;
 
 	// If not initialized, just bail
+#if defined(_MACOSX) || defined(_LINUX)
+	if (gsi_is_false(GSI_CORE_LOAD(aCore->mIsInitialized)))
+#else
 	if (gsi_is_false(aCore->mIsInitialized))
+#endif
 		return;
 
 	// Take the critical section to prevent anyone from re-initializing while
@@ -321,7 +372,11 @@ void gsCoreShutdown()
 		// we released the final reference, begin shutdown
 		// no other thread will begin using the core until
 		// mIsShuttingDown has been set back to false
+#if defined(_MACOSX) || defined(_LINUX)
+		GSI_CORE_STORE(aCore->mIsShuttingDown, gsi_true);
+#else
 		aCore->mIsShuttingDown = gsi_true;
+#endif
 
 		// Cancel all tasks
 		#ifdef GSICORE_DYNAMIC_TASK_LIST
@@ -352,9 +407,17 @@ GSCoreValue gsCoreIsShutdown()
 {
 	GSCoreMgr* aCore = gsiGetStaticCore();
 
+#if defined(_MACOSX) || defined(_LINUX)
+	if (gsi_is_true(GSI_CORE_LOAD(aCore->mIsShuttingDown)))
+#else
 	if (gsi_is_true(aCore->mIsShuttingDown))
+#endif
 		return GSCore_SHUTDOWN_PENDING;
+#if defined(_MACOSX) || defined(_LINUX)
+	if (GSI_CORE_LOAD(aCore->mRefCount) == 0)
+#else
 	if (aCore->mRefCount == 0)
+#endif
 		return GSCore_SHUTDOWN_COMPLETE;
 
 	// The core isn't shutting down, and ref count > 0,

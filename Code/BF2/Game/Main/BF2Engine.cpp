@@ -54,6 +54,7 @@
 #include "Demo.h"                           // [INFERRED] header path; demo.cpp itself is attested
 #include "../../Scene/Object/PlayerManager.h" // the real PlayerManager - replaces the local shim
 #include "../Objects/IPlayer.h"              // per-player handleFrameUpdate loop
+#include "../Objects/IObjectTemplate.h"     // [TEMP] BF2_PLAY_TRACE: the vehicle template name
 #include "../Objects/ICameraObject.h"       // mainLoop's held camera: getCamera / setInterpolatedMode
 
 #include <list>
@@ -74,17 +75,26 @@
 #include "../HudInformationLayer.h"
 #include "../Objects/Fx/PersistentExplosionEffectManager.h"
 #endif
-#include "../../Sound/BfSound.h"            // IBfSound* g_bfSound - the client's menu/movie arms
+#include "../../Sound/BfSound.h"
+#if defined(__APPLE__) && !DEDICATED
+#include "../../Sound/SoundEngine/BfSoundEngine.h"   // [TEMP] SoundStats for BF2_PLAY_TRACE
+#endif            // IBfSound* g_bfSound - the client's menu/movie arms
 #include "../../IO/Input/Input.h"           // io::IInputManager / IInputDeviceManager - the client's input arms
 #include <ctime>                            // time / difftime - sessionStartTime
+#include <cctype>                           // [TEMP] std::tolower - the input-script query
+#include <map>
 #include <cstring>                          // memcpy - updateInput's sample copy
 #include <cstdio>                           // std::fprintf - the [FRONTIER] stop in startGame's client branch
 #include <cstdlib>                          // std::abort   - the same stop
 #if !DEDICATED
 #include "BF2ClientSeams.h"                 // [FRONTIER] client collaborators without recovered classes
+#include "../../AI/AIInterface/AIInstance.h"   // ai::g_aiInstance, IAIInstance (ds:0xA33C08 in the client)
 #include "../LocalProfileManager.h"        // native client startup interface
 #include "../ProfileManager.h"             // renderMenu case 14 clears the pending transition
 #include "../../Menu/BF2HudManager.h"       // constructor and established virtual prefix; publication gated
+#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
+#include "../../Geom/GeometryTemplateManager.h"   // shutdown: the client arm's template clear (+0x28)
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include "../../Core/Ids.h"                 // the menu CIDs / IID_IMenuLogic / IID_IFSMoviePlayer
@@ -92,7 +102,22 @@
 #include "../../Menu/IMenuLogic.h"          // menuLogic
 #include "../../Sound/BfSound/MusicPlayer.h"
 #include "../../IO/Input/PlayerInput.h"     // updateInput's per-tick copy
+#if defined(_WIN32)
 #include <shellapi.h>                       // ShellExecuteA - restartBF2 / activateMod / browseModHomepage
+#elif defined(__APPLE__)
+// [CHOSEN, not recovered] macOS: the cursor, minimize, URL and relaunch counterparts.
+#include "../../Platform/macOS/CocoaHost.h"
+#include "../../Platform/macOS/MacSystem.h"
+#include "../../Platform/macOS/ClientPaths.h"
+#include <unistd.h>
+#endif
+#endif
+
+#if !DEDICATED && (defined(_WIN32) || defined(__APPLE__))
+#include "../../Platform/InputScript.h"     // [TEMP] aim / walk-to query (BF2_INPUT_SCRIPT)
+#include <cctype>
+#include <cstdio>
+#include <map>
 #endif
 
 // Middleware attribution functions have global scope. Preserve their startup call order.
@@ -137,6 +162,11 @@ bool BF2Engine::getMenuActive() const
 
 // [CHOSEN] accessor with getMenuActive's shape: the movie player is a client-only member, and
 // mainLoop tests it in four places that must fold to nothing in a dedicated build.
+#if DEDICATED
+// [TEMP] the dedicated image has no BF2_HOST_TRACE (the helper below is client-only).
+#define BF2_HOST_TRACE_SITE(step, value) ((void)0)
+#endif
+
 bool BF2Engine::isMoviePlaying() const
 {
 #if DEDICATED
@@ -247,6 +277,217 @@ void musicTraceSite(const char* site)
     if (armed < 0) armed = std::getenv("BF2_TRACE_MUSIC") ? 1 : 0;
     if (armed) { std::fprintf(stderr, "[MUSIC] event 0 from %s\n", site); std::fflush(stderr); }
 }
+#if defined(__APPLE__)
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-singleplayer-hosting-validated]
+// BF2_HOST_TRACE=1: one read-only stderr line per startMission/startGame exit, naming the step
+// (docs/macos-c-singleplayer.md: the client-hosted instant battle that sometimes never loads).
+void hostTrace(const char* step, int value)
+{
+    static int armed = -1;
+    if (armed < 0) armed = std::getenv("BF2_HOST_TRACE") ? 1 : 0;
+    if (armed) { std::fprintf(stderr, "[host] %s %d\n", step, value); std::fflush(stderr); }
+}
+#define BF2_HOST_TRACE_SITE(step, value) hostTrace(step, static_cast<int>(value))
+#else
+#define BF2_HOST_TRACE_SITE(step, value) ((void)0)
+#endif
+#if defined(__APPLE__)
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-ingame-play-validated]
+// BF2_PLAY_TRACE=1: once a second, one read-only stderr line about the local player (alive,
+// vehicle template and seat root, position, view direction), the players alive per team, and
+// the sound engine (initialized, provider, playing samples, allocated/max voices). Judging
+// scripted playthroughs from the log (docs/macos-c-ingame-play.md). Nothing is written.
+void playTraceTick()
+{
+    static int armed = -1;
+    if (armed < 0) armed = std::getenv("BF2_PLAY_TRACE") ? 1 : 0;
+    if (!armed || !world::playerManager)
+        return;
+    static double last = 0.0;
+    const double now = static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+    if (now - last < 1.0 && last != 0.0)
+        return;
+    last = now;
+    int alive[3] = { 0, 0, 0 }, total[3] = { 0, 0, 0 };
+    const std::list<world::IPlayer*>& players = world::playerManager->getPlayers();
+    for (std::list<world::IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
+    {
+        const int team = (*it)->getTeam();
+        if (team < 0 || team > 2) continue;
+        ++total[team];
+        if ((*it)->getIsAlive()) ++alive[team];
+    }
+    char sound[256] = "sound=none";
+    if (g_soundEngine && g_soundEngine->isInitialized())
+    {
+        const SoundStats* st = static_cast<const SoundStats*>(g_soundEngine->getStats());
+        if (st)
+            std::snprintf(sound, sizeof sound, "sound=on provider=\"%s\" playing=%d waiting=%d sources=%d maxVoices=%d",
+                          st->providerInfo ? st->providerInfo : "", st->playing, st->waiting, st->sources, st->maxVoices);
+    }
+    else if (g_soundEngine)
+        std::snprintf(sound, sizeof sound, "sound=not-initialized");
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player)
+    {
+        std::fprintf(stderr, "[PLAY] no local player; players t1 %d/%d t2 %d/%d; %s\n",
+                     alive[1], total[1], alive[2], total[2], sound);
+        std::fflush(stderr);
+        return;
+    }
+    const char* vehicleName = "-";
+    float pos[3] = { 0, 0, 0 };
+    if (world::IObject* vehicle = player->getVehicle())
+    {
+        world::IObject* root = world::getRootParent(vehicle);
+        if (vehicle->getTemplate()) vehicleName = vehicle->getTemplate()->getName().c_str();
+        const Vec3& p = (root ? root : vehicle)->getAbsolutePosition();
+        pos[0] = p.x; pos[1] = p.y; pos[2] = p.z;
+    }
+    float fwd[3] = { 0, 0, 0 };
+    if (world::ICameraObject* camera = player->getCamera())
+    {
+        const Mat4& m = camera->getTransformation(0.0f);
+        fwd[0] = m.m[8]; fwd[1] = m.m[9]; fwd[2] = m.m[10];
+    }
+    std::fprintf(stderr, "[PLAY] alive=%d manDown=%d team=%d vehicle=%s pos=%.1f/%.1f/%.1f fwd=%.2f/%.2f/%.2f "
+                         "players t1 %d/%d t2 %d/%d; %s\n",
+                 player->getIsAlive() ? 1 : 0, player->getIsManDown() ? 1 : 0, player->getTeam(), vehicleName,
+                 pos[0], pos[1], pos[2], fwd[0], fwd[1], fwd[2], alive[1], total[1], alive[2], total[2], sound);
+    std::fflush(stderr);
+}
+
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-client-perf-understood]
+// BF2_FRAME_TRACE=1: once a second (wall clock), one stderr line with the frame count, the mean and
+// worst frame time, and the mean wall time of each mainLoop section (docs/macos-c-handplay-1.md).
+// Measurement only: off by default, nothing in the loop changes.
+namespace frametrace {
+enum Section { Pre, Update, Script, Objects, Render, Tail, Count };
+static int  s_armed = -1;
+static std::chrono::steady_clock::time_point s_mark, s_frameStart, s_windowStart;
+static double s_sum[Count], s_frameMax, s_frameSum;
+static int    s_frames, s_ticks;
+inline bool armed()
+{
+    if (s_armed < 0) s_armed = std::getenv("BF2_FRAME_TRACE") ? 1 : 0;
+    return s_armed != 0;
+}
+inline void begin()
+{
+    if (!armed()) return;
+    s_frameStart = s_mark = std::chrono::steady_clock::now();
+    if (s_windowStart.time_since_epoch().count() == 0) s_windowStart = s_frameStart;
+}
+inline void mark(Section s)
+{
+    if (!armed()) return;
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    s_sum[s] += std::chrono::duration<double, std::milli>(now - s_mark).count();
+    s_mark = now;
+}
+inline void end(int ticks, bool inGame)
+{
+    if (!armed()) return;
+    mark(Tail);
+    const double ms = std::chrono::duration<double, std::milli>(s_mark - s_frameStart).count();
+    s_frameSum += ms;
+    if (ms > s_frameMax) s_frameMax = ms;
+    ++s_frames;
+    s_ticks += ticks;
+    const double window = std::chrono::duration<double>(s_mark - s_windowStart).count();
+    if (window < 1.0) return;
+    const double n = s_frames ? s_frames : 1;
+    std::fprintf(stderr, "[FRAME] %s fps=%.1f mean=%.1fms max=%.1fms ticks=%d | pre %.1f update %.1f script %.1f "
+                         "objects %.1f render %.1f tail %.1f\n",
+                 inGame ? "game" : "menu", s_frames / window, s_frameSum / n, s_frameMax, s_ticks,
+                 s_sum[Pre] / n, s_sum[Update] / n, s_sum[Script] / n, s_sum[Objects] / n, s_sum[Render] / n,
+                 s_sum[Tail] / n);
+    std::fflush(stderr);
+    for (int i = 0; i < Count; ++i) s_sum[i] = 0.0;
+    s_frameMax = s_frameSum = 0.0;
+    s_frames = s_ticks = 0;
+    s_windowStart = s_mark;
+}
+} // namespace frametrace
+#define BF2_FRAME_MARK(s) frametrace::mark(frametrace::s)
+#endif
+#if !DEDICATED && (defined(_WIN32) || defined(__APPLE__))
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: client-test-automation-replaced]
+// The input script's aim / face / walk-to query (Platform/InputScript.h): read-only.
+bool scriptQuery(const char* target, float viewPos[3], float viewFwd[3], float targetPos[3])
+{
+    if (!world::playerManager)
+        return false;
+    world::IPlayer* self = world::playerManager->getLocalHumanPlayer();
+    if (!self || !self->getIsAlive())
+        return false;
+    world::ICameraObject* camera = self->getCamera();
+    if (!camera)
+        return false;
+    const Mat4& m = camera->getTransformation(0.0f);
+    for (int i = 0; i < 3; ++i) { viewPos[i] = m.m[12 + i]; viewFwd[i] = m.m[8 + i]; }
+    float x, y, z;
+    if (std::sscanf(target, "%f/%f/%f", &x, &y, &z) == 3)
+    {
+        targetPos[0] = x; targetPos[1] = y; targetPos[2] = z;
+        return true;
+    }
+    const std::string kind(target);
+    if (kind.compare(0, 5, "tmpl:") == 0 && world::objectManager)
+    {
+        // Nearest root object whose template name is one of the comma-separated names.
+        std::string names = "," + kind.substr(5) + ",";
+        for (char& c : names) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        float bestT = 1e30f;
+        bool foundT = false;
+        std::map<unsigned int, world::IObject*>& all = world::objectManager->getAllObjectsFromGrid();
+        for (std::map<unsigned int, world::IObject*>::iterator it = all.begin(); it != all.end(); ++it)
+        {
+            world::IObject* o = it->second;
+            if (!o || o->getParent() || !o->getTemplate())
+                continue;
+            std::string n = "," + o->getTemplate()->getName() + ",";
+            for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (names.find(n) == std::string::npos)
+                continue;
+            const Vec3& pos = o->getAbsolutePosition();
+            const float dx = pos.x - viewPos[0], dy = pos.y - viewPos[1], dz = pos.z - viewPos[2];
+            const float d = dx * dx + dy * dy + dz * dz;
+            if (d < bestT)
+            {
+                bestT = d; foundT = true;
+                targetPos[0] = pos.x; targetPos[1] = pos.y + 1.0f; targetPos[2] = pos.z;
+            }
+        }
+        return foundT;
+    }
+    const int team = self->getTeam();
+    float best = 1e30f;
+    bool found = false;
+    const std::list<world::IPlayer*>& players = world::playerManager->getPlayers();
+    for (std::list<world::IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
+    {
+        world::IPlayer* p = *it;
+        if (p == self || !p->getIsAlive() || !p->getVehicle())
+            continue;
+        if ((kind == "enemy" && p->getTeam() == team) || (kind == "friend" && p->getTeam() != team))
+            continue;
+        if (kind != "enemy" && kind != "friend" && kind != "player")
+            return false;
+        world::IObject* root = world::getRootParent(p->getVehicle());
+        const Vec3& pos = (root ? root : p->getVehicle())->getAbsolutePosition();
+        const float dx = pos.x - viewPos[0], dy = pos.y - viewPos[1], dz = pos.z - viewPos[2];
+        const float d = dx * dx + dy * dy + dz * dz;
+        if (d < best)
+        {
+            best = d; found = true;
+            targetPos[0] = pos.x; targetPos[1] = pos.y + 1.2f; targetPos[2] = pos.z;   // chest height
+        }
+    }
+    return found;
+}
+const bool s_scriptQueryRegistered = (inputscript::setScriptQuery(&scriptQuery), true);
+#endif
 bool s_menuMusicHold        = true;    // byte_96E340: activateMenu skips the menu-music start once
 bool s_cursorShown          = true;    // byte_96E3A3: mainLoop hides the cursor once, when a movie starts
 bool s_activateMenuOnFrame1 = true;    // byte_96E3A4: mainLoop's first-frame login + activateMenu
@@ -355,6 +596,10 @@ SingleInstanceGuard::SingleInstanceGuard()
 #elif defined(_WIN32) && !DEDICATED
     handle = 0;                                                     // the editor: no guard, never a second instance
     isFirstInstance = true;
+#elif defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] Same first/second-instance gate, using a per-user advisory lock.
+    lockFd = macos::acquireClientInstanceLock();
+    isFirstInstance = lockFd >= 0;
 #endif
 }
 
@@ -362,6 +607,10 @@ SingleInstanceGuard::~SingleInstanceGuard()
 {
 #if BF2_ENGINE_INSTANCE_MUTEX
     ReleaseMutex(handle);                                           // not CloseHandle - as shipped (0x4083F0)
+#elif defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] Keep the inode so contenders always lock the same file.
+    if (lockFd >= 0)
+        close(lockFd);
 #endif
 }
 #undef BF2_ENGINE_INSTANCE_MUTEX
@@ -603,6 +852,27 @@ bool BF2Engine::init(const std::string& commandLine)
     return true;
 }
 
+#if !DEDICATED
+namespace {
+// GeometryTemplateManager +0x28 (clear) on the client's ds:0x9A5578 slot, through the typed
+// interface that the renderer-linked client builds carry.
+void shutdownGeometryTemplates(IBase* manager)
+{
+#if defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS)
+    static_cast<geom::IGeometryTemplateManager*>(manager)->clear();
+#else
+    // [FRONTIER] [TEMP] [CHOSEN, not recovered] Client builds without the typed renderer interface
+    // (neither MSVC nor the statically linked plugins) have no reviewed dispatch for this slot.
+    // [RETIRE-WHEN: posix-client-geometry-interface] Such a client carries the typed manager header.
+    (void)manager;
+    std::fprintf(stderr, "[FRONTIER] dice::hfe::BF2Engine::shutdown GeometryTemplateManager::clear reached\n");
+    std::fflush(stderr);
+    std::abort();
+#endif
+}
+} // namespace
+#endif
+
 // Shuts down the game and engine services.
 // [INFERRED] Boolean return type; current callers discard the always-true result.
 bool BF2Engine::shutdown()
@@ -653,6 +923,14 @@ bool BF2Engine::shutdown()
 
     shutdownGame(true);                 // the bool argument is 1 (0x8131d2c-0x8131d31)
 
+#if !DEDICATED
+    // Client arm (BF2.exe 0x408E32..0x408ECF; absent from the server ELF). The music player that
+    // initEngine created: its nonvirtual destructor (0x7E1900) unregisters the ECMenu handler.
+    // The member is cleared whether or not it was set (0x408E54).
+    delete musicPlayer;
+    musicPlayer = 0;
+#endif
+
     // 6. World teardown. None of this has a counterpart in init() or initEngine(): mainTerrain and
     //    the object templates are created by level loading, so shutdown() is doing double duty as
     //    an engine teardown and a world teardown.
@@ -663,10 +941,32 @@ bool BF2Engine::shutdown()
 
     world::objectTemplateManager->deleteAll(false);                    // vtable +0x38, argument 0
 
+#if !DEDICATED
+    // BF2.exe 0x408E91: drop every geometry template the level loaded (GeometryTemplateManager
+    // +0x28) before the renderer goes away.
+    if (g_geometryTemplateManager)
+        shutdownGeometryTemplates(g_geometryTemplateManager);
+#endif
+
     // Instance() is called and its result discarded, purely to force the singleton into existence
     // so that Release() has something to tear down. Faithful to the binary, odd as it reads.
     world::SupplyDropManager::Instance();
     world::SupplyDropManager::Release();
+
+#if !DEDICATED
+    // BF2.exe 0x408EAA: delete the HUD manager through its deleting destructor (slot 0, flag 1)
+    // and clear the "HudManager" singleton slot. Its widgets, Ref2System and HUD fonts hold renderer
+    // resources, so this must precede shutdownEngine, which unloads the renderer.
+    if (hudManager)
+    {
+        delete hudManager;
+        hudManager = 0;
+    }
+
+    // [CHOSEN, not recovered] BF2.exe 0x408EC0 then calls Bf2VoipClient +0x68 when the voice client
+    // exists. This tree never constructs one (see initEngine), so the call is omitted.
+    // [RETIRE-WHEN: client-voip-optional] Restore the call with the voice client's class.
+#endif
 
     shutdownSettingsRepostitory();      // mirrors init()'s initSettingsRepostitory()
     shutdownEngine();
@@ -1169,6 +1469,29 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
                     swiffHost->setPage(2);
             }
             activateMenu(0);
+#if defined(__APPLE__)
+            // [TEMP] [CHOSEN, not recovered] c-loopback harness switch, off unless
+            // BF2_MAC_COMMANDLINE_JOIN=1 is set. Shipped, the menu's ActionScript reads this page
+            // (dice.bf2.Logic.getCommandLine) and calls dice.bf2.Logic.joinCommandlineServer on its
+            // own; the macOS menu does not run that script yet. This makes the same host call
+            // as_logic_joinCommandlineServer makes (port +0x0E4, address +0x0DC, joinServer +0x100,
+            // query port 0), so the join event reaches renderMenu's case 3 as it would from the
+            // menu. [RETIRE-WHEN: macos-menu-actionscript] the menu script issues the join itself.
+            if (!settings->boolGet("GSIsServer", false))
+            {
+                const char* commandLineJoin = std::getenv("BF2_MAC_COMMANDLINE_JOIN");
+                if (commandLineJoin && commandLineJoin[0] == '1')
+                {
+                    const int page = swiffHost->getPage();
+                    const int port = swiffHost->getPortSetting();
+                    const std::string address = swiffHost->getJoinAddressSetting();
+                    const bool queued = swiffHost->joinServer(address, port, 0);
+                    std::fprintf(stderr, "[TEMP] BF2_MAC_COMMANDLINE_JOIN: page %d, joinServer(%s, %d, 0) -> %d\n",
+                                 page, address.c_str(), port, queued ? 1 : 0);
+                    std::fflush(stderr);
+                }
+            }
+#endif
             return true;
         }
     }
@@ -1181,7 +1504,9 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
         SingletonRegInfo sri = { std::string("Game"), reinterpret_cast<IBase**>(&game), IID_IGame, CID_GameServer, 2 };
         classManager->registerSingleton(sri);           // ClassManager vtable +0x44, 0x81383c8
 
-        if (!game->init())                              // IGame vtable +0x18, 0x81383ff
+        const bool gameInit = game->init();
+        BF2_HOST_TRACE_SITE("server game->init", gameInit);
+        if (!gameInit)                                  // IGame vtable +0x18, 0x81383ff
             return false;                               // > edx=0, return 0
 
         // renameAndReOpenPureLog composes "Logs/" + arg1 + arg2 + ".log" (verified from the string
@@ -1197,7 +1522,9 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
 
         setGameLogic(CID_ServerGameLogic);              // releases the old gameLogic and
                                                         // createInstance2(cid, IID_IGameLogic)
-        if (!gameLogic->init())                         // IGameLogic vtable +0x10, 0x81384d0
+        const bool logicInit = gameLogic->init();
+        BF2_HOST_TRACE_SITE("server gameLogic->init", logicInit);
+        if (!logicInit)                                 // IGameLogic vtable +0x10, 0x81384d0
             return false;
 
         int port = serverSettings->m_serverPort;          // ServerSettings +0x20
@@ -1205,6 +1532,7 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
             port = settings->intGet("GSPort", 16567);   // queried a second time; intGet
                                                         // [UNRESOLVED] The third startServer argument's meaning; this caller passes zero.
         ok = gameServer->startServer(serverSettings->m_serverIP, port, 0);
+        BF2_HOST_TRACE_SITE("server startServer", ok);
     }
     else
     {
@@ -1266,7 +1594,7 @@ bool BF2Engine::startGame(bool noAutoJoin, bool startFromMenu)   // 2nd bool fro
             {
                 std::string mod = host->getServerMod();                      // the server's mod
                 IBase* modInfo = classManager->getSingleton("ModInfo");
-                if (!modInfo_vslot0x30(modInfo, mod))                          // IModInfo +0x30 - [UNRESOLVED] role
+                if (!modInfo_vslot0x30(modInfo, mod))                          // IModInfo +0x30, getModFromPath
                 {
                     if (compareIgnoreCase(mod, "mods/xpack") == 0)             // both images
                         host->setMessageId(26);
@@ -1438,7 +1766,7 @@ bool BF2Engine::initEngine()
         return false;
     SingletonServer::init();                            // genuinely static - 0x813907E pushes nothing
 #if !DEDICATED
-    musicPlayer = new MusicPlayer();                    // operator new(8), 0x7E1B40 - client only; never deleted
+    musicPlayer = new MusicPlayer();                    // operator new(8), 0x7E1B40 - client only; shutdown deletes it
 #endif
     return true;
 }
@@ -1547,11 +1875,17 @@ static double s_prevWallClockTime = 0.0;                        // [INFERRED] na
 static float* const s_sleepOverheadTime =                       // [INFERRED] name
     Vars::getFloat("server-sleep-overhead-time", 0.005f);       // default bits 0x3BA3D70A
 
+#ifndef BF2_FRAME_MARK
+#define BF2_FRAME_MARK(s) ((void)0)                       // [TEMP] BF2_FRAME_TRACE: client only
+#endif
 bool BF2Engine::mainLoop()
 {
     // Runs one frame per call. A pending quit returns false before any frame work.
     if (quitNextFrameFlag)
         return false;
+#if defined(__APPLE__) && !DEDICATED
+    frametrace::begin();                                            // [TEMP] BF2_FRAME_TRACE
+#endif
 
     // : the idle throttle. The binary does `if (!byte52) usleep(100000);` - a flat 100 ms
     // (imm 0x186A0 at 0x8137A80), NOT derived from a getter. byte52 (+0x52) is set from a handleEvent
@@ -1695,7 +2029,11 @@ bool BF2Engine::mainLoop()
     {
         if (s_cursorShown)
         {
+#if defined(__APPLE__)
+            macos::CocoaHost::instance().showCursor(false);   // [CHOSEN, not recovered] ShowCursor(FALSE)
+#else
             ShowCursor(FALSE);
+#endif
             s_cursorShown = false;
         }
         byte70 = true;
@@ -1723,8 +2061,14 @@ bool BF2Engine::mainLoop()
         {
             if (byte70)
             {
+#if defined(__APPLE__)
+                // [CHOSEN, not recovered] the host's counter has ShowCursor's semantics.
+                if (macos::CocoaHost::instance().showCursor(true) == 1)
+                    macos::CocoaHost::instance().showCursor(false);
+#else
                 if (ShowCursor(TRUE) == 1)
                     ShowCursor(FALSE);
+#endif
                 if (musicPlayer)
                 {
                     musicTraceSite("mainLoop byte70");               // [TEMP] BF2_TRACE_MUSIC
@@ -1751,6 +2095,10 @@ bool BF2Engine::mainLoop()
         if ((!isDedicated() && ticks > 0 && !game) || g_bfSound->getForceUpdate())
             g_bfSound->update(ticks);                               // IBfSound: the one-int update (PE slot +0x18)
     }
+#if defined(__APPLE__)
+    if (game && !isDedicated())
+        playTraceTick();                                            // [TEMP] BF2_PLAY_TRACE
+#endif
     if (game && gameLogic && !isDedicated() && renderTicks > 0)
         // The HUD information-layer singleton is required on this client path.
         static_cast<HudInformationLayer*>(g_hudInformationLayer)->update(static_cast<float>(renderTicks) * renderDt);
@@ -1759,6 +2107,7 @@ bool BF2Engine::mainLoop()
 
     // Step simulation only with ticks and both game owners present; use the
     // simulation-rate sample already taken for this frame.
+    BF2_FRAME_MARK(Pre);                                            // [TEMP] BF2_FRAME_TRACE
     if (!isMoviePlaying() && ticks > 0 && game && gameLogic)        // 0x813752E; BF2.exe adds the movie gate
     {
 #if !DEDICATED
@@ -1775,6 +2124,7 @@ bool BF2Engine::mainLoop()
 
     // Python updates require render ticks and an initialized host, independent of
     // game presence and simulation rate.
+    BF2_FRAME_MARK(Update);                                         // [TEMP] BF2_FRAME_TRACE
     if (renderTicks > 0)
     {
         if (python::pythonHost()->isInitialized())
@@ -1789,6 +2139,7 @@ bool BF2Engine::mainLoop()
     // Advance the separate frame-event manager by a duration, not a timestamp.
     // Its processEvents result is discarded.
     frameEventManager->processEvents(frameTime);
+    BF2_FRAME_MARK(Script);                                         // [TEMP] BF2_FRAME_TRACE
 
     // Advance the world only outside movies, with a game and nonzero simulation rate.
     if (!isMoviePlaying() && game && !simRateZero)                  //  / 0x813758A; BF2.exe adds the movie gate
@@ -1807,7 +2158,7 @@ bool BF2Engine::mainLoop()
             // BF2.exe 0x40CA80: the viewer comes from BF2Render::getRenderView when the AI global
             // says so or the game logic is a client's. The view transform is fetched twice, as shipped. The
             // dedicated PE still makes the AI global's +0x18 call with bf2Render null (result
-            // unused) - [UNRESOLVED] identity of ds:0xA33C08 / ds:0x8B25B0; not called on a server here.
+            // unused). ds:0xA33C08 / ds:0x8B25B0 is ai::g_aiInstance; not called on a server here.
             const bool aiViewer = unresolvedGlobalA33C08 && unresolvedGlobalA33C08_vslot0x18();
             if (bf2Render && (aiViewer || (gameLogic && !gameLogic->isServer())))
             {
@@ -1835,6 +2186,7 @@ bool BF2Engine::mainLoop()
         }
     }
 
+    BF2_FRAME_MARK(Objects);                                        // [TEMP] BF2_FRAME_TRACE
 #if !DEDICATED
     // THE frame - BF2.exe 0x40CA80. Never in a dedicated image: isDedicated() gates it and every
     // object it touches is client-only.
@@ -1878,6 +2230,7 @@ bool BF2Engine::mainLoop()
         bf2Render->update(frameTime);                               // vslot +0x14, 0x4530D0
 #endif
 
+    BF2_FRAME_MARK(Render);                                         // [TEMP] BF2_FRAME_TRACE
     bf2Console->updateConsole();
 #if !DEDICATED
     if (hudManager)
@@ -1942,6 +2295,9 @@ bool BF2Engine::mainLoop()
     // externally detectable. CheckServerAliveThread is the producer side.
     if (isDedicated())                                              // BF2.exe 0x40CA80: `if (sub_440510() && sub_440510())` -
         markAsStillRunning();                                       // the call site's test and the inlined body's own
+#if defined(__APPLE__) && !DEDICATED
+    frametrace::end(ticks, game != 0 && menuLogic == 0);            // [TEMP] BF2_FRAME_TRACE
+#endif
 
     // [CHOSEN, not recovered] The per-frame PunkBuster SDK pump is omitted.
     // A queued quit makes this the final frame.
@@ -2087,7 +2443,7 @@ bool BF2Engine::filterGameInput(io::GameInput& input)
         menuLogic->handleInput(input);                      // IMenuLogic +0x38
         return false;
     }
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)               // [CHOSEN, not recovered] macOS fills the ring too
     menuKeyCount = 0;                                       // the WM_KEYDOWN ring (Game/Main/BF2.cpp) is dropped
     menuKeyRead  = menuKeyWrite;                            //   every frame the menu is down
 #endif
@@ -2371,6 +2727,7 @@ bool BF2Engine::startMission(const std::string& map, const std::string& /*mode -
 #endif
 
     const bool started = startGame(false, false);
+    BF2_HOST_TRACE_SITE("startMission startGame", started);
     if (!started)
     {
         activateMenu(0);
@@ -2702,9 +3059,16 @@ void BF2Engine::playSound(const std::string&)                              {}
 void BF2Engine::browseModHomepage(const std::string& url)
 {
 #if !DEDICATED
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] ShowWindow(SW_MINIMIZE) and ShellExecuteA("open", url).
+    macos::CocoaHost::instance().minimize();
+    if (!macos::CocoaHost::instance().openURL(url))
+        return;
+#else
     ShowWindow(window->getHwnd(), SW_MINIMIZE);             // Window vslot +0x2C
     if (reinterpret_cast<INT_PTR>(ShellExecuteA(0, "open", url.c_str(), 0, 0, SW_SHOWNORMAL)) <= 32)
         return;
+#endif
     quitNextFrameFlag = true;
 #else
     (void)url;
@@ -2716,10 +3080,16 @@ void BF2Engine::browseModHomepage(const std::string& url)
 void BF2Engine::restartBF2()
 {
 #if !DEDICATED
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] GetModuleFileNameA + ShellExecuteA(exe, commandLine).
+    if (!macos::relaunchExecutable(commandLine))
+        return;
+#else
     char fileName[MAX_PATH];
     GetModuleFileNameA(0, fileName, MAX_PATH);
     if (reinterpret_cast<INT_PTR>(ShellExecuteA(0, "open", fileName, commandLine.c_str(), 0, SW_SHOWNORMAL)) <= 32)
         return;
+#endif
     quitNextFrameFlag = true;
 #endif
 }
@@ -2741,14 +3111,16 @@ void BF2Engine::buildRestartCommandLine(const std::string& modPath, const std::s
     }
     if (IBase* lpm = classManager->getSingleton("LocalProfileManager"))
     {
-        if (static_cast<ILocalProfileManager*>(lpm)->getCurrentProfile())
+        ILocalProfileManager* profiles = static_cast<ILocalProfileManager*>(lpm);
+        if (LocalProfile* profile = profiles->getCurrentProfile())             // +0x44
         {
-            std::string scratch;
-            localProfileManager_vslot0x70(lpm, localProfileManager_vslot0xD0(lpm, scratch, 1));
-            std::string password;
-            password = static_cast<ILocalProfileManager*>(lpm)->getPassword();
-            commandLine += std::string(" +playerName ") + scratch;       // [UNRESOLVED] which string each += takes:
-            commandLine += std::string(" +playerPassword ") + password;   //   the decompiler drops the operands
+            // 0x403F34..0x403FE8: the login password goes back into the record encoded (+0x70 with
+            // `true`, pushed before +0xD0's return slot), then the record's encoded password (+0x88)
+            // and its GameSpy nick (record +0x54) go on the command line.
+            profiles->setPassword(profiles->getLoginPassword(), true);         // +0xD0, +0x70
+            std::string password = profiles->getPassword();                    // +0x88
+            commandLine += std::string(" +playerName ") + profile->gamespyNick;
+            commandLine += std::string(" +playerPassword ") + password;
         }
     }
 }
@@ -2790,7 +3162,24 @@ IMenuLogic* menuLogic = 0;                  // dword_987358 - the active menu; s
 hud::BF2HudManager* hudManager = 0;         // dword_A10890 - zeroed again by the client ctor (0x408190)
 BF2VoipClient* bf2VoipClient = 0;           // dword_9A4DA0
 IBase* g_renderer = 0;                      // BF2.exe g_Renderer - [UNRESOLVED] symbol; set by the renderer bring-up, not by this TU
-IBase* unresolvedGlobalA33C08 = 0;          // ds:0xA33C08 / bf2_w32ded ds:0x8B25B0
+// ds:0xA33C08 is ai::g_aiInstance: its only writer, 0x801030, stores getSimpleSingleton("AI") as
+// ai::AIInstanceServer::updateInstance does. The alias keeps one object for both names.
+IBase*& unresolvedGlobalA33C08 = ai::g_aiInstance;
+
+// startGame join result 8 (0x40543F..0x40544F): ModInfo +0x30 with the server's mod path and a full
+// 32-bit test of the result. The client ModInfo table 0x8A1230 holds 0x47E590 there, which matches
+// each 0x154-byte Mod on its first string (path): IModInfo::getModFromPath.
+bool modInfo_vslot0x30(IBase* modInfo, const std::string& modName)
+{
+    return static_cast<IModInfo*>(modInfo)->getModFromPath(modName) != 0;
+}
+
+// mainLoop's ragdoll viewer (0x40D1ED..0x40D22A) calls the AI instance's +0x18 after its null test:
+// IAIInstance::isInitialized.
+bool unresolvedGlobalA33C08_vslot0x18()
+{
+    return ai::aiInstance()->isInitialized();
+}
 // The client singleton slots BF2.exe 0x4301A9 registers (Core/ModuleRegistry.cpp). [CHOSEN] placement:
 // their .data addresses 0x987340..0x987398 surround menuLogic (0x987358) and s_prevWallClockTime
 // (0x987330), i.e. this TU's statics.

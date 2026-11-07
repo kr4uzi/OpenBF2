@@ -28,11 +28,20 @@ static PyLongObject *muladd1(PyLongObject *, wdigit, wdigit);
 static PyLongObject *divrem1(PyLongObject *, digit, digit *);
 static PyObject *long_format(PyObject *aa, int base, int addL);
 
+#if !defined(MS_WINDOWS) && (defined(__APPLE__) || defined(__linux__))
+/* [CHOSEN, not recovered] Match ceval.c's atomic ticker accesses on POSIX. */
+#define SIGCHECK(PyTryBlock) \
+	if (__atomic_sub_fetch(&_Py_Ticker, 1, __ATOMIC_SEQ_CST) < 0) { \
+		__atomic_store_n(&_Py_Ticker, _Py_CheckInterval, __ATOMIC_SEQ_CST); \
+		if (PyErr_CheckSignals()) { PyTryBlock; } \
+	}
+#else
 #define SIGCHECK(PyTryBlock) \
 	if (--_Py_Ticker < 0) { \
 		_Py_Ticker = _Py_CheckInterval; \
 		if (PyErr_CheckSignals()) { PyTryBlock; } \
 	}
+#endif
 
 /* Normalize (remove leading zeros from) a long int object.
    Doesn't attempt to free the storage--in most cases, due to the nature

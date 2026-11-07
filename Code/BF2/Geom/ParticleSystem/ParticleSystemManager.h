@@ -15,6 +15,8 @@
 #include "../../Math/Vec3.h"
 
 #include <cstddef>
+#include <stdint.h>
+#include <vector>
 
 namespace dice {
 namespace hfe {
@@ -52,9 +54,11 @@ public:
     virtual void reserved08() = 0;                                            // +0x20 detach
     virtual void reserved09(bool value) = 0;                                  // +0x24
     virtual bool reserved10() const = 0;                                      // +0x28
-    virtual void reserved11(int value) = 0;                                   // +0x2C
-    virtual int reserved12() const = 0;                                       // +0x30
-    virtual void reserved13(int value) = 0;                                   // +0x34
+    // +0x2C..+0x34 carry the owner object and the parent matrix as integers; intptr_t is `int` on
+    // x86 (same signature) and pointer-sized on x64.
+    virtual void reserved11(intptr_t value) = 0;                              // +0x2C
+    virtual intptr_t reserved12() const = 0;                                  // +0x30
+    virtual void reserved13(intptr_t value) = 0;                              // +0x34
     virtual void* reserved14(const void* value) = 0;                          // +0x38
     virtual const void* reserved15() const = 0;                               // +0x3C
     virtual void reserved16(const Vec3& value) = 0;                           // +0x40
@@ -400,35 +404,10 @@ public:
     virtual float getSpeedFromParticle() const = 0;                           // +0x188
 };
 
-// The Win32 manager returns its internal VC7.1 vector by reference at +0x38. This is renderer-owned
-// storage even in the rebuilt native-host flavour, so it must keep the four-word VC7.1 layout;
-// exposing std::vector here would move first from +4 to +0 on modern MSVC. This carrier is for the
-// Win32 RendDX9/plugin boundary. The symbolized Linux port was used to cross-check semantics, but
-// its libstdc++ vector begins at +0 and would need its own executable carrier.
-struct ParticleSystemInstanceList
-{
-    /* +0x00 */ void*                     allocator;
-    /* +0x04 */ IParticleSystemInstance** first;
-    /* +0x08 */ IParticleSystemInstance** last;
-    /* +0x0C */ IParticleSystemInstance** endStorage;
-
-    IParticleSystemInstance* const* begin() const { return first; }
-    IParticleSystemInstance* const* end() const { return last; }
-
-    unsigned int size() const
-    {
-        return first ? static_cast<unsigned int>(last - first) : 0u;
-    }
-};
-
-#if defined(_M_IX86) || defined(__i386__)
-static_assert(sizeof(ParticleSystemInstanceList) == 16,
-              "ParticleSystemManager's VC7.1 instance vector must remain 16 bytes");
-static_assert(offsetof(ParticleSystemInstanceList, first) == 4,
-              "ParticleSystemManager's instance-vector begin pointer must remain at +4");
-static_assert(offsetof(ParticleSystemInstanceList, last) == 8,
-              "ParticleSystemManager's instance-vector end pointer must remain at +8");
-#endif
+// The manager's active-instance vector, returned by reference at +0x38. BF2.exe
+// (Game/GameLogic/Player.cpp) reads it directly: the client and its renderer share one STL
+// (issue #7).
+typedef std::vector<IParticleSystemInstance*> ParticleSystemInstanceList;
 
 // +0x3C consumes exactly 60 bytes. Names for the four pool counts and final two renderer knobs are
 // unresolved; their widths, offsets, and the float fields are recovered from 0x100D37A0.
@@ -472,9 +451,10 @@ class IParticleSystemManager : public IBase
 public:
     // +0x00..+0x0C: IBase quartet.
 
-    // +0x10, PE 0x100D2E30. Calls +0x30, then reacquires the WindManager singleton. The exact
-    // source name remains [UNRESOLVED]. postLoadLevel is the separate direct BF2 0x100D2FD0 body,
-    // named by the Editor caller, which reacquires HeightmapCluster at manager +0x8C14.
+    // +0x10 (body: psm_reserved10). Calls +0x30, then reacquires the WindManager singleton. The exact
+    // source name remains [UNRESOLVED]. postLoadLevel is the separate direct body
+    // (particleSystemManagerPostLoadLevel), named by the Editor caller, which reacquires
+    // HeightmapCluster at manager +0x8C14.
     virtual void reserved_reacquireWindManager() = 0;
 
     virtual IParticleSystemInstance* createInstance(
@@ -520,12 +500,16 @@ inline IParticleSystemManager* asParticleSystemManager(IBase* base)
 void particleSystemManagerBeginFrame(IParticleSystemManager* manager);
 void particleSystemManagerEndFrame(IParticleSystemManager* manager);
 
-// Direct ResourceManager lifecycle calls, PE 0x100D38D0 / 0x100D2FD0. The preLoadLevel
+// Direct ResourceManager lifecycle calls (preLoadLevel PE 0x100D38D0, postLoadLevel 0x100D2FD0). The preLoadLevel
 // spelling is [INFERRED] from the Editor ResourceManager caller; no virtual slots are added.
 void particleSystemManagerPreLoadLevel(IParticleSystemManager* manager);
 void particleSystemManagerPostLoadLevel(IParticleSystemManager* manager);
 // Releases level instances/descriptors, queues, registries, renderer buffers, pools, and atlas.
 void particleSystemManagerUnloadLevel(IParticleSystemManager* manager);
+
+// The HeightmapCluster singleton postLoadLevel stored in the manager (retail +0x8C14); borrowed,
+// possibly null. No null guard on `manager`.
+IBase* particleSystemManagerHeightmapCluster(IBase* manager);
 
 } // namespace geom
 } // namespace hfe

@@ -89,10 +89,9 @@ void EffectBundleTemplate::preCache() const
         ObjectTemplate::preCache();
 }
 
-#if DEDICATED
-// Dedicated ELF81FC410 / PE5F9250, read in full. The local stream is genuinely empty;
-// its zero-byte write still occurs after a successful base writer and its result is checked.
-// The client effect-specific writer remains a declaration-only frontier.
+// Dedicated ELF81FC410 / PE5F9250 and client BF2.exe 0x6416E0 (table 0x8FF850 +0xF8), read in
+// full and identical. The local stream is genuinely empty; its zero-byte write still occurs after a
+// successful base writer and its result is checked.
 bool EffectBundleTemplate::makeMemberScript(const TemplateInfo* info, io::IStream* stream)
 {
     std::ostringstream out;
@@ -101,7 +100,6 @@ bool EffectBundleTemplate::makeMemberScript(const TemplateInfo* info, io::IStrea
     const std::string text = out.str();
     return stream->write(text.c_str(), static_cast<unsigned int>(text.length())) == text.length();
 }
-#endif
 
 // substitute the effect-aware child info for Bundle's plain TemplateInfo.
 BundleTemplate::TemplateInfo* EffectBundleTemplate::createTemplateInfo(const std::string& name)

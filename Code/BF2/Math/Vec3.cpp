@@ -115,6 +115,7 @@ std::istream& operator>>(std::istream& in, Vec3& v)
     return in;
 }
 
+// PE 0x100277C0: fastcall, receiver ecx and vector edx; float, then each '/' separator and float, stream returned by the last insertion.
 std::ostream& operator<<(std::ostream& out, const Vec3& v)
 {
     out << v.x << '/' << v.y << '/' << v.z;    // default precision, '/' separators
@@ -134,6 +135,7 @@ std::istream& operator>>(std::istream& in, Vec2& v)
     return in;
 }
 
+// PE 0x1005BD40: fastcall, receiver ecx and vector edx; float, then each '/' separator and float, stream returned by the last insertion.
 std::ostream& operator<<(std::ostream& out, const Vec2& v)
 {
     out << v.x << '/' << v.y;
@@ -159,6 +161,7 @@ std::istream& operator>>(std::istream& in, Vec4& v)
     return in;
 }
 
+// PE 0x100584B0: fastcall, receiver ecx and vector edx; float, then each '/' separator and float, stream returned by the last insertion.
 std::ostream& operator<<(std::ostream& out, const Vec4& v)
 {
     out << v.x << '/' << v.y << '/' << v.z << '/' << v.w;

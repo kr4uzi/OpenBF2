@@ -99,9 +99,9 @@ bool UDPSocket::setBroadcast(unsigned short port)
     {
         struct sockaddr_in address;
         std::memset(&address, 0, sizeof(address));
-        address.sin_addr.s_addr = ::htonl(INADDR_BROADCAST);
+        address.sin_addr.s_addr = htonl(INADDR_BROADCAST);   // unqualified: a macro on macOS
         address.sin_family = AF_INET;
-        address.sin_port = ::htons(port);
+        address.sin_port = htons(port);   // unqualified: a macro on macOS
         std::memcpy(m_address.sockaddr, &address, 16);
     }
     return true;
@@ -419,6 +419,12 @@ bool UDPSocket::listen(std::string addressAndPort, bool blocking)
     if (::bind(static_cast<NativeSocket>(m_socket),
                reinterpret_cast<const struct sockaddr*>(&addr), 16) != 0)
     {
+#if defined(__APPLE__)
+        // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: macos-singleplayer-hosting-validated]
+        // BF2_HOST_TRACE=1: name the listen address and errno of a failed bind (read-only).
+        if (std::getenv("BF2_HOST_TRACE"))
+            std::fprintf(stderr, "[host] UDPSocket::listen bind %s failed errno %d\n", addressAndPort.c_str(), errno);
+#endif
         closeSocketHandle(m_socket);
         return false;
     }

@@ -1,6 +1,7 @@
 // Path: [INFERRED]. Runtime/template pairing follows the ELF TU's global constructor.
 // Evidence: ELF 0x8175500..0x817693F / PE 0x58F610..0x58FFFF.
 #include "DestroyableWindowsBundle.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "../TemplateLeaves.h"
 #include "../../IGame.h"
 #include "../../../Core/Ids.h"
@@ -24,10 +25,6 @@ namespace {
 #if defined(_MSC_VER)
 #define BF2_WINDOWS_CALL __thiscall
 const unsigned int partSlot = 0x4C, getSecondarySlot = 0xCC, setSecondarySlot = 0xC8;
-#else
-#define BF2_WINDOWS_CALL
-const unsigned int partSlot = 0x54, getSecondarySlot = 0xD0, setSecondarySlot = 0xCC;
-#endif
 template<class F> F geometrySlot(void* geometry, unsigned int offset)
 {
     return reinterpret_cast<F>((*static_cast<void***>(geometry))[offset / 4]);
@@ -48,6 +45,13 @@ void setPartTransformation(void* geometry, const Mat4& matrix, int part)
     geometrySlot<F>(geometry, partSlot)(geometry, matrix, part);
 }
 #undef BF2_WINDOWS_CALL
+#else
+// Non-MSVC: the named geometry_part operations (ELF +0x54 / +0xD0 / +0xCC).
+void* secondaryGeometry(void* geometry) { return geometry_part::getNextGeometry(geometry); }
+void setSecondaryGeometry(void* geometry, void* secondary) { geometry_part::setNextGeometry(geometry, secondary); }
+void setPartTransformation(void* geometry, const Mat4& matrix, int part)
+{ geometry_part::setTransform(geometry, &matrix, part); }
+#endif
 }
 
 DestroyableWindowsBundle::DestroyableWindowsBundle(const DestroyableWindowsBundleTemplate* objectTemplate)

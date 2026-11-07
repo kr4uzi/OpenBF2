@@ -1,6 +1,6 @@
 // [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: HUD-EDIT-NODE-FIXTURE]
 // Tests edit-node layout and builder bindings with real storage and registry.
-// Only getEditData/getStringData factories are substituted; paintSelf and onEvent1 frontiers are excluded.
+// Only getEditData/getStringData factories and the System glyph metrics are substituted.
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -60,6 +60,9 @@ public:
     TypeDescriptor* getType() override { return Object::getClassType(); }
     int loadFont(const char* name) override
     { fonts.push_back(name); return 400 + int(fonts.size()); }
+    // Fixed five-unit advance so the edit node's visible-start walk is defined.
+    bool getGlyphMetrics(int, FontHandle, GlyphMetrics* metrics) override
+    { *metrics = GlyphMetrics{1.0f, 3.0f, 1.0f, 8.0f, 0.0f}; return true; }
     std::vector<std::string> fonts;
 };
 class RecordingEvents : public EventManager {};
@@ -151,6 +154,54 @@ static void editSlotCases()
     CHECK(node.m_color.b == 0.3f && node.m_color.a == 0.4f);
     // The five slots are independent storage.
     CHECK(node.m_font == 78 && node.m_maxCharacters == -5);
+}
+
+// onEvent1's key arms and paintSelf's null-string return. Painting with text
+// needs a loaded font and a render context and is covered in-game instead.
+static void editInputCases()
+{
+    NameTreeRoot registry;
+    PlainSystem system(registry);
+    Bf2EditNode node("Keys");
+    StringData text("abc", "Text");
+    const Rect rect = {0.0f, 0.0f, 100.0f, 10.0f, 0.0f};
+    node.paintSelf(&system, nullptr, &rect, &rect, nullptr);   // no string: nothing drawn
+    node.m_string = &text;
+    char buffer[8];
+
+    // Only event index 1 is handled; unfocused input is refused.
+    CHECK(!node.onEvent1(&system, &rect, nullptr, 5, 0, 1));
+    CHECK(!node.onEvent1(&system, &rect, nullptr, 5, 1, 1));
+    node.m_focused = true;
+    node.m_cursor = 3;
+    CHECK(node.onEvent1(&system, &rect, nullptr, 5, 1, 1) && node.m_cursor == 2);  // left
+    CHECK(node.onEvent1(&system, &rect, nullptr, 7, 1, 1) && node.m_cursor == 3);  // right
+    CHECK(node.onEvent1(&system, &rect, nullptr, 7, 1, 1) && node.m_cursor == 3);  // at end
+    CHECK(node.onEvent1(&system, &rect, nullptr, 9, 1, 1) && node.m_cursor == 0);  // home
+    CHECK(node.onEvent1(&system, &rect, nullptr, 5, 1, 1) && node.m_cursor == 0);  // at start
+    // End stops one before the end of the text, as shipped.
+    CHECK(node.onEvent1(&system, &rect, nullptr, 10, 1, 1) && node.m_cursor == 2);
+    // Backspace removes the character before the cursor and moves it back.
+    CHECK(node.onEvent1(&system, &rect, nullptr, 15, 1, 1) && node.m_cursor == 1);
+    text.getString(&system, buffer, sizeof(buffer));
+    CHECK(std::strcmp(buffer, "ac") == 0);
+    // Delete removes the character under the cursor and keeps it in place.
+    CHECK(node.onEvent1(&system, &rect, nullptr, 14, 1, 1) && node.m_cursor == 1);
+    text.getString(&system, buffer, sizeof(buffer));
+    CHECK(std::strcmp(buffer, "a") == 0);
+    CHECK(node.onEvent1(&system, &rect, nullptr, 14, 1, 1));                         // at end
+    text.getString(&system, buffer, sizeof(buffer));
+    CHECK(std::strcmp(buffer, "a") == 0);
+    CHECK(node.onEvent1(&system, &rect, nullptr, 16, 1, 1));
+    // Key 17 only clears the ignore-click flag.
+    node.m_ignoreClick = true;
+    CHECK(node.onEvent1(&system, &rect, nullptr, 17, 1, 1) && !node.m_ignoreClick);
+    // Key 18 without a select action falls through to the focused arms.
+    CHECK(node.onEvent1(&system, &rect, nullptr, 18, 1, 1) && node.m_focused);
+    // An unrecognised key still reports success while focused.
+    CHECK(node.onEvent1(&system, &rect, nullptr, 3, 1, 1));
+    node.m_focused = false;
+    node.m_string = nullptr;
 }
 
 struct Harness
@@ -350,21 +401,10 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "FIXTURE_FONT_RETURNED\n");
         return 93;
     }
-    if (argc > 1 && !std::strcmp(argv[1], "paintself-death")) {
-        Bf2EditNode node("Frontier");
-        node.paintSelf(nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::fprintf(stderr, "FIXTURE_PAINTSELF_RETURNED\n");
-        return 92;
-    }
-    if (argc > 1 && !std::strcmp(argv[1], "onevent-death")) {
-        Bf2EditNode node("Frontier");
-        node.onEvent1(nullptr, nullptr, nullptr, 0, 0, 0);
-        std::fprintf(stderr, "FIXTURE_ONEVENT_RETURNED\n");
-        return 91;
-    }
     turnOffAllDebug(DebugTypeError);
     editNodeCases();
     editSlotCases();
+    editInputCases();
     commandCases();
     std::printf("HUD edit node %d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

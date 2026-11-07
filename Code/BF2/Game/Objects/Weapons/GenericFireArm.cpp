@@ -4,6 +4,7 @@
 // [RETIRE-WHEN: unrecovered-factories-registered] Register remaining factories only once their required bodies exist.
 
 #include "GenericFireArm.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "../Game/TriggerManager.h"
 #include "FireComponents/FireComp.h"
 #include "AmmoComponents/AmmoComp.h"           // IWeaponAmmoComp - the typed ammo delegates
@@ -416,14 +417,18 @@ void GenericFireArm::updateGeometry()
         // / client PE 0x5E0610: suppress the original mesh while an
         // alternate display object supplies it. Both ABIs call geometry +0x50;
         // this is the whole-object transform, not the adjacent per-part slot.
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if defined(_MSC_VER)
+#if defined(_M_IX86)
         typedef void (__thiscall* SetTransformation)(void*, const Mat4&);
 #else
         typedef void (*SetTransformation)(void*, const Mat4&);
 #endif
         reinterpret_cast<SetTransformation>(
-            (*static_cast<void***>(m_geometry))[0x50 / sizeof(void*)])(
+            (*static_cast<void***>(m_geometry))[0x50 / 4])(
                 m_geometry, Mat4::getZero());
+#else
+        geometry_part::setGeometryTransform(m_geometry, &Mat4::getZero());       // PE +0x50
+#endif
     }
     else
     {

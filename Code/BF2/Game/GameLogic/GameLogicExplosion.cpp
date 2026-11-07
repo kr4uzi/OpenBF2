@@ -37,6 +37,7 @@
 #include "../../Scene/Object/PlayerManager.h"
 #include "../../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
 #include "../../Sound/BfSound.h"
+#include "../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 #include "../../AI/AIInterface/BFKnowledge/BFCollisionHandler.h"
 #include "../../AI/AIDLL/AI/Main/CommonSingletonServer.h"   // m_iBFCollisionHandler
 
@@ -554,7 +555,7 @@ bool GameLogicExplosion::handleExplosionForceOnObject(
     if (isSoldier)
     {
         radial.y += *g_explosionSoldierForceYMod;
-        strength *= static_cast<float>(std::rand() % 100) / 200.0f + 0.8f;
+        strength *= static_cast<float>(bf2crt::rand() % 100) / 200.0f + 0.8f;
     }
 
     const float existingForce = length(node->getPositionalAcceleration());

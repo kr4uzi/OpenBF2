@@ -75,8 +75,8 @@ public:
 
     virtual void setLodLevel(BotLodLevel level) = 0;                                              // +0x008
     virtual BotLodLevel getLodLevel() const = 0;                                                  // +0x00C
-    virtual void planExecution(const double& slice) = 0;                                          // +0x010 partial [FRONTIER]
-    virtual int decisionMaking(const double& slice) = 0;                                          // +0x014 partial [FRONTIER]
+    virtual void planExecution(const double& slice) = 0;                                          // +0x010
+    virtual int decisionMaking(const double& slice) = 0;                                          // +0x014
     virtual void cheatExecution() = 0;                                                            // +0x018
     virtual void see(const double& dt) = 0;                                                       // +0x01C
     virtual void updateSensing(const double& dt) = 0;                                             // +0x020
@@ -102,11 +102,11 @@ public:
     virtual bool isTakingOrders() = 0;                                                            // +0x070
     virtual bool isOrderedBehaviour(unsigned char behaviour) = 0;                                 // +0x074
     virtual bool isOrderedObject(unsigned int handle, BotBehaviour* b) = 0;                       // +0x078
-    virtual void setFiringTarget(unsigned int handle) = 0;                                        // +0x07C [FRONTIER]
+    virtual void setFiringTarget(unsigned int handle) = 0;                                        // +0x07C
     virtual unsigned int getFiringTarget() const = 0;                                             // +0x080
     virtual double getFiringTargetTime() const = 0;                                               // +0x084
     virtual SensingAgent* getSensingAgent() = 0;                                                  // +0x088
-    virtual void insertBehaviourInformation(float f, const Vec3& v, unsigned char c) = 0;         // +0x08C [FRONTIER]
+    virtual void insertBehaviourInformation(float f, const Vec3& v, unsigned char c) = 0;         // +0x08C
     virtual const std::map<unsigned int, SensedObject*>& getSensedObjects() const = 0;                          // +0x090
     virtual SensedObject* getSensedObjectFromHandle(unsigned int handle) const = 0;                       // +0x094
     virtual void setUnresolvedCollisionObject(unsigned int handle) = 0;                           // +0x098
@@ -233,9 +233,9 @@ public:
 // [RETIRE-WHEN: botmain-bases] Remove when the corresponding implementation is complete and validated.
     virtual void setLodLevel(BotLodLevel level);                                                  // +0x008
     virtual BotLodLevel getLodLevel() const;                                                      // +0x00C
-    virtual void planExecution(const double& slice);                                              // +0x010 partial [FRONTIER]
+    virtual void planExecution(const double& slice);                                              // +0x010 ELF 0x188B90
     // [INFERRED] Returns an integer work count accumulated by BotManager.
-    virtual int decisionMaking(const double& slice);                                              // +0x014 partial [FRONTIER]
+    virtual int decisionMaking(const double& slice);                                              // +0x014 ELF 0x1893D0
     virtual void cheatExecution();                                                                // +0x018
     virtual void see(const double& dt);                                                           // +0x01C
     virtual void updateSensing(const double& dt);                                                 // +0x020
@@ -261,7 +261,7 @@ public:
     virtual bool isTakingOrders();                                                                // +0x070
     virtual bool isOrderedBehaviour(unsigned char behaviour);                                     // +0x074
     virtual bool isOrderedObject(unsigned int handle, BotBehaviour* b);                           // +0x078
-    virtual void setFiringTarget(unsigned int handle);                                            // +0x07C [FRONTIER]
+    virtual void setFiringTarget(unsigned int handle);                                            // +0x07C ELF 0x18C5E0
     virtual unsigned int getFiringTarget() const;                                                 // +0x080
     virtual double getFiringTargetTime() const;                                                   // +0x084
     virtual SensingAgent* getSensingAgent();                                                      // +0x088

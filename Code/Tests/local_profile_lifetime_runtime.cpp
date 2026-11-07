@@ -421,7 +421,7 @@ struct ProfileControl : IControlSettings {
     bool setDefaults() override { ++defaults; return true; }   // +24, createProfile 4AAACA
     void resetControlMaps() override { ++resets; }
     void updateInputDevices() override { std::abort(); }
-    bool mapNextInput(int,bool,int,bool,bool) override { std::abort(); }
+    int mapNextInput(int,bool,int,bool,bool) override { std::abort(); }
     bool selectControlMap(const std::string&) override { std::abort(); }
     bool getBindingDescription(io::IControlMap*,int,bool,bool,bool,std::string&,std::wstring&) override { std::abort(); }
     std::string getActiveControlMapName() override { std::abort(); }
@@ -1021,7 +1021,7 @@ struct ProfileControlMaps : io::IControlMapManager {
     void setActive(const std::string&) override { std::abort(); }
     void setActive(const io::IControlMap*) override { std::abort(); }
     io::IControlMap* getActive() const override { ++const_cast<ProfileControlMaps*>(this)->activeQueries; return nullptr; }
-    bool mapNextInput(io::IControlMap*,int,bool,bool,bool,bool,std::string&) override { std::abort(); }
+    int mapNextInput(io::IControlMap*,int,bool,bool,bool,bool,std::string&) override { std::abort(); }
     float getRepeatRate(int,bool) override { std::abort(); }
     void applyActive() override { ++applies; }
 };
@@ -1813,9 +1813,6 @@ int main(int argc,char** argv)
     if(argc==2) {
         LocalProfileManager manager; events.current=&manager; std::string value;
         ILocalProfileManager* prefix=&manager;
-        if(!std::strcmp(argv[1],"delete-operation")) {
-            std::vector<LocalProfile> rows(1);rows[0].name="0001";LocalProfileFixture::cache(manager,rows,true);prefix->deleteProfile(0);
-        }
         if(!std::strcmp(argv[1],"online-account")) {
             LocalProfileFixture::seed(manager); prefix->createOnlineAccount(value,value,value,value);
         }
@@ -1828,8 +1825,6 @@ int main(int argc,char** argv)
         if(!std::strcmp(argv[1],"voice-read")) { float a=1,b=2,c=3;bool d=false;prefix->readVoiceSettings(a,b,c,d); }
 #ifdef BF2_PROFILE_DISCOVERY_FIXTURE
 #endif
-        if(!std::strcmp(argv[1],"slot70")) localProfileManager_vslot0x70(&manager,value);
-        if(!std::strcmp(argv[1],"slotD0")) localProfileManager_vslot0xD0(&manager,value,1);
         std::puts("unexpected return"); return 0;
     }
     check(sizeof(void*)==4,"x86 pointers");
@@ -1912,7 +1907,6 @@ int main(int argc,char** argv)
     // The default-profile creation, both saves, both loads and the settings apply are complete
     // production paths now; they are exercised in-process (applyTests, saveLoadTests) instead of
     // as diagnostic children.
-    death("delete-operation","[FRONTIER] dice::hfe::LocalProfileManager::deleteProfile:");
     death("online-account","[FRONTIER] dice::hfe::LocalProfileManager::createOnlineAccount:");
     death("slot30","[FRONTIER] dice::hfe::LocalProfileManager::frontierPrimary30:");
     death("slot34","[FRONTIER] dice::hfe::LocalProfileManager::frontierPrimary34:");
@@ -1920,10 +1914,6 @@ int main(int argc,char** argv)
         std::make_pair("voice-load","loadVoiceSettings"),std::make_pair("voice-save","saveVoiceSettings"),
         std::make_pair("voice-read","readVoiceSettings")}) {
         std::string expected=std::string("[FRONTIER] dice::hfe::LocalProfileManager::")+pair.second+":";
-        death(pair.first,expected.c_str());
-    }
-    for(const auto& pair:{std::make_pair("slot70","localProfileManager_vslot0x70"),std::make_pair("slotD0","localProfileManager_vslot0xD0")}) {
-        std::string expected=std::string("[FRONTIER] dice::hfe::")+pair.second+":";
         death(pair.first,expected.c_str());
     }
     std::printf("LocalProfile lifetime: %u/%u passed; native manager=%zu record=%zu bookmark=%zu\n",checks-failures,checks,sizeof(LocalProfileManager),sizeof(LocalProfile),sizeof(LocalDemoBookmark));

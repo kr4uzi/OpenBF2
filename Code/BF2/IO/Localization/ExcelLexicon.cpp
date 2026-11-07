@@ -5,6 +5,9 @@
 #include "../../Core/StringUtil.h"         // getUpperCase, calcStringHashValueNoCase
 #include "../../Core/Debug.h"
 #include "../File/File.h"
+#if !defined(_WIN32)
+#include "../../Platform/Utf16.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -65,7 +68,7 @@ void* ExcelLexicon::queryInterface(unsigned int iid) const
 }
 
 // Loads ESC-delimited localization pairs. Empty values are skipped and the first key insertion wins.
-// Failures retain earlier entries. The BOM is two bytes; later units use native wchar_t width.
+// Failures retain earlier entries. Text on disk is UTF-16LE, including the two-byte BOM.
 // A final nonspace character at EOF is consumed by trailing-whitespace handling.
 bool ExcelLexicon::load(const std::string& filename)
 {
@@ -88,10 +91,18 @@ bool ExcelLexicon::load(const std::string& filename)
     while (file.getAvailableBytes())
     {
         std::wstring wideKey, value;
+#if defined(_WIN32)
         if (!file.read(wideKey, wchar_t(27)) || wideKey.empty()
             || !file.seek(static_cast<SeekOrigin>(1), sizeof(wchar_t))
             || !file.read(value, wchar_t(27))
             || !file.seek(static_cast<SeekOrigin>(1), sizeof(wchar_t)))
+#else
+        // [CHOSEN, not recovered] POSIX seeks count UTF-16 units, not native wide characters.
+        if (!file.read(wideKey, wchar_t(27)) || wideKey.empty()
+            || !file.seek(static_cast<SeekOrigin>(1), sizeof(char16_t))
+            || !file.read(value, wchar_t(27))
+            || !file.seek(static_cast<SeekOrigin>(1), sizeof(char16_t)))
+#endif
             return false;
         std::string key = makeNarrow(wideKey);
         const std::string::size_type space = key.find(' ');
@@ -106,12 +117,21 @@ bool ExcelLexicon::load(const std::string& filename)
             if (!m_strings.exists(upper, bucket))
                 m_strings.insert(upper, value, bucket);
         }
+#if defined(_WIN32)
         wchar_t character;
         while (file.read(&character, sizeof(wchar_t))
                && (character == L'\n' || character == L'\r' || character == L' ' || character == L'\t'))
         {}
         if (file.getAvailableBytes())
             file.seek(static_cast<SeekOrigin>(1), -static_cast<int>(sizeof(wchar_t)));
+#else
+        char16_t character;
+        while (platform::readUtf16LE(file, character)
+               && (character == u'\n' || character == u'\r' || character == u' ' || character == u'\t'))
+        {}
+        if (file.getAvailableBytes())
+            file.seek(static_cast<SeekOrigin>(1), -static_cast<int>(sizeof(char16_t)));
+#endif
     }
     return true;
 }

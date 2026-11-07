@@ -232,10 +232,11 @@ inline void lod(float lodScale, float view, float nearRatio, float farRatio,
                 float& base, float& nearDistance, float& inverseNear, float& farDistance, float& inverseFar)
 {
     const Real product = mul(wide(lodScale),wide(view)); base = store(product);
-    const Real near = mul(product,wide(nearRatio)); nearDistance = store(near);
-    inverseNear = store(div(1.0L,sub(wide(base),near)));
-    const Real far = mul(wide(farRatio),wide(base)); farDistance = store(far);
-    inverseFar = store(div(1.0L,sub(wide(base),far)));
+    // Not named near/far: <windows.h> defines both as empty macros.
+    const Real nearValue = mul(product,wide(nearRatio)); nearDistance = store(nearValue);
+    inverseNear = store(div(1.0L,sub(wide(base),nearValue)));
+    const Real farValue = mul(wide(farRatio),wide(base)); farDistance = store(farValue);
+    inverseFar = store(div(1.0L,sub(wide(base),farValue)));
 }
 inline float effectiveDistance(float renderer, float global, float factor)
 {

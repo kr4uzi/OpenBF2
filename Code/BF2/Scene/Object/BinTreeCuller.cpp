@@ -25,13 +25,6 @@ inline float distanceSquared(const Vec3& a, const Vec3& b)
     return x * x + y * y + z * z;
 }
 
-void unrecoveredBinQuery(const char* name)
-{
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::world::BinTreeCuller::%s reached\n", name);
-    std::fflush(stderr);
-    std::abort();
-}
-
 } // anonymous namespace
 
 BinTreeCuller::Node::Node(BinTreeCuller* owner)
@@ -49,12 +42,10 @@ BinTreeCuller::BinTreeCuller()
     : m_refCount(1)
     , m_root(0)
     , m_locked(false)
-    , m_getAllOut(0)
+    , m_queryOut(0)
     , m_queryPredicator(0)
     , m_queryRadius(0.0f)
-    , m_queryOut(0)
     , m_queryAllVisible(0)
-    , m_directionHalfLength(0.0f)
     , m_directionOut(0)
 {
     m_queryOrigin.x = m_queryOrigin.y = m_queryOrigin.z = 0.0f;
@@ -318,12 +309,12 @@ void BinTreeCuller::getAllObjects(Node* node)
     IObject* const object = node->payload.object;
     if (m_queryPredicator && !m_queryPredicator->predicate(object))
         return;
-    m_getAllOut->push_back(object);
+    m_queryOut->push_back(object);
 }
 
 void BinTreeCuller::getAllObjects(std::vector<IObject*>& out)
 {
-    m_getAllOut = &out;
+    m_queryOut = &out;
     if (m_root)
         getAllObjects(m_root);
 }
@@ -486,7 +477,7 @@ void BinTreeCuller::appendGetObjects(const Vec3& centre, float radius,
 void BinTreeCuller::getDirectionObjects(Node* node)
 {
     const float midpointDistanceSquared = distanceSquared(node->position, m_directionMidpoint);
-    const float broadRadius = node->radius + m_directionHalfLength;
+    const float broadRadius = node->radius + m_queryRadius;
     if (midpointDistanceSquared > broadRadius * broadRadius)
         return;
 
@@ -550,8 +541,8 @@ void BinTreeCuller::getObjects(const Vec3& from, const Vec3& direction,
     const float halfX = direction.x * 0.5f;
     const float halfY = direction.y * 0.5f;
     const float halfZ = direction.z * 0.5f;
-    m_directionHalfLength = std::sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ);
-    if (!(m_directionHalfLength >= 0.001f))
+    m_queryRadius = std::sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ);
+    if (!(m_queryRadius >= 0.001f))
         return;
 
     m_directionStart = from;
@@ -570,12 +561,55 @@ void BinTreeCuller::getObjects(const Vec3& from, const Vec3& direction,
     getDirectionObjects(m_root);
 }
 
-// The remaining box/frustum query families are named, fail-loud frontiers rather than silent
-// empty results.  They are independent of the recovered ray candidate path above.
-void BinTreeCuller::getObjects(const Vec3&, const Vec3&, std::vector<IObject*>&,
-                               ObjectPredicator*)
+// PE 0x0072CA60; ELF 0x08305230. The shipped box query requires a nonempty tree.
+void BinTreeCuller::getObjects(const Vec3& minimum, const Vec3& maximum,
+                               std::vector<IObject*>& out, ObjectPredicator* predicator)
 {
-    unrecoveredBinQuery("getObjects(box)");
+    m_queryPredicator = predicator;
+    m_boxMinimum = minimum;
+    m_boxMaximum = maximum;
+    m_queryOut = &out;
+    getObjectsInBoxByStartAndEndPos(m_root);
+}
+
+// PE 0x0072C980; ELF 0x083050D0.
+void BinTreeCuller::getObjectsInBoxByStartAndEndPos(Node* node)
+{
+    float distance = 0.0f;
+    if (m_boxMinimum.x > node->position.x)
+    {
+        const float delta = m_boxMinimum.x - node->position.x;
+        distance = delta * delta;
+    }
+    else if (node->position.x > m_boxMaximum.x)
+    {
+        const float delta = m_boxMaximum.x - node->position.x;
+        distance = delta * delta;
+    }
+
+    // shipped defect: z replaces the x contribution; y is never tested.
+    if (m_boxMinimum.z > node->position.z)
+    {
+        const float delta = m_boxMinimum.z - node->position.z;
+        distance = delta * delta;
+    }
+    else if (node->position.z > m_boxMaximum.z)
+    {
+        const float delta = m_boxMaximum.z - node->position.z;
+        distance = delta * delta;
+    }
+
+    if (distance > node->radius * node->radius)
+        return;
+    if (node->left)
+    {
+        getObjectsInBoxByStartAndEndPos(node->left);
+        getObjectsInBoxByStartAndEndPos(node->right);
+    }
+    else if (!m_queryPredicator || m_queryPredicator->predicate(node->payload.object))
+    {
+        m_queryOut->push_back(node->payload.object);
+    }
 }
 
 // Collects fully contained nodes separately from plane-straddling nodes.
@@ -597,7 +631,7 @@ void BinTreeCuller::getObjects(const Frustum& frustum, std::vector<IObject*>& vi
     m_queryOrigin = m_queryFrustum.m_center;              // retail +0x204 out of the embedded copy
     m_queryRadius = m_queryFrustum.m_boundingRadius;      // retail +0x210
 
-    m_getAllOut       = &visible;
+    m_queryOut        = &visible;
     m_queryAllVisible = &allVisible;
 
     if (predicator)
@@ -631,7 +665,7 @@ void BinTreeCuller::getObjectsByFrustum(Node* node)
         return;
 
     if (fullyInside)
-        m_getAllOut->push_back(node->payload.object);
+        m_queryOut->push_back(node->payload.object);
     else
         m_queryAllVisible->push_back(node->payload.object);
 }
@@ -656,7 +690,7 @@ void BinTreeCuller::getObjectsByFrustumNonPred(Node* node)
     }
 
     if (fullyInside)
-        m_getAllOut->push_back(node->payload.object);
+        m_queryOut->push_back(node->payload.object);
     else
         m_queryAllVisible->push_back(node->payload.object);
 }
@@ -664,7 +698,7 @@ void BinTreeCuller::getObjectsByFrustumNonPred(Node* node)
 // The unfiltered twin of getAllObjects(Node*) above.
 // The pair was nearly written here as two NEW functions. It is not new: 0x8304CF0 is the
 // getAllObjects(Node*) this file has always had, and the ELF's own symbol table names this one
-// getAllObjectsNonPred. Both write +0x238 - m_getAllOut - because that is the single output
+// getAllObjectsNonPred. Both write +0x238 - m_queryOut - because that is the single output
 // pointer every query on this class uses.
 void BinTreeCuller::getAllObjectsNonPred(Node* node)
 {
@@ -674,7 +708,7 @@ void BinTreeCuller::getAllObjectsNonPred(Node* node)
         getAllObjectsNonPred(node->right);
         return;
     }
-    m_getAllOut->push_back(node->payload.object);
+    m_queryOut->push_back(node->payload.object);
 }
 
 } // namespace world

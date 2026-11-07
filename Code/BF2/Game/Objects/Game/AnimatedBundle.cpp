@@ -1,6 +1,7 @@
 // Animated-bundle lifecycle and skeleton/geometry synchronization.
 
 #include "AnimatedBundle.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 
 #include "../../../Animation/BoneAnimation/AnimationSystem.h"
 #include "../../../Animation/BoneAnimation/Skeleton.h"
@@ -21,16 +22,13 @@ namespace {
 #if defined(_MSC_VER)
 #  define BF2_AB_VCALL __thiscall
 const unsigned int kGeometryPoseSlot = 0x54;
-#else
-#  define BF2_AB_VCALL
-const unsigned int kGeometryPoseSlot = 0x58;
-#endif
 // Geometry pose upload takes one matrix per bone and a count; the slot differs by platform.
 typedef void  (BF2_AB_VCALL* GeometryPoseFn)(void*, void*, int);
 inline void* rawSlot(void* object, unsigned int byteOffset)
 {
     return (*reinterpret_cast<void***>(object))[byteOffset / 4];
 }
+#endif
 } // namespace
 
 AnimatedBundle::AnimatedBundle(const AnimatedBundleTemplate* objectTemplate)
@@ -104,8 +102,13 @@ void AnimatedBundle::handleVisualUpdate(float deltaTime, float)
     }
     m_skeleton->transform(0, -1);
     // Upload one transformation matrix per bone.
+#if defined(_MSC_VER)
     reinterpret_cast<GeometryPoseFn>(rawSlot(geometry, kGeometryPoseSlot))(
         geometry, m_skeleton->m_transforms, m_skeleton->m_boneCount);
+#else
+    geometry_part::setBoneTransforms(geometry, reinterpret_cast<const Mat4*>(m_skeleton->m_transforms),
+                                     m_skeleton->m_boneCount);                   // ELF +0x58
+#endif
 }
 
 // / 0x8167940, 74 B each: both systems, slots +0x30 / +0x38.

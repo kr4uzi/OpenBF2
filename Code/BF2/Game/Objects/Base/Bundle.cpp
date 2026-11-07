@@ -2,6 +2,7 @@
 // Contents: recovered Bundle construction and composite child propagation.
 
 #include "Bundle.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "BundleTemplate.h"
 #include "../../../Core/Debug.h"
 #include "../../../Core/Ids.h"
@@ -25,11 +26,13 @@ namespace {
 #  define BF2_BUNDLE_VCALL
 #endif
 
+#if defined(_MSC_VER)
 template <class Fn>
 inline Fn bundleVslot(void* object, unsigned int byteOffset)
 {
     return reinterpret_cast<Fn>((*reinterpret_cast<void***>(object))[byteOffset / 4]);
 }
+#endif
 
 // The renderer geometry interface is not otherwise present in the server source tree.  Both ports
 // pin this one operation: PE +0x4C / ELF +0x54, taking an absolute transform and a part number.
@@ -38,11 +41,11 @@ void setGeometryPartTransformation(geom::IGeometry* geometry,
 {
 #if defined(_MSC_VER)
     const unsigned int slot = 0x4C;
-#else
-    const unsigned int slot = 0x54;
-#endif
     typedef void (BF2_BUNDLE_VCALL* Fn)(void*, const Mat4&, int);
     bundleVslot<Fn>(geometry, slot)(geometry, transformation, part);
+#else
+    geometry_part::setTransform(geometry, &transformation, part);                // ELF +0x54
+#endif
 }
 
 // Leaves nearly unit vectors unchanged and collapses nearly zero vectors to zero.

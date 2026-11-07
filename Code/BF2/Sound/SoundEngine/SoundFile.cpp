@@ -15,6 +15,8 @@
 
 #include <cctype>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 
 namespace dice {
 namespace hfe {
@@ -213,6 +215,12 @@ bool SoundFile::loadWav(int* loopStart, int* loopEnd)
     if (rate <= (unsigned int) targetRate)
         return ok;
     const int factor = (int) (rate / (unsigned int) targetRate);
+#if !defined(_WIN32)
+    if (std::getenv("BF2_SOUND_TRACE"))                                // [TEMP] BF2_SOUND_TRACE
+        std::fprintf(stderr, "[SND] load %s: %d Hz x%d -> %d Hz mono (factor %d, quality %d)\n", m_name.c_str(),
+                     m_format.samplesPerSecond, m_format.channels, targetRate, factor,
+                     g_soundEngineInstance->getQualityLevel());
+#endif
     if (loopStart) *loopStart /= factor;
     if (loopEnd)   *loopEnd   /= factor;
     const int newSamples = (int) ((unsigned int) m_format.numSamples / (unsigned int) factor);

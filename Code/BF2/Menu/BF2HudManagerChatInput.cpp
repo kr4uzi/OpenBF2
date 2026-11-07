@@ -1,5 +1,8 @@
 // HUD chat-input routing. [INFERRED] Source split. Named send and descriptor frontiers remain at their call sites.
 #include "BF2HudManager.h"
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#include "../Math/PortableX87.h"
+#endif
 #if !DEDICATED
 #include "BfEditData.h"
 #include "HudInformationAdapter.h"
@@ -15,12 +18,18 @@
 #include "../IO/Input/GameInput.h"
 #include "../Scene/Object/PlayerManager.h"
 #include <cstring>
+// [CHOSEN, not recovered] SSE2 is used only by the Windows x64 arm; arm64 has no emmintrin.h.
+#if defined(_WIN32) && !defined(_M_IX86)
+#include <emmintrin.h>
+#endif
 namespace dice { namespace hfe { extern IBase* squadManager; namespace hud {
 namespace {
 // Expression helper for PE7B371D..373A /7B3980..399D, not a separate retail
 // method. Keep the x87 subtraction, truncation and saved rounding control.
 int chatSecondsRemaining(double deadline, double now)
 {
+#if defined(_WIN32)
+#if defined(_M_IX86)
     unsigned short original, truncating;
     int result;
     __asm {
@@ -35,6 +44,19 @@ int chatSecondsRemaining(double deadline, double now)
         fldcw original
     }
     return result;
+#else
+    // [PLATFORM] x64: SSE2 arithmetic (x87 keeps 80-bit intermediates). cvttsd2si truncates
+    // like the chopped fistp, including the 0x80000000 indefinite result.
+    return _mm_cvttsd_si32(_mm_set_sd(deadline - now));
+#endif
+#else
+// [CHOSEN, not recovered] Preserve the S2.1 POSIX numeric arm (docs/macos-s2-1-asm.md).
+    unsigned short original, truncating;
+    int result;
+    // [CHOSEN, not recovered] Preserve x87 extended subtraction and truncation.
+    result = bf2x87::integer<int>(bf2x87::sub(bf2x87::wide(deadline), bf2x87::wide(now)));
+    return result;
+#endif
 }
 
 // Identical spam-display arms in sendSayAll7B36C4 and sendSayTeam7B3926.

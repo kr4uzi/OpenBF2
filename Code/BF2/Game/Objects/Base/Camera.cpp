@@ -5,6 +5,7 @@
 // Keep request/force position paths and the separate general/near-vehicle shake behavior.
 
 #include "Camera.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #include "../../../Core/System.h"
 #include "../../../Core/Ids.h"
 #include "../../../Core/Debug.h"                 // setViewMode's attested line 1171
@@ -109,11 +110,13 @@ inline IHeightmapCluster* cameraHeightmapCluster()
 #  define BF2_VCALL
 #endif
 
+#if defined(_MSC_VER)
 template <class Fn>
 inline Fn vslot(void* object, unsigned int byteOffset)
 {
     return reinterpret_cast<Fn>((*reinterpret_cast<void***>(object))[byteOffset / 4]);
 }
+#endif
 
 typedef int  (BF2_VCALL* VFn_geomCount)(void*);
 typedef void (BF2_VCALL* VFn_geomSet)(void*, int);
@@ -124,15 +127,16 @@ typedef void (BF2_VCALL* VFn_geomSet)(void*, int);
 const unsigned int kGeomSetSubGeometrySlot   = 0x6C;
 const unsigned int kGeomSubGeometryCountSlot = 0x74;
 const unsigned int kGeomSetLodSlot           = 0x78;
-#else
-const unsigned int kGeomSetSubGeometrySlot   = 0x70;
-const unsigned int kGeomSubGeometryCountSlot = 0x78;
-const unsigned int kGeomSetLodSlot           = 0x7C;
-#endif
 
 inline int  geomSubGeometryCount(void* g)     { return vslot<VFn_geomCount>(g, kGeomSubGeometryCountSlot)(g); }
 inline void geomSetSubGeometry(void* g, int i){ vslot<VFn_geomSet>(g, kGeomSetSubGeometrySlot)(g, i); }
 inline void geomSetLod(void* g, int i)        { vslot<VFn_geomSet>(g, kGeomSetLodSlot)(g, i); }
+#else
+// Non-MSVC: the named geometry_part operations (ELF +0x70 / +0x78 / +0x7C).
+inline int  geomSubGeometryCount(void* g)     { return geometry_part::getSubgeomCount(g); }
+inline void geomSetSubGeometry(void* g, int i){ geometry_part::setSubgeom(g, i); }
+inline void geomSetLod(void* g, int i)        { geometry_part::setLod(g, i); }
+#endif
 
 #if !DEDICATED && defined(_MSC_VER)
 // [TEMP] [CHOSEN, not recovered] Optional BF2_TRACE_VEHICLE_GEOM diagnostics for geometry switches and local camera roots.
@@ -766,10 +770,11 @@ const Mat4& Camera::getTransformationCVMChase(float deltaTime, bool frontChase)
         float radius = root->getPhysicBoundingRadius();
         if (radius <= 2.0f)
             radius = 2.0f;
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if defined(_MSC_VER)
         else
             // [PLATFORM] PE 0x5F0A36/0x5F0A56 repeats this virtual call on the >2 or unordered
             // arm. ELF 0x81DCAD0 caches its sole call, so the non-Win32 source path does too.
+            // Every Windows image (x86 and the native x64, issue #7) takes the PE arm.
             radius = root->getPhysicBoundingRadius();
 #endif
         desiredDistance = radius * s_chaseDistanceScale;
@@ -788,9 +793,9 @@ const Mat4& Camera::getTransformationCVMChase(float deltaTime, bool frontChase)
         desiredDirection.x, desiredDirection.y, desiredDirection.z, 1.0f
     };
     float blend = deltaTime * cameraTemplate->getFollowStiffness();
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if defined(_MSC_VER)
     // [PLATFORM] PE's clamp helper returns zero for unordered/NaN; the ELF's inlined comparisons
-    // leave NaN untouched.
+    // leave NaN untouched. Every Windows image (x86 and the native x64, issue #7) takes the PE arm.
     if (!(blend >= 0.0f))
         blend = 0.0f;
 #else

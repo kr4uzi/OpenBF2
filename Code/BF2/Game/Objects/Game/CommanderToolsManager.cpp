@@ -30,6 +30,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "../../../Platform/MsvcRand.h"  // [CHOSEN, not recovered] the client CRT's rand (MSVCR71)
 
 namespace dice {
 namespace hfe {
@@ -129,8 +130,8 @@ bool CommanderToolState::startScan()
 // half-open modulo expression are both shipped behavior.
 Vec3 CommanderToolState::CalculateRandomDropVehicleDeviation(int maximum, int minimum)
 {
-    const int distance = minimum + std::rand() % (maximum - minimum);
-    const double angle = static_cast<double>(std::rand() % 360) / 360.0 * 6.28;
+    const int distance = minimum + bf2crt::rand() % (maximum - minimum);
+    const double angle = static_cast<double>(bf2crt::rand() % 360) / 360.0 * 6.28;
     const double cosine = std::cos(angle);
     const double sine = std::sin(angle);
 

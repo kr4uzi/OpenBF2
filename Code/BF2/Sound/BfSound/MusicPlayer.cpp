@@ -25,6 +25,12 @@ MusicPlayer::MusicPlayer()
     eventManager->registerEventHandler(static_cast<EventCategory>(10), this, 100);
 }
 
+// BF2.exe 0x7E1900, called directly by BF2Engine::shutdown before operator delete.
+MusicPlayer::~MusicPlayer()
+{
+    eventManager->unregisterEventHandler(static_cast<EventCategory>(10), this);   // vslot +0x30
+}
+
 // Loads mod music through the facade, then starts the engine. Requires sound globals and ModInfo.
 void MusicPlayer::startMenuMusic()
 {

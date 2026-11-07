@@ -17,6 +17,9 @@
 #include "../../Core/Debug.h"
 #include "../../Core/Ids.h"
 #include "UnixFileStream.h"
+#if defined(__APPLE__) && !DEDICATED
+#include "../../Platform/macOS/ClientPaths.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -41,6 +44,39 @@ void buildFileInfo(FileInfo* info, const struct stat* st)
     info->lastWriteTimeLow   = 0;
     info->lastWriteTimeHigh  = 0;
 }
+
+#if defined(__APPLE__) && !DEDICATED
+// [CHOSEN, not recovered] The client image's directory removal. BF2.exe's Win32FileSystem::deleteFile
+// (0x676440) removes a directory recursively through the shell (FO_DELETE); the dedicated ELF's
+// unlink cannot. LocalProfileManager::deleteProfile (PE 0x4AAF70) deletes a whole profile directory
+// through deleteFile, so the macOS client removes the tree depth-first. Symbolic links are removed,
+// never followed.
+bool removeDirectoryTree(const std::string& path)
+{
+    DIR* dir = opendir(path.c_str());
+    if (!dir)
+        return false;
+    bool ok = true;
+    while (struct dirent* entry = readdir(dir))
+    {
+        if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)
+            continue;
+        const std::string child = path + "/" + entry->d_name;
+        struct stat st;
+        if (lstat(child.c_str(), &st) != 0)
+        {
+            ok = false;
+            continue;
+        }
+        if (S_ISDIR(st.st_mode))
+            ok = removeDirectoryTree(child) && ok;
+        else if (unlink(child.c_str()) != 0)
+            ok = false;
+    }
+    closedir(dir);
+    return rmdir(path.c_str()) == 0 && ok;
+}
+#endif
 
 } // anonymous namespace
 
@@ -114,7 +150,18 @@ IBase* UnixFileSystem::create(unsigned int iid, IBase* outer)
 // Normalizes a path in place by folding case and converting backslashes to forward slashes.
 void UnixFileSystem::fixUnixPath(std::string& path)
 {
-    for (std::string::size_type i = 0; i < path.size(); ++i)
+    std::string::size_type first = 0;
+#if defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] The ELF lowercases whole paths, which are relative game paths there.
+    // The macOS client's @HOME@ substitution is an absolute user path (clientDataDirectory):
+    // lowercasing it named a different path on case-sensitive volumes and under the runner's
+    // sandbox, so a fresh home's Profile.con/Global.con writes silently failed. Keep that prefix
+    // as it is; everything after it is lowered as before (docs/macos-c-asan-heap.md).
+    const std::string& home = macos::clientDataDirectory();
+    if (!home.empty() && path.compare(0, home.size(), home) == 0)
+        first = home.size();
+#endif
+    for (std::string::size_type i = first; i < path.size(); ++i)
     {
         if (path[i] == '\\')
             path[i] = '/';
@@ -208,6 +255,18 @@ bool UnixFileSystem::deleteFile(const std::string& name)
     std::string path(name);
     fixUnixPath(path);
 
+#if defined(__APPLE__) && !DEDICATED
+    struct stat st;
+    if (lstat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+    {
+        if (!removeDirectoryTree(path))
+        {
+            logError("rmdir", path);
+            return false;
+        }
+        return true;
+    }
+#endif
     if (unlink(path.c_str()) == -1)
     {
         logError("unlink", path);
@@ -299,6 +358,13 @@ bool UnixFileSystem::createDirectory(const std::string& path)
     {
         if (path[i] != '/')
             continue;
+#if defined(__APPLE__) && !DEDICATED
+        // [CHOSEN, not recovered] The ELF only sees relative paths. The macOS client writes
+        // under an absolute @HOME@, whose leading '/' made the first part "" and mkdir("")
+        // fail with ENOENT, which aborted the walk: a fresh home never got Profiles/Default/.
+        if (i == 0)
+            continue;
+#endif
 
         std::string part(path, 0, i);
         if (mkdir(part.c_str(), 0755) == -1 && errno != EEXIST)
@@ -376,11 +442,16 @@ int UnixFileSystem::findFiles_recursionHelper(const std::string& path, bool recu
 // then hands back "/tmp" anyway. Line 435 of this file, and the source of its attested path.
 const std::string& UnixFileSystem::getHomeSubstitution() const
 {
+#if defined(__APPLE__) && !DEDICATED
+    // [CHOSEN, not recovered] Client data is independent of the read-only game installation.
+    return macos::clientDataDirectory();
+#else
     Debug(DEBUGTYPE_6, __FILE__, 435, std::string())
         << "dep: dedicated servers aren't allowed to write to @HOME@";
 
     static const std::string home("/tmp");
     return home;
+#endif
 }
 
 // @root@ is the current directory.

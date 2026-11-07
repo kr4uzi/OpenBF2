@@ -19,6 +19,7 @@
 #include "SoundTrace.h"
 #include "Win32System.h"
 #include "SoundEngineMath.h"
+#include "../../Platform/MsvcRand.h"   // [CHOSEN, not recovered] MSVCR71 rand range (RAND_MAX 0x7FFF)
 
 #include <algorithm>
 #include <cctype>
@@ -1142,7 +1143,7 @@ void BfSoundEngine::schedule(Sample* s)
     }
     s->m_startFrame = m_frame + delay;
     s->m_readyFrame = m_frame + delay;
-    const int r = std::rand();
+    const int r = bf2crt::rand();
     s->m_pitchSeed  = (unsigned char) r;
     s->m_volumeSeed = (unsigned char) (r >> 8);
     pushDelayed(s);

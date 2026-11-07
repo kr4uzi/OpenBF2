@@ -23,7 +23,8 @@ class IProjectileObject;
 
 // `dice::hfe::ChannelMessageType` - BFRadioComm::sendAIRadioMessage's second parameter
 // (`NS0_18ChannelMessageType`, i.e. hfe scope, not ai). Passed by value; an opaque enum with an
-// explicit `int` base gives it the 4-byte slot the call frame shows. [FRONTIER] its enumerators.
+// explicit `int` base gives it the 4-byte slot the call frame shows. [CHOSEN] opaque here: the AI
+// only passes values through; the enumerators belong to the engine side (Game/IGame.h).
 enum ChannelMessageType : int;
 
 // `dice::hfe::KitType` - KitTemplateManager::getTemplate's parameter (`NS0_7KitType`).

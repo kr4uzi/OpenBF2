@@ -45,9 +45,9 @@ public:
     virtual void         setActive(const std::string& name);    // 0x84977A0,   46   recovered
     virtual void         setActive(const IControlMap* map);     // 0x84977D0,   27   recovered
     virtual IControlMap* getActive() const;                     // 0x8497790,   11   recovered
-    virtual bool         mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d,
-                                      std::string& out);        // 0x8497AC0, 5146   [CHOSEN-STUB]
-    virtual float        getRepeatRate(int id, bool b);         // 0x8498EE0,  103   [CHOSEN-STUB]
+    virtual int          mapNextInput(IControlMap* map, int id, bool a, bool b, bool c, bool d,
+                                      std::string& out);        // 0x8497AC0, 5133   recovered
+    virtual float        getRepeatRate(int id, bool b);         // 0x8498EE0,  103   recovered
     virtual void         applyActive();                         // 0x84977F0,  164   recovered
 
     // +0x44 / +0x48
@@ -57,6 +57,9 @@ public:
     // that collision is dice's and is preserved.
     // _ZN4dice3hfe2io17ControlMapManager6createEjPNS0_5IBaseE.
     static IBase* create(unsigned int iid, IBase* outer);
+
+    // True when input id may share its binding with another input (the shipped tables).
+    bool allowDuplicate(int id, bool playerMap);                // 0x8498F50,  101   recovered
 
 private:
     /* 0x04 */ int                          m_refCount;

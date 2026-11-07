@@ -1,7 +1,12 @@
 // Handles input and presentation for the between-rounds menu.
 #include "../Core/BuildConfig.h"
 #if !DEDICATED
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "../Platform/macOS/CocoaHost.h"   // [CHOSEN, not recovered] cursor and key characters
+#include "../Platform/macOS/MacKeyMap.h"
+#endif
 #include "BetweenRoundsLogic.h"
 #include "IMenuTeamManager.h"
 #include "ISwiffHost.h"
@@ -28,6 +33,25 @@ namespace io { extern IBase* inputDeviceManager; }    // Core/Globals.cpp; PE 0x
 
 // Translates a DirectInput scan code using the keyboard layout cached on first use.
 // Returns the number of characters written, or zero when keyboard-state retrieval fails.
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] macOS: the key code for the scan code, translated with the current
+// layout and the Shift/Caps Lock state, as ToAsciiEx translates with GetKeyboardState. Writes one
+// character and returns 1, or returns 0 when the key produces none or one outside the 8-bit range
+// the ANSI call answers in.
+int menuScanCodeToChar(unsigned int scanCode, unsigned short* character)
+{
+    macos::CocoaHost& host = macos::CocoaHost::instance();
+    const unsigned short keyCode =
+        macos::macKeyCodeFromDik(static_cast<unsigned char>(scanCode), host.isISOKeyboard());
+    if (keyCode == 0xFFFF)
+        return 0;
+    const std::u16string text = host.keyCharacter(keyCode, host.modifierFlags());
+    if (text.size() != 1 || text[0] > 0xFF)
+        return 0;
+    character[0] = static_cast<unsigned short>(text[0]);
+    return 1;
+}
+#else
 int menuScanCodeToChar(unsigned int scanCode, unsigned short* character)
 {
     static const HKL layout = GetKeyboardLayout(0);
@@ -37,6 +61,7 @@ int menuScanCodeToChar(unsigned int scanCode, unsigned short* character)
     return ToAsciiEx(MapVirtualKeyExA(scanCode, MAPVK_VSC_TO_VK, layout),
                      scanCode, keyState, character, 0, layout);
 }
+#endif
 
 // The string is constructed between the console pointer and the mouse state, which is
 // where the member sits; the four tail stores follow it.
@@ -123,8 +148,13 @@ bool BetweenRoundsLogic::init()
     setConsole(bf2Engine->bf2Console);                                        // BF2Engine +0x14
     io::IInputDevice* mouse = static_cast<io::IInputDeviceManager*>(io::inputDeviceManager)->getInputDevice(io::IDFMouse);
     mouse->deActivate();                                                      // +0x20, unguarded in the binary
+#if defined(__APPLE__)
+    macos::CocoaHost::instance().showCursor(true);                            // [CHOSEN] ShowCursor(TRUE)
+    macos::CocoaHost::instance().setCursor(m_host->getCursor(0));             // +0x6C, SetCursor
+#else
     ShowCursor(TRUE);
     SetCursor(static_cast<HCURSOR>(m_host->getCursor(0)));                    // +0x6C
+#endif
     io::g_falconMouseMode = 1;                                                // ds:0x978FC4
     return true;
 }
@@ -146,8 +176,13 @@ void BetweenRoundsLogic::deactivate()
     }
     m_swiffActive = false;
     m_frameActive = false;
+#if defined(__APPLE__)
+    macos::CocoaHost::instance().setCursor(0);                                // [CHOSEN] SetCursor(0)
+    macos::CocoaHost::instance().showCursor(false);                           //   ShowCursor(FALSE)
+#else
     SetCursor(0);
     ShowCursor(FALSE);
+#endif
 }
 
 ui::ISwiffPlayer* BetweenRoundsLogic::getSwiffPlayer() const { return m_player; }
@@ -170,9 +205,15 @@ bool BetweenRoundsLogic::beginFrame()
 {
     const bool pending = m_player->getSwiffHost()->getFlag7B8();              // +0x5C then +0xCC
     if (m_player->getSwiffHost()->getFlagEA8() || pending)                    // +0x5C then +0x2A8
+#if defined(__APPLE__)
+        macos::CocoaHost::instance().setCursor(m_host->getCursor(1));         // +0x6C, the busy cursor
+    else
+        macos::CocoaHost::instance().setCursor(m_host->getCursor(m_host->getBusy()));// +0x2B8 then +0x6C
+#else
         SetCursor(static_cast<HCURSOR>(m_host->getCursor(1)));                // +0x6C, the busy cursor
     else
         SetCursor(static_cast<HCURSOR>(m_host->getCursor(m_host->getBusy())));// +0x2B8 then +0x6C
+#endif
     if (!m_render->beginFrame())                                              // +0xCC
         return false;
     m_frameActive = true;

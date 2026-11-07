@@ -9,7 +9,6 @@
 
 #include "../../../../RendDX9Abi/HfeAbi.h"
 #include "../../../../RendDX9Abi/BfMemory.h"
-#include "../../../../RendDX9Abi/Vc71Vector.h"
 
 namespace dice {
 namespace hfe {
@@ -75,20 +74,39 @@ void SwiffModule::getSingletonList(RD9_HOST_VECTOR_PARAMETER(SingletonRegInfo, /
 // static_cast<ECCoreEventHandler*>(this) yields.
 
 namespace {
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] These two ordinals precede EventManager's destructor;
+// tools/macos/vtable_audit.py checks them against Clang's provider table.
+constexpr unsigned nativeEventRegisterSlot = 11;
+constexpr unsigned nativeEventUnregisterSlot = 12;
+typedef bool (*EmRegisterFn)(void*, EventCategory, IEventListener*, int);
+typedef bool (*EmUnregisterFn)(void*, EventCategory, IEventListener*);
+#else
 typedef int (__thiscall* EmRegisterFn)  (void* self, int category, void* handler, int priority);
 typedef int (__thiscall* EmUnregisterFn)(void* self, int category, void* handler);
+#endif
 
 inline void eventManagerRegister(int category, void* handler, int priority)
 {
     void*  em   = eventManager;
     void** vtbl = *reinterpret_cast<void***>(em);
+#if !defined(_MSC_VER)
+    reinterpret_cast<EmRegisterFn>(vtbl[nativeEventRegisterSlot])(
+        em, static_cast<EventCategory>(category), static_cast<ECCoreEventHandler*>(handler), priority);
+#else
     reinterpret_cast<EmRegisterFn>(vtbl[0x2C / 4])(em, category, handler, priority);
+#endif
 }
 inline void eventManagerUnregister(int category, void* handler)
 {
     void*  em   = eventManager;
     void** vtbl = *reinterpret_cast<void***>(em);
+#if !defined(_MSC_VER)
+    reinterpret_cast<EmUnregisterFn>(vtbl[nativeEventUnregisterSlot])(
+        em, static_cast<EventCategory>(category), static_cast<ECCoreEventHandler*>(handler));
+#else
     reinterpret_cast<EmUnregisterFn>(vtbl[0x30 / 4])(em, category, handler);
+#endif
 }
 } // anonymous namespace
 
@@ -141,6 +159,18 @@ IModule* dllmodules[] =
     new ui::SwiffModule(),
     0
 };
+
+#if defined(BF2_STATIC_PLUGINS)
+// [CHOSEN, not recovered] The statically linked image's "reload" (Code/StaticPlugins/StaticPlugins.h):
+// deinitDll released the module and nulled its slot; a fresh SwiffPlayer.dll mapping would run the
+// table's initializer again, so the slot gets a new module before the next initDll. The other image
+// statics (gameswf globals, the key-state bytes) are not reset; see docs/macos-c-menu-interact.md.
+extern "C" void bf2_swiffplayer_reloadImage()
+{
+    if (!dllmodules[0])
+        dllmodules[0] = new ui::SwiffModule();
+}
+#endif
 
 } // namespace hfe
 } // namespace dice

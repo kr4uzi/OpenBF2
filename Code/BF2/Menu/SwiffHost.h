@@ -48,9 +48,9 @@ public:
     std::string getCurrentMapGameMode() override;
     int  getCurrentMapMaxPlayers() override;
     int  getCurrentMapSize() override;
-    bool setPlayerRenderCapability0(int value) override;
+    bool setPlayerRenderCapability0(intptr_t value) override;
     void* getCursor(int which) override;
-    bool setPlayerRenderCapability1(int value) override;
+    bool setPlayerRenderCapability1(intptr_t value) override;
     void setFlag28(bool value) override;
     bool getFlag28() override;
     ui::IServerBrowser* getServerList(const std::string& name) override;
@@ -123,7 +123,7 @@ public:
     bool playSound(const std::string& name) override;
     void slot18C(int a) override;
     bool getModCount(int* out) override;
-    bool slot194(int index, int b) override;
+    bool getModAt(int index, IModInfo::Mod* out) override;
     bool requestActivateMod(const std::string* mod) override;
     bool requestBrowseModHomepage(const IModInfo::Mod* mod) override;
     bool getVersionString(std::string& out) override;
@@ -241,7 +241,7 @@ public:
     void setIntF4C(int value) override;
     bool isPlayingDemo() override;
     std::string getModName() override;
-    bool slot368(int a, int b, int c) override;
+    bool slot368(const std::string& modPath, const std::string& address, int port) override;
     int  getExpansionPack(const std::string& modName) override;
     std::string getLanguageSetting() override;
     void parseResolution(const std::string& text, int* width, int* height, int* hz) override;

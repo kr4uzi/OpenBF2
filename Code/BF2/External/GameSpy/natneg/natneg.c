@@ -771,6 +771,13 @@ void NNProcessData(char *data, int len, struct sockaddr_in *fromaddr)
 	NATNegotiator neg;
 	unsigned char ptype;
 
+#if defined(_MACOSX) || defined(_LINUX)
+	/* [CHOSEN, not recovered] Inspect only a complete header before reading its magic/type.
+	   Payloads below already use memcpy into packed local storage, never atomic word access. */
+	if (len < BASEPACKET_SIZE)
+		return;
+#endif
+
 	if (!CheckMagic(data))
 		return; //invalid packet
 

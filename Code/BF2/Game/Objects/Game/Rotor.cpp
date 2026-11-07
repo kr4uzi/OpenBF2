@@ -1,6 +1,7 @@
 // Rotor lifecycle and visual rotation.
 
 #include "Rotor.h"
+#include "../GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 
 #include <string>
 
@@ -21,10 +22,6 @@ namespace {
 #if defined(_MSC_VER)
 #define BF2_ROTOR_GEOM_CALL __thiscall
 const unsigned int setGeomSlot = 0x6C, getGeomCountSlot = 0x74;
-#else
-#define BF2_ROTOR_GEOM_CALL
-const unsigned int setGeomSlot = 0x70, getGeomCountSlot = 0x78;
-#endif
 template<class F> F geometrySlot(void* geometry, unsigned int offset)
 {
     return reinterpret_cast<F>((*static_cast<void***>(geometry))[offset / 4]);
@@ -40,6 +37,11 @@ int getGeometryGeomCount(void* geometry)
     return geometrySlot<F>(geometry, getGeomCountSlot)(geometry);
 }
 #undef BF2_ROTOR_GEOM_CALL
+#else
+// Non-MSVC: the named geometry_part operations (ELF +0x70 / +0x78).
+void setGeometryGeom(void* geometry, int geom) { geometry_part::setSubgeom(geometry, geom); }
+int getGeometryGeomCount(void* geometry) { return geometry_part::getSubgeomCount(geometry); }
+#endif
 }
 
 // Bundle(template); the vptrs; the block (m_geomState -1, m_spinDownTimer 3.0,

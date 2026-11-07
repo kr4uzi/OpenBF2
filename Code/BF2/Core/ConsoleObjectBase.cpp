@@ -17,6 +17,8 @@ namespace hfe {
 // Converts typed arguments or stores raw string pointers, executes the binding and formats its result.
 // setArgFromString uses one-based indices; argument storage belongs to the generated binding.
 // ELF 0x486320; engine 0x83BE630. Slots +0x68, +0x7C, +0x60, +0x64 are attested in both images.
+// RendDX9.dll copy PE 0x1007BFD0 (`retn 0Ch`, hidden result first; the MSVC table's slots +0x64,
+// +0x78, +0x5C, +0x60). The trace block below is the [TEMP] harness, not part of the copy.
 std::string ConsoleObjectBaseImpl::execute(std::string* args, int argCount)
 {
     // [TEMP] [CHOSEN, not recovered] BF2_TRACE_CONSOLE logs each invoked binding.
@@ -91,21 +93,26 @@ bool          ConsoleObjectBaseImpl::isDynamic() const       { return m_isDynami
 // -> +0x50 + index*4. no bounds check in the original - the array is ten wide and the caller is
 // trusted to stay inside it. execute() iterates its supplied count without clamping;
 // ordinary console callers perform the command's arity check before dispatch.
+// PE 0x10051D60 (the RendDX9.dll copy: mov eax, [ecx + 4*eax + 0x50]; retn 4).
 const char* ConsoleObjectBaseImpl::getArgType(int index) const { return m_argTypes[index]; }
 
 // Range access forwards to the generated object's virtual hooks.
 // Range endpoints are pointers to mutable members. Preserve hook slot order without swapping the forwarder targets.
 bool ConsoleObjectBaseImpl::hasRange() const { return objectHasRange(); }
+// PE 0x10051DB0 (RendDX9.dll copy: tail call through vtable +0x6C, the result slot passed straight through).
 std::pair<const void*, const void*> ConsoleObjectBaseImpl::getRange() const
 {
     return getObjectRange();
 }
+// PE 0x10051E80 (RendDX9.dll copy: forwards through vtable +0x74).
 std::pair<std::string, std::string> ConsoleObjectBaseImpl::getRangeAsString() const
 {
     return getObjectRangeAsString();            // sret passed straight through
 }
+// PE 0x10051DD0 (RendDX9.dll copy: forwards through vtable +0x70).
 std::string ConsoleObjectBaseImpl::getDeltaAsString() const   { return getObjectDeltaAsString(); }
 bool        ConsoleObjectBaseImpl::hasBundledType() const     { return objectHasBundledType(); }
+// PE 0x10051E20 (RendDX9.dll copy: forwards through vtable +0x80).
 std::string ConsoleObjectBaseImpl::getTypeDescription() const { return getObjectTypeDescription(); }
 
 // The eight object-level hooks. Stubs here by design - this is the half the macro overrides, and
@@ -116,17 +123,23 @@ void        ConsoleObjectBaseImpl::executeObjectMethod()           { }
 std::string ConsoleObjectBaseImpl::getReturnValueAsString() const  { return std::string(); }
 void        ConsoleObjectBaseImpl::setArgFromString(int, const std::string&) { }   // empty, 5 bytes
 bool        ConsoleObjectBaseImpl::objectHasRange() const          { return false; }
+// PE 0x100525C0 (RendDX9.dll copy, the vtable +0x6C default of the renderer bindings: stores two zero words
+// through its result pointer; retn 4).
 std::pair<const void*, const void*> ConsoleObjectBaseImpl::getObjectRange() const
 {
     return std::pair<const void*, const void*>(0, 0); // zeroes the two pointer out-fields
 }
-std::string ConsoleObjectBaseImpl::getObjectDeltaAsString() const  { return std::string(); }
+// PE 0x10051E40 (RendDX9.dll copy), BF2.exe 0x410C61 and ELF 0x83BE930 (ConsoleObjectBaseImpl::getObjectDeltaAsString):
+// every image's default builds the literal "No Delta" (BF2.exe .rdata 0x881164, ELF .rodata 0x88D0C70); 2703 BF2.exe
+// binding vtables point at 0x410C61. The earlier empty-string default was a reconstruction error.
+std::string ConsoleObjectBaseImpl::getObjectDeltaAsString() const  { return std::string("No Delta"); }
 std::pair<std::string, std::string> ConsoleObjectBaseImpl::getObjectRangeAsString() const
 {
     return std::pair<std::string, std::string>(); // two empty strings into the sret
 }
 void        ConsoleObjectBaseImpl::checkObjectRange(bool)          { }
 bool        ConsoleObjectBaseImpl::objectHasBundledType() const    { return false; }
+// PE 0x10051E60 (RendDX9.dll copy, vtable +0x80 default: constructs an empty string).
 std::string ConsoleObjectBaseImpl::getObjectTypeDescription() const { return std::string(); }
 
 ConsoleObjectBaseImpl::~ConsoleObjectBaseImpl() { }
@@ -136,6 +149,8 @@ ConsoleObject::~ConsoleObject() { }
 
 // Defaults for subsequent generated bindings: object name, access and category.
 // Only the first character of the copied name is lowercased; names must fit the 32-byte allocation.
+// The RendDX9 image defines its own copy (Code/RendDX9Abi/NativeConsoleObjects.cpp, PE 0x1007BF60).
+#if !defined(BF2_IMAGE_RENDDX9)
 namespace {
 const char*   g_defaultNameLower = "";
 unsigned int  g_defaultAccess    = 0;
@@ -161,6 +176,7 @@ SetConsoleClassDefaults::SetConsoleClassDefaults(const char* objectName, unsigne
     g_defaultAccess    = access;
     g_defaultCategory  = category;
 }
+#endif // !BF2_IMAGE_RENDDX9
 
 // One list per translation-unit tag. Function-local static: the generated constructors run during
 // static initialisation and this must already exist when the first of them fires.

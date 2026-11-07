@@ -95,13 +95,23 @@ std::list<ConsoleObject*>& toolObjectConsoleObjects();      // Scene/Object/Tool
 #include "../Menu/MenuTeamManager.h"     // client factory41053B, team/kit menu data
 #include "../Menu/ServerBrowserManager.h" // client factory410205, the lists' owner
 #include "../IO/Input/DX8InputDeviceManager.h" // client InputDX8Module factory rows
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] macOS port: MacInputDeviceManager answers the DX8 row (docs/macos-s2-4.md).
+#include "../IO/Input/MacInputDeviceManager.h"
+#endif
 #include "../IO/Input/InputManager.h"
 #endif
 #if !DEDICATED
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#if defined(_WIN32)
 #include <windows.h>                      // LoadLibraryA / GetProcAddress / FreeLibrary - BfSoundModule
+#else
+// [CHOSEN, not recovered] The macOS client resolves BF2Audio through the POSIX loader wrappers,
+// which answer statically linked images first (docs/macos-port.md).
+#include "PluginDll.h"
+#endif
 #include "../Game/Utility/Vars.h"         // Vars::getInt("opt-nosound") - BfSoundModule::init
 #endif
 #include "System.h"          // g_system - io::ModuleIO::init calls resetExactTime
@@ -584,7 +594,14 @@ void InputDX8Module::getClassList(std::vector<ClassRegInfo>& out) // PE6AC3E6, c
 {
     // [PLATFORM] Client table89AE6C supplies these two rows in this order.
     // Use native ClassRegInfo/factory ABI, never the retail36-byte STL record.
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] macOS port: the Cocoa-backed manager under the DX8 CID and name, so
+    // BF2EngineSetup's setSingletonClass("InputDeviceManager", CID_DX8InputDeviceManager) and every
+    // caller stay unchanged (docs/macos-s2-4.md).
+    out.push_back(ClassRegInfo{CID_DX8InputDeviceManager, "dice.hfe.io.InputDeviceManager.DX8", &MacInputDeviceManager::create});
+#else
     out.push_back(ClassRegInfo{CID_DX8InputDeviceManager, "dice.hfe.io.InputDeviceManager.DX8", &DX8InputDeviceManager::create});
+#endif
     out.push_back(ClassRegInfo{CID_InputManager, "dice.hfe.io.InputManager", &InputManager::create});
 }
 #else
@@ -1162,7 +1179,11 @@ bool MathModule::init()
 bool MathModule::close() { closeMath(); return true; }
 
 #if !DEDICATED
+#if defined(_WIN32)
 static HMODULE s_audioLibrary = 0;                          // BF2.exe ds:0xA24CB0 - the BF2Audio.dll handle
+#else
+static void* s_audioLibrary = 0;                            // [CHOSEN] POSIX loader-wrapper handle
+#endif
 #endif
 bool BfSoundModule::init()
 {
@@ -1185,7 +1206,11 @@ bool BfSoundModule::init()
     }
     BfSound* facade = new BfSound;
     g_bfSound = facade;
+#if defined(_WIN32)
     s_audioLibrary = LoadLibraryA("BF2Audio.dll");
+#else
+    s_audioLibrary = ::LoadLibrary("BF2Audio.dll");
+#endif
     if (s_audioLibrary)
     {
         typedef ISoundEngine* (*GetSoundEngineFn)();

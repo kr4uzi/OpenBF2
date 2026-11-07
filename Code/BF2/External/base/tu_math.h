@@ -13,7 +13,10 @@
 #include <float.h>
 
 // OSX doesn't have single precision math functions defined in math.h
-#ifdef __MACH__
+// [BUILD-FIX SwiffPlayer: every supported macOS SDK declares the float functions, and these macros
+// rename unrelated identifiers (renddx9abi::logf). The Windows build never took this branch, so
+// it stays off on macOS too and the menu player uses the same float math everywhere.]
+#if defined(__MACH__) && 0
     #define sinf sin
     #define cosf cos
     #define tanf tan

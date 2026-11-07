@@ -159,4 +159,3 @@ template struct dice::hfe::world::ClassFactory<dice::hfe::world::ParachuteTempla
 template struct dice::hfe::world::ClassFactory<dice::hfe::world::ZiplineContainerTemplate>;
 template struct dice::hfe::world::ClassFactory<dice::hfe::world::GrapplingHookRopeContainerTemplate>;
 template struct dice::hfe::world::ClassFactory<dice::hfe::world::FloatingBundleTemplate>;
-template struct dice::hfe::world::ClassFactory<dice::hfe::world::RotationalBundleTemplate>;
