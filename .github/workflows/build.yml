@@ -62,19 +62,22 @@ jobs:
           cmake --build out/build/ci-x86 --target bf2_aidll
 
       # RendDX9.dll and TextureAtlasBuilder.dll, and so the client and the editor, build against the
-      # April 2005 DirectX SDK (Code/Build/dxsdk.cmd). Hosted runners do not have it; without it both
-      # images are skipped with a notice and left out of the packages.
-      - name: Locate the April 2005 DirectX SDK
+      # April 2005 DirectX SDK or, on hosted runners without it, the D3DX fallback (Code/Build/dxsdk.cmd).
+      # Only when neither is usable are both images skipped with a notice and left out of the packages.
+      - name: Locate the D3DX headers and import library
         id: dxsdk
         if: matrix.arch == 'x86'
         run: |
-          call Code\Build\dxsdk.cmd x86
+          rem The same call renddx9.cmd and textureatlasbuilder.cmd make: the April 2005 SDK, or
+          rem without it the D3DX fallback (BF2_D3DX=auto, Code/Build/dxsdk.cmd).
+          call Code\Build\dxsdk.cmd x86 fallback
           if errorlevel 1 (
-            echo ::notice title=DirectX SDK not installed::The x86 client and editor need the April 2005 DirectX SDK; they are not built or packaged on this runner.
+            echo ::notice title=No D3DX source::Neither the April 2005 DirectX SDK nor the D3DX fallback is usable; the x86 client and editor are not built or packaged on this runner.
             echo found=false>> "%GITHUB_OUTPUT%"
           ) else (
             echo found=true>> "%GITHUB_OUTPUT%"
           )
+          exit /b 0
 
       # Keep the client/plugin and editor builds sequential within this checkout.
       - name: Build the x86 client with plugins
