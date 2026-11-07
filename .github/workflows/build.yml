@@ -198,7 +198,10 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install flex bison mingw-w64 autoconf automake libtool cpanminus
+          brew install flex bison mingw-w64 autoconf automake libtool pkgconf cpanminus vulkan-headers spirv-headers
+          # vkd3d's configure needs the Vulkan and SPIR-V headers; /opt/homebrew/include is not on the
+          # compiler's default search path on Apple silicon.
+          echo "CPPFLAGS=-I$(brew --prefix vulkan-headers)/include -I$(brew --prefix spirv-headers)/include" >> "$GITHUB_ENV"
           # vkd3d's configure needs Perl's JSON module.
           cpanm --notest --local-lib "$HOME/perl5" JSON
           echo "PERL5LIB=$HOME/perl5/lib/perl5" >> "$GITHUB_ENV"
