@@ -156,7 +156,7 @@ BotScript* BBPRevive::createPlan(Bot* bot)
     else
         select = checkPointer(new BAPATrigger(static_cast<io::PlayerInputMap>(weapon->getWeaponActivate()),
                                               checkPointer(new BAPConTrue()), checkPointer(new BAPConFalse()),
-                                              static_cast<int>(1 << weapon->getWeaponActivate()), m_id, 0.0, false));
+                                              static_cast<int>(1u << weapon->getWeaponActivate()), m_id, 0.0, false));
     serial->addStatement(select);
 
     // 0x2995B9: the revive distance, stored as a float local and scaled at run time.

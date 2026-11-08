@@ -131,7 +131,7 @@ public:
     // Horner's scheme; an empty polynomial is 0. ELF 0x1CA310.
     float evaluate(float x) const
     {
-        const unsigned int n = size();
+        const unsigned int n = static_cast<unsigned int>(size());
         float result = 0.0f;
         if (n >= 2)
         {
@@ -149,8 +149,8 @@ public:
     // ELF 0x1CA370. Grows to the longer operand.
     Polynom& operator+=(const Polynom& other)
     {
-        const unsigned int n = size();
-        const unsigned int m = other.size();
+        const unsigned int n = static_cast<unsigned int>(size());
+        const unsigned int m = static_cast<unsigned int>(other.size());
         if (n < m)
         {
             resize(m, 0.0f);
@@ -171,7 +171,7 @@ public:
     // ELF 0x1CA4D0. The product has size() + other.size() - 1 coefficients.
     Polynom& operator*=(const Polynom& other)
     {
-        Polynom product(size() - 1 + other.size());
+        Polynom product(static_cast<unsigned int>(size() - 1 + other.size()));
         for (unsigned int i = 0; i < size(); ++i)
             for (unsigned int j = 0; j < other.size(); ++j)
                 product[i + j] = other[j] * (*this)[i] + product[i + j];
@@ -187,7 +187,7 @@ public:
     // this tree). ELF 0x1C8F50.
     void findRoots(std::vector<float>& roots) const
     {
-        unsigned int degree = size() - 1;
+        unsigned int degree = static_cast<unsigned int>(size() - 1);
         while (degree != 0 && (*this)[degree] == 0.0f)
             --degree;
 
@@ -268,7 +268,7 @@ public:
 // The products findRoots inlines: a scaled copy, and a copy multiplied in place.
 inline Polynom operator*(float factor, const Polynom& polynom)
 {
-    Polynom result(polynom.size());
+    Polynom result(static_cast<unsigned int>(polynom.size()));
     for (unsigned int i = 0; i < polynom.size(); ++i)
         result[i] = factor * polynom[i];
     return result;

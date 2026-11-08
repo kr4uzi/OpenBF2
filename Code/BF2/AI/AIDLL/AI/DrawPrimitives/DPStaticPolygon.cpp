@@ -21,7 +21,7 @@ DPStaticPolygon::DPStaticPolygon(float lifeTime, const std::vector<Vec3>& vertic
     : DrawPrimitive(lifeTime, colours[0])
     , m_filled(filled)
 {
-    const unsigned int count = vertices.size();
+    const unsigned int count = static_cast<unsigned int>(vertices.size());
     m_triangles.resize(count - 2);
     m_colours.resize(count - 2);
     for (unsigned int i = 1; i < count - 1; ++i)
@@ -43,7 +43,7 @@ DPStaticPolygon::~DPStaticPolygon()
 // ELF 0x37F350. The triangle count is read once before the loop.
 bool DPStaticPolygon::draw(IDebugRenderer* renderer)
 {
-    const unsigned int count = m_triangles.size();
+    const unsigned int count = static_cast<unsigned int>(m_triangles.size());
     for (unsigned int i = 0; i < count; ++i)
         renderer->drawTriangle(m_triangles[i], m_colours[i], m_filled);
     return true;

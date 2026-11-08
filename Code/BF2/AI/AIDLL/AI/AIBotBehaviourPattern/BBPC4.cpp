@@ -53,7 +53,7 @@ BAPATrigger* newKeyTrigger(const WeaponInfo* weapon, int (WeaponInfo::*key)() co
 {
     return checkPointer(new BAPATrigger(static_cast<io::PlayerInputMap>((weapon->*key)()),
                                         checkPointer(new BAPConTrue()), checkPointer(new BAPConFalse()),
-                                        static_cast<int>(1 << (weapon->*key)()), patternId, 0.0, flag));
+                                        static_cast<int>(1u << (weapon->*key)()), patternId, 0.0, flag));
 }
 
 } // namespace

@@ -395,7 +395,7 @@ void AISettings::preparePlanInterpreterPool(int vehicle)
 {
     if (static_cast<int>(m_planInterpreterPool.size()) <= vehicle)
     {
-        for (unsigned int i = m_planInterpreterPool.size(); i < static_cast<unsigned int>(vehicle + 1); ++i)
+        for (unsigned int i = static_cast<unsigned int>(m_planInterpreterPool.size()); i < static_cast<unsigned int>(vehicle + 1); ++i)
             m_planInterpreterPool.push_back(checkPointer(new BAPInterpreter(45)));
     }
     prepareVehicleGroup(vehicle);

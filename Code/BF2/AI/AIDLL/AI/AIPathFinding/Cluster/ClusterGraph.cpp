@@ -1114,7 +1114,7 @@ void ClusterGraph::calculatePortalCosts(int map, unsigned int island)
     }
 
     m_portalCosts = new float[portalCosts.size()];
-    m_numberOfPortalCosts = portalCosts.size();
+    m_numberOfPortalCosts = static_cast<unsigned int>(portalCosts.size());
     for (unsigned int i = 0; i < portalCosts.size(); ++i)
         m_portalCosts[i] = portalCosts[i];
 
