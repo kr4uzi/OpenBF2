@@ -25,12 +25,11 @@ PACKAGES = {
         )),
     },
     "windows-x64": {
-        "server": ("bin_w64ded", ("bf2_w64ded.exe", "dice_py.dll")),
-        # [CHOSEN, not recovered] Package the native x64 client (owner request 2026-11-08).
-        # CMake has no Windows x64 AI target; local games still need that missing image.
+        # [CHOSEN, not recovered] Native AI in both hosts (kr4uzi/OpenBF2 issue #11).
+        "server": ("bin_w64ded", ("bf2_w64ded.exe", "dice_py.dll", "aidll.dll")),
         "client": ("bin_client", (
             "BF2.exe", "dice_py.dll", "RendDX9.dll", "SwiffPlayer.dll",
-            "BF2Audio.dll", "TextureAtlasBuilder.dll",
+            "BF2Audio.dll", "TextureAtlasBuilder.dll", "aidll.dll",
         )),
     },
     "linux-x64": {
@@ -232,11 +231,6 @@ def package(args):
             "Automated server tests must explicitly use an unused port other than 16567.\n"
         ).format(name=name, revision=args.revision, source=source_url, requirements=requirements)
         readme += "\n" + installation(args.platform, role, name, names[0])
-        if args.platform == "windows-x64" and role == "client":
-            readme += (
-                "\nNo Windows x64 AI library is built or included. Local games require\n"
-                "that missing native image; retail x86 AI DLLs cannot be used here.\n"
-            )
         if args.platform == "windows-x86":
             readme += (
                 "\nThe executable links strictly. The bundled voice-server DLL retains\n"

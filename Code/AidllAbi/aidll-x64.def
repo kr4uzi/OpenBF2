@@ -1,0 +1,6 @@
+; [CHOSEN, not recovered] Native Windows x64 AI entry points (kr4uzi/OpenBF2 issue #11).
+; LoadLibraryBf resolves these names; retail x86 export ordinals are not an x64 contract.
+; All other interaction uses the native ClassManager/singleton ABI shared with the host.
+EXPORTS
+    deinitDll
+    initDll

@@ -1022,10 +1022,9 @@ bool BF2Engine::parseParameters(const std::string& commandLine)
     // [PLATFORM] Dedicated PE 0x404AF5 keeps the server name; client PE 0x409CBD
     // constructs "aidll.dll". Only the ELF overwrites its initial Win32 spelling.
 #if DEDICATED && defined(_WIN64)
-    // [CHOSEN, not recovered] Native x64 keeps the AI library name empty until a
-    // compatible library exists; UseAI=false skips loading and an explicit connection
-    // request retains the empty-name refusal. [RETIRE-WHEN: native-dedicated-ai-library]
-    std::string aiDll;
+    // [CHOSEN, not recovered] Native x64 shares the rebuilt client's AI image.
+    // https://github.com/kr4uzi/OpenBF2/issues/11
+    std::string aiDll("aidll.dll");
 #elif DEDICATED
     std::string aiDll("AIDLL_w32ded.dll");
 #else

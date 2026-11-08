@@ -61,6 +61,19 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --build out/build/ci-x86 --target bf2_aidll
 
+      # [CHOSEN, not recovered] The x64 server depends on and stages the native AI library.
+      - name: Check the Windows x64 AI exports
+        if: matrix.arch == 'x64'
+        run: |
+          call Code\Build\vsdevcmd.cmd x64
+          if errorlevel 1 exit /b 1
+          dumpbin /exports out\build\ci-x64\bin_client\aidll.dll > out\build\ci-x64\aidll-exports.txt
+          if errorlevel 1 exit /b 1
+          type out\build\ci-x64\aidll-exports.txt
+          python -c "import re; from pathlib import Path; text=Path('out/build/ci-x64/aidll-exports.txt').read_text(); names=re.findall(r'^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)\s*$', text, re.M); assert sorted(names)==['deinitDll', 'initDll'], names"
+          if errorlevel 1 exit /b 1
+          fc /b out\build\ci-x64\bin_client\aidll.dll out\build\ci-x64\bin_w64ded\aidll.dll
+
       # RendDX9.dll and TextureAtlasBuilder.dll, and so the client and the editor, build against the
       # April 2005 DirectX SDK or, on hosted runners without it, the D3DX fallback (Code/Build/dxsdk.cmd).
       # Only when neither is usable are the client (and on x86 the editor) skipped with a notice and left

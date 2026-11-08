@@ -57,7 +57,7 @@ class PackageReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(path) as archive:
             entries = {entry.removeprefix(name + "/") for entry in archive.namelist()}
             runtime = {"BF2.exe", "dice_py.dll", "RendDX9.dll", "SwiffPlayer.dll",
-                       "BF2Audio.dll", "TextureAtlasBuilder.dll"}
+                       "BF2Audio.dll", "TextureAtlasBuilder.dll", "aidll.dll"}
             self.assertEqual({entry for entry in entries if entry.endswith((".exe", ".dll"))}, runtime)
             for license_name in ("Ogg-COPYING.txt", "Vorbis-COPYING.txt", "gameswf.txt",
                                  "gameswf-base.txt", "FFmpeg-COPYING.LGPLv2.1.txt"):
@@ -68,10 +68,24 @@ class PackageReleaseTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(archive.read(name + "/" + entry)).hexdigest(), digest)
             self.assertEqual(metadata["link_contract"], "strict")
             self.assertNotIn(b"diagnostic /FORCE package", archive.read(name + "/README.txt"))
-            self.assertIn(b"No Windows x64 AI library", archive.read(name + "/README.txt"))
+            self.assertNotIn(b"No Windows x64 AI library", archive.read(name + "/README.txt"))
         checksum = path.with_suffix(".zip.sha256").read_bytes()
         self.assertEqual(checksum, (hashlib.sha256(path.read_bytes()).hexdigest()
                                    + "  " + path.name + "\n").encode("ascii"))
+
+    def test_x64_server_contents_and_contract(self):
+        self.populate()
+        self.package()
+        name = "openbf2-windows-x64-server"
+        with zipfile.ZipFile(self.args.output_dir / (name + ".zip")) as archive:
+            runtime = {"bf2_w64ded.exe", "dice_py.dll", "aidll.dll"}
+            entries = {entry.removeprefix(name + "/") for entry in archive.namelist()}
+            self.assertEqual({entry for entry in entries if entry.endswith((".exe", ".dll"))}, runtime)
+            metadata = json.loads(archive.read(name + "/build-info.json"))
+            self.assertEqual(set(metadata["runtime_files"]), runtime)
+            self.assertEqual(metadata["link_contract"], "strict")
+            for entry, digest in metadata["runtime_files"].items():
+                self.assertEqual(hashlib.sha256(archive.read(name + "/" + entry)).hexdigest(), digest)
 
     def test_omit_unbuilt_windows_clients_and_editor(self):
         for platform in ("windows-x86", "windows-x64"):

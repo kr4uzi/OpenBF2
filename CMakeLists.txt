@@ -1129,9 +1129,7 @@ endif() # BF2_BUILD_LINUX / BF2_BUILD_MACOS / MSVC link contracts
 
 # =================================================================================================
 # bf2_aidll - THE BOT-AI SIDE-DLL IMAGE.
-# The native Windows x64 profile remains dedicated-only. POSIX ports build their own AI image
-# below with native headers; they cannot use the shipped x86 library.
-if(NOT BF2_BUILD_X64 OR BF2_BUILD_POSIX)
+# Native 64-bit ports build the same manifest with their host ABI; they cannot load x86 AI.
 #
 # AIDLL_w32ded.dll is a THIRD server-side image built from this same tree: bf2_w32ded.exe loads it
 # through ai::AIConnection::init -> LoadLibraryBf -> the exported initDll, and reaches it afterwards
@@ -1145,11 +1143,10 @@ if(NOT BF2_BUILD_X64 OR BF2_BUILD_POSIX)
 # below is therefore its own compilation, and it MIRRORS Code/Build/aidll.cmd. Keep the two lists
 # in step; aidll.cmd is the one the harness and every gate use.
 #
-# EXCLUDE_FROM_ALL, with its own diagnostic /FORCE link: unwritten functions may link at RVA 0.
-# The dedicated executable's strict link does not establish this side-DLL's completeness.
-# Any remaining unresolved symbol must be reported by the strict-link gate.
+# EXCLUDE_FROM_ALL; x86 Windows retains its diagnostic /FORCE link. Native 64-bit images link
+# strictly. The executable's link does not establish the side-DLL's completeness.
 #
-# OUTPUT: <BF2_AIDLL_OUTPUT_DIR>/AIDLL_w32ded.dll - the build tree's bin/, NEVER the game folder.
+# x86 OUTPUT: <BF2_AIDLL_OUTPUT_DIR>/AIDLL_w32ded.dll - the build tree's bin/, NEVER the game folder.
 # "D:/B2BF Launcher/Battlefield2/AIDLL_w32ded.dll" is the REFERENCE binary. The server reaches the
 # rebuilt DLL through a RELATIVE `AIDLL` setting (LoadLibraryBf builds ".\\" + name against the
 # current directory); Code/Tests/aidll/run.py does exactly that and copies nothing.
@@ -1215,6 +1212,40 @@ if(BF2_BUILD_POSIX)
         set_target_properties(bf2_aidll_loader_check PROPERTIES BUILD_RPATH "\$ORIGIN")
     endif()
     add_dependencies(bf2_aidll_loader_check bf2_aidll)
+elseif(BF2_BUILD_X64)
+    # [CHOSEN, not recovered] Windows x64 AI for the native client and dedicated server.
+    # https://github.com/kr4uzi/OpenBF2/issues/11. Keep the host's /MD, release STL layout,
+    # embedded debug information and pointer-truncation errors. The x64 link is strict.
+    bf2_configure_cpp_target(bf2_aidll)
+    bf2_set_image(bf2_aidll 1)
+    target_compile_definitions(bf2_aidll PRIVATE BF2_IMAGE_AIDLL=1 _ITERATOR_DEBUG_LEVEL=0)
+    target_compile_options(bf2_aidll PRIVATE ${BF2_CLIENT_X64_COMPILE_OPTIONS})
+    target_include_directories(bf2_aidll PRIVATE ${BF2_PYTHON_INCLUDE_DIRS})
+    set(bf2_aidll_x64_def "${CMAKE_CURRENT_SOURCE_DIR}/Code/AidllAbi/aidll-x64.def")
+    set_target_properties(bf2_aidll PROPERTIES
+        OUTPUT_NAME aidll
+        PREFIX ""
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin_client"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin_client"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin_client"
+        RUNTIME_OUTPUT_DIRECTORY_RECONSTRUCTION "${CMAKE_BINARY_DIR}/bin_client"
+        PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin_client"
+        FOLDER "BF2")
+    target_link_libraries(bf2_aidll PRIVATE kernel32 user32 advapi32 ws2_32)
+    target_link_options(bf2_aidll PRIVATE
+        /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB:python23.lib
+        "/DEF:${bf2_aidll_x64_def}"
+        "/MAP:${CMAKE_BINARY_DIR}/bin_client/aidll.map")
+    set_property(TARGET bf2_aidll APPEND PROPERTY LINK_DEPENDS "${bf2_aidll_x64_def}")
+
+    # Stage on every server build, even if only the DLL changed since the last executable link.
+    add_custom_target(bf2_aidll_server_stage
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${BF2_DEDICATED_OUTPUT_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:bf2_aidll>" "${BF2_DEDICATED_OUTPUT_DIR}/aidll.dll"
+        DEPENDS bf2_aidll
+        VERBATIM)
+    add_dependencies("${BF2_DEDICATED_TARGET}" bf2_aidll_server_stage)
 else()
 set_target_properties(bf2_aidll PROPERTIES
     LINKER_LANGUAGE CXX
@@ -1250,7 +1281,6 @@ target_link_options(bf2_aidll PRIVATE
 )
 
 endif() # POSIX / Windows AIDLL
-endif() # x86 Windows or POSIX AIDLL
 
 if(NOT BF2_BUILD_X64)
 
@@ -1436,6 +1466,9 @@ set_target_properties(bf2_client PROPERTIES
 )
 bf2_configure_cpp_target(bf2_client)
 bf2_set_image(bf2_client 0)
+if(BF2_BUILD_X64)
+    add_dependencies(bf2_client bf2_aidll)
+endif()
 target_compile_definitions(bf2_client PRIVATE _ITERATOR_DEBUG_LEVEL=0)
 set_target_properties(bf2_client PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${BF2_GAME_DIR}"
