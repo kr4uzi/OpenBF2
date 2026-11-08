@@ -11,7 +11,7 @@
 # time here with BF2_IMAGE_EDITOR=1 and filtered out of the client objects (bf2_editor_shared_sources
 # below lists them). See docs/building.md.
 #
-#   bf2_editor              BF2Editor.exe, a /FORCE diagnostic link like bf2_client
+#   bf2_editor              BF2Editor.exe, strict link
 #   bf2_editor_renddx9      the editor's OWN native RendDX9.dll, built into this build tree and staged
 #                           beside BF2Editor.exe (every bf2_editor build runs it)
 #   bf2_editor_linkcheck    the strict companion link: its unresolved list is the editor's work list
@@ -390,6 +390,22 @@ function(bf2_editor_link_common target)
         target_link_libraries("${target}" PRIVATE "${BF2_DICE_PY_LIB}")
     endif()
     target_link_libraries("${target}" PRIVATE ${bf2_editor_system_libs})
+    # [CHOSEN, not recovered] Complete the shared client engine's voice dependency, as bf2_client
+    # does. VoipServerInternal.cpp references the facade lifecycle and pump. No retail editor
+    # image is available to justify excluding that recovered code.
+    if(BF2_BUILD_X64)
+        if(NOT TARGET bf2_voipserver_client_objects)
+            message(FATAL_ERROR "${target}: missing native x64 client voice objects")
+        endif()
+        target_sources("${target}" PRIVATE $<TARGET_OBJECTS:bf2_voipserver_client_objects>)
+        message(STATUS "${target}: voice provider = bf2_voipserver_client_objects (native x64)")
+    else()
+        if(NOT TARGET bf2_voipserver_client)
+            message(FATAL_ERROR "${target}: missing x86 client voice DLL target")
+        endif()
+        target_link_libraries("${target}" PRIVATE bf2_voipserver_client)
+        message(STATUS "${target}: voice provider = bf2_voipserver_client (x86 import library)")
+    endif()
     # x86 only: the x64 client objects import nothing from the 32-bit NovintHFX.dll.
     if(TARGET bf2_novint_imports)
         add_dependencies("${target}" bf2_novint_imports)
@@ -398,14 +414,13 @@ function(bf2_editor_link_common target)
 endfunction()
 
 # ---- BF2Editor.exe ------------------------------------------------------------------------------
-# /FORCE, like bf2_client: the client object set still has unresolved externals (the strict list
-# below). A /FORCE image proves only the paths it runs.
+# The six CBF2VoipServer facade methods are supplied by the client's voice target.
+# Keep this link strict so any remaining image debt fails visibly; VM validation is required.
 # /ENTRY: see App/EditorMain.cpp - the game's WinMain is linked but never the entry.
 add_executable(bf2_editor EXCLUDE_FROM_ALL ${bf2_editor_link_objects})
 bf2_editor_link_common(bf2_editor)
 set_target_properties(bf2_editor PROPERTIES OUTPUT_NAME BF2Editor)
 target_link_options(bf2_editor PRIVATE
-    /FORCE
     /INCREMENTAL:NO
     /DEBUG
     /SUBSYSTEM:WINDOWS
@@ -414,6 +429,14 @@ target_link_options(bf2_editor PRIVATE
     "/MAP:${BF2_EDITOR_OUTPUT_DIR}/BF2Editor.map"
     /IGNORE:4006,4088,4098
 )
+if(TARGET bf2_voipserver_client)
+    add_custom_command(TARGET bf2_editor POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:bf2_voipserver_client>" "${BF2_EDITOR_OUTPUT_DIR}/BF2VoipServer.dll"
+        COMMENT "Staging the rebuilt client voice server beside BF2Editor.exe"
+        VERBATIM
+    )
+endif()
 if(EXISTS "${BF2_DICE_PY_DLL}")
     add_custom_command(TARGET bf2_editor POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -470,15 +493,14 @@ set_property(TARGET bf2_editor_renddx9 PROPERTY FOLDER "BF2Editor")
 add_dependencies(bf2_editor bf2_editor_renddx9)
 
 # ---- The strict companion link --------------------------------------------------------------------
-# EXPECTED TO FAIL until the client object set links clean; the LNK2019/LNK2001 names are the
-# editor's whole-image work list (shared engine debt included). /FORCE:MULTIPLE tolerates only
-# duplicates, as for bf2_client_linkcheck. Compare its symbol set with bf2_client_linkcheck's before
-# attributing a gap to editor code.
+# Reuse the editor's exact objects and libraries without any /FORCE option.
+# LNK2019/LNK2001 names measure the editor's remaining whole-image link debt;
+# the production editor also links strictly. This manual check stays EXCLUDE_FROM_ALL.
+# It is independent of bf2_editor: requesting the production target never builds this executable.
 add_executable(bf2_editor_linkcheck EXCLUDE_FROM_ALL ${bf2_editor_link_objects})
 bf2_editor_link_common(bf2_editor_linkcheck)
 set_target_properties(bf2_editor_linkcheck PROPERTIES OUTPUT_NAME BF2Editor_linkcheck)
 target_link_options(bf2_editor_linkcheck PRIVATE
-    /FORCE:MULTIPLE
     /INCREMENTAL:NO
     /DEBUG
     /SUBSYSTEM:WINDOWS

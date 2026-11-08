@@ -17,7 +17,7 @@ endif()
 
 # =================================================================================================
 # TOOLCHAINS (2026-09-29). Three configurations, one source tree:
-#   * MSVC x86            - the retail-fidelity reconstruction: bf2_w32ded.exe, /FORCE diagnostic link.
+#   * MSVC x86            - the retail-fidelity reconstruction: bf2_w32ded.exe, strict link.
 #   * MSVC x64            - the native Windows dedicated port: bf2_w64ded.exe, strict link.
 #   * GCC/Clang, Linux    - the native Linux dedicated port: `bf2` + `libdice_py.so`. It is the x64
 #     x86-64                port's pointer-bearing layouts compiled by the platform family the ELF
@@ -918,9 +918,9 @@ set_target_properties(bf2_engine_objects bf2_zlib_objects bf2_tinyxml_objects
 # harness (bounded frames, object probes, RVA-printing fault handler) lives in Code/Build/bootmain.cpp
 # and is reached only through Code/Build/bootrun.cmd; it is deliberately NOT linked here.
 #
-# ⚠ The x86 diagnostic target retains /FORCE: every unwritten function links at RVA 0 and faults
-# when reached. The x64 target DOES NOT use /FORCE. It must not emit a runnable image until every
-# compile, dependency, and strict-link requirement is satisfied.
+# Both Windows executables link strictly: zero unresolved symbols were measured in
+# the x86 companion with MSVC 14.44 and the matching dice_py.lib.
+# Side-DLL link contracts and runtime frontiers remain independent of the executable's link.
 #
 # OUTPUT: <BF2_DEDICATED_OUTPUT_DIR>/<selected target>.exe. The default is inside that architecture's
 # build tree, NEVER the game folder: D:/B2BF Launcher/Battlefield2/bf2_w32ded.exe is the ORIGINAL
@@ -1122,9 +1122,7 @@ target_link_options("${BF2_DEDICATED_TARGET}" PRIVATE
     "/MAP:${BF2_DEDICATED_OUTPUT_DIR}/${BF2_DEDICATED_OUTPUT_NAME}.map"
     /IGNORE:4006,4088,4098
 )
-if(NOT BF2_BUILD_X64)
-    target_link_options("${BF2_DEDICATED_TARGET}" PRIVATE /FORCE)
-else()
+if(BF2_BUILD_X64)
     target_link_options("${BF2_DEDICATED_TARGET}" PRIVATE /OPT:REF /OPT:ICF /INCREMENTAL:NO)
 endif()
 endif() # BF2_BUILD_LINUX / BF2_BUILD_MACOS / MSVC link contracts
@@ -1147,8 +1145,8 @@ if(NOT BF2_BUILD_X64 OR BF2_BUILD_POSIX)
 # below is therefore its own compilation, and it MIRRORS Code/Build/aidll.cmd. Keep the two lists
 # in step; aidll.cmd is the one the harness and every gate use.
 #
-# EXCLUDE_FROM_ALL, and /FORCE for the same reason bf2_w32ded is: every unwritten function links at
-# RVA 0 and faults BY NAME on the path that reaches it.
+# EXCLUDE_FROM_ALL, with its own diagnostic /FORCE link: unwritten functions may link at RVA 0.
+# The dedicated executable's strict link does not establish this side-DLL's completeness.
 # Any remaining unresolved symbol must be reported by the strict-link gate.
 #
 # OUTPUT: <BF2_AIDLL_OUTPUT_DIR>/AIDLL_w32ded.dll - the build tree's bin/, NEVER the game folder.
@@ -1323,6 +1321,13 @@ if(TARGET bf2_voipserver)
     target_link_libraries("${BF2_DEDICATED_TARGET}" PRIVATE bf2_voipserver)
 endif()
 
+# [CHOSEN, not recovered] Compatibility build alias: the production x86 server now links strictly.
+# Like bf2_client_linkcheck, this emits only the production executable, not a second check image.
+if(NOT BF2_BUILD_POSIX AND NOT BF2_BUILD_X64)
+    add_custom_target(bf2_w32ded_linkcheck DEPENDS bf2_w32ded)
+    set_property(TARGET bf2_w32ded_linkcheck PROPERTY FOLDER "BF2")
+endif()
+
 # =================================================================================================
 # bf2_voipserver_client - THE CLIENT LISTEN-SERVER VOICE DLL.
 #
@@ -1391,21 +1396,18 @@ endif() # Windows x86 voice images
 if(NOT BF2_BUILD_POSIX)
 
 # =================================================================================================
-# bf2_client - THE CLIENT LINK-REACH IMAGE (2026-09-03).
+# bf2_client - THE STRICTLY LINKED WINDOWS CLIENT.
 #
-# This is a real /DDEDICATED=0 image. Modern link.exe does
-# not enumerate unresolved symbols when /FORCE is active, so bf2_client_linkcheck below is the
-# deliberately failing strict link whose diagnostics are the client work list. Both targets are
-# EXCLUDE_FROM_ALL. Process startup constructs HUD, then stops before singleton registration (2026-09-05);
-# this is not a runnable-client claim. RendDX9 now has a separately proven
-# native registry/module ABI flavour, but its HWND/display-mode boundary and the exe-side
-# BF2Render bridge are still open; SwiffPlayer's native AS host callbacks remain frontiers. Both plugin
-# builds are staged beside this diagnostic host since 2026-09-08 (the bf2_client_plugins dependency below).
+# This /DDEDICATED=0 image links without /FORCE on x86 and x64 when the matching
+# dice_py import library is supplied (MSVC 14.44 checks, 2026-11-08).
+# Four-way runs and the x64 movie check establish runtime reach; remaining engine
+# frontiers still limit individual paths. The target stays EXCLUDE_FROM_ALL.
+# Native plugins are staged beside the host by bf2_client_plugins below.
 # Output stays in this build tree and can never overwrite the retail BF2.exe used as
 # reverse-engineering evidence.
 # =================================================================================================
 # Fixed inside this build tree on purpose: unlike the server's opt-in deployment directory, a
-# diagnostic client target must never be redirected onto the retail BF2.exe (CMake clean would then
+# client target must never be redirected onto the retail BF2.exe (CMake clean would then
 # own and could remove it).
 set(BF2_CLIENT_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin_client")
 
@@ -1442,7 +1444,7 @@ set_target_properties(bf2_client PROPERTIES
 
 # Normal startup includes the movies; +restart remains an optional explicit skip.
 set(BF2_CLIENT_RUN_ARGS "+modPath;mods/bf2;+fullscreen;0;+multi;1"
-    CACHE STRING "Arguments for the diagnostic bf2_client_run target (a CMake ;-list).")
+    CACHE STRING "Arguments for the bf2_client_run target (a CMake ;-list).")
 add_custom_target(bf2_client_run
     COMMAND "$<TARGET_FILE:bf2_client>" ${BF2_CLIENT_RUN_ARGS}
     DEPENDS bf2_client
@@ -1464,7 +1466,7 @@ if(EXISTS "${BF2_DICE_PY_DLL}")
     add_custom_command(TARGET bf2_client POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${BF2_DICE_PY_DLL}" "${BF2_CLIENT_OUTPUT_DIR}/dice_py.dll"
-        COMMENT "Staging dice_py.dll beside the diagnostic BF2.exe"
+        COMMENT "Staging dice_py.dll beside BF2.exe"
         VERBATIM
     )
 endif()
@@ -1491,7 +1493,7 @@ if(EXISTS "${BF2_GAME_DIR}/NovintHFX.dll")
     add_custom_command(TARGET bf2_client POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${BF2_GAME_DIR}/NovintHFX.dll" "${BF2_CLIENT_OUTPUT_DIR}/NovintHFX.dll"
-        COMMENT "Staging the original Novint SDK companion beside the diagnostic BF2.exe"
+        COMMENT "Staging the original Novint SDK companion beside BF2.exe"
         VERBATIM
     )
 endif()
@@ -1629,7 +1631,7 @@ add_custom_target(bf2_client_plugins
             "-DBF2_PLUGIN_DST_DIR=${BF2_CLIENT_OUTPUT_DIR}"
             "-DBF2_PLUGIN_HINT=build it with Code/Build/textureatlasbuilder.cmd ${BF2_PLUGIN_FLAVOUR}"
             -P "${BF2_PLUGIN_STAGE_SCRIPT}"
-    COMMENT "Staging the four ${BF2_PLUGIN_FLAVOUR} plugins beside the diagnostic BF2.exe"
+    COMMENT "Staging the four ${BF2_PLUGIN_FLAVOUR} plugins beside BF2.exe"
     VERBATIM
 )
 # Ordering AND obligation: all four plugin builds complete before anything is copied. This
@@ -1668,7 +1670,6 @@ if(BF2_BUILD_X64)
     target_sources(bf2_client PRIVATE $<TARGET_OBJECTS:bf2_voipserver_client_objects>)
 endif()
 target_link_options(bf2_client PRIVATE
-    /FORCE
     /INCREMENTAL:NO
     /DEBUG
     # ⚠ THE ",4.0" IS LOAD-BEARING, AND IT IS A FIDELITY SETTING, NOT A PREFERENCE.
@@ -1699,60 +1700,9 @@ target_link_options(bf2_client PRIVATE
 
 set_property(TARGET bf2_client_objects PROPERTY FOLDER "BF2")
 
-# Strict companion to bf2_client. This target is EXPECTED TO FAIL until every client external is
-# recovered; the final LNK1120 count and the preceding symbol names are the measured whole-image
-# work list (shared engine debt included, not a client-only delta).
-# /FORCE:MULTIPLE tolerates the five known duplicate FileChangeManager constants without tolerating
-# unresolveds. Keeping it separate lets bf2_client emit the RVA-0 PE used for map/import checks.
-add_executable(bf2_client_linkcheck EXCLUDE_FROM_ALL
-    $<TARGET_OBJECTS:bf2_client_objects>
-    $<TARGET_OBJECTS:bf2_zlib_objects>
-    $<TARGET_OBJECTS:bf2_tinyxml_objects>
-    $<TARGET_OBJECTS:bf2_gamespy_objects>
-    $<TARGET_OBJECTS:bf2_gamespy_sb_objects>
-    $<TARGET_OBJECTS:bf2_gamespy_gp_objects>
-    $<TARGET_OBJECTS:bf2_gamespy_cdkeyc_objects>
-)
-set_target_properties(bf2_client_linkcheck PROPERTIES
-    LINKER_LANGUAGE CXX
-    WIN32_EXECUTABLE TRUE
-    OUTPUT_NAME BF2_linkcheck
-    RUNTIME_OUTPUT_DIRECTORY "${BF2_CLIENT_OUTPUT_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${BF2_CLIENT_OUTPUT_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${BF2_CLIENT_OUTPUT_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RECONSTRUCTION "${BF2_CLIENT_OUTPUT_DIR}"
-    PDB_OUTPUT_DIRECTORY "${BF2_CLIENT_OUTPUT_DIR}"
-    PDB_OUTPUT_DIRECTORY_DEBUG "${BF2_CLIENT_OUTPUT_DIR}"
-    PDB_OUTPUT_DIRECTORY_RELEASE "${BF2_CLIENT_OUTPUT_DIR}"
-    PDB_OUTPUT_DIRECTORY_RECONSTRUCTION "${BF2_CLIENT_OUTPUT_DIR}"
-    FOLDER "BF2"
-)
-bf2_configure_cpp_target(bf2_client_linkcheck)
-bf2_set_image(bf2_client_linkcheck 0)
-
-if(EXISTS "${BF2_DICE_PY_LIB}")
-    target_link_libraries(bf2_client_linkcheck PRIVATE "${BF2_DICE_PY_LIB}")
-endif()
-target_link_libraries(bf2_client_linkcheck PRIVATE
-    advapi32 crypt32 dbghelp dinput8 dsound dxguid gdi32 ole32 psapi shell32 user32 winmm ws2_32
-)
-if(TARGET bf2_voipserver_client_objects)
-    target_sources(bf2_client_linkcheck PRIVATE $<TARGET_OBJECTS:bf2_voipserver_client_objects>)
-elseif(TARGET bf2_voipserver_client)
-    # x86: the CBF2VoipServer members come from BF2VoipServer.dll's import library, as for bf2_client.
-    target_link_libraries(bf2_client_linkcheck PRIVATE bf2_voipserver_client)
-endif()
-if(TARGET bf2_novint_imports)
-    add_dependencies(bf2_client_linkcheck bf2_novint_imports)
-    target_link_libraries(bf2_client_linkcheck PRIVATE "${BF2_NOVINT_IMPORT_LIB}")
-endif()
-target_link_options(bf2_client_linkcheck PRIVATE
-    /FORCE:MULTIPLE
-    /INCREMENTAL:NO
-    /DEBUG
-    /SUBSYSTEM:WINDOWS
-    /NODEFAULTLIB:python23.lib
-)
+# Compatibility build alias: bf2_client itself now performs the strict link.
+add_custom_target(bf2_client_linkcheck DEPENDS bf2_client)
+set_property(TARGET bf2_client_linkcheck PROPERTY FOLDER "BF2")
 
 # The BF2 Editor links the client object set above, so it lives in this Windows client block
 # (x86 and native x64). Every editor target is EXCLUDE_FROM_ALL.
