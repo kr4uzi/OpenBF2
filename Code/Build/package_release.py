@@ -13,19 +13,24 @@ import zipfile
 # Keep these manifests aligned with the image targets in CMakeLists.txt.
 PACKAGES = {
     "windows-x86": {
-        "server-diagnostic": ("bin", (
-            "bf2_w32ded.exe", "dice_py.dll", "AIDLL_w32ded.dll",
+        "server": ("bin", (
+            "bf2_w32ded.exe", "dice_py.dll", "AIDLL_w32ded.dll", "BF2VoipServer_w32ded.dll",
         )),
-        "client-diagnostic": ("bin_client", (
+        "client": ("bin_client", (
             "BF2.exe", "dice_py.dll", "RendDX9.dll", "SwiffPlayer.dll",
-            "BF2Audio.dll", "TextureAtlasBuilder.dll",
+            "BF2Audio.dll", "TextureAtlasBuilder.dll", "BF2VoipServer.dll",
         )),
-        "editor-diagnostic": ("bin_editor", (
-            "BF2Editor.exe", "dice_py.dll", "RendDX9.dll", "TextureAtlasBuilder.dll",
+        "editor": ("bin_editor", (
+            "BF2Editor.exe", "dice_py.dll", "RendDX9.dll", "TextureAtlasBuilder.dll", "BF2VoipServer.dll",
         )),
     },
     "windows-x64": {
-        "server": ("bin_w64ded", ("bf2_w64ded.exe", "dice_py.dll")),
+        # [CHOSEN, not recovered] Native AI in both hosts (kr4uzi/OpenBF2 issue #11).
+        "server": ("bin_w64ded", ("bf2_w64ded.exe", "dice_py.dll", "aidll.dll")),
+        "client": ("bin_client", (
+            "BF2.exe", "dice_py.dll", "RendDX9.dll", "SwiffPlayer.dll",
+            "BF2Audio.dll", "TextureAtlasBuilder.dll", "aidll.dll",
+        )),
     },
     "linux-x64": {
         "server": ("bin_linux", ("bf2", "libdice_py.so")),
@@ -59,6 +64,77 @@ def leading_notice(path):
     if not match or not match.group().strip():
         raise ValueError("Missing leading dependency notice: {}".format(path))
     return match.group().rstrip() + "\n"
+
+
+def installation(platform, role, name, executable):
+    """[CHOSEN, not recovered] Owner-requested install policy."""
+    server = role.startswith("server")
+    options = "+loadMod bf2" if role.startswith("editor") else "+modPath mods/bf2"
+    if role.startswith("client"):
+        options += " +fullscreen 0"
+    if platform.startswith("windows-"):
+        text = (
+            "Install (Windows, Command Prompt)\n"
+            "1. Use your own Battlefield 2 1.50 {content} installation. Extract this\n"
+            "   package to C:\\OpenBF2\\{name}; keep all its DLLs beside {exe}.\n"
+            "   Keep client, server and editor packages in separate folders.\n"
+            "2. Set the working directory to the installation root containing mods\\,\n"
+            "   python\\ and pylib-2.3.4.zip (not to mods\\bf2):\n"
+            "   cd /d \"C:\\Games\\{root}\"\n"
+        ).format(content="dedicated-server" if server else "retail game",
+                 name=name, exe=executable, root="Battlefield 2 Server" if server else "Battlefield 2")
+        command = '"C:\\OpenBF2\\{}\\{}" {}'.format(name, executable, options)
+        if role.startswith("client"):
+            text += ("   The original folder supplies binkw32.dll, d3dx9_25.dll, NovintHFX.dll\n"
+                     "   and the OpenAL DLLs through this working directory where required\n"
+                     "   (x86-only Bink/Novint). Checked against the code; not runtime-tested here.\n")
+    else:
+        macos = platform.startswith("macos-")
+        text = (
+            "Install ({system}, Terminal)\n"
+            "1. Extract this package to ~/Games/{name}.\n"
+            "2. From your own {content} installation, copy mods/, python/ and\n"
+            "   pylib-2.3.4.zip into that folder, beside {exe}. Also copy Settings/\n"
+            "   and Profiles/ if present, and admin/ if you use its server scripts.\n"
+            "   Keep the complete mods/ tree, including its archives and movies.\n"
+            "{case_note}"
+            "3. In Terminal (keep the bundled libraries beside the executable):\n"
+            "   cd \"$HOME/Games/{name}\"\n"
+        ).format(system="macOS 11 or later; arm64 for Apple silicon, x86_64 for Intel" if macos else "Linux",
+                 content="Windows/Wine Battlefield 2 1.50" if macos else "Battlefield 2 1.50 server",
+                 name=name, exe=executable,
+                 case_note=("   Use a case-insensitive volume for Windows/Wine content; the engine\n"
+                            "   lowercases game paths. Do not rename individual files or folders.\n")
+                 if macos else "   Use Linux server content with lowercase game paths.\n")
+        if macos:
+            text += "   xattr -dr com.apple.quarantine .\n"
+        text += "   chmod +x {}\n".format(executable)
+        command = "./{} {}".format(executable, options)
+        if macos and not server:
+            text += ("   New user profiles live in ~/Library/Application Support/OpenBF2/Profiles/,\n"
+                     "   independently of the copied installation's Profiles/ folder.\n"
+                     "   Before joining, create ~/Library/Application Support/OpenBF2/Registry.con:\n"
+                     "   HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Games\\Battlefield 2\\ergc = YOUR-CD-KEY\n"
+                     "   Use your own unmarked key, single backslashes, no quotes; keep the file private.\n")
+    if server:
+        text += (
+            "   Use the server's stock mods/bf2/Settings/ServerSettings.con and\n"
+            "   mods/bf2/Settings/maplist.con from this working directory.\n"
+            "   Optional overrides: +config path/to/ServerSettings.con and\n"
+            "   +mapList path/to/maplist.con, with paths relative to the content root.\n"
+        )
+    text += (
+        "{step}. Start with:\n   {command}\n"
+        "   Replace the example paths with your own.\n"
+    ).format(step=3 if platform.startswith("windows-") else 4, command=command)
+    if platform.startswith("windows-"):
+        text += ("   A shortcut can use the same command as Target and the installation\n"
+                 "   root as Start in. No original EXE or DLL is replaced; to go back,\n"
+                 "   launch the original executable/shortcut.\n")
+        if not role.startswith("editor"):
+            text += ("   +modPath selects a mod, not the entire installation; keep the\n"
+                     "   working directory above.\n")
+    return text + "\n"
 
 
 def package(args):
@@ -103,6 +179,9 @@ def package(args):
             files["licenses/MojoShader-LICENSE.txt"] = deps / "mojoshader/LICENSE.txt"
             files["licenses/meshoptimizer-LICENSE.md"] = external / "meshoptimizer/LICENSE.md"
             files["licenses/FFmpeg-COPYING.LGPLv2.1.txt"] = external / "ffmpeg-bink/COPYING.LGPLv2.1"
+        if role.startswith("client") and args.platform == "windows-x64":
+            # renddx9.cmd x64 statically links the FFmpeg-based Bink replacement.
+            files["licenses/FFmpeg-COPYING.LGPLv2.1.txt"] = external / "ffmpeg-bink/COPYING.LGPLv2.1"
         if role.startswith("editor"):
             files["licenses/ImGui-LICENSE.txt"] = external / "imgui/LICENSE.txt"
             files["licenses/ImGuizmo-LICENSE.txt"] = external / "ImGuizmo/LICENSE"
@@ -126,27 +205,40 @@ def package(args):
             "windows_signing": "not configured",
             "runtime_files": {entry: sha256(files[entry]) for entry in names},
         }
+        if args.platform.startswith("windows-"):
+            requirements = (
+                "Windows requires the matching x86/x64 Microsoft Visual C++ runtime.\n"
+                "Client/editor dependencies such as Bink, NovintHFX, d3dx9_25 and an\n"
+                "OpenAL provider must be supplied separately where required.\n"
+                "These Windows binaries are not code-signed.\n"
+            )
+        elif args.platform.startswith("macos-"):
+            requirements = "macOS binaries are ad-hoc signed, not notarized.\n"
+        else:
+            requirements = (
+                "Linux is built on Ubuntu 22.04 with dynamic glibc/ncurses dependencies.\n"
+                "Keep libdice_py.so beside bf2.\n"
+            )
         readme = (
             "OpenBF2: {name}\n\n"
             "Source revision: {revision}\nSource and build instructions: {source}\n\n"
             "This archive contains rebuilt runtime binaries. It does not contain a\n"
             "Battlefield 2 installation. Supply your own compatible 1.50 game content,\n"
-            "configuration and Python game scripts. Keep the original game binaries\n"
-            "separate and run these binaries with the game content as working directory.\n"
+            "configuration and Python game scripts.\n"
             "Do not mix rebuilt client/editor engine plugins with retail engine plugins.\n\n"
-            "Windows requires the matching x86/x64 Microsoft Visual C++ runtime.\n"
-            "Client/editor runtime dependencies such as Bink, NovintHFX, d3dx9_25 and\n"
-            "an OpenAL provider must be supplied separately where required. Windows\n"
-            "binaries are not code-signed by this pipeline.\n"
-            "Linux is built on Ubuntu 22.04 with dynamic glibc/ncurses dependencies.\n"
-            "Keep libdice_py.so beside bf2; use chmod +x bf2 if your extractor drops modes.\n"
-            "macOS builds target macOS 11 or later, one archive per architecture (arm64 or\n"
-            "x86_64). Keep the .dylib files beside bf2_client/bf2. The binaries are ad-hoc\n"
-            "signed, not notarized: clear the quarantine flag (xattr -dr com.apple.quarantine)\n"
-            "after extracting.\n\n"
+            "{requirements}\n"
             "Build and fixture success do not establish loading, joining or gameplay.\n"
             "Automated server tests must explicitly use an unused port other than 16567.\n"
-        ).format(name=name, revision=args.revision, source=source_url)
+        ).format(name=name, revision=args.revision, source=source_url, requirements=requirements)
+        readme += "\n" + installation(args.platform, role, name, names[0])
+        if args.platform == "windows-x86":
+            readme += (
+                "\nThe executable links strictly. The bundled voice-server DLL retains\n"
+                "its independent diagnostic /FORCE link and may contain unresolved calls.\n"
+                "A strict executable link does not establish side-DLL completeness.\n"
+            )
+            if role == "server":
+                readme += "The bundled AI library also retains its diagnostic /FORCE link.\n"
         if diagnostic:
             readme += (
                 "\nThis is a diagnostic /FORCE package. Its executable and any AI library\n"

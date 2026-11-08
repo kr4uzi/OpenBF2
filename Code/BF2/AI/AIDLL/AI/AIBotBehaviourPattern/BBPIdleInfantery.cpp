@@ -114,7 +114,7 @@ BotScript* BBPIdleInfantery::createPlan(Bot* bot)
                     // Right-to-left argument evaluation in the image: the controls mask and both
                     // conditions are built before the input is read again.
                     const int patternId = m_patternId;
-                    const unsigned long long controls = static_cast<long long>(static_cast<int>(1 << weapon->getWeaponZoom()));
+                    const unsigned long long controls = static_cast<long long>(static_cast<int>(1u << weapon->getWeaponZoom()));
                     BAPConFalse* const stop = checkPointer(new BAPConFalse());
                     BAPConTrue* const start = checkPointer(new BAPConTrue());
                     BAPATrigger* const unzoom = checkPointer(new BAPATrigger(

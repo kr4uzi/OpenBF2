@@ -1038,7 +1038,7 @@ void normalize(Vec3& v)
 // `1 << input` sign-extended to the 64-bit control mask (`movl %eax,%edx; sarl $0x1f,%edx`).
 unsigned long long inputMask(int input)
 {
-    return static_cast<unsigned long long>(static_cast<long long>(static_cast<int>(1 << input)));
+    return static_cast<unsigned long long>(static_cast<long long>(static_cast<int>(1u << input)));
 }
 
 // Every branch starts its parallel block with the sensing-agent override; bots whose own

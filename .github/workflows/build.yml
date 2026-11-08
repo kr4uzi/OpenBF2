@@ -61,6 +61,19 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --build out/build/ci-x86 --target bf2_aidll
 
+      # [CHOSEN, not recovered] The x64 server depends on and stages the native AI library.
+      - name: Check the Windows x64 AI exports
+        if: matrix.arch == 'x64'
+        run: |
+          call Code\Build\vsdevcmd.cmd x64
+          if errorlevel 1 exit /b 1
+          dumpbin /exports out\build\ci-x64\bin_client\aidll.dll > out\build\ci-x64\aidll-exports.txt
+          if errorlevel 1 exit /b 1
+          type out\build\ci-x64\aidll-exports.txt
+          python -c "import re; from pathlib import Path; text=Path('out/build/ci-x64/aidll-exports.txt').read_text(); names=re.findall(r'^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\w+)(?:\s*=\s*\S+)?\s*$', text, re.M); assert sorted(names)==['deinitDll', 'initDll'], names"
+          if errorlevel 1 exit /b 1
+          fc /b out\build\ci-x64\bin_client\aidll.dll out\build\ci-x64\bin_w64ded\aidll.dll
+
       # RendDX9.dll and TextureAtlasBuilder.dll, and so the client and the editor, build against the
       # April 2005 DirectX SDK or, on hosted runners without it, the D3DX fallback (Code/Build/dxsdk.cmd).
       # Only when neither is usable are the client (and on x86 the editor) skipped with a notice and left
@@ -79,8 +92,7 @@ jobs:
           )
           exit /b 0
 
-      # Keep the client/plugin and editor builds sequential within this checkout. The x64 client
-      # (RendDX9 x64 with the Bink port) is built as a check; its package stays server-only for now.
+      # Keep the client/plugin and editor builds sequential within this checkout.
       - name: Build the ${{ matrix.arch }} client with plugins
         if: steps.dxsdk.outputs.found == 'true'
         run: |
@@ -97,8 +109,11 @@ jobs:
 
       # Future Windows signing belongs here, before packaging and checksums.
       # No signing credentials or signing step are configured yet.
+      - name: Check packaging fixtures
+        run: python Code/Tests/test_package_release.py
+
       - name: Package Windows binaries
-        run: python Code/Build/package_release.py --platform windows-${{ matrix.arch }} --build-dir out/build/ci-${{ matrix.arch }} --output-dir out/packages --revision "%GITHUB_SHA%" --repository "%GITHUB_REPOSITORY%" ${{ (matrix.arch == 'x86' && steps.dxsdk.outputs.found != 'true') && '--omit client-diagnostic --omit editor-diagnostic' || '' }}
+        run: python Code/Build/package_release.py --platform windows-${{ matrix.arch }} --build-dir out/build/ci-${{ matrix.arch }} --output-dir out/packages --revision "%GITHUB_SHA%" --repository "%GITHUB_REPOSITORY%" ${{ steps.dxsdk.outputs.found != 'true' && (matrix.arch == 'x86' && '--omit client --omit editor' || '--omit client') || '' }}
 
       - name: Upload Windows packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
