@@ -3,236 +3,139 @@
 // This source code has been donated to the Public Domain.  Do
 // whatever you want with it.
 
+#include "../../Platform/X87Compat.h"
 #include "gameswf_log.h"
 #include "gameswf_action.h"
 #include "gameswf_impl.h"
-#include "gameswf_log.h"
 #include "base/smart_ptr.h"
 
 #include "gameswf_timers.h"
-#include "gameswf_xml.h"
 
-using namespace std;
 
 namespace gameswf 
 {
-  Timer::Timer() :
-      _which(0),
-      _interval(0.0),
-      _start(0.0),
-      _object(0),
-      _env(0)
+  // SwiffPlayer.dll 0x100774C0 copies borrowed pointers, then the method string,
+  // argument array and float timing fields. 0x10075E30 assigns in the same order.
+  // [INFERRED] Source-level type and field names; native pointer/container widths.
+  struct interval_record
   {
-  }
-  
-  Timer::Timer(as_value *obj, int ms)
-  {
-    setInterval(*obj, ms);
-    start();
-  }
-  
-  Timer::~Timer()
-  {
-    log_msg("%s: \n", __FUNCTION__);
-  }
-  
-  int
-  Timer::setInterval(as_value obj, int ms)
-  {
-    _function = obj;
-    _interval = ms * 0.001;   // [DICE-MOD SwiffPlayer: milliseconds. The stock 0.01 made every interval ten times too long; the shipped timer keeps the raw ms.]
-    // _interval = ms * 0.000001;
-    start();
+    // Implicit construction/destruction: 0x10077B80 / 0x10077BA0 initializes
+    // only method/arguments, then destroys arguments before method.
+    as_environment* environment;
+    as_object_interface* receiver;
+    as_object_interface* target;
+    tu_string method;
+    ::array<as_value> arguments;
+    float milliseconds;
+    float last_fire;
+  };
 
-    return 0;
-  }
+  // SwiffPlayer.dll 0x100F8CC0, destructor 0x1007DA60 / veneer 0x1007EB10.
+  // Entry copy/construct/clear: 0x10077CA0 / 0x10077CD0 / 0x1007CD50.
+  // The records own only
+  // their method names and arguments; object/environment pointers are borrowed.
+  static ::hash<Uint32, interval_record> s_intervals;
+  static Uint32 s_next_interval = 0;
 
-  int
-  Timer::setInterval(as_value obj, int ms, as_environment *en)
+  void clear_interval_registry() { s_intervals.clear(); }
+
+  // [CHOSEN, not recovered] S3 bridge for the native combined movie interface;
+  // retail calls the receiver's environment slot directly.
+  static as_environment* interval_environment(as_object_interface* receiver)
   {
-    _function = obj;
-    _interval = ms * 0.001;   // [DICE-MOD SwiffPlayer: milliseconds. The stock 0.01 made every interval ten times too long; the shipped timer keeps the raw ms.]
-    _env = en;
-    // _interval = ms * 0.000001;
-    start();
-
-    return 0;
-  }
-  int
-  Timer::setInterval(as_value obj, int ms, array<struct variable *> *locals)
-  {
-    _function = obj;
-    _interval = ms * 0.001;   // [DICE-MOD SwiffPlayer: milliseconds. The stock 0.01 made every interval ten times too long; the shipped timer keeps the raw ms.]
-    _locals = locals;
-    // _interval = ms * 0.000001;
-    start();
-
-    return 0;
+    movie* target = receiver->to_movie();
+    return target ? target->get_action_environment() : NULL;
   }
 
-  int
-  Timer::setInterval(as_value obj, int ms, as_object_interface *this_ptr, as_environment *en)
+  // SwiffPlayer.dll 0x10077910. Keep the live record and iterator across calls:
+  // retail neither snapshots nor protects them against callback invalidation.
+  void update_intervals(float movie_time)
   {
-    _function = obj;
-    _interval = ms * 0.001;   // [DICE-MOD SwiffPlayer: milliseconds. The stock 0.01 made every interval ten times too long; the shipped timer keeps the raw ms.]
-    _env = en;
-    _object = this_ptr;
-    // _interval = ms * 0.000001;
-    start();
-
-    return 0;
-  }
-
-  void
-  Timer::clearInterval()
-  {
-    _interval = 0.0;
-    _start = 0.0;
-  }
-  
-  void
-  Timer::start()
-  {
-    uint64 ticks = tu_timer::get_profile_ticks();
-    _start = tu_timer::profile_ticks_to_seconds(ticks);
-  }
-  
-
-  bool
-  Timer::expired()
-  {
-    if (_start > 0.0) {
-      uint64 ticks = tu_timer::get_profile_ticks();
-      double now = tu_timer::profile_ticks_to_seconds(ticks);
-      //printf("FIXME: %s: now is %f, start time is %f, interval is %f\n", __FUNCTION__, now, _start, _interval);
-      if (now > _start + _interval) {
-        _start = now;               // reset the timer
-        //log_msg("Timer expired! \n");
-        return true;
-      }
-      // FIXME: Sometimes, "now" and "_start" have bad values.
-      // I don't know why, but this works around the problem..
-      else if (now < _start) {
-        log_msg( "Timer::expired - now (%lf) is before start (%lf)!\n"
-                 "     Expiring right now.\n",
-                 now, _start);
-        _start = now;
-        return true;
+    for (::hash<Uint32, interval_record>::iterator it = s_intervals.begin();
+         it != s_intervals.end(); ++it)
+    {
+      interval_record& record = it->second;
+      if ((long double)record.milliseconds * 0.001f < (long double)movie_time - record.last_fire
+          || record.last_fire == 0.0f)
+      {
+        record.last_fire = movie_time;
+        if (record.receiver == NULL) continue;
+        set_call_super(NULL);
+        as_value method;
+        if (record.receiver->get_member(record.method.to_tu_stringi(), &method)
+            && (method.get_type() == as_value::C_FUNCTION || method.get_type() == as_value::AS_FUNCTION))
+        {
+          for (int i = 0; i < record.arguments.size(); ++i)
+            record.environment->push_val(record.arguments[i]);
+          as_value result;
+          if (as_as_function* function = method.to_as_function())
+          {
+            as_environment* env = interval_environment(record.receiver);
+            if (env) env = interval_environment(record.receiver);
+            else env = record.environment;
+            set_environment_super(env);
+            (*function)(fn_call(&result, record.receiver, env,
+                record.arguments.size(), record.environment->get_top_index()));
+          }
+          for (int i = 0; i < record.arguments.size(); ++i)
+            record.environment->pop();
+        }
       }
     }
-      
-    // log_msg("Timer not enabled! \n");
-    return false;
   }
 
   void
   timer_setinterval(const fn_call& fn)
   {
-    int i;
-    as_value	method;
-    log_msg("%s: args=%d\n", __FUNCTION__, fn.nargs);
-    
-    timer_as_object *ptr = new timer_as_object;
-    
-    //  action_buffer	m_action_buffer;
-    //timer_as_object*	ptr = (timer_as_object*) (as_object*) this_ptr;
-    assert(ptr);
-    
-    movie*	mov = fn.env->get_target()->get_root_movie();
-    // [DICE-MOD SwiffPlayer: both AS2 forms. The shipped gameswf_as_global_setinterval branches on
-    // whether arg0 converts to an object: setInterval(object, "methodName", ms, args...) resolves
-    // the method on that object and ticks with it as `this`; otherwise setInterval(function, ms,
-    // args...). Stock 2006 knew only the function form and, handed an object, stored the OBJECT as
-    // the "function" - every tick then logged "error in call_method(): method is not a function"
-    // (retail 2026-09-02: once per frame, from the menu's update manager).]
-    as_value val;
-    as_object_interface* target = NULL;
-    int ms = 0;
+    // SwiffPlayer.dll 0x1007E030: argument refusal precedes timer allocation.
+    if (fn.nargs < 2)
     {
-      const as_value& first = fn.env->bottom(fn.first_arg_bottom_index);
-      if (first.to_as_function() == NULL && first.to_object() != NULL && fn.nargs >= 3)
+      log_error("error: set_interval needs atleast two args\n");
+      return;
+    }
+    interval_record record;
+    record.last_fire = 0.0f;
+    record.environment = fn.env;
+    record.target = fn.env->get_target();
+    const as_value& first = fn.arg(0);
+    record.receiver = first.get_type() == as_value::OBJECT ? first.m_object_value : NULL;
+    int extra;
+    if (record.receiver == NULL)
+    {
+      record.method = first.to_string();
+      record.milliseconds = (float)fn.arg(1).to_number();
+      extra = 2;
+    }
+    else
+    {
+      record.method = fn.arg(1).to_string();
+      if (fn.nargs < 3)
       {
-        target = first.to_object();
-        const tu_string method_name = fn.env->bottom(fn.first_arg_bottom_index - 1).to_tu_string();
-        target->get_member(tu_stringi(method_name.c_str()), &val);
-        ms = (int) fn.env->bottom(fn.first_arg_bottom_index - 2).to_number();
+        log_error("error: set_interval needs atleast three args\n");
+        return;
       }
-      else
-      {
-        as_as_function *as_func = (as_as_function *)first.to_as_function();
-        val = as_value(as_func);
-        ms = (int) fn.env->bottom(fn.first_arg_bottom_index - 1).to_number();
-      }
+      record.milliseconds = (float)fn.arg(2).to_number();
+      extra = 3;
     }
-
-    // [TEMP] RW-89 timer trace. Remove with the tracers.
-    log_error("[setInterval] form=%s method_type=%d ms=%d target=%p\n",
-              target ? "object" : "function", (int) val.get_type(), ms, target);
-
-    tu_string local_name;
-    as_value local_val;
-    array<with_stack_entry>	dummy_with_stack;
-
-    fn.env->add_frame_barrier();
-    //method = env->get_variable("loopvar", dummy_with_stack);
-
-#if 1
-    // FIXME: This is pretty gross, but something is broke elsewhere and it doesn't
-    // seem to effect anything else. When a function is called from a executing
-    // function, like calling setInterval() from within the callback to
-    // XMLSocket::onConnect(), the local variables of the parent function need to
-    // be propogated to the local stack as regular variables (not locals) or
-    // they can't be found in the scope of the executing chld function. There is
-    // probably a better way to do this... but at least this works.
-    for (i=0; i< fn.env->get_local_frame_top(); i++) {
-      if (fn.env->m_local_frames[i].m_name.size()) {
-        //method = env->get_variable(env->m_local_frames[i].m_name, dummy_with_stack);
-        //if (method.get_type() != as_value::UNDEFINED)
-        {
-          local_name  = fn.env->m_local_frames[i].m_name;
-          local_val = fn.env->m_local_frames[i].m_value;
-          fn.env->set_variable(local_name, local_val, 0);
-        }
-      }
-    }
-#endif
-    //    ptr->obj.setInterval(val, ms, (as_object *)ptr, env);
-    
-    //Ptr->obj.setInterval(val, ms);
-    ptr->obj.setInterval(val, ms, target ? target : (as_object_interface *)(as_object *)ptr, fn.env);
-    
-    fn.result->set_int(mov->add_interval_timer(&ptr->obj));
-  }
-  
-  void
-  timer_expire(const fn_call& fn)
-  {
-    //log_msg("%s:\n", __FUNCTION__);
-
-    timer_as_object*	ptr = (timer_as_object*) (as_object*) fn.this_ptr;
-    assert(ptr);
-    const as_value&	val = ptr->obj.getASFunction();
-    
-    if (as_as_function* as_func = val.to_as_function()) {
-      // It's an ActionScript function.  Call it.
-      log_msg("Calling ActionScript function for setInterval Timer\n");
-      (*as_func)(fn_call(fn.result, fn.this_ptr, fn.env, 0, 0));
-    } else {
-      log_error("FIXME: Couldn't find setInterval Timer!\n");
-    }
+    for (int i = extra; i < fn.nargs; ++i)
+      record.arguments.push_back(fn.arg(i));
+    const Uint32 id = s_next_interval;
+    s_intervals.set(id, record);
+    ++s_next_interval;
+    fn.result->set_int(bf2x87::lowWord(id));
   }
   
   void
   timer_clearinterval(const fn_call& fn)
   {
-    //log_msg("%s: nargs = %d\n", __FUNCTION__, nargs);
-
-    double id = fn.env->bottom(fn.first_arg_bottom_index).to_number();
-
-    movie*	mov = fn.env->get_target()->get_root_movie();
-    // [TEMP] RW-89 timer trace. Remove with the tracers.
-    log_error("[clearInterval] id=%g\n", id);
-    mov->clear_interval_timer((int)id);
-    fn.result->set_bool(true); 
+    // SwiffPlayer.dll 0x1007E210: the shipped typo names set_interval here too.
+    if (fn.nargs == 0)
+    {
+      log_error("error: set_interval needs one arg\n");
+      return;
+    }
+    const Uint32 id = (Uint32)bf2x87::toIntTruncate(fn.arg(0).to_number());
+    interval_record copy;
+    if (s_intervals.get(id, &copy)) s_intervals.invalidate(id);
   }
 }

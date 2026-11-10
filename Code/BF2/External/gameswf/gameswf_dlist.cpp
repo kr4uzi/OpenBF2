@@ -11,12 +11,14 @@
 #include "gameswf_log.h"
 #include "gameswf_render.h"
 #include "gameswf.h"
+#include "gameswf_prefix_trace.h"
 #include <typeinfo>
 
 
 
 namespace gameswf
 {
+	// SwiffPlayer.dll 0x100A7800: signed depth comparison yields -1, 0 or 1.
 	/*static*/ int	display_object_info::compare(const void* _a, const void* _b)
 	{
 		display_object_info*	a = (display_object_info*) _a;
@@ -42,65 +44,50 @@ namespace gameswf
 	// matching the given depth.  Failing that, return the index
 	// of the first object with a larger depth.
 	{
-		int	size = m_display_object_array.size();
-		if (size == 0)
-		{
-			return 0;
-		}
-		
-		// Binary search.
-		int	jump = size >> 1;
-		int	index = jump;
+		// SwiffPlayer.dll 0x100A7820. On an
+		// equal depth retail keeps the binary-search hit if referenced, otherwise
+		// searches the equal-depth run for a referenced entry before using the hit.
+		const int size = m_display_object_array.size();
+		if (size == 0) return 0;
+		int jump = size >> 1;
+		int index = jump;
 		for (;;)
 		{
 			jump >>= 1;
 			if (jump < 1) jump = 1;
-			
-			if (depth > m_display_object_array[index].m_character->get_depth())
+			const int current = m_display_object_array[index].m_character->get_depth();
+			if (depth > current)
 			{
-				if (index == size - 1)
-				{
-					index = size;
-					break;
-				}
+				if (index == size - 1) return size;
 				index += jump;
 			}
-			else if (depth < m_display_object_array[index].m_character->get_depth())
+			else if (depth < current)
 			{
-				if (index == 0
-				    || depth > m_display_object_array[index - 1].m_character->get_depth())
-				{
-					break;
-				}
+				if (index == 0 || m_display_object_array[index - 1].m_character->get_depth() < depth) return index;
 				index -= jump;
 			}
 			else
 			{
-				// match -- scan backward to make sure this is the first entry with this depth.
-				//
-				// Linear.  But multiple objects with the same depth are only allowed for
-				// very old SWF's, so we don't really care.
-				for (;;)
+				if (m_display_object_array[index].m_ref) return index;
+				int candidate = index;
+				while (candidate != 0 && m_display_object_array[candidate].m_character->get_depth() == depth)
 				{
-					if (index == 0
-					    || m_display_object_array[index - 1].m_character->get_depth() < depth)
-					{
-						break;
-					}
-					index--;
+					if (m_display_object_array[candidate].m_ref) return candidate;
+					candidate--;
 				}
-				assert(m_display_object_array[index].m_character->get_depth() == depth);
-				assert(index == 0 || m_display_object_array[index - 1].m_character->get_depth() < depth);
-				break;
+				if (m_display_object_array[candidate].m_character->get_depth() != depth) candidate++;
+				for (; candidate < size; candidate++)
+				{
+					if (m_display_object_array[candidate].m_character->get_depth() != depth) return index;
+					if (m_display_object_array[candidate].m_ref) return candidate;
+				}
+				return index;
 			}
 		}
-		
-		assert(index >= 0 && index <= size);
-		
-		return index;
 	}
 	
 
+	// SwiffPlayer.dll 0x100A78F0.
 	int	display_list::get_display_index(int depth)
 		// Like the above, but looks for an exact match, and returns -1 if failed.
 	{
@@ -115,6 +102,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A7920.
 	character*	display_list::get_character_at_depth(int depth)
 	{
 		int	index = get_display_index(depth);
@@ -131,6 +119,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A7D10 visits referenced entries in display-list order.
 	character*	display_list::get_character_by_name(const tu_string& name)
 	{
 		// See if we have a match on the display list.
@@ -164,6 +153,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A8080.
 	void	display_list::add_display_object(
 		character* ch, 
 		Uint16 depth,
@@ -177,39 +167,21 @@ namespace gameswf
 
 		assert(ch);
 		
-		int	size = m_display_object_array.size();
+		// [CHOSEN, not recovered] S3 bridge: retain the 2006 argument at
+		// callers; retail always unreferences an equal-depth occupant.
+		(void) replace_if_depth_is_occupied;
 		int index = find_display_index(depth);
-
-		if (replace_if_depth_is_occupied)
+		if (index >= 0 && index < m_display_object_array.size())
 		{
-			// Eliminate an existing object if it's in the way.
-			if (index >= 0 && index < size)
+			display_object_info& old = m_display_object_array[index];
+			if (old.m_character->get_depth() == depth)
 			{
-				display_object_info & dobj = m_display_object_array[index];
-
-				if (dobj.m_character->get_depth() == depth)
-				{
-#if !defined(_MSC_VER)
-					if (g_swf_mouse_pass_depth > 0)
-					{
-						SWF_LIST_TRACE("replace at depth %d in list %p (size %d)", depth, (void*) this, size);
-					}
-#endif
-					dobj.set_character(NULL);
-					m_display_object_array.remove(index);
-				}
+				old.m_ref = false;
+				old.m_character->release_mouse_capture_within();
+				// SwiffPlayer.dll 0x100A80F6: a surviving old occupant is detached.
+				old.m_character->set_parent(NULL);
+				old.m_character->mark_dead();
 			}
-		}
-		else
-		{
-			// Caller wants us to allow multiple objects
-			// with the same depth.  find_display_index()
-			// returns the first matching depth, if there
-			// are any, so the new character will get
-			// inserted before all the others with the
-			// same depth.  This matches the semantics
-			// described by Alexi's SWF ref.  (This is all
-			// for legacy SWF compatibility anyway.)
 		}
 
 		ch->set_depth(depth);
@@ -223,9 +195,8 @@ namespace gameswf
 		di.m_character->set_ratio(ratio);
 		di.m_character->set_clip_depth(clip_depth);
 
-		// Insert into the display list...
-		assert(index == find_display_index(depth));
-		
+		// Retail searches again after setting the new character's properties.
+		index = find_display_index(depth);
 		m_display_object_array.insert(index, di);
 
 		// do the frame1 actions (if applicable) and the "onClipEvent (load)" event.
@@ -233,6 +204,7 @@ namespace gameswf
 	}
 	
 	
+	// SwiffPlayer.dll 0x100A7960: clip_depth is not changed by a move.
 	void	display_list::move_display_object(
 		Uint16 depth,
 		bool use_cxform,
@@ -297,6 +269,7 @@ namespace gameswf
 	}
 	
 	
+	// SwiffPlayer.dll 0x100A81B0.
 	void	display_list::replace_display_object(
 		character* ch,
 		Uint16 depth,
@@ -334,10 +307,6 @@ namespace gameswf
 		
 		smart_ptr<character>	old_ch = di.m_character;
 
-		// [DICE-MOD SwiffPlayer #58] 0x100A8080 releases the root's mouse capture held by the
-		// outgoing character or anything beneath it (see remove_display_object below).
-		old_ch->release_mouse_capture_within();
-
 		// Put the new character in its place.
 		assert(ch);
 		ch->set_depth(depth);
@@ -372,8 +341,8 @@ namespace gameswf
 	}
 	
 	
-	// [DICE-MOD SwiffPlayer #32] raw entries below: the character may already be unreferenced.
-	void	display_list::remove_display_object(Uint16 depth, int id)
+	//  raw entries below: the character may already be unreferenced.
+	void	display_list::remove_display_object(Uint16 depth)
 	// Removes the object at the specified depth.
 	{
 //		IF_VERBOSE_DEBUG(log_msg("dl::remove(%d)\n", depth));//xxxxx
@@ -398,48 +367,30 @@ namespace gameswf
 
 		assert(m_display_object_array[index].m_character.get_ptr()->get_depth() == depth);
 		
-		if (id != -1)
-		{
-			// Caller specifies a specific id; scan forward til we find it.
-			for (;;)
-			{
-				if (m_display_object_array[index].m_character.get_ptr()->get_id() == id)
-				{
-					break;
-				}
-				if (index + 1 >= size
-				    || m_display_object_array[index + 1].m_character.get_ptr()->get_depth() != depth)
-				{
-					// Didn't find a match!
-					log_error("remove_display_object: no character at depth %d with id %d\n", depth, id);
-					return;
-				}
-				index++;
-			}
-			assert(index < size);
-			assert(m_display_object_array[index].m_character.get_ptr()->get_depth() == depth);
-			assert(m_display_object_array[index].m_character.get_ptr()->get_id() == id);
-		}
+		// SwiffPlayer.dll 0x100A7A20 takes only depth.
 
 		// Removing the character at get_display_object(index).
 		display_object_info&	di = m_display_object_array[index];
 		
 		// Remove reference only.
 		di.m_ref = false;
-		// [DICE-MOD SwiffPlayer #58] 0x100A7A20 (0x100A7A67..0x100A7AAA): a removed character that
+		//  0x100A7A20 (0x100A7A67..0x100A7AAA): a removed character that
 		// holds the root's mouse capture, or contains its holder, releases it. The holder took it on
 		// its press (#51) and gives it back only in its own release transition, which a character
 		// off the list never runs again; every other state machine stays gated off. mainMenu.swf's
 		// CREATE ACCOUNT button: its onPress runs createOffline, which on success jumps the root
 		// from the account page (frame 19) to the main menu (49) and removes the pressed button, so
-		// after an SP account creation no click reached the menu. The shipped body then clears the
-		// removed character's parent (+0x64); the port keeps the parent for its dead reference (#42)
-		// [CHOSEN, not recovered].
+		// after an SP account creation no click reached the menu.
 		if (di.m_character.get_ptr()) di.m_character->release_mouse_capture_within();
-		if (di.m_character.get_ptr()) di.m_character->mark_dead();	// [DICE-MOD SwiffPlayer #42] dead from the removal on
+		// SwiffPlayer.dll 0x100A7AB5: detached script references must not retain
+		// a borrowed parent that can be destroyed before the next timer callback.
+		di.m_character->set_parent(NULL);
+		if (di.m_character.get_ptr()) di.m_character->mark_dead();	//  dead from the removal on
 	}
 	
 	
+	// SwiffPlayer.dll 0x100A7F10 snapshots the count, sends UNLOAD to every
+	// stored character (including unreferenced entries), then clears storage.
 	void	display_list::clear()
 	// clear the display list.
 	{
@@ -477,6 +428,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A7AE0.
 	void	display_list::reset()
 	// reset the references to the display list.
 	{
@@ -489,6 +441,8 @@ namespace gameswf
 	}
 	
 	
+	// SwiffPlayer.dll 0x100A7F50: backwards sweep, release the character before
+	// removing its entry; the final removal frees the array. No list-storage hold.
 	void	display_list::update()
 	// remove unreferenced objects.
 	{
@@ -524,50 +478,28 @@ namespace gameswf
 	void	display_list::advance(float delta_time)
 	// advance referenced characters.
 	{
-		int n = m_display_object_array.size();
+		// SwiffPlayer.dll 0x100A82A0 snapshots pointers to referenced entries,
+		// then rechecks their reference flags before dispatch. It holds no characters.
+		array<display_object_info*> entries;
+		const int n = m_display_object_array.size();
 		for (int i = 0; i < n; i++)
 		{
-			// @@@@ TODO FIX: If array changes size due to
-			// character actions, the iteration may not be
-			// correct!
-			//
-			// What's the correct thing to do here?  Options:
-			//
-			// * copy the display list at the beginning,
-			// iterate through the copy
-			//
-			// * use (or emulate) a linked list instead of
-			// an array (still has problems; e.g. what
-			// happens if the next or current object gets
-			// removed from the dlist?)
-			//
-			// * iterate through current array in depth
-			// order.  Always find the next object using a
-			// search of current array (but optimize the
-			// common case where nothing has changed).
-			//
-			// * ???
-			//
-			// Need to test to see what Flash does.
-			if (n != m_display_object_array.size())
+			if (m_display_object_array[i].m_ref == true)
 			{
-				log_error("gameswf bug: dlist size changed due to character actions, bailing on update!\n");
-				break;
+				entries.push_back(&m_display_object_array[i]);
 			}
-
-			display_object_info & dobj = m_display_object_array[i];
-			
-			if (dobj.m_ref == true)
+		}
+		for (int i = 0, count = entries.size(); i < count; i++)
+		{
+			if (entries[i]->m_ref)
 			{
-				character*	ch = dobj.m_character.get_ptr();
-				assert(ch);
-
-				ch->advance(delta_time);
+				entries[i]->m_character->advance(delta_time);
 			}
 		}
 	}
 	
 	
+	// SwiffPlayer.dll 0x100A7B00: visibility and mask-only gates precede masking.
 	void	display_list::display()
 	// Display the referenced characters. Lower depths
 	// are obscured by higher depths.
@@ -583,6 +515,7 @@ namespace gameswf
 
 			character*	ch = dobj.m_character.get_ptr();
 			assert(ch);
+			if (prefix_trace_display(ch)) prefix_trace_geometry(ch, "display-list");
 
 			if (ch->get_visible() == false)
 			{
@@ -590,9 +523,9 @@ namespace gameswf
 				continue;
 			}
 
-			// [DICE-MOD SwiffPlayer: a setMask() mask is drawn only inside its target's mask
+			// a setMask() mask is drawn only inside its target's mask
 			// sandwich (the shipped display_list::display, sub_100A7B00, skips characters whose
-			// +196 byte is set).]
+			// +196 byte is set).
 			if (ch->m_is_mask_only)
 			{
 				continue;
@@ -624,7 +557,7 @@ namespace gameswf
 			
 			if (ch->m_mask != NULL)
 			{
-				// [DICE-MOD SwiffPlayer: the setMask() sandwich, exactly as sub_100A7B00 does it.]
+				// the setMask() sandwich, exactly as sub_100A7B00 does it.
 				render::begin_submit_mask();
 				ch->m_mask->display();
 				render::end_submit_mask();

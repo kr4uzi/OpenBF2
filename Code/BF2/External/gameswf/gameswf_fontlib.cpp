@@ -6,6 +6,7 @@
 // A module to take care of all of gameswf's loaded fonts.
 
 
+#include <cmath>
 #include "base/container.h"
 #include "base/tu_file.h"
 #include "gameswf.h"
@@ -14,6 +15,7 @@
 #include "gameswf_log.h"
 #include "gameswf_render.h"
 #include "gameswf_shape.h"
+#include "../../Platform/X87Compat.h"
 #include "gameswf_styles.h"
 #include "gameswf_tesselate.h"
 #include "gameswf_render.h"
@@ -64,6 +66,7 @@ namespace fontlib
 	static int	s_glyph_render_size = s_glyph_nominal_size << OVERSAMPLE_BITS;
 
 	
+	// SwiffPlayer.dll 0x100A47F0.
 	void	set_nominal_glyph_pixel_size(int pixel_size)
 	{
 		static const int	MIN_SIZE = 4;
@@ -71,9 +74,11 @@ namespace fontlib
 
 		if (pixel_size < MIN_SIZE)
 		{
-			log_error("set_nominal_glyph_pixel_size(%d) too small, clamping to %d\n",
-				  pixel_size,
-				  MIN_SIZE);
+			// Retail supplies only 4 for the two conversions on this branch.
+			// Preserve the missing argument; the callback must be disabled to
+			// exercise this clamp without the shipped formatter's unchecked read.
+			void (*report)(const char*, ...) = log_error;
+			report("set_nominal_glyph_pixel_size(%d) too small, clamping to %d\n", MIN_SIZE);
 			pixel_size = MIN_SIZE;
 		}
 		else if (pixel_size > MAX_SIZE)
@@ -105,6 +110,10 @@ namespace fontlib
 		int	m_glyph_index;
 		texture_glyph	m_texture_glyph;
 
+		// SwiffPlayer.dll 0x100A64C0: source font, index, then texture glyph.
+		pending_glyph_info& operator=(const pending_glyph_info&) = default;
+
+		// SwiffPlayer.dll 0x100A4F70; implicit member destruction at 0x100A52B0.
 		pending_glyph_info()
 			:
 			m_source_font(NULL),
@@ -128,6 +137,7 @@ namespace fontlib
 	{
 		int	m_x_min, m_x_max, m_y_min, m_y_max;
 
+		// SwiffPlayer.dll 0x100A4870: four ordered integer stores.
 		recti(int x0 = 0, int x1 = 0, int y0 = 0, int y1 = 0)
 			:
 			m_x_min(x0),
@@ -174,6 +184,7 @@ namespace fontlib
 	{
 		int	m_x, m_y;
 
+		// SwiffPlayer.dll 0x100A48F0.
 		pointi(int x = 0, int y = 0)
 			:
 			m_x(x),
@@ -181,6 +192,7 @@ namespace fontlib
 		{
 		}
 
+		// SwiffPlayer.dll 0x100A4910.
 		bool	operator<(const pointi& p) const
 		// For sorting anchor points.
 		{
@@ -197,6 +209,7 @@ namespace fontlib
 	static tu_file*	s_file = NULL;
 
 
+	// SwiffPlayer.dll 0x100A66F0.
 	static void	ensure_cache_image_available()
 	{
 		if (s_pending_glyphs.size() == 0)
@@ -216,6 +229,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6BE0.
 	void	finish_current_texture(movie_definition_sub* owner)
 	{
 		if (s_pending_glyphs.size() == 0)
@@ -296,6 +310,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A5020: reject overflow, then strict rectangle overlaps.
 	bool	is_rect_available(const recti& r)
 	// Return true if the given rect can be packed into the
 	// currently active texture.
@@ -325,6 +340,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6800.
 	void	add_cover_rect(const recti& r)
 	// Add the given rect to our list.  Eliminate any anchor
 	// points that are disqualified by this new rect.
@@ -344,6 +360,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A68C0.
 	void	add_anchor_point(const pointi& p)
 	// Add point to our list of anchors.  Keep the list sorted.
 	{
@@ -367,6 +384,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6950.
 	bool	pack_rectangle(int* px, int* py, int width, int height)
 	// Find a spot for the rectangle in the current cache image.
 	// Return true if there's a spot; false if there's no room.
@@ -441,6 +459,7 @@ namespace fontlib
 		float	m_offset_x;
 		float	m_offset_y;
 
+		// SwiffPlayer.dll 0x100A4940.
 		rendered_glyph_info()
 			:
 			m_source_font(0),
@@ -454,6 +473,7 @@ namespace fontlib
 	};
 
 
+	// SwiffPlayer.dll 0x100A5140.
 	static void	software_trapezoid(
 		float y0, float y1,
 		float xl0, float xl1,
@@ -462,18 +482,24 @@ namespace fontlib
 	{
 		assert(s_render_buffer);
 
-		int	iy0 = (int) ceilf(y0);
-		int	iy1 = (int) ceilf(y1);
-		float	dy = y1 - y0;
+		int	iy0 = bf2x87::toIntTruncate(std::ceil(double(y0)));
+		int	iy1 = bf2x87::toIntTruncate(std::ceil(double(y1)));
+		float	dy = bf2x87::store(bf2x87::sub(bf2x87::Real(y1), bf2x87::Real(y0)));
 
 		for (int y = iy0; y < iy1; y++)
 		{
 			if (y < 0) continue;
 			if (y >= s_glyph_render_size) return;
 
-			float	f = (y - y0) / dy;
-			int	xl = (int) ceilf(flerp(xl0, xl1, f));
-			int	xr = (int) ceilf(flerp(xr0, xr1, f));
+			float	f = bf2x87::store(bf2x87::div(
+				bf2x87::sub(bf2x87::Real(y), bf2x87::Real(y0)), bf2x87::Real(dy)));
+			// Each interpolated edge is stored as double for CRT ceil, not float.
+			const double left = bf2x87::storeDouble(bf2x87::add(bf2x87::mul(
+				bf2x87::sub(bf2x87::Real(xl1), bf2x87::Real(xl0)), bf2x87::Real(f)), bf2x87::Real(xl0)));
+			int	xl = bf2x87::toIntTruncate(std::ceil(left));
+			const double right = bf2x87::storeDouble(bf2x87::add(bf2x87::mul(
+				bf2x87::sub(bf2x87::Real(xr1), bf2x87::Real(xr0)), bf2x87::Real(f)), bf2x87::Real(xr0)));
+			int	xr = bf2x87::toIntTruncate(std::ceil(right));
 			
 			xl = iclamp(xl, 0, s_glyph_render_size - 1);
 			xr = iclamp(xr, 0, s_glyph_render_size - 1);
@@ -488,11 +514,13 @@ namespace fontlib
 	}
 
 
+	// Implicit vptr-only constructor: SwiffPlayer.dll 0x100A50A0.
 	struct draw_into_software_buffer : tesselate::trapezoid_accepter
 	// A trapezoid accepter that does B&W rendering into our
 	// software buffer.
 	{
 		// Overrides from trapezoid_accepter
+		// SwiffPlayer.dll 0x100A50B0: transform right edges before left edges and Y.
 		virtual void	accept_trapezoid(int style, const tesselate::trapezoid& tr)
 		{
 			// Transform the coords.
@@ -501,17 +529,18 @@ namespace fontlib
 			float	x_offset = s_render_matrix.m_[0][2];
 			float	y_offset = s_render_matrix.m_[1][2];
 
-			float	y0 = tr.m_y0 * y_scale + y_offset;
-			float	y1 = tr.m_y1 * y_scale + y_offset;
-			float	lx0 = tr.m_lx0 * x_scale + x_offset;
-			float	lx1 = tr.m_lx1 * x_scale + x_offset;
-			float	rx0 = tr.m_rx0 * x_scale + x_offset;
-			float	rx1 = tr.m_rx1 * x_scale + x_offset;
+			float	rx1 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_rx1), bf2x87::Real(x_scale)), bf2x87::Real(x_offset)));
+			float	rx0 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_rx0), bf2x87::Real(x_scale)), bf2x87::Real(x_offset)));
+			float	lx1 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_lx1), bf2x87::Real(x_scale)), bf2x87::Real(x_offset)));
+			float	lx0 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_lx0), bf2x87::Real(x_scale)), bf2x87::Real(x_offset)));
+			float	y1 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_y1), bf2x87::Real(y_scale)), bf2x87::Real(y_offset)));
+			float	y0 = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(tr.m_y0), bf2x87::Real(y_scale)), bf2x87::Real(y_offset)));
 
 			// Draw into the software buffer.
 			software_trapezoid(y0, y1, lx0, lx1, rx0, rx1);
 		}
 
+		// SwiffPlayer.dll 0x100A52A0: release builds discard glyph outlines' line strips.
 		virtual void	accept_line_strip(int style, const point coords[], int coord_count)
 		{
 			assert(0);	// Shape glyphs should not contain lines.
@@ -519,6 +548,7 @@ namespace fontlib
 	};
 
 
+	// SwiffPlayer.dll 0x100A5C20.
 	static bool	render_glyph(rendered_glyph_info* rgi, const shape_character_def* sh)
 	// Render the given outline shape into a cached font texture.
 	// Return true if the glyph is not empty; false if it's
@@ -554,12 +584,14 @@ namespace fontlib
 		}
 
 		s_render_matrix.set_identity();
-		s_render_matrix.concatenate_scale(s_glyph_render_size / s_rendering_box);
+		s_render_matrix.concatenate_scale(bf2x87::store(bf2x87::div(
+			bf2x87::Real(s_glyph_render_size), bf2x87::Real(s_rendering_box))));
 		s_render_matrix.concatenate_translation(offset_x, offset_y);
 
 		// Tesselate & draw the shape.
 		draw_into_software_buffer	accepter;
-		sh->tesselate(s_rendering_box / s_glyph_render_size * 0.5f, &accepter);
+		sh->tesselate(bf2x87::store(bf2x87::mul(bf2x87::div(
+			bf2x87::Real(s_rendering_box), bf2x87::Real(s_glyph_render_size)), bf2x87::Real(0.5f))), &accepter);
 
 		//
 		// Process the results of rendering.
@@ -607,8 +639,9 @@ namespace fontlib
 		{
 			// Fill in rendered_glyph_info.
 			rgi->m_image = new image::alpha(max_x - min_x + 1, max_y - min_y + 1);
-			rgi->m_offset_x = offset_x / s_rendering_box * s_glyph_nominal_size - min_x;
-			rgi->m_offset_y = offset_y / s_rendering_box * s_glyph_nominal_size - min_y;
+			const bf2x87::Real scale = bf2x87::div(bf2x87::Real(s_glyph_nominal_size), bf2x87::Real(s_rendering_box));
+			rgi->m_offset_x = bf2x87::store(bf2x87::sub(bf2x87::mul(bf2x87::Real(offset_x), scale), bf2x87::Real(min_x)));
+			rgi->m_offset_y = bf2x87::store(bf2x87::sub(bf2x87::mul(scale, bf2x87::Real(offset_y)), bf2x87::Real(min_y)));
 
 			// Copy the rendered glyph into the new image.
 			{for (int j = 0, n = rgi->m_image->m_height; j < n; j++)
@@ -634,6 +667,7 @@ namespace fontlib
 
 
 
+	// SwiffPlayer.dll 0x100A6D60.
 	bool	try_to_reuse_previous_image(
 		const rendered_glyph_info& rgi,
 		const hash<unsigned int, const rendered_glyph_info*>& image_hash)
@@ -743,6 +777,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6F30.
 	void	pack_and_assign_glyphs(array<rendered_glyph_info>* glyph_info, movie_definition_sub* owner)
 	// Pack the given glyphs into textures, and push the
 	// texture_glyph info into the source fonts.
@@ -753,6 +788,7 @@ namespace fontlib
 		// Sort the glyphs by size (biggest first).
 		struct sorter
 		{
+			// SwiffPlayer.dll 0x100A4960; images are bounded by the glyph cache size.
 			static int	sort_by_size(const void* a, const void* b)
 			// For qsort.
 			{
@@ -875,6 +911,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6A40.
 	static void	generate_font_bitmaps(array<rendered_glyph_info>* glyph_info, font* f, movie_definition_sub* owner)
 	// Render images for each of the font's glyphs, and put the
 	// info about them in the given array.
@@ -918,12 +955,16 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A4980: divide the nominal size before multiplying by 1024.
 	float	get_texture_glyph_max_height(const font* f)
 	{
-		return 1024.0f / s_rendering_box * f->get_texture_glyph_nominal_size(); //  s_glyph_nominal_size;
+		return bf2x87::store(bf2x87::mul(
+			bf2x87::div(bf2x87::Real(f->get_texture_glyph_nominal_size()),
+				bf2x87::Real(s_rendering_box)), bf2x87::Real(1024.0f)));
 	}
 
 
+	// SwiffPlayer.dll 0x100A52E0.
 	static void	wipe_font_textures(const array<font*>& fonts)
 	{
 		for (int i = 0, n = fonts.size(); i < n; i++)
@@ -939,6 +980,7 @@ namespace fontlib
 	//
 
 
+	// SwiffPlayer.dll 0x100A7300.
 	void	generate_font_bitmaps(const array<font*>& fonts, movie_definition_sub* owner)
 	// Build cached textures from glyph outlines.
 	{
@@ -982,6 +1024,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A7480.
 	void	output_cached_data(
 		tu_file* out,
 		const array<font*>& fonts,
@@ -1088,6 +1131,8 @@ namespace fontlib
 	}
 	
 
+	// SwiffPlayer.dll 0x100A5ED0. [CHOSEN, not recovered] S3 bridge:
+	// use the native tu_file and typed bitmap/font containers for the retail records.
 	void	input_cached_data(tu_file* in, const array<font*>& fonts, movie_definition_sub* owner)
 	// Load a stream containing previously-saved font glyph textures.
 	{
@@ -1199,18 +1244,7 @@ namespace fontlib
 				tg.m_uv_origin.m_x = in->read_float32();
 				tg.m_uv_origin.m_y = in->read_float32();
 
-				if (glyph_index < 0 || glyph_index >= fnt->get_glyph_count())
-				{
-					// Cached data doesn't match this font!
-					log_error("error: invalid glyph index %d in cached font data, limit is %d, font is '%s'\n",
-						  glyph_index,
-						  fnt->get_glyph_count(),
-						  fnt->get_name());
-				}
-				else
-				{
-					fnt->add_texture_glyph(glyph_index, tg);
-				}
+				fnt->add_texture_glyph(glyph_index, tg);
 			}
 
 			// Load cached shape data.
@@ -1223,6 +1257,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6AE0.
 	void	clear()
 	// Release all the fonts we know about.
 	{
@@ -1230,6 +1265,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A5310.
 	int	get_font_count()
 	// Return the number of fonts in our library.
 	{
@@ -1237,6 +1273,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A5320.
 	font*	get_font(int index)
 	// Retrieve one of our fonts, by index.
 	{
@@ -1249,6 +1286,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A5340: live array bound, null entries skipped, strcmp.
 	font*	get_font(const char* name)
 	// Return the named font.
 	{
@@ -1268,6 +1306,7 @@ namespace fontlib
 	}
 			
 
+	// SwiffPlayer.dll 0x100A49C0.
 	const char*	get_font_name(const font* f)
 	// Return the name of the given font.  (This basically exists
 	// so that font* can be opaque to the host app).
@@ -1280,6 +1319,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A6AF0; push_back constructs a temporary strong pointer.
 	void	add_font(font* f)
 	// Add the given font to our library.
 	{
@@ -1297,6 +1337,7 @@ namespace fontlib
 	}
 
 
+	// SwiffPlayer.dll 0x100A53C0.
 	void	draw_glyph(const matrix& mat, const texture_glyph& tg, rgba color, int nominal_glyph_height)
 	// Draw the given texture glyph using the given transform, in
 	// the given color.
@@ -1306,19 +1347,20 @@ namespace fontlib
 		// @@ worth it to precompute these bounds?
 
 		rect	bounds = tg.m_uv_bounds;
-		bounds.m_x_min -= tg.m_uv_origin.m_x;
-		bounds.m_x_max -= tg.m_uv_origin.m_x;
-		bounds.m_y_min -= tg.m_uv_origin.m_y;
-		bounds.m_y_max -= tg.m_uv_origin.m_y;
+		const bf2x87::Real x_min = bf2x87::sub(bf2x87::Real(bounds.m_x_min), bf2x87::Real(tg.m_uv_origin.m_x));
+		const bf2x87::Real x_max = bf2x87::sub(bf2x87::Real(bounds.m_x_max), bf2x87::Real(tg.m_uv_origin.m_x));
+		bounds.m_y_min = bf2x87::store(bf2x87::sub(bf2x87::Real(bounds.m_y_min), bf2x87::Real(tg.m_uv_origin.m_y)));
+		bounds.m_y_max = bf2x87::store(bf2x87::sub(bf2x87::Real(bounds.m_y_max), bf2x87::Real(tg.m_uv_origin.m_y)));
 
 		// Scale from uv coords to the 1024x1024 glyph square.
 		// @@ need to factor this out!
-		static float	s_scale = GLYPH_CACHE_TEXTURE_SIZE * s_rendering_box / nominal_glyph_height;
+		static float	s_scale = bf2x87::store(bf2x87::div(bf2x87::mul(
+			bf2x87::Real(s_rendering_box), bf2x87::Real(float(GLYPH_CACHE_TEXTURE_SIZE))), bf2x87::Real(nominal_glyph_height)));
 
-		bounds.m_x_min *= s_scale;
-		bounds.m_x_max *= s_scale;
-		bounds.m_y_min *= s_scale;
-		bounds.m_y_max *= s_scale;
+		bounds.m_x_min = bf2x87::store(bf2x87::mul(bf2x87::Real(s_scale), x_min));
+		bounds.m_x_max = bf2x87::store(bf2x87::mul(bf2x87::Real(s_scale), x_max));
+		bounds.m_y_min = bf2x87::store(bf2x87::mul(bf2x87::Real(s_scale), bf2x87::Real(bounds.m_y_min)));
+		bounds.m_y_max = bf2x87::store(bf2x87::mul(bf2x87::Real(s_scale), bf2x87::Real(bounds.m_y_max)));
 		
 		render::draw_bitmap(mat, tg.m_bitmap_info.get_ptr(), bounds, tg.m_uv_bounds, color);
 	}

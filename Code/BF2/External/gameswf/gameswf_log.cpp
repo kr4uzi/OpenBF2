@@ -6,17 +6,16 @@
 // Helpers for logging messages & errors.
 
 
-#include "gameswf_log.h"
-#include "gameswf.h"
-
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #if !defined(_MSC_VER)
 #include <stdlib.h>
-#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #endif
+#include "gameswf_log.h"
+#include "gameswf.h"
 
 
 namespace gameswf
@@ -29,6 +28,7 @@ namespace gameswf
 	static char	s_buffer[BUFFER_SIZE];
 
 
+	// SwiffPlayer.dll 0x1009AF40 replaces the callback, including null.
 	void	register_log_callback(void (*callback)(bool error, const char* message))
 	// The host app can use this to install a function to receive log
 	// & error messages from gameswf.
@@ -39,16 +39,23 @@ namespace gameswf
 	}
 
 
-#ifdef _WIN32
-#define vsnprintf	_vsnprintf
-#endif // _WIN32
+	static void format_into_buffer(const char* fmt, va_list ap)
+	{
+#if defined(_WIN32)
+		_vsnprintf(s_buffer, BUFFER_SIZE, fmt, ap);
+#else
+		// [CHOSEN, not recovered] POSIX CRT bridge: native formatting, with
+		// MSVCR71's full-buffer nontermination. Locale, nonfinite spelling and
+		// invalid-format effects remain native CRT policy, not recovered parity.
+		char formatted[BUFFER_SIZE + 1];
+		memcpy(formatted, s_buffer, BUFFER_SIZE);
+		const int count = vsnprintf(formatted, sizeof(formatted), fmt, ap);
+		const int bytes = count >= 0 && count < BUFFER_SIZE ? count + 1 : BUFFER_SIZE;
+		memcpy(s_buffer, formatted, bytes);
+#endif
+	}
 
-#define FORMAT_INTO_BUFFER(fmt)				\
-		va_list ap;				\
-		va_start(ap, fmt);			\
-		vsnprintf(s_buffer, BUFFER_SIZE, fmt, ap);	\
-		va_end(ap);
-
+	// SwiffPlayer.dll 0x1009AF50.
 	void	log_msg(const char* fmt, ...)
 	// Printf-style informational log.
 	{
@@ -57,12 +64,16 @@ namespace gameswf
 			return;
 		}
 
-		FORMAT_INTO_BUFFER(fmt);
+		va_list ap;
+		va_start(ap, fmt);
+		format_into_buffer(fmt, ap);
+		va_end(ap);
 
 		s_log_callback(false, s_buffer);
 	}
 
 
+	// SwiffPlayer.dll 0x1009AF90.
 	void	log_error(const char* fmt, ...)
 	// Printf-style error log.
 	{
@@ -71,7 +82,10 @@ namespace gameswf
 			return;
 		}
 
-		FORMAT_INTO_BUFFER(fmt);
+		va_list ap;
+		va_start(ap, fmt);
+		format_into_buffer(fmt, ap);
+		va_end(ap);
 
 		s_log_callback(true, s_buffer);
 	}

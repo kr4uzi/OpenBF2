@@ -73,10 +73,15 @@
 #include "../Objects/GameLogicComp/IArmorGLComp.h"   // getDefaultMaterial
 #include "../../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
 #include "ActionBuffer.h"                         // sizeof 0x2C - ditto
+#if !DEDICATED
+// BF2.exe 0x5ED220: client tutorial owner.
+#include "PlayerVOHelp.h"
+#endif
 
 namespace dice {
 namespace hfe {
 
+#if DEDICATED
 // [INFERRED] Client voice-over tutorial state owned by Player. Dedicated players leave it null.
 // The constructor and help/update behavior remain declaration-only; the trailing pairs store
 // message intervals and countdowns.
@@ -97,6 +102,7 @@ struct PlayerVOHelp
     std::string labels[82]; // +0x200 on both ports; let the host STL determine stride.
     struct Timer { float interval, remaining; } timers[82];
 };
+#endif
 
 // ds:0x8ACBFA4 - Core/Globals.cpp owns it, declared IBase* with no layout. Same
 // declaration GameLogic.cpp:1028 uses; the two must stay identical or MSVC mangles two
@@ -290,6 +296,15 @@ Player::Player(int index, world::CPersistentExplosionEffectManager* explosionEff
     // A virtual call from A constructor, on the table just stamped in. This is
     // io::INetworkable's +0x18 slot, not a private helper - see Player.h.
     init(0);
+
+#if !DEDICATED
+    // BF2.exe 0x505D20..0x505D52.
+    if (!isDedicated())
+    {
+        m_voHelp = new PlayerVOHelp();
+        m_voHelp->loadPlayed();
+    }
+#endif
 
     // Retail also sets a networkable-base float to -1 here; that field has no exposed accessor
     // in this model. Notify AI of the player only when its singleton exists.
@@ -2482,7 +2497,32 @@ const world::IObjectTemplate* Player::getPersonalDecalTemplate() const
 }
 
 // Dedicated-image VO-help hooks are inert; the played query always returns true.
-// These bodies do not implement client tutorial playback.
+#if !DEDICATED
+// PE slots +0x210..+0x21C correspond to ELF +0x214..+0x220: ELF has two destructor slots.
+// BF2.exe 0x4F9F00.
+void Player::enableVOHelp(bool enabled)
+{
+    if (m_voHelp)
+        m_voHelp->enable(enabled);
+}
+// BF2.exe 0x4F9F20.
+void Player::enableVOHelpMessage(int id)
+{
+    if (m_voHelp)
+        m_voHelp->disableMessage(id, false);
+}
+// BF2.exe 0x4F9F40.
+void Player::disableVOHelpMessage(int id)
+{
+    if (m_voHelp)
+        m_voHelp->disableMessage(id, true);
+}
+// BF2.exe 0x4F9F60.
+bool Player::getVOHelpMessagePlayed(int id)
+{
+    return m_voHelp && m_voHelp->messagePlayed(id);
+}
+#else
 void Player::enableVOHelp(bool)
 {
 }
@@ -2499,6 +2539,7 @@ bool Player::getVOHelpMessagePlayed(int)
 {
     return true;
 }
+#endif
 
 // Rename through PlayerManager before changing the local name. Duplicate names
 // are silently rejected.
@@ -4123,11 +4164,20 @@ void Player::update(float deltaTime)
     // 1 & 2: the persistent explosion effects
     world::explosionEffectManager->handleObject(this);
 
-    // [PLATFORM] The client additionally updates an unidentified member before local
-    // explosion effects. That client-only call remains unimplemented.
-    // [RETIRE-WHEN: player-update-client-arm] Identify the member and recover its update.
+#if !DEDICATED
+    // BF2.exe 0x505340..0x505385.
+    // PE +0x58 is getIsRemote (ELF +0x5C), not getIsAIPlayer.
+    if (this == world::playerManager->getLocalHumanPlayer() && !getIsRemote())
+    {
+        if (m_voHelp)
+            m_voHelp->update(deltaTime);
+        world::explosionEffectManager->updateExplosionEffects(deltaTime);
+    }
+#else
+    // The dedicated image updates only the local explosion effects here.
     if (this == world::playerManager->getLocalHumanPlayer() && !getIsRemote())
         world::explosionEffectManager->updateExplosionEffects(deltaTime);
+#endif
 
     // 3: a dead player is not inside a control point
     if (!getIsAlive() && m_isInsideCP)

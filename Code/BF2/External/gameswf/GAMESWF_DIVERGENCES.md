@@ -1,64 +1,33 @@
-# gameswf and base local adaptations
+# gameswf platform choices
 
-The upstream base is Thatcher Ulrich's tu-testbed snapshot of 27 February 2006.
-The vendored libraries are adapted for BF2's menu movies and the SwiffPlayer
-host. Keep upstream notices intact; the source files retain their original
-licensing declarations.
+The gameswf/base sources began with Thatcher Ulrich's tu-testbed snapshot of
+27 February 2006. S3 supplies recovered bodies where recorded in the ledger;
+S4 removes the unused upstream
+features and retires the old DICE-MOD patch annotations. Existing upstream
+copyright and licensing notices remain in the retained files.
 
-Local changes use two searchable source markers:
+This file lists only retained platform adaptations and owner decisions. Each is
+`[CHOSEN, not recovered]`. Retail instructions and their addresses belong beside
+the implementation and in the [track ledger](../../../../docs/tracks/swf/ledger.csv).
+The [S4 report](../../../../docs/macos-swf-s4.md) records removals, evidence,
+validation and unfinished recovery. Retirement of a patch annotation does not
+certify a whole function or remove a named frontier.
 
-- `[BUILD-FIX SwiffPlayer: ...]` for build integration changes.
-- `[DICE-MOD SwiffPlayer: ...]` for menu-runtime and host compatibility changes.
+| Choice | Contract and limits |
+| --- | --- |
+| Native rebuilt ABI ([issue #7](https://github.com/B2BF/OpenBF2/issues/7)) | Native C++ interfaces, member-based containers, strings, virtual bases, type-adjustment helpers and allocation replace the VC7.1 x86 representation. Shared register storage and separately owned character arguments adapt fixed/embedded retail storage. Strong function/class/prototype links and function-property object adapters remain explicit in source. These choices apply to rebuilt images on every host; they are not retail object-layout claims. |
+| Native value/host adapters (issue #7) | Existing NULLTYPE-to-tag-zero mapping, tolerant operand storage, native receiver/environment adapters, definition-bounds providers and text extent/character conversions remain where their callers still need them. The printf/va_list host API coexists with retail's single-command parser until its host callers migrate. Text CRT conversion keeps the recovered C-locale byte widening; the non-C POSIX locale/wchar_t adapter retains native conversion and error semantics. |
+| Native widths and build integration (issue #7 and the owner-requested macOS port) | Hash entries retain the functor's full `size_t` hash; object/function identity strings retain full pointers. x86-64/AArch64 are known little-endian targets. Supported C++ libraries supply math declarations; obsolete OS X math macros stay disabled. `tu_util` comparison helpers and qualified `::hash` friends avoid standard-library collisions. Debug breaks use the supported compiler primitive. Standard-library headers precede compatibility macros. |
+| Native movie lifetime and collector (issue #7; owner decision 2026-11-09) | Reference counting and the script-object registry stay active. Last-player teardown clears interval records, script graph edges and library class bindings, releases the player's references and resets action globals. With another live player, global teardown is skipped and logged. Movie libraries stay cached. The five collector rows remain `chosen`: `0x10077700`, `0x1008D950`, `0x1007B320`, `0x1008A160` and the GC portion of `0x1007AED0`. No direct-deletion sweep is activated or claimed recovered. |
+| Renderer and input platform seams (owner-requested macOS port; issue #7) | Metal/Cocoa replace Win32 rendering/input services at their host boundaries. Generated RGBA/A8 pixels are retained and uploaded once per live handler registry, with weak cached-definition registry links and fresh RGBA copies because RendDX9 swaps channels in place. Handler/descriptor destruction releases uploads. The native asynchronous key callback supplies the platform input state; the retail Enter predicate itself is shared code. See [gradient ownership](../../../../docs/macos-ui-gradients.md) and [native interfaces](../../../../docs/macos-swf-s3-natives.md). |
+| Expat substitute (owner decision) | Official Expat R_1_95_0 and C callback adapters stand in for the unidentified retail parser revision. The vendored files remain unchanged. Unicode classification and parser internals can differ; see [provenance](../expat/README.md). The DICE XML wrapper is separately recovered; a passing XML fixture does not certify parser equivalence. |
+| Numeric and CRT edges (owner decision 2026-11-09) | The 13 designated numeric/CRT rows retain standard math and native CRT behavior without x87 emulation. Last-bit results, inherited precision/rounding, nonfinite/range behavior, formatting, locale and errors can differ. Other native x87/storage adapters retain their documented limits; ordinary-input agreement is not an equivalence claim. |
+| Hash-capacity mode binding (owner decision) | Native policy selects the normal client 24-bit/nearest mode. The integer capacity results for that mode are recovered, including early large transitions, no minimum-16 clamp and the exponent-32 masked shift. Nonpositive requests retain the native clear adapter until each old dangling-word/new null-word template variant is attributed. Entry widths/ownership remain native. Alternate inherited FP modes are not emulated. See [capacity evidence and limits](../../../../docs/macos-swf-hashsize.md). |
+| Unattributed inventory (owner decision 2026-11-09) | All 104 category-(d) rows retain `unattributed, no recorded reference` as their final inventory disposition. This neither recovers a body nor proves runtime unreachability. No source owner, signature or callable implementation is invented. |
 
-Run `rg "BUILD-FIX SwiffPlayer|DICE-MOD SwiffPlayer" Code/BF2/External`
-from the repository root to locate the affected code.
-
-## Integration
-
-Keep `gameswf/` and `base/` as siblings, with their parent directory on the
-include path. `compatibility_include.h` supplies the integrator configuration.
-The engine-specific wrapper lives in `SwiffPlayer/`.
-
-Build the image with
-[swiffplayer.cmd](../../../Build/swiffplayer.cmd). A dedicated-server build does
-not validate this library. The wrapper uses typed gameswf calls and maps renderer
-operations by function; raw vtable positions are not portable between library
-versions.
-
-## Adaptation map
-
-| Area | Main files | Behavior to preserve |
-| --- | --- | --- |
-| Build configuration | `gameswf_shape.cpp`, `base/tu_types.h`, build manifest | Disable the optional OpenGL shape-debug path. Exclude the inactive XMLSocket translation unit, whose unconditional SDL include is unavailable in this build. Treat x86-64 and AArch64 as known little-endian targets so the 64-bit macOS client does not fall back to SDL's type header, and keep `base/tu_math.h`'s obsolete OS X float-math macros (`logf` to `log` and the rest) off on macOS, as on Windows. `base/utility.h`'s `fmax`, `fmin` and `log2(float)` live in namespace `tu_util` and every caller (`base/container.h`, `gameswf_types.cpp`, `gameswf_text.cpp`, `gameswf_impl.cpp`, `fclamp`) calls them qualified: libc++ declares the C library overloads at global scope, and gameswf's comparisons answer differently for NaN and signed-zero inputs, so its own versions stay in use on every toolchain. |
-| Host access and images | `gameswf.h`, `gameswf_action.*`, `gameswf_impl.*`, `gameswf_render.*` | Global-object access, named bitmap exports, external bitmap creation policy, texture loading, and background-color readback. Exported names must own their string storage. |
-| ActionScript objects | `gameswf_action.*`, `gameswf_string.cpp` | Properties and prototype accessors, class registration, object literals, inheritance, constructor dispatch, `this`/`super`, array/string methods, enumeration, and object conversion. |
-| VM state | `gameswf_action.*` | Tolerant stack underflow, timeline variables, caller register banks, and function register save/restore. |
-| Timers | `gameswf_timers.*`, `gameswf_impl.cpp` | Global timer registration, object-method callbacks, and millisecond intervals. |
-| Sprite lifetime and timelines | `gameswf_impl.*`, `gameswf_dlist.*` | Deferred removals, dead-clip access, construct/load ordering, label and numeric goto behavior, timeline state changes, and action-queue draining before execution. |
-| Drawing and bounds | `gameswf_shape.*`, `gameswf_styles.h`, `gameswf_impl.*` | Runtime shapes, image clips, owned runtime definitions, local clip extents, and scale-aware width/height updates. |
-| Text and localization | `gameswf_text.cpp`, `gameswf_font.h`, `gameswf_string.cpp`, render interfaces | Renderer-managed text lines, editing/focus/selection, independent narrow and wide values, and font-leading terms for caret and auto-height. |
-| Mouse input | `gameswf_impl.*`, `gameswf_button.*`, `gameswf_text.cpp` | Per-character dispatch, capture across press/release, handler names, and capture release when a containing sprite is hidden or leaves its display list (removed or replaced). |
-| x64 portability ([issue #7](https://github.com/B2BF/OpenBF2/issues/7)) | `base/container.h`, `base/utility.*`, `gameswf_action.cpp` | Hash entries store the functor's full `size_t` hash, the value lookups compare (the upstream `int` round trip sign-extended on x64 and lost keys). Object and function address strings print the whole pointer, so object identity through string comparison holds above 4 GB. The debug-only assert breakpoint uses `__debugbreak` where inline asm is unavailable. x86 code generation and output are unchanged. Marked `[CHOSEN, not recovered] x64`. |
-| Movie teardown ([issue #7](https://github.com/B2BF/OpenBF2/issues/7)) | `gameswf.h`, `gameswf_action.*`, `gameswf_impl.*`, `gameswf_dlist.*`, `gameswf_text.cpp`, `gameswf_button.cpp`, `SwiffPlayer/SwiffPlayer.cpp` | Every `as_object_interface` registers itself while it exists. `~SwiffPlayer` releases its movie: `release_script_objects` clears every registered clip and object - a clip's environment, handlers and children (without UNLOAD, so no script runs), an object's members, accessors and prototype - and the library definitions' `registerClass` bindings, which breaks the script reference cycles that kept each menu's clip tree, and the clips removed during play, alive. The instance and definition references are then dropped and `action_clear()` resets `_global`, the per-menu script reset the shipped DLL unload gives. The movie library stays cached (dropping it leaks each definition through its sprite-definition and font back references). The global steps run only when the dying player is the only live one (a live-player count); otherwise they are skipped and logged, and only the player's own instance and definition references are dropped. Marked `[CHOSEN, not recovered]`. |
-
-## Constraints for changes
-
-Function calls borrow the caller's register bank while name lookup keeps the
-defining environment. Function2 calls save and restore registers 0 through 9;
-higher registers remain shared. Keep this distinction when changing nested calls
-or constructor dispatch.
-
-Text fields keep narrow and wide values independently. A wide-only string can
-provide display text while converting to an empty narrow string. Keep the
-renderer selection result as a Boolean; equal or uninitialized selection
-endpoints do not replace it.
-
-Numeric gotos are queued; label gotos apply immediately. Action queues remove a
-buffer before executing it so reentrant navigation cannot execute the same
-buffer twice. Runtime-created definitions must remain alive through deferred
-display-list removal.
-
-This integration is incomplete. Examples include solid-color fallback for
-gradient fills, unsupported custom array-sort comparators, and remaining
-timeline/lifetime differences documented at their source boundaries. Preserve
-those markers and validate the affected menu flows when changing these areas.
+Build the client movie image through CMake or
+[swiffplayer.cmd](../../../Build/swiffplayer.cmd); the manifests list the same
+remaining gameswf/base sources. The standalone 2006 SDL Makefiles and tools are
+removed. Keep `gameswf/` and `base/` as siblings and their parent on the include
+path. `compatibility_include.h` remains the integrator configuration and heap
+seam. A dedicated-server build alone does not validate this library.

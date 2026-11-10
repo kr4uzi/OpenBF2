@@ -29,6 +29,7 @@ namespace gameswf
 		// trapezoidation.
 		struct trapezoid_accepter
 		{
+			// Implicit vptr-only construction: SwiffPlayer.dll 0x10096410.
 			virtual void	accept_trapezoid(int style, const trapezoid& tr) = 0;
 			virtual void	accept_line_strip(int style, const point coords[], int coord_count) = 0;
 		};

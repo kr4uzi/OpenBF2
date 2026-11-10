@@ -1,0 +1,97 @@
+{
+ "note": "[CHOSEN, not recovered] Dev-route (Wine + d3dx9_25) limit: these generated RaShaderSM permutations fail every attempted profile with E_OUTOFMEMORY from ID3DXEffectCompiler::CompileEffect, even with a large-address-aware host. They occur at lighting high (RAPATH 0) for every texture-filter quality. The native route (c-native-fx) must compile them; see docs/macos-c-fx-permutations.md gap 3.",
+ "condition": "lighting quality 3 (RaDefines RAPATH 0), any filter quality; dynamic-shadow setting irrelevant (no hasshadow)",
+ "profiles_failed": [
+  "vs_1_1/ps_1_3 .. vs_2_0/ps_2_0 (all ten, measured for L3S1F3T3); attempts 0-3 for the other two filter qualities"
+ ],
+ "permutations": [
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_hasenvmap_|_usehemimap_",
+   "effect": "shaders/rashadersmhasnormalmaphasenvmapusehemimap.fx",
+   "bits": 26,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_hasenvmap_|_usehemimap_|_hashemiocclusion_",
+   "effect": "shaders/rashadersmhasnormalmaphasenvmapusehemimaphashemiocclusion.fx",
+   "bits": 538,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_objspacenormalmap_|_hasenvmap_|_usehemimap_",
+   "effect": "shaders/rashadersmhasnormalmapobjspacenormalmaphasenvmapusehemimap.fx",
+   "bits": 30,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_objspacenormalmap_|_hasenvmap_|_usehemimap_|_hashemiocclusion_",
+   "effect": "shaders/rashadersmhasnormalmapobjspacenormalmaphasenvmapusehemimaphashemiocclusion.fx",
+   "bits": 542,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_objspacenormalmap_|_usehemimap_",
+   "effect": "shaders/rashadersmhasnormalmapobjspacenormalmapusehemimap.fx",
+   "bits": 22,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_objspacenormalmap_|_usehemimap_|_hashemiocclusion_",
+   "effect": "shaders/rashadersmhasnormalmapobjspacenormalmapusehemimaphashemiocclusion.fx",
+   "bits": 534,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_usehemimap_",
+   "effect": "shaders/rashadersmhasnormalmapusehemimap.fx",
+   "bits": 18,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  },
+  {
+   "family": "RaShaderSM",
+   "permutation": "_hasnormalmap_|_usehemimap_|_hashemiocclusion_",
+   "effect": "shaders/rashadersmhasnormalmapusehemimaphashemiocclusion.fx",
+   "bits": 530,
+   "configs": [
+    "L3*F1",
+    "L3*F2",
+    "L3*F3"
+   ]
+  }
+ ]
+}

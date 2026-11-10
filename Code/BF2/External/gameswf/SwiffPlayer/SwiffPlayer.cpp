@@ -4,13 +4,27 @@
 
 #ifdef BF2_IMAGE_SWIFFPLAYER
 
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <new>
+#include <set>
+#include <string>
+#include <vector>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
 #include "../../../Platform/X87Compat.h" // [CHOSEN, not recovered] x87 conversion results, including invalid inputs.
 #include "SwiffPlayer.h"
+#include "SwiffBitmapCache.h"
+#include "OfflineConnectPopup.h"
 #include "../../../Core/MsvcCrtCompat.h"   // [CHOSEN, not recovered] sprintf_s, __time32_t/_time32, _time64 outside MSVC
 #if defined(__APPLE__)
 #include "../../../Platform/macOS/CocoaHost.h"
-#include <cstdio>
-#include <cstdlib>
 // [CHOSEN, not recovered] macOS: the two user32 calls the ActionScript bindings make, on the Cocoa
 // host. SetCursor takes the host's cursor tokens (SwiffHost::getCursor) and answers the previous
 // one; GetKeyState is called only for VK_CAPITAL (20), whose toggle bit is the Caps Lock state.
@@ -42,7 +56,6 @@ static short GetKeyState(int vkey)
 #else
 #include "../../../Menu/ISwiffRender.h" // the typed render calls of the dice.bf2.Logic credits natives
 #endif
-#include <string>
 
 #include "../../../Menu/ISwiffHost.h" // native storage calls share the owner's std::string ABI
 #include "../../../Menu/IServerBrowser.h"  // stopBrowser's list handle (+0x30 stopUpdate)
@@ -71,18 +84,11 @@ static short GetKeyState(int vkey)
 #include "base/tu_file.h"   // the file_opener_callback return type
 #include "base/image.h"     // image::rgb / image::rgba (create_bitmap_info_rgb/rgba read w/h)
 #include "gameswf_action.h" // as_object / as_value / get_global_object - the AS-bridge graph build
+#include "gameswf_impl.h"   // existing movie frame navigation used by the offline popup policy
+#include "gameswf_render.h"
 #include "gameswf_log.h"    // [TEMP] c-swf-disconnect: SWF_LIST_TRACE
+#include "gameswf_prefix_trace.h"
 
-#include <new>
-#include <string>
-#include <vector>
-#include <stddef.h>         // offsetof: SwiffRenderHandler::renderContext
-#include <string.h>
-#include <stdio.h>         // memset, memcpy
-#include <time.h>          // time(): the stamp the host records carry
-#include <stdlib.h>         // getenv (the AS-diagnostic gate)
-#include <stdarg.h>         // va_list: swiffFormatString (sub_10003320) behind Logic.setDecimals
-#include <map>              // unk_100F882C: the server-browser filter clauses, keyed by bit
 
 namespace dice {
 namespace hfe {
@@ -105,6 +111,11 @@ static SwiffPlayer* g_swiffPlayerInstance = 0;
 // [CHOSEN, not recovered] issue #7: the players constructed and not yet destroyed. The movie
 // teardown's global steps (SwiffPlayer::releaseMovie) run only when the dying player is the last.
 static int s_livePlayers = 0;
+
+// [CHOSEN, not recovered] Owner-approved offline popup policy, without player
+// layout or virtual-slot changes. releaseMovie removes the borrowed instance.
+// See docs/macos-feat-connectip3.md; no script callback is replaced or retained.
+static std::set<gameswf::movie_interface*> s_mainMenus;
 
 // The gameswf modifier-key latches the shipped image keeps as file-scope bytes (byte_100F8EE8/9/A/B),
 // NOT as object members - notifyChar/notifyKeyState/resetModifierState touch these.
@@ -702,6 +713,14 @@ void as_locale_getString(const gameswf::fn_call& fn)
     renddx9abi::HostString ids(fn.arg(0).to_string());
     std::wstring out;
     h->getLocalizedString(out, ids);
+    if (gameswf::prefix_trace_enabled() && ids == "LOGIN_prefix")
+    {
+        char units[257] = {};
+        const size_t count = out.size() < 32 ? out.size() : 32;
+        for (size_t i = 0; i < count; ++i)
+            std::snprintf(units + i * 8, sizeof(units) - i * 8, "%06x, ", unsigned(out[i]));
+        gameswf::prefix_trace_log("locale key='LOGIN_prefix' wideUnits=%zu units=[%s]", out.size(), units);
+    }
     gameswf::assign_dice_string_object_wide(text, BF2_DICE_UTF16(out.c_str()));
     fn.result->set_as_object_interface(text);
 }
@@ -9642,7 +9661,7 @@ inline void rcDrawBitmapNull(void* rc, const void* m, int texId,
 inline void rcBeginMask(void* rc)   { reinterpret_cast<void(__thiscall*)(void*)>(rcVtbl(rc)[0x9C/4])(rc); }  // +0x9C slot 39
 inline void rcEndMask(void* rc)     { reinterpret_cast<void(__thiscall*)(void*)>(rcVtbl(rc)[0xA0/4])(rc); }  // +0xA0 slot 40
 inline void rcDisableMask(void* rc) { reinterpret_cast<void(__thiscall*)(void*)>(rcVtbl(rc)[0xA4/4])(rc); }  // +0xA4 slot 41
-// [DICE-MOD SwiffPlayer #36] the text ("font wrapper") slots 26-37, the targets of the shipped
+//  the text ("font wrapper") slots 26-37, the targets of the shipped
 // render_handler forwarders 0x10005DC0..0x10005EC0.
 inline void* rcTextCreate(void* rc, const char* name, int size)             { return reinterpret_cast<void*(__thiscall*)(void*, const char*, int)>(rcVtbl(rc)[0x68/4])(rc, name, size); }                    // +0x68 slot 26 createFont
 inline void  rcTextRelease(void* rc, void* line)                            { reinterpret_cast<void(__thiscall*)(void*, void*)>(rcVtbl(rc)[0x6C/4])(rc, line); }                                              // +0x6C slot 27
@@ -9796,6 +9815,14 @@ SwiffPlayer::SwiffPlayer()
 
     initKeyTranslation();
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Cocoa asynchronous Enter state; independent of
+    // notifyChar/modifier latches and the gameswf Key listener event table.
+    gameswf::set_async_key_state_callback([](int) -> unsigned short {
+        return ::dice::hfe::macos::CocoaHost::instance().consumeAsyncEnterState();
+    });
+#endif
+
     // getSingleton("Bf2VoipClient") - the BF2.exe VoIP client (null in the harness). classManager
     // vslot +0x48.
     bf2_voip_client = static_cast<void*>(
@@ -9816,6 +9843,7 @@ void SwiffPlayer::releaseMovie()
 {
     gameswf::movie_interface*  inst = static_cast<gameswf::movie_interface*>(movie_instance);
     gameswf::movie_definition* def  = static_cast<gameswf::movie_definition*>(movie_definition);
+    s_mainMenus.erase(inst);
     movie_instance   = 0;
     movie_definition = 0;
     const bool onlyPlayer = s_livePlayers == 1;
@@ -9847,6 +9875,10 @@ SwiffPlayer::~SwiffPlayer()
     // save. The voip-volume save stays out [Stage 3]; releaseMovie() is this build's movie and
     // global teardown ([CHOSEN, not recovered], issue #7).
     releaseMovie();
+    // [CHOSEN, not recovered] issue #7: cached native definitions can outlive
+    // this player. Their bitmap destructors must not call its dead handler.
+    if (gameswf::get_render_handler() == &render_handler)
+        gameswf::set_render_handler(NULL);
     --s_livePlayers;                 // [CHOSEN, not recovered] issue #7, see releaseMovie
 
     voip_update_flag = 0;
@@ -9911,7 +9943,14 @@ void SwiffPlayer::initKeyTranslation()
 // frontier.
 
 bool  SwiffPlayer::isMovieLoaded()                 { return movie_instance != 0; }
-void  SwiffPlayer::setRender(ISwiffRender* r)      { render_context = r; }
+void SwiffPlayer::setRender(ISwiffRender* r)
+{
+    // [CHOSEN, not recovered] Drop the old generated-image lease before changing
+    // registry. Cached descriptors will upload on their next use in this handler.
+    if (render_context != r)
+        render_handler.bitmap_registry.reset();
+    render_context = r;
+}
 ISwiffRender* SwiffPlayer::getRender()             { return render_context; }
 void  SwiffPlayer::setSwiffHost(ISwiffHost* h)     { swiff_host = h; }
 ISwiffHost* SwiffPlayer::getSwiffHost()            { return swiff_host; }
@@ -9998,10 +10037,8 @@ void SwiffPlayer::setScale(float xScale, float yScale)
         rcSetScale(render_context, xScale, yScale);
 }
 
-// loadMovie. Stage 3: parse + instance + push size, real. The bitmap-character walk
-// (external images -> loadTexture) and the 27-namespace AS graph read dice-modified gameswf internals
-// by raw offset and are deferred to Stage 5; the movie still parses, advances and renders its vector
-// shapes without them.
+// Parses and instances the movie, resolves its named image descriptors through
+// the renderer, then publishes the ActionScript namespaces before advancing.
 bool SwiffPlayer::loadMovie(const char* movieName)
 {
     ISwiffHost* host = getSwiffHost();
@@ -10028,9 +10065,12 @@ bool SwiffPlayer::loadMovie(const char* movieName)
     rcSetMovieWidth(render_context, static_cast<unsigned>(movie_width));
     rcSetMovieHeight(render_context, movie_height);
 
-    // DO_NOT_LOAD_BITMAPS - the documented host-texture policy, and the reason the shipped DLL
-    // links no zlib/jpeglib: menu bitmaps are never decoded, only named and resolved externally.
-    gameswf::set_default_create_bitmaps(gameswf::DO_NOT_LOAD_BITMAPS);
+    // SwiffPlayer.dll 0x1007D43A..0x1007D443 constructs with bitmap loading
+    // enabled. Gradient styles then take 0x100A43EF's generated-image path.
+    // [RETIRE-WHEN: swf-cached-bitmap-renderer-ownership] Generated descriptors
+    // now rebind through per-handler leases; retain this acceptance marker until
+    // real menu gradients and repeated reload/memory runs have been validated.
+    gameswf::set_default_create_bitmaps(gameswf::DO_LOAD_BITMAPS);
     gameswf::movie_definition* def = gameswf::create_library_movie(path);
     movie_definition = def;
     if (!def)
@@ -10039,6 +10079,7 @@ bool SwiffPlayer::loadMovie(const char* movieName)
         return false;
     }
     gameswf::movie_interface* inst = def->create_instance();
+    s_mainMenus.erase(static_cast<gameswf::movie_interface*>(movie_instance));
     movie_instance = inst;
     if (!inst)
     {
@@ -10046,47 +10087,38 @@ bool SwiffPlayer::loadMovie(const char* movieName)
         return false;
     }
 
-    // Resolves every bitmap through the renderer using its copied export name, or ""
-    // for unnamed characters. Copy names from the export hash to avoid dangling c_str pointers.
+    // SwiffPlayer.dll 0x100062F1..0x1000634C resolves only named descriptors;
+    // Generated gradient/font descriptors are rebound separately when drawn.
     {
-        tu_string              names[256];
-        gameswf::bitmap_info*  infos[256];
-        const int n = def->get_exported_bitmaps(256, names, infos);
         const int total = def->get_bitmap_info_count();
-        int resolved = 0, unnamed = 0;
+        int resolved = 0;
         for (int i = 0; i < total; ++i)
         {
             gameswf::bitmap_info* bi = def->get_bitmap_info(i);
-            if (!bi) continue;
-            const char* name = "";
-            for (int k = 0; k < n; ++k)
-                if (infos[k] == bi) { name = names[k].c_str(); break; }
-            int tw = 0, th = 0;
-            const int handle = render_context ? rcLoadTexture(render_context, name, &tw, &th) : -1;
-            if (handle >= 0)
-            {
-                // The handle IS the texture; the bitmap_info carries nothing else (no pixels).
-                bi->m_texture_id      = static_cast<unsigned>(handle);
-                bi->m_original_width  = tw;
-                bi->m_original_height = th;
-                if (name[0]) ++resolved; else ++unnamed;
-            }
-            else if (name[0])
-            {
-                ::renddx9abi::logf("[SwiffPlayer::loadMovie] loadTexture(\"%s\") failed", name);
-            }
+            if (!bi->is_named() || !render_context) continue;
+            gameswf::named_bitmap_info* named = static_cast<gameswf::named_bitmap_info*>(bi);
+            bi->m_texture_id = static_cast<unsigned>(rcLoadTexture(render_context,
+                named->m_name.c_str(), &bi->m_original_width, &bi->m_original_height));
+            ++resolved;
         }
-        ::renddx9abi::logf("[SwiffPlayer::loadMovie] bitmaps: %d characters, %d named exports, "
-                           "%d named resolved via loadTexture, %d unnamed given handles",
-                           total, n, resolved, unnamed);
+        ::renddx9abi::logf("[SwiffPlayer::loadMovie] bitmaps: %d characters, "
+                           "%d named submitted to loadTexture", total, resolved);
     }
 
     // Publish the ActionScript namespace graph before the movie's first advance.
     // Registration adapts the engine bindings to this gameswf version's fn_call ABI.
     buildAsGraph();
 
+    // [CHOSEN, not recovered] Only this movie may complete an offline dialog request.
+    if (movieName && std::strcmp(movieName, "mainMenu.swf") == 0)
+    {
+        s_mainMenus.insert(inst);
+        ::renddx9abi::logf("[SwiffPlayer] offline Connect to IP policy: main-menu instance registered");
+    }
+
     ::renddx9abi::logf("[SwiffPlayer::loadMovie] returning true");
     SWF_LIST_TRACE("loadMovie '%s'", movieName ? movieName : "");   // [TEMP] c-swf-disconnect
+    gameswf::prefix_trace_log("loadMovie '%s' (watching prefixField and LOGIN_prefix)", movieName ? movieName : "");
     return true;
 }
 
@@ -10161,6 +10193,10 @@ void SwiffPlayer::update(float deltaTime)
     gameswf::movie_interface* mi = static_cast<gameswf::movie_interface*>(movie_instance);
     mi->set_display_viewport(0, 0, movie_width, movie_height);      // typed (2006 4-arg)
     mi->advance(deltaTime);
+    // [CHOSEN, not recovered] Observe the authored request after its actions,
+    // before display. Neither cached loginStatus nor its native getter changes.
+    if (openOfflineConnectPopup(mi->get_root_movie(), s_mainMenus.count(mi) != 0))
+        ::renddx9abi::logf("[SwiffPlayer] offline selectedPopup=connecttoip: selected authored popup frame (loginStatus=1)");
     if (traceUpdate)   // [TEMP] stream tracer
         ::renddx9abi::logf("[stream]   viewport=(0,0,%d,%d) after advance: frame=%d/%d play=%d mouse=(%d,%d,%d)",
                            movie_width, movie_height, mi->get_current_frame(),
@@ -10168,7 +10204,7 @@ void SwiffPlayer::update(float deltaTime)
                            (int)mi->get_play_state(), mouse_x, mouse_y, mouse_buttons);
 
     // Propagate the movie background color to the renderer each frame.
-    // [DICE-MOD] The movie interface exposes the background getter used by this bridge.
+    //  The movie interface exposes the background getter used by this bridge.
     if (render_context)
     {
         const gameswf::rgba bg = mi->get_background_color();
@@ -10256,7 +10292,7 @@ static void swiffKeyDownLatch(int vkey)
     else if (vkey == 17) s_ctrlHeld   = 1;
     else if (vkey == 20) s_capsToggle = (s_capsToggle == 0);   // caps is a toggle, not a latch
     // The "IME handler" of the shipped latch IS the focused text field's +200 interface
-    // (dword_100F8EE0): its slot 0 takes the virtual key. [DICE-MOD #37]
+    // (dword_100F8EE0): its slot 0 takes the virtual key.
     gameswf::set_text_input_modifiers(s_shiftHeld != 0, s_altHeld != 0, s_ctrlHeld != 0, s_capsToggle != 0);
     if (gameswf::text_input* field = gameswf::get_focused_text_input())
         field->on_key(vkey);
@@ -10290,7 +10326,7 @@ void  SwiffPlayer::notifyKeyState(int code, int down)
 }
 // 0x10006DB0 setTextInput: the host hands over clipboard text -> `src`, then the focused field's
 // paste (slot 2). 0x10006E30 / 0x10006E90 getTextInput0/1: the focused field's copy (slot 3) / cut
-// (slot 4), then `src` is assigned into the host's PRE-constructed std::string. [DICE-MOD #37]
+// (slot 4), then `src` is assigned into the host's PRE-constructed std::string.
 void  SwiffPlayer::setTextInput(const char* text)
 {
     gameswf::text_input_clipboard() = text ? text : "";
@@ -10399,6 +10435,26 @@ ISwiffRender* SwiffRenderHandler::renderContext()
     return owner->render_context;
 }
 
+// [CHOSEN, not recovered] Cached definitions share pixels, never registry IDs.
+const std::shared_ptr<SwiffBitmapRegistry>& SwiffRenderHandler::bitmapRegistry()
+{
+    if (!bitmap_registry)
+        bitmap_registry = std::make_shared<SwiffBitmapRegistry>(renderContext());
+    return bitmap_registry;
+}
+
+void SwiffRenderHandler::bindBitmap(const gameswf::bitmap_info* bitmap)
+{
+    if (bitmap && bitmap->m_render_resource)
+        SwiffBitmapRegistry::bind(const_cast<gameswf::bitmap_info*>(bitmap), bitmapRegistry());
+}
+
+// SwiffPlayer.dll 0x10005CE0: forward to ISwiffRender +0x40 unchanged.
+void SwiffRenderHandler::set_depth(int depth)
+{
+    renderContext()->recordStat(depth);
+}
+
 namespace {
 inline void* rhRc(SwiffRenderHandler* self)
 { return self->renderContext(); }
@@ -10414,9 +10470,11 @@ gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_empty()
 gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_alpha(int w, int h, unsigned char* data)
 {
     gameswf::bitmap_info* bi = new gameswf::bitmap_info();
-    bi->m_texture_id     = static_cast<unsigned>(rcUploadAlpha(rhRc(this), (unsigned)w, (unsigned)h, data));
     bi->m_original_width  = w;
     bi->m_original_height = h;
+    // [CHOSEN, not recovered] Preserve generated font pixels for cached reloads.
+    bi->m_render_resource.reset(new SwiffBitmapPixels(SwiffBitmapPixels::Alpha, w, h, w, data));
+    bindBitmap(bi);
     return bi;
 }
 // 0x10005AE0: a NULL image answers NULL before anything is allocated (0x10005AED..0x10005AFE);
@@ -10434,23 +10492,22 @@ gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_rgb(image::rgb* im)
 gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_rgba(image::rgba* im)
 {
     gameswf::bitmap_info* bi = new gameswf::bitmap_info();
-    bi->m_texture_id = static_cast<unsigned>(rcUploadRgba(rhRc(this), im));
-    if (im) { bi->m_original_width = im->m_width; bi->m_original_height = im->m_height; }
+    // SwiffPlayer.dll 0x10005BC1..0x10005BD6 stores dimensions before upload.
+    bi->m_original_width = im->m_width;
+    bi->m_original_height = im->m_height;
+    // [CHOSEN, not recovered] Keep canonical RGBA before RendDX9 swaps channels.
+    bi->m_render_resource.reset(new SwiffBitmapPixels(SwiffBitmapPixels::Rgba,
+        im->m_width, im->m_height, im->m_pitch, im->m_data));
+    bindBitmap(bi);
     return bi;
 }
-// The shipped slot-5 forwarder: create_bitmap_info_file(path, &w, &h) -> ISwiffRender::loadTexture
-// (+0x28). The handle IS the texture; a failed resolve (-1) is "no image", which the loadMovie
-// image loader treats as nothing to place.
+// SwiffPlayer.dll 0x10005BF0: allocate first, then keep the renderer's handle
+// and both dimensions, including a failure handle. The descriptor is returned.
 gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_file(const char* path)
 {
+    gameswf::bitmap_info* bi = new (std::nothrow) gameswf::bitmap_info();
     int w = 0, h = 0;
-    const int handle = rcLoadTexture(rhRc(this), path ? path : "", &w, &h);
-    if (handle < 0)
-    {
-        ::renddx9abi::logf("[SwiffPlayer] create_bitmap_info_file(\"%s\") - loadTexture failed", path ? path : "");
-        return 0;
-    }
-    gameswf::bitmap_info* bi = new gameswf::bitmap_info();
+    const int handle = rcLoadTexture(rhRc(this), path, &w, &h);
     bi->m_texture_id      = static_cast<unsigned>(handle);
     bi->m_original_width  = w;
     bi->m_original_height = h;
@@ -10458,9 +10515,8 @@ gameswf::bitmap_info* SwiffRenderHandler::create_bitmap_info_file(const char* pa
 }
 void SwiffRenderHandler::delete_bitmap_info(gameswf::bitmap_info* bi)
 {
-    // Release the render texture; gameswf's ref-counting frees the bitmap_info object itself.
-    if (bi)
-        rcReleaseTexture(rhRc(this), static_cast<int>(bi->m_texture_id));
+    // SwiffPlayer.dll 0x10005C80: release the handle without a null guard.
+    rcReleaseTexture(rhRc(this), static_cast<int>(bi->m_texture_id));
 }
 void SwiffRenderHandler::begin_display(gameswf::rgba background_color,
                                        int vx0, int vy0, int vw, int vh,
@@ -10535,6 +10591,7 @@ void SwiffRenderHandler::fill_style_color(int fill_side, gameswf::rgba color)
 void SwiffRenderHandler::fill_style_bitmap(int fill_side, const gameswf::bitmap_info* bi,
                                            const gameswf::matrix& m, bitmap_wrap_mode wm)
 {
+    bindBitmap(bi); // [CHOSEN, not recovered] The current handler owns the upload.
     const int texId = bi ? static_cast<int>(bi->m_texture_id) : 0;
     const int w     = bi ? bi->m_original_width  : 0;
     const int h     = bi ? bi->m_original_height : 0;
@@ -10557,6 +10614,7 @@ void SwiffRenderHandler::draw_bitmap(const gameswf::matrix& m, const gameswf::bi
                                      const gameswf::rect& coords, const gameswf::rect& uv_coords,
                                      gameswf::rgba color)
 {
+    bindBitmap(bi); // [CHOSEN, not recovered] Also covers cached glyph bitmaps.
     // Shipped forwarder targets SwiffRender +0x64, which is a nullsub - the menu uses the font-wrapper
     // path (Stage 5) for textured glyphs, not draw_bitmap. Forwarded for fidelity; lands on the no-op.
     const int texId = bi ? static_cast<int>(bi->m_texture_id) : 0;
@@ -10578,7 +10636,7 @@ void SwiffRenderHandler::end_submit_mask()
 void SwiffRenderHandler::disable_mask()
 { SPL("[stream]   disable_mask"); rcDisableMask(rhRc(this)); }
 
-// [DICE-MOD SwiffPlayer #36] The twelve text slots. Each shipped forwarder is `mov ecx,[ecx+8]; mov
+//  The twelve text slots. Each shipped forwarder is `mov ecx,[ecx+8]; mov
 // eax,[ecx]; jmp [eax+off]` except two that convert an out-parameter (0x10005E20 hit test: the
 // renderer writes the position into a stack copy of the last argument, the forwarder stores it through
 // the pointer; 0x10005E50 selection: two locals, two stores).
@@ -10634,7 +10692,7 @@ bool SwiffRenderHandler::text_selection(void* line, int* a, int* b)
     if (a) *a = va;
     if (b) *b = vb;
     // The render context's AL is the answer the field's delete_selection (sub_10088D60) tests
-    // before it deletes [start, end): with "no selection" the outs are meaningless. [DICE-MOD #46]
+    // before it deletes [start, end): with "no selection" the outs are meaningless.
     return has;
 }
 // 0x10005E90 (`jmp [vtbl+0x88]`): the four float dwords pass through unchanged.

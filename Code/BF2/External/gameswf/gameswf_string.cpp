@@ -6,231 +6,151 @@
 // Implementation of ActionScript String class.
 
 
+#include "../../Platform/X87Compat.h"
 #include "base/tu_config.h"
 #include "gameswf_string.h"
 #include "gameswf_log.h"
-#if defined(__APPLE__)
-#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
-#endif
+#include "base/utf8.h"
 #include "base/smart_ptr.h"
+#include <cctype>
 
 
 namespace gameswf
 {
+	struct tu_string_as_object;
+	static void register_string_methods(tu_string_as_object* str);
+	static void set_string_result(as_value* result, const tu_string& text);
+	static void string_slice_result(const fn_call& fn, const tu_stringi& method, const tu_string& text);
+	static void string_case_result(const fn_call& fn, const tu_string& text, bool upper);
+
 	void string_method(const fn_call& fn, const tu_stringi& method_name, const tu_string& this_string)
-	// Executes the string method named by method_name.
+	// Dispatches String builtins; failed argument checks leave the result untouched.
 	{
-		if (method_name == "charCodeAt")
+		if (method_name == "charAt" || method_name == "charCodeAt")
 		{
-			int	index = (int) fn.arg(0).to_number();
-			if (index >= 0 && index < this_string.utf8_length())
+			// SwiffPlayer.dll 0x1009B350 / 0x1009B410: byte offsets, index zero refused.
+			if (fn.nargs != 1)
 			{
-				fn.result->set_double(this_string.utf8_char_at(index));
+				log_error("String::%s needs one argument\n", method_name.c_str());
 				return;
 			}
-
-			fn.result->set_double(0);	// FIXME: according to docs, we're supposed to return "NaN"
-			return;
-		}
-		else if (method_name == "charAt")
-		{
-			int	index = (int) fn.arg(0).to_number();
-			if (index >= 0 && index < this_string.utf8_length())
+			const int index = bf2x87::toIntTruncate(fn.arg(0).to_number());
+			if (index > 0 && index <= this_string.length())
 			{
-				tu_string result;
-				result += this_string.utf8_char_at(index);
-				fn.result->set_tu_string(result);
+				const char* p = this_string.c_str() + index;
+				if (method_name == "charAt")
+				{
+					const char text[2] = { *p, 0 };
+					set_string_result(fn.result, tu_string(text));
+				}
+				else
+				{
+					fn.result->set_double(utf8::decode_next_unicode_character(&p));
+				}
 			}
-
-			fn.result->set_string("");
 			return;
 		}
 		else if (method_name == "fromCharCode")
 		{
-			// Takes a variable number of args.  Each arg
-			// is a numeric character code.  Construct the
-			// string from the character codes.
-
-			tu_string result;
-
-			for (int i = 0; i < fn.nargs; i++)
+			// SwiffPlayer.dll 0x1009AFE0: only the first argument is encoded.
+			if (fn.nargs == 0)
 			{
-#if defined(__APPLE__)
-				// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
-				uint32 c = bf2x87::lowUInt32(fn.arg(i).to_number());
-#else
-				uint32 c = (uint32) fn.arg(i).to_number();
-#endif
-				result.append_wide_char(c);
-			}
-
-			fn.result->set_tu_string(result);
-			return;
-		}
-		else if (method_name == "toUpperCase")
-		{
-			fn.result->set_tu_string(this_string.utf8_to_upper());
-			return;
-		}
-		else if (method_name == "toLowerCase")
-		{
-			fn.result->set_tu_string(this_string.utf8_to_lower());
-			return;
-		}
-		else if (method_name == "indexOf")
-		{
-			if (fn.nargs < 1)
-			{
-				fn.result->set_double(-1);
+				log_error("String::fromCharCode needs one argument\n");
 				return;
 			}
-			else
-			{
-				int	start_index = 0;
-				if (fn.nargs > 1)
-				{
-					start_index = (int) fn.arg(1).to_number();
-				}
-				const char*	str = this_string.c_str();
-				const char*	p = strstr(
-					str + start_index,	// FIXME: not UTF-8 correct!
-					fn.arg(0).to_string());
-				if (p == NULL)
-				{
-					fn.result->set_double(-1);
-					return;
-				}
-
-				fn.result->set_double(tu_string::utf8_char_count(str, p - str));
-				return;
-			}
-		}
-		else if (method_name == "substring")
-		{
-			// Pull a slice out of this_string.
-			int	start = 0;
-			int	utf8_len = this_string.utf8_length();
-			int	end = utf8_len;
-			if (fn.nargs >= 1)
-			{
-				start = (int) fn.arg(0).to_number();
-				start = iclamp(start, 0, utf8_len);
-			}
-			if (fn.nargs >= 2)
-			{
-				end = (int) fn.arg(1).to_number();
-				end = iclamp(end, 0, utf8_len);
-			}
-
-			if (end < start) swap(&start, &end);	// dumb, but that's what the docs say
-			assert(end >= start);
-
-			fn.result->set_tu_string(this_string.utf8_substring(start, end));
+			// 0x1009B00A-0x1009B02F: construct/register before argument conversion.
+			as_object_interface* result = create_dice_string_object(NULL, 0);
+			const int code = bf2x87::toIntTruncate(fn.arg(0).to_number());
+			char text[8];
+			int offset = 0;
+			utf8::encode_unicode_character(text, &offset, static_cast<Uint32>(code));
+			text[offset] = 0;
+			assign_dice_string_object_narrow(result, text);
+			fn.result->set_as_object_interface(result);
 			return;
 		}
-		// [DICE-MOD SwiffPlayer #31: the rest of the String method set the shipped String object
-		// registers (sub_1009BB10: split, charAt, charCodeAt, concat, indexOf, lastIndexOf, slice,
-		// toLowerCase, toUpperCase, substr, substring, toString). Stock 2006 stopped at the TODO
-		// list that stood here; the login page's column lists split their construct parameters.]
+		else if (method_name == "toUpperCase" || method_name == "toLowerCase")
+		{
+			string_case_result(fn, this_string, method_name == "toUpperCase");
+			return;
+		}
+		else if (method_name == "indexOf" || method_name == "lastIndexOf")
+		{
+			// SwiffPlayer.dll 0x1009B570 / 0x1009B640: forward search from an unchecked offset.
+			if (fn.nargs == 0)
+			{
+				log_error("String::%s needs atleast one argument\n", method_name.c_str());
+				return;
+			}
+			const char* needle = fn.arg(0).to_string();
+			int start = 0;
+			if (fn.nargs > 1) start = bf2x87::toIntTruncate(fn.arg(1).to_number());
+			const char* text = this_string.c_str();
+			const char* found = strstr(text + start, needle);
+			if (method_name == "lastIndexOf")
+			{
+				const char* last = NULL;
+				while (found)
+				{
+					last = found;
+					found = strstr(found + 1, needle);
+				}
+				found = last;
+			}
+			fn.result->set_int(found ? static_cast<int>(found - text) : -1);
+			return;
+		}
 		else if (method_name == "concat")
 		{
-			tu_string	result = this_string;
-			for (int i = 0; i < fn.nargs; i++)
+			// SwiffPlayer.dll 0x1009B4C0 returns a fresh narrow String object.
+			if (fn.nargs == 0)
 			{
-				result += fn.arg(i).to_tu_string();
-			}
-			fn.result->set_tu_string(result);
-			return;
-		}
-		else if (method_name == "lastIndexOf")
-		{
-			if (fn.nargs < 1)
-			{
-				fn.result->set_double(-1);
+				log_error("String::concat needs atleast one argument\n");
 				return;
 			}
-			const tu_string	needle = fn.arg(0).to_tu_string();
-			const char*	str = this_string.c_str();
-			int	best = -1;
-			if (needle.length() > 0)
-			{
-				for (const char* p = strstr(str, needle.c_str()); p != NULL; p = strstr(p + 1, needle.c_str()))
-				{
-					best = tu_string::utf8_char_count(str, p - str);
-				}
-			}
-			fn.result->set_double(best);
-			return;
-		}
-		else if (method_name == "length")
-		{
-			fn.result->set_int(this_string.utf8_length());
-			return;
-		}
-		else if (method_name == "slice" || method_name == "substr")
-		{
-			const int	utf8_len = this_string.utf8_length();
-			int	start = fn.nargs >= 1 ? (int) fn.arg(0).to_number() : 0;
-			if (start < 0) start += utf8_len;
-			start = iclamp(start, 0, utf8_len);
-			int	end = utf8_len;
-			if (fn.nargs >= 2)
-			{
-				if (method_name == "slice")
-				{
-					end = (int) fn.arg(1).to_number();
-					if (end < 0) end += utf8_len;
-				}
-				else
-				{
-					end = start + (int) fn.arg(1).to_number();
-				}
-				end = iclamp(end, 0, utf8_len);
-			}
-			if (end < start) end = start;
-			fn.result->set_tu_string(this_string.utf8_substring(start, end));
+			tu_string text = this_string;
+			for (int i = 0; i < fn.nargs; ++i) text += fn.arg(i).to_string();
+			set_string_result(fn.result, text);
 			return;
 		}
 		else if (method_name == "split")
 		{
-			as_object*	arr = create_array_object();
-			smart_ptr<as_object>	keep(arr);
-			if (fn.nargs < 1 || fn.arg(0).get_type() == as_value::UNDEFINED)
+			// SwiffPlayer.dll 0x1009B110: empty fields consume an index but are not stored.
+			IF_VERBOSE_ACTION(log_msg("-- String split \n"));
+			if (fn.nargs < 1)
 			{
-				array_object_push(arr, as_value(this_string.c_str()));
+				log_error("String::split needs atleast one argument\n");
+				return;
 			}
-			else
+			const tu_string delimiter = fn.arg(0).to_tu_string();
+			int limit = 0x7fffffff;
+			if (fn.nargs > 1) limit = bf2x87::toIntTruncate(fn.arg(1).to_number());
+			smart_ptr<as_object> result(create_array_object());
+			const char* text = this_string.c_str();
+			for (int index = 0; index < limit; ++index)
 			{
-				const tu_string	delim = fn.arg(0).to_tu_string();
-				if (delim.length() == 0)
+				const char* found = strstr(text, delimiter.c_str());
+				const int count = found ? static_cast<int>(found - text) : static_cast<int>(strlen(text));
+				if (count != 0)
 				{
-					// An empty delimiter splits into single characters.
-					const int	n = this_string.utf8_length();
-					for (int i = 0; i < n; i++)
-					{
-						tu_string	c;
-						c += this_string.utf8_char_at(i);
-						array_object_push(arr, as_value(c.c_str()));
-					}
+					char name[20];
+					snprintf(name, sizeof(name), "%d", index);
+					result->set_member(name, as_value(tu_string(text, count).c_str()));
 				}
-				else
-				{
-					const char*	s = this_string.c_str();
-					for (;;)
-					{
-						const char*	p = strstr(s, delim.c_str());
-						if (p == NULL)
-						{
-							array_object_push(arr, as_value(s));
-							break;
-						}
-						tu_string	piece(s, (int) (p - s));
-						array_object_push(arr, as_value(piece.c_str()));
-						s = p + delim.length();
-					}
-				}
+				if (!found) break;
+				text = found + delimiter.length();
 			}
-			fn.result->set_as_object_interface(arr);
+			fn.result->set_as_object_interface(result.get_ptr());
+			return;
+		}
+		else if (method_name == "length")
+		{
+			fn.result->set_int(this_string.length());
+			return;
+		}
+		else if (method_name == "slice" || method_name == "substr" || method_name == "substring")
+		{
+			string_slice_result(fn, method_name, this_string);
 			return;
 		}
 		else if (method_name == "toString")
@@ -238,7 +158,6 @@ namespace gameswf
 			fn.result->set_tu_string(this_string);
 			return;
 		}
-
 		fn.result->set_undefined();
 	}
 
@@ -247,18 +166,29 @@ namespace gameswf
 	struct tu_string_as_object : public gameswf::as_object
 	{
 		tu_string m_string;
-		// [DICE-MOD SwiffPlayer #38] the shipped object's std::wstring at +60: set only when the object
+		//  the shipped object's std::wstring at +60: set only when the object
 		// is built from wide text (Locale.getString), a terminating 0 included; empty otherwise.
 		array<Uint16> m_wide;
+		// SwiffPlayer.dll 0x1009C140 / 0x1009C110 destroys wide text, narrow
+		// text, then the object base. [CHOSEN, not recovered] S3 bridge:
+		// implicit destruction keeps the native wide array and object ownership.
 
-		// [DICE-MOD SwiffPlayer #31] `length` on a String object, as on a string value.
+		tu_string_as_object()
+		{
+			// SwiffPlayer.dll 0x1009BB10: empty narrow/wide values and builtin methods.
+			// [CHOSEN, not recovered] S3 bridge: native strings and parent interface.
+			register_string_methods(this);
+		}
+
+		//  `length` on a String object, as on a string value.
 		// [#38] the shipped getter (sub_1009B090) answers the WIDE size first (+80) and falls back to
 		// the narrow length only when no wide text is set.
 		virtual bool	get_member(const tu_stringi& name, as_value* val)
 		{
 			if (name == "length")
 			{
-				val->set_int(m_wide.size() > 1 ? m_wide.size() - 1 : m_string.utf8_length());
+				// SwiffPlayer.dll 0x1009B090: narrow length is measured in bytes.
+				val->set_int(m_wide.size() > 1 ? m_wide.size() - 1 : m_string.length());
 				return true;
 			}
 			return as_object::get_member(name, val);
@@ -279,7 +209,7 @@ namespace gameswf
 		}
 	};
 
-	// [DICE-MOD SwiffPlayer #31] the forwarders for the methods the shipped String object registers.
+	//  the forwarders for the methods the shipped String object registers.
 #define SWF_STRING_FORWARDER(fn_name, method)                                          \
 	void fn_name(const fn_call& fn)                                                    \
 	{                                                                                  \
@@ -315,16 +245,8 @@ namespace gameswf
   
 	void string_from_char_code(const fn_call& fn)
 	{
-		tu_string_as_object* this_string_ptr = (tu_string_as_object*) fn.this_ptr;
-		assert(this_string_ptr);
-
-		// tulrich: Ugh!  The caller has done hash.get() on
-		// the method name to find the method, and now we're
-		// going to construct a new method name and run it
-		// through a big if-else.
-		//
-		// TODO do this more efficiently.
-		string_method(fn, tu_stringi("fromCharCode"), this_string_ptr->m_string);
+		// SwiffPlayer.dll 0x1009AFE0 never reads its receiver; the class has no payload.
+		string_method(fn, tu_stringi("fromCharCode"), tu_string());
 	}
 
 
@@ -345,34 +267,105 @@ namespace gameswf
 
 	void string_to_string(const fn_call& fn)
 	{
-		tu_string_as_object* this_string_ptr = (tu_string_as_object*) fn.this_ptr;
-		assert(this_string_ptr);
-
-		fn.result->set_tu_string(this_string_ptr->m_string);
+		// SwiffPlayer.dll 0x1009AFD0 returns the same object, including its wide payload.
+		fn.result->set_as_object_interface(fn.this_ptr);
 	}
 
 
-	// [DICE-MOD SwiffPlayer #31/#38] the twelve methods the shipped String object registers on
-	// itself (sub_1009BB10), plus stock's fromCharCode - shared by the AS `String` constructor and
-	// the wide factory below.
+	as_object* create_dice_string_class()
+	{
+		// SwiffPlayer.dll 0x1009BA20: an object with fromCharCode, no text payload.
+		// [CHOSEN, not recovered] S3 bridge to the native parent/interface storage.
+		as_object* object = new as_object;
+		object->set_member("fromCharCode", &string_from_char_code);
+		return object;
+	}
+
+	// SwiffPlayer.dll 0x1009BA20 registers fromCharCode in the base; 0x1009BB10
+	// registers the instance methods in the order below.
 	static void	register_string_methods(tu_string_as_object* str)
 	{
-		str->set_member("toString", &string_to_string);
 		str->set_member("fromCharCode", &string_from_char_code);
-		str->set_member("charCodeAt", &string_char_code_at);
-		str->set_member("lastIndexOf", &string_last_index_of);
 		str->set_member("split", &string_split);
 		str->set_member("charAt", &string_char_at);
+		str->set_member("charCodeAt", &string_char_code_at);
 		str->set_member("concat", &string_concat);
 		str->set_member("indexOf", &string_index_of);
+		str->set_member("lastIndexOf", &string_last_index_of);
 		str->set_member("slice", &string_slice);
 		str->set_member("toLowerCase", &string_to_lower_case);
 		str->set_member("toUpperCase", &string_to_upper_case);
 		str->set_member("substr", &string_substr);
 		str->set_member("substring", &string_substring);
+		str->set_member("toString", &string_to_string);
 	}
 
-	// [DICE-MOD SwiffPlayer #38] DICE's String object built from wide text - what the shipped
+	// [CHOSEN, not recovered] S3 bridge to the current String storage and factory.
+	// Retail builtin results construct 0x1009BB10, then assign only the narrow payload.
+	static void set_string_result(as_value* result, const tu_string& text)
+	{
+		smart_ptr<tu_string_as_object> str(new tu_string_as_object);
+		str->m_string = text;
+		result->set_as_object_interface(str.get_ptr());
+	}
+
+	static void string_slice_result(const fn_call& fn, const tu_stringi& method, const tu_string& text)
+	{
+		// SwiffPlayer.dll 0x1009B730 / 0x1009B910 / 0x1009BFB0 preserve distinct
+		// length/conversion order. All allocate the result before copying the suffix.
+		if (fn.nargs == 0)
+		{
+			log_error("String::%s needs atleast one argument\n", method.c_str());
+			return;
+		}
+		int length = 0;
+		if (method == "substr") length = text.length();
+		int start = bf2x87::toIntTruncate(fn.arg(0).to_number());
+		if (method == "substr" && start < 0) start += length;
+		if (method == "substring" && start < 0) start = 0;
+		if (method == "substring") length = text.length();
+		int end = method == "substr" ? length - start : length;
+		if (fn.nargs > 1)
+		{
+			end = bf2x87::toIntTruncate(fn.arg(1).to_number());
+			if (method == "substring" && end < 0) end = 0;
+		}
+		if (method == "slice") length = text.length();
+		smart_ptr<tu_string_as_object> result(new tu_string_as_object);
+		if (start >= 0 && start < length)
+		{
+			result->m_string = text.c_str() + start;
+			// Retail forwards negative resize lengths too. The base tag owns the
+			// unresolved resize contract at 0x1006E3B0; no clamp belongs here.
+			if (method == "substr") result->m_string.resize(end);
+			else if (end < length) result->m_string.resize(end - start);
+		}
+		fn.result->set_as_object_interface(result.get_ptr());
+	}
+
+	static void string_case_result(const fn_call& fn, const tu_string& text, bool upper)
+	{
+		// SwiffPlayer.dll 0x1009B830 / 0x1009B8A0: construct, copy the narrow
+		// bytes, call the CRT's in-place case conversion, then publish the object.
+		smart_ptr<tu_string_as_object> result(new tu_string_as_object);
+		result->m_string = text;
+		char* bytes = const_cast<char*>(result->m_string.c_str());
+#if defined(_WIN32)
+		if (upper) _strupr(bytes);
+		else _strlwr(bytes);
+#else
+		// [CHOSEN, not recovered] POSIX CRT bridge: bytewise native locale
+		// mapping, without UTF-8 decoding. MSVCR71 locale equivalence is unverified.
+		for (char* p = bytes; *p; ++p)
+		{
+			const unsigned char c = static_cast<unsigned char>(*p);
+			*p = static_cast<char>(upper ? std::toupper(c) : std::tolower(c));
+		}
+#endif
+		fn.result->set_as_object_interface(result.get_ptr());
+	}
+
+	//  DICE's String object built from wide text - what the shipped
 	// Locale.getString (sub_1004C650) returns: the wide payload set, the methods registered, the
 	// narrow copy left empty (see get_text_value above).
 	as_object_interface*	create_dice_string_object(const Uint16* wide, int count)
@@ -383,11 +376,10 @@ namespace gameswf
 			str->m_wide.push_back(wide[i]);
 		}
 		str->m_wide.push_back(0);
-		register_string_methods(str);
 		return str;
 	}
 
-	// [DICE-MOD SwiffPlayer #38] Locale.getString1004C650 constructs its String
+	//  Locale.getString1004C650 constructs its String
 	// before the host lookup, then assigns out.c_str() at1004C6DE and clears the
 	// narrow side at1004C6EC. This helper preserves that order without new slots.
 	void assign_dice_string_object_wide(as_object_interface* object, const Uint16* wide)
@@ -402,7 +394,7 @@ namespace gameswf
 		str->m_string = "";
 	}
 
-	// [DICE-MOD SwiffPlayer #38] The narrow twin. Mod.getCurrentModName (sub_1004F950) builds the same
+	//  The narrow twin. Mod.getCurrentModName (sub_1004F950) builds the same
 	// object the other way round: it assigns the +44 tu_string from the host's plain mod name and
 	// CLEARS the +60 wide side, so get_text_value answers the narrow copy and the length getter
 	// falls through to it. Same object, opposite field.
@@ -415,14 +407,13 @@ namespace gameswf
 
 	void string_ctor(const fn_call& fn)
 	{
+		// SwiffPlayer.dll 0x1008D670: construct/register before converting the argument.
 		smart_ptr<tu_string_as_object> str = new tu_string_as_object;
 
 		if (fn.nargs > 0)
 		{
 			str->m_string = fn.arg(0).to_tu_string();
 		}
-
-		register_string_methods(str.get_ptr());
 
 		fn.result->set_as_object_interface(str.get_ptr());
 	}

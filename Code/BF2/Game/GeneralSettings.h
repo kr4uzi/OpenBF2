@@ -1,9 +1,9 @@
 // General profile settings and server-history storage.
 #ifndef GAME_GENERALSETTINGS_H
 #define GAME_GENERALSETTINGS_H
-#include "../Core/IBase.h"
 #include <string>
 #include <vector>
+#include "../Core/IBase.h"
 #if !DEDICATED
 namespace dice { namespace hfe {
 
@@ -247,6 +247,11 @@ public:
     // LCD display mode setting, also exposed through the movie's VideoSettings namespace.
     bool  getLCDDisplayModes() const override      { return m_lcdDisplayModes; }   //+15C
     void  setLCDDisplayModes(bool value) override  { m_lcdDisplayModes = value; }  //+160
+
+    // [CHOSEN, not recovered] Owner's tutorial option; see docs/macos-feat-tutoff.md.
+    // Native-only accessors leave the recovered virtual interface unchanged.
+    bool getShowTutorialMessages() const { return m_showTutorialMessages; }
+    void setShowTutorialMessages(bool value) { m_showTutorialMessages = value; }
 private:
     friend struct GeneralSettingsFixture;
     int m_refCount;                               // retail+04
@@ -283,6 +288,8 @@ private:
     int m_toggleFilters;                          //+F4, a bit mask: +10C tests, +110 sets/clears
     bool m_autoReady;                             //+F8
     bool m_lcdDisplayModes;                       //+F9
+    // [CHOSEN, not recovered] Persisted general option; true keeps retail pop-ups.
+    bool m_showTutorialMessages;
 };
 
 } }

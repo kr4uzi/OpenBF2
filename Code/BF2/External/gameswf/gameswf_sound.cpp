@@ -19,6 +19,7 @@ namespace gameswf
 	static sound_handler*	s_sound_handler = 0;
 
 
+	// SwiffPlayer.dll 0x1009E8F0.
 	void	set_sound_handler(sound_handler* s)
 	// Called by host, to set a handler for all sounds.
 	// Can pass in 0 to disable sound.
@@ -27,12 +28,14 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009E900.
 	sound_handler*	get_sound_handler()
 	{
 		return s_sound_handler;
 	}
 
 
+	// SwiffPlayer.dll 0x1009E910; deleting veneer 0x1009F530.
 	sound_sample_impl::~sound_sample_impl()
 	{
 		if (s_sound_handler)
@@ -50,6 +53,7 @@ namespace gameswf
 		bool stereo);
 
 
+	// SwiffPlayer.dll 0x1009F220.
 	void	define_sound_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load a DefineSound tag.
 	{
@@ -126,10 +130,12 @@ namespace gameswf
 
 	struct start_sound_tag : public execute_tag
 	{
+		// Implicit destructor: SwiffPlayer.dll 0x1009F440 (deleting veneer).
 		Uint16	m_handler_id;
 		int	m_loop_count;
 		bool	m_stop_playback;
 
+		// SwiffPlayer.dll 0x1009F3F0.
 		start_sound_tag()
 			:
 			m_handler_id(0),
@@ -139,6 +145,7 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x1009E960: envelope/no-multiple flags are read and discarded.
 		void	read(stream* in, int tag_type, movie_definition_sub* m, const sound_sample_impl* sam)
 		// Initialize this StartSound tag from the stream & given sample.
 		// Insert ourself into the movie.
@@ -168,6 +175,7 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x1009F410.
 		void	execute(movie* m)
 		{
 			if (s_sound_handler)
@@ -185,6 +193,7 @@ namespace gameswf
 	};
 
 
+	// SwiffPlayer.dll 0x1009F470.
 	void	start_sound_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load a StartSound tag.
 	{
@@ -362,6 +371,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009EA10: 4096-frame blocks, 2-5-bit codes, interleaved stereo.
 	void	adpcm_expand(
 		void* out_data_void,
 		stream* in,

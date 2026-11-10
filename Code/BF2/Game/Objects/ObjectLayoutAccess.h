@@ -49,6 +49,9 @@ struct LayoutAccess
     {
         return p->m_weaponHudComponent;
     }
+    // BF2.exe 0x5EDF21/0x5EDF2D: VO help reads the cached slots, without a query.
+    static IObjectComponent*& helpHudComponent(IObject* p) { return p->m_helpHudComponent; }
+    static IObjectComponent*& abilityHudComponent(IObject* p) { return p->m_abilityHudComponent; }
     static IObjectComponent*& radioGLComponent(IObject* p)
     {
         return p->m_radioGLComponent;

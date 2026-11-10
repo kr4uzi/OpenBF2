@@ -1059,8 +1059,14 @@ bool BF2Engine::parseParameters(const std::string& commandLine)
     if (cmd.length() != 0)
     {
         SimpleParser parser('+');   // [INFERRED] form: the ctor is fully inlined. No call is emitted
+#if !DEDICATED
+        // [CHOSEN, not recovered] Owner-requested session override; bare +help keeps usage.
+        parser.add( 57, "help",                   "0/1 hides/shows tutorial messages; no value displays help");
+        parser.add( 58, "?",                      "Displays command-line help");
+#else
         parser.add( 57, "help",                   "Displays this help");
         parser.add( 58, "?",                      "Same as +help");
+#endif
         parser.add(  0, "dedicated",              "Start in dedicated server mode");
         parser.add(  1, "multi",                  "Allow starting multiple BF2 instances");
         parser.add(  8, "config",                 "Sets path to the ServerSettings.con file to use");
@@ -1210,7 +1216,16 @@ bool BF2Engine::parseParameters(const std::string& commandLine)
                     break;
 
                 case 57:    // +help
-                case 58:    // +?     - ONE case label, and it returns false (0x8135EA3 xor eax,eax
+#if !DEDICATED
+                    // [CHOSEN, not recovered] Owner request 2026-11-09 (docs/macos-feat-helparg.md).
+                    // Session-only: never change GeneralSettings or serialize this override.
+                    if (value == "0" || value == "1")
+                    {
+                        settings->boolSet("GSCommandLineShowTutorialMessages", value == "1");
+                        break;
+                    }
+#endif
+                case 58:    // +? and usage forms of +help return false (0x8135EA3 xor eax,eax
                             // > the single retn). Region 1 never runs, so BF2Engine::init fails and
                             // the process exits after printing the help - the shipped behaviour, and
                             // the answer to this function's old "[UNRESOLVED] return value" note.

@@ -10,13 +10,10 @@
 #define GAMESWF_ACTION_H
 
 
-#include "gameswf.h"
-#if defined(__APPLE__)
-#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
-#endif
-#include "gameswf_types.h"
 #include <wchar.h>
 
+#include "gameswf.h"
+#include "gameswf_types.h"
 #include "base/container.h"
 #include "base/smart_ptr.h"
 
@@ -30,14 +27,14 @@ namespace gameswf
 	struct as_as_function;
 	void	log_error(const char* fmt, ...);	// [TEMP] RW-89 trace support (gameswf_log.h)
 	struct as_object;
-	// [DICE-MOD SwiffPlayer #31] a fresh Array and its push, for String.split (the array type lives in
+	//  a fresh Array and its push, for String.split (the array type lives in
 	// gameswf_action.cpp; the String unit only needs these two).
 	as_object*	create_array_object();
-	// [DICE-MOD SwiffPlayer #38] DICE's String object from wide text (gameswf_string.cpp).
+	//  DICE's String object from wide text (gameswf_string.cpp).
 	as_object_interface*	create_dice_string_object(const Uint16* wide, int count);
-	// [DICE-MOD SwiffPlayer #38] Assign the wide payload of an existing factory object.
+	//  Assign the wide payload of an existing factory object.
 	void	assign_dice_string_object_wide(as_object_interface* object, const Uint16* wide);
-	// [DICE-MOD SwiffPlayer #38] the narrow twin: Mod.getCurrentModName (sub_1004F950) assigns the
+	//  the narrow twin: Mod.getCurrentModName (sub_1004F950) assigns the
 	// +44 tu_string from a plain host string and CLEARS the +60 wide side, the mirror of the above.
 	void	assign_dice_string_object_narrow(as_object_interface* object, const char* text);
 
@@ -81,6 +78,9 @@ namespace gameswf
 #define BF2_DICE_WIDE(units)	((const wchar_t*) (units))
 #endif
 	void	array_object_push(as_object* arr, const as_value& v);
+	// [CHOSEN, not recovered] S3 bridge for retail's direct Array storage reads.
+	// The caller must supply an Array object; no member lookup or conversion runs.
+	const array<as_value>& array_object_values(as_object_interface* arr);
 
 
 	//
@@ -117,33 +117,15 @@ namespace gameswf
 			KEY_UP,
 			DATA,
 			
-                        // These are for the MoveClipLoader ActionScript only
-                        LOAD_START,
-                        LOAD_ERROR,
-                        LOAD_PROGRESS,
-                        LOAD_INIT,
-			
-                        // These are for the XMLSocket ActionScript only
-                        SOCK_CLOSE,
-                        SOCK_CONNECT,
-                        SOCK_DATA,
-                        SOCK_XML,
-			
-                        // These are for the XML ActionScript only
-                        XML_LOAD,
-                        XML_DATA,
-			
-                        // This is for setInterval
-                        TIMER,
-			
-			// [DICE-MOD SwiffPlayer #27: the SWF 7 `construct` clip event (PlaceObject2 flag bit 18,
+			// the SWF 7 `construct` clip event (PlaceObject2 flag bit 18,
 			// 0x40000). Flash fires it right after instantiation and BEFORE a registered class's
 			// constructor; it is how the authoring tool bakes component-inspector parameters into the
 			// movie (`__authorMode = false`, `callbackFrequency = 0`, ...). mainMenu.swf carries 1,178
 			// of them. Stock 2006 gameswf had no such event, so every DICE component kept its
-			// authoring-mode default and drew its IDE placeholder rectangle - the grey-box menu.]
+			// authoring-mode default and drew its IDE placeholder rectangle - the grey-box menu.
+			RESERVED,	// Retail event-name table entry 19.
 			CONSTRUCT,
-			// [DICE-MOD SwiffPlayer #51] the shipped table's 22nd event, "onDoublePress": a press the
+			//  the shipped table's 22nd event, "onDoublePress": a press the
 			// host reports with the mouse buttons as 2 (the sprite mouse pass, sub_10080010).
 			DOUBLE_PRESS,
 			EVENT_COUNT
@@ -154,6 +136,7 @@ namespace gameswf
 
 		event_id() : m_id(INVALID), m_key_code(key::INVALID) {}
 
+		// SwiffPlayer.dll 0x1006ED10.
 		event_id(id_code id, key::code c = key::INVALID)
 			:
 			m_id((unsigned char) id),
@@ -165,6 +148,7 @@ namespace gameswf
 				|| (m_key_code != key::INVALID && (m_id == KEY_PRESS)));
 		}
 
+		// SwiffPlayer.dll 0x1006ED30 compares the event byte before the key byte.
 		bool	operator==(const event_id& id) const { return m_id == id.m_id && m_key_code == id.m_key_code; }
 
 		// Return the name of a method-handler function corresponding to this event.
@@ -178,7 +162,11 @@ namespace gameswf
 
 	struct with_stack_entry
 	{
-		smart_ptr<as_object_interface>	m_object;
+		// SwiffPlayer.dll 0x10094E8E/0x1008BD83: scope records borrow the
+		// receiver. Append, expiry and 0x10082180 cleanup never retain/release it.
+		// Cleanup veneer 0x1008BD60 shares that body. Native array destruction
+		// frees storage after zeroing its count/capacity; record destruction is trivial.
+		as_object_interface*	m_object;
 		int	m_block_end_pc;
 		
 		with_stack_entry()
@@ -201,6 +189,9 @@ namespace gameswf
 	struct action_buffer
 	{
 		action_buffer();
+		// SwiffPlayer.dll 0x100766E0: dictionary, then byte storage;
+		// 0x100A2650 is the compiler's deleting wrapper.
+		~action_buffer() = default;
 		void	read(stream* in);
 		void	execute(as_environment* env);
 		void	execute(
@@ -236,6 +227,9 @@ namespace gameswf
 
 
 	struct fn_call;
+	// Execute a definition initialization tag without draining the movie's timeline queue.
+	// The tag must have been produced by do_init_action_loader.
+	void execute_init_action(execute_tag* tag, as_environment* env);
 	typedef void (*as_c_function_ptr)(const fn_call& fn);
 
 
@@ -393,6 +387,8 @@ namespace gameswf
 		double	to_number() const;
 		bool	to_bool() const;
 		as_object_interface*	to_object() const;
+		// Extract an OBJECT payload without the native function-property adapter.
+		as_object_interface* to_object_raw() const;
 		as_c_function_ptr	to_c_function() const;
 		as_as_function*	to_as_function() const;
 
@@ -404,10 +400,12 @@ namespace gameswf
 		// in preference to generic overloaded set().  You are
 		// more likely to get a warning/error if misused.
 		void	set_tu_string(const tu_string& str) { drop_refs(); m_type = STRING; m_string_value = str; }
+		// SwiffPlayer.dll 0x1008B130: release before replacing the string payload.
 		void	set_string(const char* str) { drop_refs(); m_type = STRING; m_string_value = str; }
 		void	set_double(double val) { drop_refs(); m_type = NUMBER; m_number_value = val; }
 		void	set_bool(bool val) { drop_refs(); m_type = BOOLEAN; m_boolean_value = val; }
-		void	set_int(int val) { set_double(val); }
+		// SwiffPlayer.dll 0x1006ECB0 repeats the release in set_double; preserve both calls.
+		void	set_int(int val) { drop_refs(); set_double(val); }
 		void	set_as_object_interface(as_object_interface* obj);
 		void	set_as_c_function_ptr(as_c_function_ptr func)
 		{
@@ -431,22 +429,17 @@ namespace gameswf
 
 		bool	operator==(const as_value& v) const;
 		bool	operator!=(const as_value& v) const;
-		bool	operator<(const as_value& v) const { return to_number() < v.to_number(); }
-		void	operator+=(const as_value& v) { set_double(this->to_number() + v.to_number()); }
-		void	operator-=(const as_value& v) { set_double(this->to_number() - v.to_number()); }
-		void	operator*=(const as_value& v) { set_double(this->to_number() * v.to_number()); }
-		void	operator/=(const as_value& v) { set_double(this->to_number() / v.to_number()); }  // @@ check for div/0
-		void	operator&=(const as_value& v) { set_int(int(this->to_number()) & int(v.to_number())); }
-		void	operator|=(const as_value& v) { set_int(int(this->to_number()) | int(v.to_number())); }
-		void	operator^=(const as_value& v) { set_int(int(this->to_number()) ^ int(v.to_number())); }
-		void	shl(const as_value& v) { set_int(int(this->to_number()) << int(v.to_number())); }
-		void	asr(const as_value& v) { set_int(int(this->to_number()) >> int(v.to_number())); }
-#if defined(__APPLE__)
-		// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
-		void	lsr(const as_value& v) { set_int((bf2x87::lowUInt32(this->to_number()) >> int(v.to_number()))); }
-#else
-		void	lsr(const as_value& v) { set_int((Uint32(this->to_number()) >> int(v.to_number()))); }
-#endif
+		bool	operator<(const as_value& v) const;
+		void	operator+=(const as_value& v);
+		void	operator-=(const as_value& v);
+		void	operator*=(const as_value& v);
+		void	operator/=(const as_value& v);
+		void	operator&=(const as_value& v);
+		void	operator|=(const as_value& v);
+		void	operator^=(const as_value& v);
+		void	shl(const as_value& v);
+		void	asr(const as_value& v);
+		void	lsr(const as_value& v);
 
 		void	string_concat(const tu_string& str);
 
@@ -588,26 +581,33 @@ namespace gameswf
 	//
 	// A generic bag of attributes.  Base-class for ActionScript
 	// script-defined objects.
-	// [DICE-MOD SwiffPlayer: the AS2 `Object.addProperty(name, getter, setter)` builtin. Stock 2006
+	// the AS2 `Object.addProperty(name, getter, setter)` builtin. Stock 2006
 	// gameswf has no getter/setter properties at all, and menu.swf calls addProperty 36 times in its
 	// onLoad (measured with BF2_SWIFFPLAYER_ASLOG=1). DICE hit the same gap: their 56-byte AS object
 	// class registers exactly one method, "addProperty" (sub_1009A320 -> gameswf_as_object_addproperty).
-	// Defined in gameswf_action.cpp. See GAMESWF_DIVERGENCES.md.]
+	// Defined in gameswf_action.cpp. See GAMESWF_DIVERGENCES.md.
 	void	as_object_addproperty(const fn_call& fn);
 
 	struct as_object : public as_object_interface
 	{
 		stringi_hash<as_member>	m_members;
+		// Instance construction and explicit inheritance use different links.
+		as_object_interface*	m_instance_prototype;
 		as_object_interface*	m_prototype;
+		smart_ptr<as_as_function>	m_constructor;
 
-		// [DICE-MOD SwiffPlayer: addProperty storage - the getter/setter function per property name.
-		// A name present in m_getters/m_setters shadows any plain member of the same name.]
-		stringi_hash<as_value>	m_getters;
-		stringi_hash<as_value>	m_setters;
+		// SwiffPlayer.dll 0x1009A0F0 stores a pair of borrowed script functions;
+		// 0x100749D0 destroys keys without releasing either function.
+		struct property_accessors
+		{
+			as_as_function* getter;
+			as_as_function* setter;
+		};
+		stringi_hash<property_accessors> m_accessors;
 
 		virtual as_object*	cast_to_as_object() { return this; }
 
-		// [DICE-MOD SwiffPlayer #49] The shipped as_object vtable slot +0x28 (sub_10099CB0): push the
+		//  The shipped as_object vtable slot +0x28 (sub_10099CB0): push the
 		// names a `for (k in obj)` loop visits - the prototype chain first (virtual, so it recurses
 		// base-most first), then this object's own members whose VALUE is a string, number, boolean
 		// or object (shipped types 1..4); undefined and both function types are skipped, and the
@@ -616,118 +616,36 @@ namespace gameswf
 		// call this after pushing the null terminator; stock 2006 walked m_members inline, methods
 		// included, so a for-in over an Array met its own push/pop/... C functions.
 		virtual void	enumerate(as_environment* env);
+		virtual void gc_mark();
+		virtual void gc_release();
+		void gc_mark_members();
 
 
-		// Declared here, defined in gameswf_action.cpp (they need call_method to invoke the
-		// getter/setter, and a scratch as_environment to pass its arguments through).
+		// Accessors keep the original receiver while searching explicit inheritance links.
 		void	add_property(const tu_stringi& name, const as_value& getter, const as_value& setter);
-		bool	get_property(const tu_stringi& name, as_value* val);	// true if a getter handled it
-		bool	set_property(const tu_stringi& name, const as_value& val);	// true if a setter handled it
-		// [DICE-MOD SwiffPlayer #28: a getter/setter registered on a CLASS PROTOTYPE applies to every
+		bool	get_property(const tu_stringi& name, as_value* val, as_object_interface* receiver = NULL);
+		bool	set_property(const tu_stringi& name, const as_value& val, as_object_interface* receiver = NULL);
+		// a getter/setter registered on a CLASS PROTOTYPE applies to every
 		// instance, called with the instance as `this`. mainMenu.swf registers 177 of them on the
 		// component prototypes (`UIObject.prototype.addProperty("__authorMode", __get__..., __set__...)`)
 		// and the construct handlers then assign `__authorMode = false` on the instance. The lookup
-		// walks the prototype chain; the call keeps the original receiver.]
+		// walks the prototype chain; the call keeps the original receiver.
 		bool	find_getter(const tu_stringi& name, as_value* getter, int depth = 0);
 		bool	find_setter(const tu_stringi& name, as_value* setter, int depth = 0);
-		void	note_function_home(const as_value& fn);	// [DICE-MOD #30] out of line: as_as_function is incomplete here
-		static as_value	invoke_getter(const as_value& getter, as_object_interface* self);
+		static as_value	invoke_getter(const as_value& getter, as_object_interface* self,
+			const as_value& argument = as_value());
 		static void	invoke_setter(const as_value& setter, as_object_interface* self, const as_value& val);
 
-		as_object() : m_prototype(NULL) { }
-		as_object(as_object_interface* proto) : m_prototype(proto)
-		{
-			if (m_prototype)
-			{
-				m_prototype->add_ref();
-			}
-		}
-
-		virtual ~as_object()
-		{
-			if (m_prototype)
-			{
-				m_prototype->drop_ref();
-			}
-		}
+		as_object();
+		as_object(as_object_interface* proto);
+		// Compiler deleting wrapper: SwiffPlayer.dll 0x1007CD80. Native base
+		// and member ownership remain separate from this forwarding/deletion sequence.
+		virtual ~as_object();
 		
 		virtual const char*	get_text_value() const { return NULL; }
 
-		virtual void	set_member(const tu_stringi& name, const as_value& val ) {
-			//printf("SET MEMBER: %s at %p for object %p\n", name.c_str(), val.to_object(), this);
-			// [DICE-MOD SwiffPlayer #30: remember where a function was first stored (see m_home_object).]
-			if (val.get_type() == as_value::AS_FUNCTION && name != "prototype" && name != "__constructor__")
-			{
-				note_function_home(val);
-			}
-			if (name == "prototype")
-			{
-				if (m_prototype) m_prototype->drop_ref();
-				m_prototype = val.to_object();
-				if (m_prototype) m_prototype->add_ref();
-			}
-			else if (set_property(name, val))	// [DICE-MOD] an addProperty setter takes precedence
-			{
-			}
-			else
-			{
-				stringi_hash<as_member>::const_iterator it = this->m_members.find(name);
-				
-				if ( it != this->m_members.end() ) {
-
-					const as_prop_flags flags = (it.get_value()).get_member_flags();
-
-					// is the member read-only ?
-					if (!flags.get_read_only()) {
-						m_members.set(name, as_member(val, flags));
-					}
-
-				} else {
-					m_members.set(name, as_member(val));
-				}
-			}
-		}
-
-		virtual bool	get_member(const tu_stringi& name, as_value* val)
-		{
-			//printf("GET MEMBER: %s at %p for object %p\n", name.c_str(), val, this);
-			if (name == "prototype")
-			{
-				val->set_as_object_interface(m_prototype);
-				return true;
-			}
-			else if (get_property(name, val))	// [DICE-MOD] an addProperty getter takes precedence
-			{
-				return true;
-			}
-			else {
-				as_member m;
-
-				if (m_members.get(name, &m) == false)
-				{
-					if (m_prototype != NULL)
-					{
-						if (m_prototype->get_member(name, val))
-						{
-							return true;
-						}
-					}
-					// [DICE-MOD SwiffPlayer: expose the AS2 `addProperty` builtin on every object,
-					// as the real player does via Object.prototype. Checked LAST, so a real member
-					// or a prototype member of the same name still wins.]
-					if (name == "addProperty")
-					{
-						val->set_as_c_function_ptr(as_object_addproperty);
-						return true;
-					}
-					return false;
-				} else {
-					*val=m.get_member_value();
-					return true;
-				}
-			}
-			return true;
-		}
+		virtual void	set_member(const tu_stringi& name, const as_value& val);
+		virtual bool	get_member(const tu_stringi& name, as_value* val);
 
 		virtual bool get_member(const tu_stringi& name, as_member* member) const
 		{
@@ -758,15 +676,7 @@ namespace gameswf
 			return NULL;
 		}
 
-		void	clear()
-		{
-			m_members.clear();
-			if (m_prototype)
-			{
-				m_prototype->drop_ref();
-				m_prototype = NULL;
-			}
-		}
+		void	clear();
 	};
 
 
@@ -790,44 +700,25 @@ namespace gameswf
 		array<arg_spec>	m_args;
 		bool	m_is_function2;
 		uint8	m_local_register_count;	// parsed; sizes nothing since #55 (the shipped call saves a fixed r0..r9)
-		uint16	m_function2_flags;	// used by function2 to control implicit arg register assignments
+		uint16	m_function2_flags;	// retained for the native declaration interface
+		// SwiffPlayer.dll 0x10091C20 / 0x100958FB: register number to preload name.
+		hash<int, tu_string>	m_preload_registers;
 
-		// ActionScript functions have a property namespace!
-		// Typically used for class constructors, for "prototype", "constructor",
-		// and class properties.
+		// [CHOSEN, not recovered] S3 bridge: native object-interface adapter for the
+		// function's static properties and its eagerly created prototype object.
 		as_object*	m_properties;
-		// [DICE-MOD SwiffPlayer #30: the object this function was first stored on as a member - for a
-		// class method, the class PROTOTYPE. `super` inside a method is the parent of the class the
-		// method was DEFINED on (that prototype's __constructor__, left there by ActionExtends), not
-		// anything derived from `this`, or a two-level chain would loop. Stock 2006 gameswf set the
-		// function2 super register to nothing ("TODO: implement 'super'"), so every subclass
-		// init/draw/arrange's super.xxx() call died on an undefined object once the real subclass
-		// methods ran. Raw pointer, unowned: prototypes outlive the movie's functions.]
-		as_object*	m_home_object;
 
 		// NULL environment is allowed -- if so, then
 		// functions will be executed in the caller's
 		// environment, rather than the environment where they
 		// were defined.
-		as_as_function(action_buffer* ab, as_environment* env, int start, const array<with_stack_entry>& with_stack)
-			:
-			m_action_buffer(ab),
-			m_env(env),
-			m_with_stack(with_stack),
-			m_start_pc(start),
-			m_length(0),
-			m_is_function2(false),
-			m_local_register_count(0),
-			m_function2_flags(0),
-			m_properties(NULL),
-			m_home_object(NULL)
-		{
-			assert(m_action_buffer);
-		}
+		as_as_function(action_buffer* ab, as_environment* env, int start, const array<with_stack_entry>& with_stack);
 
-		// Releases the property object lazy_create_properties took a reference on (stock 2006 had
-		// no destructor and leaked it with every function used as an object).
-		// [CHOSEN, not recovered] issue #7 (https://github.com/B2BF/OpenBF2/issues/7).
+		// SwiffPlayer.dll 0x10091BB0 / 0x10091BE0 destroys static members before
+		// arguments; 0x10091C60 destroys the separate function2 storage first.
+		// [CHOSEN, not recovered] S3 bridge: this combined native type owns the
+		// property adapter and preload map. Release its property reference for
+		// issue #7 (https://github.com/B2BF/OpenBF2/issues/7).
 		~as_as_function()
 		{
 			if (m_properties)
@@ -836,9 +727,11 @@ namespace gameswf
 			}
 		}
 
+		// SwiffPlayer.dll 0x10091C20 starts with empty preload/argument storage.
+		// [CHOSEN, not recovered] S3 bridge: the native type combines both function classes.
 		void	set_is_function2() { m_is_function2 = true; }
 		void	set_local_register_count(uint8 ct) { assert(m_is_function2); m_local_register_count = ct; }
-		void	set_function2_flags(uint16 flags) { assert(m_is_function2); m_function2_flags = flags; }
+		void	set_function2_flags(uint16 flags);
 
 		void	add_arg(int arg_register, const char* name)
 		{
@@ -848,28 +741,22 @@ namespace gameswf
 			m_args.back().m_name = name;
 		}
 
+		void	add_arg(const char* name)
+		{
+			// SwiffPlayer.dll 0x1008D610 copies the name before growing the array.
+			// [CHOSEN, not recovered] S3 bridge: the native argument record also
+			// carries the register used by the separate function2 class.
+			const arg_spec argument = { 0, tu_string(name) };
+			m_args.push_back(argument);
+		}
+
 		void	set_length(int len) { assert(len >= 0); m_length = len; }
 
 		// Dispatch.
 		void	operator()(const fn_call& fn);
 
-		void	lazy_create_properties()
-		// This ensures that this as_function has a valid
-		// prototype in its properties.  This is done lazily
-		// so that functions/methods which are not used as
-		// constructors don't carry along extra unnecessary
-		// baggage.
-		{
-			if (m_properties == NULL)
-			{
-				m_properties = new as_object();
-				m_properties->add_ref();
-
-				// Create new empty prototype
-				as_value	proto(new as_object());
-				m_properties->set_member("prototype", proto);
-			}
-		}
+		void	lazy_create_properties();
+		void gc_mark();
 	};
 
 
@@ -877,14 +764,15 @@ namespace gameswf
 	struct as_environment
 	{
 		array<as_value>	m_stack;
-		// [DICE-MOD SwiffPlayer #55] ONE register bank per environment, 256 slots, shared by timeline
+		//  ONE register bank per environment, 256 slots, shared by timeline
 		// code and every function body that executes in this environment - the shipped
 		// as_environment carries `as_value registers[256]` at +0x10 (ctor 0x10077D00), and
 		// StoreRegister / the push-register operand address env+0x10+32*reg for all code (execute
 		// 0x100925A0, case 0x87 and push type 4). Stock 2006 kept four timeline registers plus a
 		// FRESH stack of local registers per DefineFunction2 call, so an argument the caller did not
 		// pass read undefined; in the shipped player it reads whatever the environment's register
-		// already held (see as_as_function::operator()). Sized to 256 on first use.
+		// already held (see as_as_function::operator()). Constructed with 256 entries.
+		// [CHOSEN, not recovered] S3 bridge: native array storage for the fixed bank.
 		array<as_value>	m_registers;
 		movie*	m_target;
 		stringi_hash<as_value>	m_variables;
@@ -896,25 +784,30 @@ namespace gameswf
 			as_value	m_value;
 
 			frame_slot() {}
+			// SwiffPlayer.dll 0x10071420: implicit destruction releases the
+			// value before the name, including when a local-frame resize shrinks.
+			// SwiffPlayer.dll 0x1008C460: copy the name, then the value.
 			frame_slot(const tu_string& name, const as_value& val) : m_name(name), m_value(val) {}
+			// SwiffPlayer.dll 0x1008BDA0: the implicit copy follows the same member order.
 		};
 		array<frame_slot>	m_local_frames;
 
-		// [DICE-MOD SwiffPlayer: the running function's bound `this` object and its superclass
+		// the running function's bound `this` object and its superclass
 		// constructor (`super`). The shipped as_environment keeps them at +8212 (checked by
 		// get_variable_raw before the target movie's members, used as `this` by CallMethod's
 		// direct-call arm) and +8216 (preloaded into the `super` register/local at function entry).
 		// Stock 2006 bound `this` to the target MOVIE for every call and never implemented `super`,
 		// so a class constructor run on a plain object or another sprite acted on the wrong object
-		// and super() went nowhere. Non-owning; saved/restored around each call.]
+		// and super() went nowhere. Non-owning; saved/restored around each call.
 		as_object_interface*	m_this_object;
 		as_as_function*		m_super_ctor;
 
-		// [DICE-MOD SwiffPlayer #57] While a function body defined in this environment runs for
+		//  While a function body defined in this environment runs for
 		// ANOTHER environment, that caller's register bank; NULL otherwise (this environment's own).
 		// Set and restored around each call by as_as_function::operator(). Non-owning.
 		as_environment*	m_register_env;
 
+		// SwiffPlayer.dll 0x10077D00 constructs all 256 register values eagerly.
 		as_environment()
 			:
 			m_target(0),
@@ -922,40 +815,56 @@ namespace gameswf
 			m_super_ctor(0),
 			m_register_env(0)
 		{
+			m_registers.resize(256);
 		}
+		~as_environment();
 
+		// SwiffPlayer.dll 0x1008A110; native movie pointer adjusts the secondary interface.
 		movie*	get_target() { return m_target; }
+		// SwiffPlayer.dll 0x1006ECE0 writes the target after the fixed register bank.
 		void	set_target(movie* target) { m_target = target; }
+		// SwiffPlayer.dll 0x1008A120 / 0x1008A140; names [INFERRED].
+		void set_this_object(as_object_interface* object) { m_this_object = object; }
+		as_as_function* get_super_constructor() const { return m_super_ctor; }
 
 		// stack access/manipulation
 		// @@ TODO do more checking on these
+		// SwiffPlayer.dll push helpers: 0x1008E0F0 (string), 0x1008E180 (double),
+		// 0x1008E200 (float), 0x1008E3C0 (Boolean), 0x1008E450 (signed integer).
+		// 0x1008E280 / 0x1008E320 also construct an OBJECT before growing storage.
+		// 0x100A8CC0 constructs a narrow C-string value before resize/assignment;
+		// XML enumeration inlines the same sequence at 0x100A8D83..0x100A8DD1.
+		// [INFERRED] C-string instantiation of this template; native string storage.
+		// [CHOSEN, not recovered] S3 bridge: native objects share one refcount interface.
+		// Construct the value before growing the operand storage, then append a copy.
 		template<class T>
-		void	push(T val) { push_val(as_value(val)); }
-		void	push_val(const as_value& val) { m_stack.push_back(val); }
-		// [DICE-MOD SwiffPlayer: MAKE THE VALUE STACK UNDERFLOW-TOLERANT, as the real Flash player is.
-		//
-		// menu.swf contains stray `Pop` (0x17) opcodes: at one site the bytecode is
-		//     Push'_global'; GetVariable; Push'dice'; GetMember; Not; Not; BranchIfTrue +24
-		//     [157..180: Push'_global'; GetVariable; Push'dice',0,'Object'; New; SetMember]
-		//     181: Pop
-		// Every one of those opcodes has its SPEC-CORRECT stack effect in this gameswf (verified by
-		// instrumenting the VM with a depth-tracking opcode ring), and BOTH the taken and the
-		// fall-through path reach pc=181 with an EMPTY stack - so the Pop has nothing to pop. The
-		// movie is simply unbalanced there; ~20 such sites execute in its onLoad.
-		//
-		// The real Flash player - and DICE's gameswf, which ran this exact movie - absorb that: a pop
-		// on an empty stack yields `undefined` and execution continues. Stock gameswf instead indexes
-		// the array out of bounds (`m_stack.back()` at index -1) or resizes it NEGATIVE, and the
-		// negative resize destructs from a negative index -> ~as_value on garbage -> CRASH. That crash,
-		// not the SWF, is the defect.
-		//
-		// So: pop/top/bottom/drop all clamp and yield undefined rather than fault. This is FAITHFUL
-		// behaviour (matching the shipped player), not a workaround for our own integration.
-		// Indexed in Code/BF2/External/gameswf/GAMESWF_DIVERGENCES.md.]
+		void	push(T val)
+		{
+			const as_value value(val);
+			m_stack.push_back(value);
+		}
+		void	push_val(as_value val)
+		{
+			// SwiffPlayer.dll 0x10077640 copies its by-value argument into a local
+			// before resizing. Both copies stay alive through the appended assignment.
+			as_value copy;
+			copy = val;
+			m_stack.push_back(copy);
+		}
+		// [CHOSEN, not recovered] S3 bridge: retain the native menu integration's
+		// tolerant operand accesses while the VM/base boundary remains incomplete.
+		// Retail top (0x1008AB50), pop (0x10076600) and drop (0x1008C4A0) do not
+		// clamp; the shared resize helper (0x1000B980) traps on a negative size.
+		// [RETIRE-WHEN: swf-s3-operand-underflow] Reconcile native/retail operand
+		// effects with the base tag and validate menu initialization, callbacks and
+		// malformed stacks before replacing these guards. Empty accesses currently
+		// reached by the native menus are not proof of retail underflow behavior.
 		static as_value&	underflow_slot() { static as_value s_undef; s_undef.set_undefined(); return s_undef; }
 
 		as_value	pop()
 		{
+			// SwiffPlayer.dll 0x10076600 copies the top before shrinking;
+			// the empty-stack return is the native tolerance bridge above.
 			if (m_stack.size() <= 0) return as_value();	// undefined
 			as_value result = m_stack.back(); m_stack.pop_back(); return result;
 		}
@@ -970,16 +879,17 @@ namespace gameswf
 			if (index < 0 || index >= m_stack.size()) return underflow_slot();
 			return m_stack[index];
 		}
-		// [DICE-MOD SwiffPlayer: clamp instead of resizing NEGATIVE - see the underflow note above
-		// pop()/top(). This is the site that actually crashed: resize(negative) destructs from a
-		// negative index.]
+		// Keep an excessive drop within the native operand storage; see the bridge above.
 		void	drop(int count) { int n = m_stack.size() - count; if (n < 0) n = 0; m_stack.resize(n); }
 
 		int	get_top_index() const { return m_stack.size() - 1; }
 
-		as_value	get_variable(const tu_string& varname, const array<with_stack_entry>& with_stack) const;
+		// A successful with-scope lookup also writes its object to receiver, when supplied.
+		as_value	get_variable(const tu_string& varname, const array<with_stack_entry>& with_stack,
+			as_object_interface** receiver = NULL) const;
 		// no path stuff:
-		as_value	get_variable_raw(const tu_string& varname, const array<with_stack_entry>& with_stack) const;
+		as_value	get_variable_raw(const tu_string& varname, const array<with_stack_entry>& with_stack,
+			as_object_interface** receiver = NULL) const;
 
 		void	set_variable(const tu_string& path, const as_value& val, const array<with_stack_entry>& with_stack);
 		// no path stuff:
@@ -993,29 +903,25 @@ namespace gameswf
 		void	set_member(const tu_stringi& varname, const as_value& val);
 
 		// Parameter/local stack frame management.
+		// SwiffPlayer.dll 0x1008AB70 returns the local-frame count.
 		int	get_local_frame_top() const { return m_local_frames.size(); }
-		// [DICE-MOD SwiffPlayer #41] true while a function frame (an empty-named barrier slot) is active.
-		bool	in_function_frame() const;
+		// SwiffPlayer.dll 0x1008C4C0 forwards to the local-frame resize helper.
 		void	set_local_frame_top(int t) { assert(t <= m_local_frames.size()); m_local_frames.resize(t); }
 		void	add_frame_barrier() { m_local_frames.push_back(frame_slot()); }
-		// [DICE-MOD SwiffPlayer #41] the barrier a FUNCTION call pushes, marked (a BOOLEAN value) so a
-		// frame script's own barrier (an undefined value, pushed by the plain execute overload) can be
-		// told apart: a `var` declared above a function barrier is a timeline var, a clip property.
-		void	add_function_barrier() { m_local_frames.push_back(frame_slot(tu_string(""), as_value(true))); }
 
-		// [DICE-MOD SwiffPlayer #55] the environment's register `reg` (the operand is a byte, so
+		//  the environment's register `reg` (the operand is a byte, so
 		// 0..255 is always a valid slot). Never NULL.
 		as_value*	register_ptr(int reg);
-		// [DICE-MOD SwiffPlayer #57] the environment whose bank register operands address here.
+		//  the environment whose bank register operands address here.
 		as_environment*	register_bank() { return m_register_env ? m_register_env : this; }
 
 		// Internal.
 		int	find_local(const tu_string& varname) const;
 		bool	parse_path(const tu_string& var_path, tu_string* path, tu_string* var) const;
 		movie*	find_target(const tu_string& path) const;
-		movie*	find_target(const as_value& val) const;
-		// [DICE-MOD SwiffPlayer: dotted-path resolution through OBJECT members, with the shipped
-		// _global fallback - the resolver get_variable/set_variable use. See the .cpp.]
+		as_object_interface*	find_target(const as_value& val) const;
+		// dotted-path resolution through OBJECT members, with the shipped
+		// _global fallback - the resolver get_variable/set_variable use. See the .cpp.
 		as_object_interface*	find_object_path(const tu_string& path, as_object_interface* start) const;
 
 		// Movie teardown: appends every object or function held on the stack, in the registers,
@@ -1087,6 +993,16 @@ namespace gameswf
 
 	// Clean up any stray heap stuff we've allocated.
 	void	action_clear();
+	// [CHOSEN, not recovered] S3 bridge for the borrowed constructor context
+	// used by the separately compiled timer dispatcher.
+	void set_call_super(as_as_function* constructor);
+	void set_environment_super(as_environment* env);
+	void gc_mark_value(const as_value& value);
+	void gc_mark_modules();
+	// [CHOSEN, not recovered] S3 bridge: expose mark traversal independently
+	// while XML edges, host roots and native strong ownership block the sweep.
+	// This advances only the generation; it never claims to collect objects.
+	void advance_gc_mark_generation();
 
 	// Dispatching methods from C++.
 	as_value	call_method0(const as_value& method, as_environment* env, as_object_interface* this_ptr);
@@ -1108,6 +1024,20 @@ namespace gameswf
 		const char* method_arg_fmt,
 		va_list args);
 
+	// Calls an expression containing a method name and quoted or numeric arguments.
+	// Returns shared string storage overwritten by the next expression call.
+	// The environment must have a target and the expression at least one token.
+	// Parsing uses at most 999 bytes.
+	const char*	call_method_expression(as_environment* env, as_object_interface* receiver,
+		const char* expression);
+	const char*	call_method_expression(as_environment* env, as_object_interface* receiver,
+		const Uint16* expression);
+
+	// Access the independent Key module without initializing it. Missing modules are ignored.
+	void	add_key_listener(as_object_interface* listener);
+	void	remove_key_listener(as_object_interface* listener);
+	int	get_last_key_pressed();
+
 	// tulrich: don't use this!  To register a class constructor,
 	// just assign the classname to the constructor function.  E.g.:
 	//
@@ -1115,9 +1045,9 @@ namespace gameswf
 	// 
 	//void register_as_object(const char* object_name, as_c_function_ptr handler);
 
-	// [DICE-MOD SwiffPlayer: accessor for the _global object, so the SwiffPlayer AS bridge can hang
+	// accessor for the _global object, so the SwiffPlayer AS bridge can hang
 	// the dice.* namespace graph off it before the first advance. Forces action_init(). See
-	// gameswf_action.cpp and GAMESWF_DIVERGENCES.md.]
+	// gameswf_action.cpp and GAMESWF_DIVERGENCES.md.
 	as_object*	get_global_object();
 
 	// Numerical indices for standard member names.  Can use this
@@ -1149,7 +1079,6 @@ namespace gameswf
 		M_YMOUSE,
 		M_PARENT,
 		M_TEXT,
-		M_TEXTWIDTH,
 		M_TEXTCOLOR,
 		M_ONLOAD,
 

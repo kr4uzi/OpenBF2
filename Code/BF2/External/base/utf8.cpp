@@ -11,6 +11,7 @@
 #include "base/utf8.h"
 
 
+// Retail SwiffPlayer.dll 0x1006E6A0.
 Uint32	utf8::decode_next_unicode_character(const char** utf8_buffer)
 {
 	Uint32	uc;
@@ -111,6 +112,7 @@ Uint32	utf8::decode_next_unicode_character(const char** utf8_buffer)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E980.
 void	utf8::encode_unicode_character(char* buffer, int* index, Uint32 ucs_character)
 {
 	if (ucs_character <= 0x7F)

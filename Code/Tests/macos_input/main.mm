@@ -583,7 +583,35 @@ void testRawMouseThreads(MouseLog& log)
 
 } // namespace
 
-int main()
+static void testAsyncEnter()
+{
+    begin("asynchronous Enter held/consuming press bits");
+    CocoaHost& host = CocoaHost::instance();
+    (void)host.consumeAsyncEnterState();
+    key(kVK_Return, true);
+    check(host.consumeAsyncEnterState() == 0x8001, "first Enter query sees held and press");
+    check(host.consumeAsyncEnterState() == 0x8000, "second Enter query consumes the press bit");
+    key(kVK_Return, true, true);
+    check(host.consumeAsyncEnterState() == 0x8000, "auto-repeat creates no second press");
+    host.overrideFocusForTest(false, false); host.overrideFocusForTest(true, true);
+    key(kVK_Return, true);
+    check(host.consumeAsyncEnterState() == 0x8001, "fresh down after an undelivered off-focus release creates a press");
+    key(kVK_Return, false);
+    check(host.consumeAsyncEnterState() == 0, "release clears held state");
+    key(kVK_Return, true); key(kVK_Return, false);
+    check(host.consumeAsyncEnterState() == 1, "release before query retains only the press bit");
+    check(host.consumeAsyncEnterState() == 0, "released press bit is consumed too");
+    key(kVK_ANSI_KeypadEnter, true);
+    check(host.consumeAsyncEnterState() == 0x8001, "keypad Enter contributes to VK_RETURN");
+    key(kVK_Return, true); key(kVK_ANSI_KeypadEnter, false);
+    check(host.consumeAsyncEnterState() == 0x8001, "either Enter keeps the aggregate held");
+    key(kVK_Return, false);
+    key(kVK_ANSI_A, true);
+    check(host.consumeAsyncEnterState() == 0, "ordinary character does not affect Enter");
+    key(kVK_ANSI_A, false);
+}
+
+int main(int argc, char** argv)
 {
     std::setvbuf(stdout, 0, _IONBF, 0);
     @autoreleasepool
@@ -591,6 +619,12 @@ int main()
         CocoaHost& host = CocoaHost::instance();
         host.enableHeadlessForTest();
         host.overrideFocusForTest(true, true);
+        if (argc == 2 && std::string(argv[1]) == "--async-enter-only")
+        {
+            testAsyncEnter();
+            std::printf("[result] %d checks, %d failures\n", g_checks, g_failures);
+            return g_failures ? 1 : 0;
+        }
         MouseLog log;
         host.addListener(&log);
 
@@ -619,6 +653,7 @@ int main()
         testCapturedMouse(log);
         testRawMouse(log);
         testRawMouseThreads(log);
+        testAsyncEnter();
 
         host.removeListener(&log);
         g_manager->release();

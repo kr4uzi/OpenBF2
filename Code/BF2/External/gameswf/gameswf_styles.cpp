@@ -19,6 +19,7 @@ namespace gameswf
 	// gradient_record
 	//
 
+	// SwiffPlayer.dll 0x100A3D10.
 	gradient_record::gradient_record()
 		:
 		m_ratio(0)
@@ -26,6 +27,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A3D30.
 	void	gradient_record::read(stream* in, int tag_type)
 	{
 		m_ratio = in->read_u8();
@@ -38,6 +40,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x100A46C0.
 	fill_style::fill_style()
 		:
 		m_type(0),
@@ -48,15 +51,17 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A4710; deleting veneer 0x100A4750.
 	fill_style::~fill_style()
 	{
 	}
 
+	// SwiffPlayer.dll 0x100A41F0.
 	void	fill_style::read(stream* in, int tag_type, movie_definition_sub* md)
 	{
 		m_type = in->read_u8();
 
-		IF_VERBOSE_PARSE(log_msg("  fill_style read type = 0x%X\n", m_type));
+		IF_VERBOSE_PARSE(log_msg("fsr type = 0x%X\n", m_type));
 
 		if (m_type == 0x00)
 		{
@@ -67,7 +72,7 @@ namespace gameswf
 				m_color.read_rgba(in);
 			}
 
-			IF_VERBOSE_PARSE(log_msg("  color: ");
+			IF_VERBOSE_PARSE(log_msg("fsr color: ");
 					 m_color.print());
 		}
 		else if (m_type == 0x10 || m_type == 0x12)
@@ -105,7 +110,7 @@ namespace gameswf
 				m_gradients[i].read(in, tag_type);
 			}
 
-			IF_VERBOSE_PARSE(log_msg("  gradients: num_gradients = %d\n", num_gradients));
+			IF_VERBOSE_PARSE(log_msg("fsr: num_gradients = %d\n", num_gradients));
 
 			// @@ hack.
 			if (num_gradients > 0)
@@ -131,7 +136,7 @@ namespace gameswf
 			// 0x41: clipped bitmap fill
 
 			int	bitmap_char_id = in->read_u16();
-			IF_VERBOSE_PARSE(log_msg("  bitmap_char = %d\n", bitmap_char_id));
+			IF_VERBOSE_PARSE(log_msg("fsr: bitmap_char = %d\n", bitmap_char_id));
 
 			// Look up the bitmap character.
 			m_bitmap_character = md->get_bitmap_character(bitmap_char_id);
@@ -147,6 +152,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A3EE0.
 	rgba	fill_style::sample_gradient(int ratio) const
 	// Return the color at the specified ratio into our gradient.
 	// Ratio is in [0, 255].
@@ -178,6 +184,7 @@ namespace gameswf
 		return m_gradients.back().m_color;
 	}
 
+	// SwiffPlayer.dll 0x100A3FB0.
 	gameswf::bitmap_info*	fill_style::create_gradient_bitmap() const
 	// Make a bitmap_info* corresponding to our gradient.
 	// We can use this to set the gradient fill style.
@@ -227,6 +234,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A4480.
 	void	fill_style::apply(int fill_side, float ratio) const
 	// Push our style parameters into the renderer.
 	{
@@ -285,6 +293,15 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A4520; method name [INFERRED].
+	void	fill_style::generate_gradient_bitmap(movie_definition_sub* md)
+	{
+		m_gradient_bitmap_info = create_gradient_bitmap();
+		md->add_bitmap_info(m_gradient_bitmap_info.get_ptr());
+	}
+
+
+	// SwiffPlayer.dll 0x100A4580.
 	void	fill_style::set_lerp(const fill_style& a, const fill_style& b, float t)
 	// Sets this style to a blend of a and b.  t = [0,1]
 	{
@@ -331,6 +348,7 @@ namespace gameswf
 	//
 
 	
+	// SwiffPlayer.dll 0x100A4140.
 	line_style::line_style()
 		:
 		m_width(0)
@@ -338,6 +356,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A3DB0.
 	void	line_style::read(stream* in, int tag_type)
 	{
 		m_width = in->read_u16();
@@ -345,11 +364,12 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A3DE0.
 	void	line_style::apply(float ratio) const
 	{
 		UNUSED(ratio);
 		gameswf::render::line_style_color(m_color);
-		gameswf::render::line_style_width(m_width);
+		gameswf::render::line_style_width(m_width * 0.05f);
 	}
 
 }

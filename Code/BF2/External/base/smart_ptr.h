@@ -27,6 +27,7 @@ template<class T>
 class smart_ptr
 {
 public:
+	// Retail SwiffPlayer.dll 0x1006FC50 / 0x1006FCD0 / 0x10070010.
 	smart_ptr(T* ptr)
 		:
 		m_ptr(ptr)
@@ -48,6 +49,7 @@ public:
 		}
 	}
 
+	// Retail SwiffPlayer.dll 0x1006FC80 / 0x1006FD00 / 0x10070040.
 	~smart_ptr()
 	{
 		if (m_ptr)
@@ -57,9 +59,12 @@ public:
 	}
 
 //	operator bool() const { return m_ptr != NULL; }
+	// Retail SwiffPlayer.dll 0x10085660 / 0x100A21A0 / 0x100A5B20.
+	// 0x10072040 / 0x10072A60: held-pointer instances, with the same identity check.
 	void	operator=(const smart_ptr<T>& s) { set_ref(s.m_ptr); }
 	void	operator=(T* ptr) { set_ref(ptr); }
 //	void	operator=(const weak_ptr<T>& w);
+	// Retail SwiffPlayer.dll 0x10085020 / 0x10085030.
 	T*	operator->() const { assert(m_ptr); return m_ptr; }
 	T*	get_ptr() const { return m_ptr; }
 	bool	operator==(const smart_ptr<T>& p) const { return m_ptr == p.m_ptr; }
@@ -70,6 +75,7 @@ public:
 	// Provide work-alikes for static_cast, dynamic_cast, implicit up-cast?  ("gentle_cast" a la ajb?)
 
 private:
+	// Retail SwiffPlayer.dll 0x100704F0 / 0x100707F0: release, store, retain.
 	void	set_ref(T* ptr)
 	{
 		if (ptr != m_ptr)
@@ -97,6 +103,7 @@ private:
 class weak_proxy
 {
 public:
+	// Retail SwiffPlayer.dll 0x1006EC50.
 	weak_proxy()
 		:
 		m_ref_count(0),
@@ -108,13 +115,16 @@ public:
 	bool	is_alive() const { return m_alive; }
 
 	// Only the actual object should call this.
+	// Retail SwiffPlayer.dll 0x1006EC60.
 	void	notify_object_died() { m_alive = false; }
 
+	// Retail SwiffPlayer.dll 0x1006EC70.
 	void	add_ref()
 	{
 		assert(m_ref_count >= 0);
 		m_ref_count++;
 	}
+	// Retail SwiffPlayer.dll 0x1006EC80.
 	void	drop_ref()
 	{
 		assert(m_ref_count > 0);

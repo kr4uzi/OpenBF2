@@ -8,10 +8,35 @@
 
 #include "gameswf_morph2.h"
 #include "gameswf_stream.h"
+#include "../../Platform/X87Compat.h"
+
+#include <new>
 
 
 namespace gameswf
 {
+	// [INFERRED] helper name; inlined in SwiffPlayer.dll 0x1009FE78-0x1009FE98.
+	static Uint16 morph_line_width(Uint16 start, Uint16 end, float ratio)
+	{
+		bf2x87::Real width1(start);
+		bf2x87::Real width2(end);
+		bf2x87::Real width = bf2x87::add(
+			bf2x87::mul(bf2x87::sub(width2, width1), bf2x87::Real(ratio)), width1);
+		return static_cast<Uint16>(bf2x87::toInt64Truncate(
+			bf2x87::add(width, bf2x87::Real(0.5f))));
+	}
+
+	// [INFERRED] inline-operation helper; SwiffPlayer.dll 0x1009FF1D-0x100A0024
+	// stores each coordinate only after subtraction, multiplication and addition.
+	static float morph_coordinate(float start, float end, float ratio)
+	{
+		return bf2x87::store(bf2x87::add(bf2x87::mul(
+			bf2x87::sub(bf2x87::Real(end), bf2x87::Real(start)), bf2x87::Real(ratio)),
+			bf2x87::Real(start)));
+	}
+
+	// SwiffPlayer.dll 0x1009F5D0.
+	// [CHOSEN, not recovered] S3 bridge: the loader assigns the native definition ID separately.
 	morph2_character_def::morph2_character_def():
 		m_last_ratio(-1.0f), m_mesh(0)
 	{
@@ -20,12 +45,14 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009F680 (deleting veneer 0x1009F710) does not delete m_mesh.
 	morph2_character_def::~morph2_character_def()
 	{
 		delete m_shape2;
 		delete m_shape1;
 	}
 
+	// SwiffPlayer.dll 0x1009FDB0.
 	void	morph2_character_def::display(character* inst)
 	{
 		int i;
@@ -33,7 +60,9 @@ namespace gameswf
 
 		// bounds
 		rect	new_bound;
-		new_bound.set_lerp(m_shape1->get_bound(), m_shape2->get_bound(), ratio);
+		rect	bound2 = m_shape2->get_bound_copy();
+		rect	bound1 = m_shape1->get_bound_copy();
+		new_bound.set_lerp(bound1, bound2, ratio);
 		set_bound(new_bound);
 
 		// fill styles
@@ -53,7 +82,9 @@ namespace gameswf
 			line_style& ls = m_line_styles[i];
 			const line_style& ls1 = m_shape1->get_line_styles()[i];
 			const line_style& ls2 = m_shape2->get_line_styles()[i];
-			ls.m_width = (Uint16)frnd(flerp(ls1.get_width(), ls2.get_width(), ratio));
+			// SwiffPlayer.dll 0x1009FE78-0x1009FE98: no float store before qword _ftol;
+			// add 0.5, truncate, then keep AX, including for negative/non-finite inputs.
+			ls.m_width = morph_line_width(ls1.get_width(), ls2.get_width(), ratio);
 			ls.m_color.set_lerp(ls1.get_color(), ls2.get_color(), ratio);
 		}
 
@@ -75,8 +106,8 @@ namespace gameswf
       
 			p.m_line = p1.m_line;
 
-			p.m_ax = flerp(p1.m_ax, m_shape2->get_paths()[n].m_ax, ratio);
-			p.m_ay = flerp(p1.m_ay, m_shape2->get_paths()[n].m_ay, ratio);
+			p.m_ax = morph_coordinate(p1.m_ax, m_shape2->get_paths()[n].m_ax, ratio);
+			p.m_ay = morph_coordinate(p1.m_ay, m_shape2->get_paths()[n].m_ay, ratio);
       
 			//  edges;
 			int len = p1.m_edges.size();
@@ -84,10 +115,10 @@ namespace gameswf
 
 			for (int j=0; j < p.m_edges.size(); j++)
 			{
-				p.m_edges[j].m_cx = flerp(p1.m_edges[j].m_cx, m_shape2->get_paths()[n].m_edges[k].m_cx, ratio);
-				p.m_edges[j].m_cy = flerp(p1.m_edges[j].m_cy, m_shape2->get_paths()[n].m_edges[k].m_cy, ratio);
-				p.m_edges[j].m_ax = flerp(p1.m_edges[j].m_ax, m_shape2->get_paths()[n].m_edges[k].m_ax, ratio);
-				p.m_edges[j].m_ay = flerp(p1.m_edges[j].m_ay, m_shape2->get_paths()[n].m_edges[k].m_ay, ratio);
+				p.m_edges[j].m_cx = morph_coordinate(p1.m_edges[j].m_cx, m_shape2->get_paths()[n].m_edges[k].m_cx, ratio);
+				p.m_edges[j].m_cy = morph_coordinate(p1.m_edges[j].m_cy, m_shape2->get_paths()[n].m_edges[k].m_cy, ratio);
+				p.m_edges[j].m_ax = morph_coordinate(p1.m_edges[j].m_ax, m_shape2->get_paths()[n].m_edges[k].m_ax, ratio);
+				p.m_edges[j].m_ay = morph_coordinate(p1.m_edges[j].m_ay, m_shape2->get_paths()[n].m_edges[k].m_ay, ratio);
 				k++;
 				if (m_shape2->get_paths()[n].m_edges.size() <= k)
 				{
@@ -100,17 +131,21 @@ namespace gameswf
 
 		matrix mat = inst->get_world_matrix();
 		cxform cx = inst->get_world_cxform();
-		float max_error = 20.0f / mat.get_max_scale() /	inst->get_parent()->get_pixel_scale();
+		// SwiffPlayer.dll 0x100A00A2-0x100A00BA stores after each division.
+		float max_error = bf2x87::store(bf2x87::div(bf2x87::Real(20.0f), shape_matrix_max_scale(mat)));
+		max_error /= inst->get_parent()->get_pixel_scale();
 		if (ratio != m_last_ratio)
 		{
 			delete m_mesh;
 			m_last_ratio = ratio;
-			m_mesh = new mesh_set(this, max_error * 0.75f);
+			// SwiffPlayer.dll 0x100A0100-0x100A0120 retains null on allocation failure.
+			m_mesh = new (std::nothrow) mesh_set(this, max_error * 0.75f);
 		}
-		m_mesh->display(mat, cx, m_fill_styles, m_line_styles);
+		m_mesh->display(mat, cx, m_fill_styles, m_line_styles, inst->get_depth());
 	}
 
   
+	// SwiffPlayer.dll 0x1009F780.
 	void	morph2_character_def::read(stream* in, int tag_type, bool with_style, movie_definition_sub* md)
 	{
 		UNUSED(tag_type);

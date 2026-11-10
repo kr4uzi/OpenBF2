@@ -1,11 +1,12 @@
-// tu_file.cpp	-- Ignacio Castaño, Thatcher Ulrich <tu@tulrich.com> 2003
+// tu_file.cpp	-- Ignacio CastaÃ±o, Thatcher Ulrich <tu@tulrich.com> 2003
 
 // This source code has been donated to the Public Domain.  Do
 // whatever you want with it.
 
 // A file class that can be customized with callbacks.
 
-
+#include <stdarg.h>
+#include <string.h>
 #include "base/tu_file.h"
 #include "base/utility.h"
 #include "base/container.h"
@@ -17,6 +18,7 @@
 //
 
 
+// Retail SwiffPlayer.dll 0x1006DCB0.
 static int std_read_func(void* dst, int bytes, void* appdata) 
 // Return the number of bytes actually read.  EOF or an error would
 // cause that to not be equal to "bytes".
@@ -26,6 +28,7 @@ static int std_read_func(void* dst, int bytes, void* appdata)
 	return fread( dst, 1, bytes, (FILE *)appdata );
 }
 
+// Retail SwiffPlayer.dll 0x1006DCD0.
 static int std_write_func(const void* src, int bytes, void* appdata)
 // Return the number of bytes actually written.
 {
@@ -34,6 +37,7 @@ static int std_write_func(const void* src, int bytes, void* appdata)
 	return fwrite( src, 1, bytes, (FILE *)appdata );
 }
 
+// Retail SwiffPlayer.dll 0x1006DCF0.
 static int std_seek_func(int pos, void *appdata)
 // Return 0 on success, or TU_FILE_SEEK_ERROR on failure.
 {
@@ -48,6 +52,7 @@ static int std_seek_func(int pos, void *appdata)
 	return 0;
 }
 
+// Retail SwiffPlayer.dll 0x1006DD20.
 static int std_seek_to_end_func(void *appdata)
 // Return 0 on success, TU_FILE_SEEK_ERROR on failure.
 {
@@ -61,6 +66,7 @@ static int std_seek_to_end_func(void *appdata)
 	return 0;
 }
 
+// Retail SwiffPlayer.dll 0x1006DD40.
 static int std_tell_func(const void *appdata)
 // Return the file position, or -1 on failure.
 {
@@ -68,6 +74,7 @@ static int std_tell_func(const void *appdata)
 	return ftell((FILE*)appdata);
 }
 
+// Retail SwiffPlayer.dll 0x1006DD50: use the CRT's EOF flag.
 static bool std_get_eof_func(void *appdata)
 // Return true if we're at EOF.
 {
@@ -82,6 +89,7 @@ static bool std_get_eof_func(void *appdata)
 	}
 }
 
+// Retail SwiffPlayer.dll 0x1006DD60.
 static int std_close_func(void *appdata)
 // Return 0 on success, or TU_FILE_CLOSE_ERROR on failure.
 {
@@ -103,12 +111,16 @@ static int std_close_func(void *appdata)
 
 struct filebuf
 {
-	membuf m_;
+	int	m_size;
+	void*	m_data;
 	int	m_position;
 	bool	m_read_only;
 
+	// Retail SwiffPlayer.dll 0x1006DD80 (S1 called this membuf).
 	filebuf()
 		:
+		m_size(0),
+		m_data(0),
 		m_position(0),
 		m_read_only(false)
 	{
@@ -116,28 +128,35 @@ struct filebuf
 
 	filebuf(int size, void* data)
 		:
-		m_(membuf::READ_ONLY, data, size),
+		m_size(size),
+		m_data(data),
 		m_position(0),
 		m_read_only(true)
 	{
 	}
 
+	// Retail SwiffPlayer.dll 0x1006DDB0 / deleting veneer 0x1006DF40.
 	~filebuf()
 	{
+		if (!m_read_only && m_data) tu_free(m_data, m_size);
 	}
 
+	// Retail SwiffPlayer.dll 0x1006DDD0; allocation uses the native issue #7 hook.
 	bool	resize(int new_size)
 	// Return false if we couldn't resize.
 	{
 		if (m_read_only) return false;
 
-		m_.resize(new_size);
+		void* data = tu_realloc(m_data, new_size, m_size);
+		if (new_size > 0 && data == 0) return false;
+		m_data = data;
+		m_size = new_size;
 
 		// Hm, does this make sense?  We're truncating the file, so clamping the cursor.
 		// Alternative would be to disallow resize, but that doesn't seem good either.
-		if (m_position > m_.size())
+		if (m_position > m_size)
 		{
-			m_position = m_.size();
+			m_position = m_size;
 		}
 
 		return true;
@@ -147,13 +166,15 @@ struct filebuf
 	{
 		return
 			m_position >= 0
-			&& m_position <= m_.size();
+			&& m_position <= m_size;
 	}
 
-	unsigned char*	get_cursor() { return ((unsigned char*) m_.data()) + m_position; }
+	// Retail SwiffPlayer.dll 0x1006DE20.
+	unsigned char*	get_cursor() { return ((unsigned char*) m_data) + m_position; }
 };
 
 
+// Retail SwiffPlayer.dll 0x1006DE30.
 static int mem_read_func(void* dst, int bytes, void* appdata) 
 // Return the number of bytes actually read.  EOF or an error would
 // cause that to not be equal to "bytes".
@@ -164,7 +185,7 @@ static int mem_read_func(void* dst, int bytes, void* appdata)
 	filebuf* buf = (filebuf*) appdata;
 	assert(buf->is_valid());
 
-	int	bytes_to_read = imin(bytes, buf->m_.size() - buf->m_position);
+	int	bytes_to_read = imin(bytes, buf->m_size - buf->m_position);
 	if (bytes_to_read)
 	{
 		memcpy(dst, buf->get_cursor(), bytes_to_read);
@@ -175,6 +196,7 @@ static int mem_read_func(void* dst, int bytes, void* appdata)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006DE80.
 static int mem_write_func(const void* src, int bytes, void* appdata)
 // Return the number of bytes actually written.
 {
@@ -185,10 +207,10 @@ static int mem_write_func(const void* src, int bytes, void* appdata)
 	assert(buf->is_valid());
 
 	// Expand buffer if necessary.
-	int	bytes_to_expand = imax(0, buf->m_position + bytes - buf->m_.size());
+	int	bytes_to_expand = imax(0, buf->m_position + bytes - buf->m_size);
 	if (bytes_to_expand)
 	{
-		if (buf->resize(buf->m_.size() + bytes_to_expand) == false)
+		if (buf->resize(buf->m_size + bytes_to_expand) == false)
 		{
 			// Couldn't expand!
 			return 0;
@@ -201,11 +223,11 @@ static int mem_write_func(const void* src, int bytes, void* appdata)
 	return bytes;
 }
 
+// Retail SwiffPlayer.dll 0x1006DEE0.
 static int mem_seek_func(int pos, void *appdata)
 // Return 0 on success, or TU_FILE_SEEK_ERROR on failure.
 {
 	assert(appdata);
-	assert(pos >= 0);
 
 	filebuf* buf = (filebuf*) appdata;
 	assert(buf->is_valid());
@@ -216,9 +238,9 @@ static int mem_seek_func(int pos, void *appdata)
 		return TU_FILE_SEEK_ERROR;
 	}
 
-	if (pos > buf->m_.size())
+	if (pos > buf->m_size)
 	{
-		buf->m_position = buf->m_.size();
+		buf->m_position = buf->m_size;
 		return TU_FILE_SEEK_ERROR;
 	}
 
@@ -226,6 +248,7 @@ static int mem_seek_func(int pos, void *appdata)
 	return 0;
 }
 
+// Retail SwiffPlayer.dll 0x1006DF10.
 static int mem_seek_to_end_func(void* appdata)
 // Return 0 on success, TU_FILE_SEEK_ERROR on failure.
 {
@@ -234,10 +257,11 @@ static int mem_seek_to_end_func(void* appdata)
 	filebuf* buf = (filebuf*) appdata;
 	assert(buf->is_valid());
 
-	buf->m_position = buf->m_.size();
+	buf->m_position = buf->m_size;
 	return 0;
 }
 
+// Retail SwiffPlayer.dll 0x1006DF20.
 static int mem_tell_func(const void* appdata)
 // Return the file position, or -1 on failure.
 {
@@ -249,6 +273,7 @@ static int mem_tell_func(const void* appdata)
 	return buf->m_position;
 }
 
+// Retail SwiffPlayer.dll 0x1006DF30.
 static bool	mem_get_eof_func(void* appdata)
 // Return true if we're positioned at the end of the buffer.
 {
@@ -257,17 +282,14 @@ static bool	mem_get_eof_func(void* appdata)
 	filebuf* buf = (filebuf*) appdata;
 	assert(buf->is_valid());
 
-	return buf->m_position >= buf->m_.size();
+	return buf->m_position >= buf->m_size;
 }
 
+// Retail SwiffPlayer.dll 0x1006E280.
 static int mem_close_func(void* appdata)
 // Return 0 on success, or TU_FILE_CLOSE_ERROR on failure.
 {
-	assert(appdata);
-
 	filebuf* buf = (filebuf*) appdata;
-	assert(buf->is_valid());
-
 	delete buf;
 
 	return 0;
@@ -279,6 +301,7 @@ static int mem_close_func(void* appdata)
 //
 
 
+// Retail SwiffPlayer.dll 0x1006DF80.
 tu_file::tu_file(
 	void * appdata,
 	read_func rf,
@@ -302,6 +325,7 @@ tu_file::tu_file(
 }
 
 
+// Retail SwiffPlayer.dll 0x1006DFC0.
 tu_file::tu_file(FILE* fp, bool autoclose=false)
 // Create a file from a standard file pointer.
 {
@@ -317,6 +341,7 @@ tu_file::tu_file(FILE* fp, bool autoclose=false)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E010.
 tu_file::tu_file(const char * name, const char * mode)
 // Create a file from the given name and the given mode.
 {
@@ -346,10 +371,11 @@ tu_file::tu_file(const char * name, const char * mode)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E2B0.
 tu_file::tu_file(memory_buffer_enum m)
 // Create a read/write memory buffer.
 {
-	m_data = new membuf;
+	m_data = new (std::nothrow) filebuf;
 
 	m_read = mem_read_func;
 	m_write = mem_write_func;
@@ -362,10 +388,11 @@ tu_file::tu_file(memory_buffer_enum m)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E310: borrow data; only growth is refused.
 tu_file::tu_file(memory_buffer_enum m, int size, void* data)
-// Create a read-only memory buffer, using the given data.
+// Create a borrowed memory buffer that cannot grow.
 {
-	m_data = new membuf(data, size);
+	m_data = new (std::nothrow) filebuf(size, data);
 
 	m_read = mem_read_func;
 	m_write = mem_write_func;
@@ -378,6 +405,7 @@ tu_file::tu_file(memory_buffer_enum m, int size, void* data)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E380.
 tu_file::~tu_file()
 // Close this file when destroyed.
 {
@@ -385,6 +413,7 @@ tu_file::~tu_file()
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E090: end/EOF callbacks and error are left alone.
 void tu_file::close() 
 // Close this file.
 { 
@@ -401,6 +430,7 @@ void tu_file::close()
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E0C0.
 void	tu_file::copy_from(tu_file* src)
 // Copy remaining contents of *src into *this.
 {
@@ -441,6 +471,7 @@ void	tu_file::copy_to(membuf* dst)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E110.
 int	tu_file::copy_bytes(tu_file* src, int byte_count)
 // Copy a fixed number of bytes from *src into *this.  Return the
 // number of bytes copied.
@@ -474,20 +505,18 @@ int	tu_file::copy_bytes(tu_file* src, int byte_count)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E190: test the next byte; omit its NUL.
 void tu_file::write_string(const char* src)
 {
-	for (;;)
+	do
 	{
-		write8(*src);
-		if (*src == 0)
-		{
-			break;
-		}
-		src++;
+		write8(*src++);
 	}
+	while (*src != 0);
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E1D0.
 int tu_file::read_string(char* dst, int max_length) 
 {
 	int i=0;
@@ -508,24 +537,27 @@ int tu_file::read_string(char* dst, int max_length)
 
 
 
-#include <stdarg.h>
-#include <string.h>
-
-#ifdef _WIN32
-#define vsnprintf	_vsnprintf
-#endif // _WIN32
-
-
 int	tu_file::printf(const char* fmt, ...)
 // Use printf-like semantics to send output to this stream.
 {
+	// SwiffPlayer.dll 0x1006E220: format, scan for NUL, forward the write result.
 	// Workspace for vsnprintf formatting.
 	static const int	BUFFER_SIZE = 1000;
 	char	buffer[BUFFER_SIZE];
 
 	va_list ap;
 	va_start(ap, fmt);
-	vsnprintf(buffer, BUFFER_SIZE, fmt, ap);
+#if defined(_WIN32)
+	_vsnprintf(buffer, BUFFER_SIZE, fmt, ap);
+#else
+	// [CHOSEN, not recovered] POSIX CRT bridge: retain native formatting,
+	// locale and error semantics, with the retail full-workspace nontermination.
+	char formatted[BUFFER_SIZE + 1];
+	memcpy(formatted, buffer, BUFFER_SIZE);
+	const int count = vsnprintf(formatted, sizeof(formatted), fmt, ap);
+	const int bytes = count >= 0 && count < BUFFER_SIZE ? count + 1 : BUFFER_SIZE;
+	memcpy(buffer, formatted, bytes);
+#endif
 	va_end(ap);
 
 	return write_bytes(buffer, strlen(buffer));

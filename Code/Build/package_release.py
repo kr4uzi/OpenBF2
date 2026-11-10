@@ -125,8 +125,10 @@ def installation(platform, role, name, executable):
         )
     text += (
         "{step}. Start with:\n   {command}\n"
+        "{help_note}"
         "   Replace the example paths with your own.\n"
-    ).format(step=3 if platform.startswith("windows-") else 4, command=command)
+    ).format(step=3 if platform.startswith("windows-") else 4, command=command,
+             help_note="   add +help 0 to hide the tutorial messages\n" if role.startswith("client") else "")
     if platform.startswith("windows-"):
         text += ("   A shortcut can use the same command as Target and the installation\n"
                  "   root as Start in. No original EXE or DLL is replaced; to go back,\n"

@@ -102,13 +102,8 @@ rem     separately with the SwiffPlayer log defines)
 rem   SwiffPlayerAbi (PluginEntry initDll/deinitDll, SwiffMemory tu_* shim)
 rem   the wrapper (SwiffPlayer.cpp, SwiffPlayerModule.cpp)
 rem
-rem Excluded from the gameswf/base drop:
-rem   base: ogl, tu_file_SDL, demo, test_ogl, component_hackery, postscript, png_helper,
-rem         triangulate_* (no core caller), logger (2006-vintage), dlmalloc.c (tu_malloc rerouted).
-rem   gameswf: morph (superseded by morph2), the 3 render handlers, both sound handlers, the tools.
-rem   gameswf_xmlsocket.cpp: EXCLUDED pending link demand - its whole body is #ifdef HAVE_LIBXML
-rem         (off), so it emits no code; the only compile blocker is an unconditional #include <SDL.h>.
-rem         Re-admit with a [BUILD-FIX] fence only if the link references an XMLSocket symbol.
+rem S4 removed the unused upstream tools, demo/render/sound backends, optional decoders,
+rem MovieClipLoader, TextFormat, XMLSocket and the legacy Timer API.
 rem ---------------------------------------------------------------------------
 echo [2/4] compiling
 set SOURCES=^
@@ -125,7 +120,6 @@ set SOURCES=^
  "%EXT%\base\tu_types.cpp" ^
  "%EXT%\base\utf8.cpp" ^
  "%EXT%\base\utility.cpp" ^
- "%EXT%\base\zlib_adapter.cpp" ^
  "%EXT%\gameswf\gameswf_action.cpp" ^
  "%EXT%\gameswf\gameswf_button.cpp" ^
  "%EXT%\gameswf\gameswf_dlist.cpp" ^
@@ -134,7 +128,6 @@ set SOURCES=^
  "%EXT%\gameswf\gameswf_impl.cpp" ^
  "%EXT%\gameswf\gameswf_log.cpp" ^
  "%EXT%\gameswf\gameswf_morph2.cpp" ^
- "%EXT%\gameswf\gameswf_movie.cpp" ^
  "%EXT%\gameswf\gameswf_render.cpp" ^
  "%EXT%\gameswf\gameswf_shape.cpp" ^
  "%EXT%\gameswf\gameswf_sound.cpp" ^
@@ -143,7 +136,6 @@ set SOURCES=^
  "%EXT%\gameswf\gameswf_styles.cpp" ^
  "%EXT%\gameswf\gameswf_tesselate.cpp" ^
  "%EXT%\gameswf\gameswf_text.cpp" ^
- "%EXT%\gameswf\gameswf_textformat.cpp" ^
  "%EXT%\gameswf\gameswf_timers.cpp" ^
  "%EXT%\gameswf\gameswf_types.cpp" ^
  "%EXT%\gameswf\gameswf_xml.cpp" ^
@@ -170,6 +162,23 @@ for %%F in (%SOURCES%) do (
     )
 )
 
+rem [CHOSEN, not recovered] Owner-approved Expat 1.95.0 substitute, compiled as C.
+rem xmltok_impl.c and xmltok_ns.c are included by xmltok.c, not separate TUs.
+set EXPAT_SOURCES= "%EXT%\expat\xmlparse.c" "%EXT%\expat\xmltok.c" "%EXT%\expat\xmlrole.c"
+if not exist "%OUT%\expat" mkdir "%OUT%\expat"
+if not exist "%OUT%\expat" exit /b 1
+for %%F in (%EXPAT_SOURCES%) do (
+    set /a OBJN+=1
+    cl /nologo /c /TC %CRT% /W3 /Zi /FS /DDEDICATED=0 /FI"%BF2%\Core\BuildConfig.h" /D_CRT_SECURE_NO_WARNINGS /I "%EXT%\expat" /Fd"%OUT%\SwiffPlayer.pdb" /Fo"%OUT%\expat\%%~nF.obj" "%%F" >"%OUT%\cl_%%~nF.log" 2>&1
+    if errorlevel 1 (
+        set /a BAD+=1
+        echo   COMPILE FAIL %%~nxF
+        type "%OUT%\cl_%%~nF.log"
+    ) else (
+        set /a OK+=1
+    )
+)
+
 rem Frontier.cpp - the shared instrument, compiled here with the SwiffPlayer log file, env var and
 rem banner (defaults in the file are RendDX9's, so renddx9.cmd stays byte-for-byte unchanged).
 set /a OBJN+=1
@@ -178,6 +187,8 @@ if errorlevel 1 ( set /a BAD+=1 & echo   COMPILE FAIL Frontier.cpp & type "%OUT%
 
 echo   %OK% compiled, %BAD% failed
 if not "%BAD%"=="0" exit /b 1
+lib /nologo /OUT:"%OUT%\expat.lib" "%OUT%\expat\xmlparse.obj" "%OUT%\expat\xmltok.obj" "%OUT%\expat\xmlrole.obj" >"%OUT%\lib_expat.log" 2>&1
+if errorlevel 1 ( type "%OUT%\lib_expat.log" & exit /b 1 )
 
 rem ---------------------------------------------------------------------------
 rem STEP 3 - link the DLL. /DEF gives the two undecorated exports and pins their ordinals to the
@@ -205,7 +216,7 @@ link /nologo /DLL /MACHINE:%ARCH% %LINK_BASE% /DEBUG /OPT:REF /OPT:ICF ^
      /PDB:"%BIN%\SwiffPlayer.pdb" ^
      /IMPLIB:"%OUT%\SwiffPlayer.lib" ^
      /MAP:"%OUT%\SwiffPlayer.map" ^
-     "%OUT%\*.obj" kernel32.lib user32.lib winmm.lib > "%OUT%\link.log" 2>&1
+     "%OUT%\*.obj" "%OUT%\expat.lib" kernel32.lib user32.lib winmm.lib > "%OUT%\link.log" 2>&1
 if errorlevel 1 (
     echo   LINK FAILED - see "%OUT%\link.log"
     type "%OUT%\link.log"

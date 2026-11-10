@@ -39,7 +39,7 @@ namespace gameswf
 		}
 	};
 
-	// [DICE-MOD SwiffPlayer #51] generate_mouse_button_events is gone: the shipped player has no
+	//  generate_mouse_button_events is gone: the shipped player has no
 	// root-level dispatcher, every character runs its own mouse pass (movie::mouse_update). The
 	// state record stays for its m_active_entity, the root's mouse capture.
 
@@ -56,6 +56,8 @@ namespace gameswf
 
 	struct button_record
 	{
+		// Implicit construction: SwiffPlayer.dll 0x100A1C70 initializes the
+		// matrix then cxform; flags, ID, definition and layer remain unwritten.
 		bool	m_hit_test;
 		bool	m_down;
 		bool	m_over;
@@ -85,14 +87,17 @@ namespace gameswf
 			OVER_DOWN_TO_IDLE = 1 << 8,
 		};
 		int	m_conditions;
+		// SwiffPlayer.dll 0x100A2560: implicit construction initializes only the array.
 		array<action_buffer*>	m_actions;
 
+		// SwiffPlayer.dll 0x100A2840: deleting wrapper invokes this destructor
+		// before the conditional object free.
 		~button_action();
 		void	read(stream* in, int tag_type);
 	};
 
 
-	struct button_character_definition : public character_def
+	struct button_character_definition : public character_def, public definition_bounds_provider
 	{
 		struct sound_envelope
 		{
@@ -103,6 +108,8 @@ namespace gameswf
 
 		struct sound_info
 		{
+			// SwiffPlayer.dll 0x100A2610 / 0x100A2600: implicit construction
+			// and destruction affect only the envelope array; scalars stay uninitialized.
 			void read(stream* in);
 
 			bool m_no_multiple;
@@ -119,6 +126,8 @@ namespace gameswf
 
 		struct button_sound_info
 		{
+			// SwiffPlayer.dll 0x100A2640 / 0x100A2630: sound_info supplies
+			// the only member lifetime work; the ID and sample pointer stay uninitialized.
 			Uint16 m_sound_id;
 			sound_sample_impl*	m_sam;
 			sound_info m_sound_style;
@@ -127,6 +136,9 @@ namespace gameswf
 		struct button_sound_def
 		{
 			void	read(stream* in, movie_definition_sub* m);
+			// SwiffPlayer.dll 0x100A26E0 / 0x100A2680: construct four envelope
+			// arrays, then destroy them in reverse order; scalar fields stay uninitialized.
+			// The deleting wrapper at 0x100A2810 destroys them before freeing the object.
 			button_sound_info m_button_sounds[4];
 		};
 
@@ -138,9 +150,14 @@ namespace gameswf
 
 		button_character_definition();
 		virtual ~button_character_definition();
+		// Retail leaves the accumulator unwritten before including its records.
+		// The returned rectangle is indeterminate for an empty button as well.
+		rect get_bound_copy() const override;
 
 		character*	create_character_instance(movie* parent, int id);
 		void	read(stream* in, int tag_type, movie_definition_sub* m);
+		// SwiffPlayer.dll 0x100A2010: find the insertion point in layer order.
+		int	find_record_index(int layer) const;
 	};
 
 };	// end namespace gameswf

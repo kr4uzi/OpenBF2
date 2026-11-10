@@ -128,6 +128,8 @@ for /r "%ROOT%" %%F in (*.cpp) do (
             rem the engine's definition site for most of them and the two would collide here.
             if /i "%%~fF"=="%ROOT%\Core\DllGlobals.cpp" set "ENGINE_OBJECT=0"
             if /i "%%~fF"=="%ROOT%\Math\Mat4Inverse.cpp" set "ENGINE_OBJECT=0"
+            rem BF2.exe client tutorial TU; excluded from the dedicated engine image.
+            if /i "%%~fF"=="%ROOT%\Game\GameLogic\PlayerVOHelp.cpp" set "ENGINE_OBJECT=0"
             if /i "%%~fF"=="%ROOT%\Menu\BetweenRoundsLogic.cpp" set "ENGINE_OBJECT=0"
             if /i "%%~fF"=="%ROOT%\Menu\BF2HudManager.cpp" set "ENGINE_OBJECT=0"
             if /i "%%~fF"=="%ROOT%\Menu\BF2HudManagerConfiguration.cpp" set "ENGINE_OBJECT=0"

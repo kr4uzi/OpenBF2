@@ -19,6 +19,8 @@ namespace gameswf
 	extern bool	s_verbose_action;
 	extern bool	s_verbose_parse;
 	extern bool	s_verbose_debug;
+	extern bool s_verbose_loader;
+	extern bool s_verbose_gc;
 };
 
 #define IF_VERBOSE_ACTION(exp) if (gameswf::s_verbose_action) { exp; }
@@ -38,6 +40,7 @@ namespace gameswf
 	{
 		Uint8	m_r, m_g, m_b, m_a;
 
+		// SwiffPlayer.dll 0x1006EBD0.
 		rgba() : m_r(255), m_g(255), m_b(255), m_a(255) {}
 
 		rgba(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
@@ -50,6 +53,7 @@ namespace gameswf
 		void	read_rgba(stream* in);
 		void	read_rgb(stream* in);
 
+		// SwiffPlayer.dll 0x10084D40.
 		void	set(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 		{
 			m_r = r;
