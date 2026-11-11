@@ -348,6 +348,9 @@ namespace gameswf
 		}
 	}
 
+	// Destructor body SwiffPlayer.dll 0x1007CDB0 (called by 0x1009D1C0): member
+	// hash at +0x38, then weak-proxy release. [CHOSEN, not recovered] issue #7:
+	// native member containers and weak proxies perform the same releases.
 	struct as_array_object : public as_object
 	{
 		// Compiler deleting wrapper: SwiffPlayer.dll 0x1009D1C0; it delegates
@@ -987,197 +990,14 @@ namespace gameswf
 		return call_method_expression(env, receiver, narrow.c_str());
 	}
 
-	const char*	call_method_parsed(
-		as_environment* env,
-		as_object_interface* this_ptr,
-		const char* method_name,
-		const char* method_arg_fmt,
-		va_list args)
-	// Printf-like vararg interface for calling ActionScript.
-	// Handy for external binding.
-	{
-		log_msg("FIXME(%d): %s\n", __LINE__, __FUNCTION__);
-
-#if 0
-		static const int	BUFSIZE = 1000;
-		char	buffer[BUFSIZE];
-		array<const char*>	tokens;
-
-		// Brutal crap parsing.  Basically null out any
-		// delimiter characters, so that the method name and
-		// args sit in the buffer as null-terminated C
-		// strings.  Leave an intial ' character as the first
-		// char in a string argument.
-		// Don't verify parens or matching quotes or anything.
-		{
-			strncpy(buffer, method_call, BUFSIZE);
-			buffer[BUFSIZE - 1] = 0;
-			char*	p = buffer;
-
-			char	in_quote = 0;
-			bool	in_arg = false;
-			for (;; p++)
-			{
-				char	c = *p;
-				if (c == 0)
-				{
-					// End of string.
-					break;
-				}
-				else if (c == in_quote)
-				{
-					// End of quotation.
-					assert(in_arg);
-					*p = 0;
-					in_quote = 0;
-					in_arg = false;
-				}
-				else if (in_arg)
-				{
-					if (in_quote == 0)
-					{
-						if (c == ')' || c == '(' || c == ',' || c == ' ')
-						{
-							// End of arg.
-							*p = 0;
-							in_arg = false;
-						}
-					}
-				}
-				else
-				{
-					// Not in arg.  Watch for start of arg.
-					assert(in_quote == 0);
-					if (c == '\'' || c == '\"')
-					{
-						// Start of quote.
-						in_quote = c;
-						in_arg = true;
-						*p = '\'';	// ' at the start of the arg, so later we know this is a string.
-						tokens.push_back(p);
-					}
-					else if (c == ' ' || c == ',')
-					{
-						// Non-arg junk, null it out.
-						*p = 0;
-					}
-					else
-					{
-						// Must be the start of a numeric arg.
-						in_arg = true;
-						tokens.push_back(p);
-					}
-				}
-			}
-		}
-#endif // 0
-
-
-		// Parse va_list args
-		int	starting_index = env->get_top_index();
-		const char* p = method_arg_fmt;
-		for (;; p++)
-		{
-			char	c = *p;
-			if (c == 0)
-			{
-				// End of args.
-				break;
-			}
-			else if (c == '%')
-			{
-				p++;
-				c = *p;
-				// Here's an arg.
-				if (c == 'd')
-				{
-					// Integer.
-					env->push(va_arg(args, int));
-				}
-				else if (c == 'f')
-				{
-					// Double
-					env->push(va_arg(args, double));
-				}
-				else if (c == 's')
-				{
-					// String
-					env->push(va_arg(args, const char *));
-				}
-				else if (c == 'l')
-				{
-					p++;
-					c = *p;
-					if (c == 's')
-					{
-						// Wide string.
-						env->push(va_arg(args, const wchar_t *));
-					}
-					else
-					{
-						log_error("call_method_parsed('%s','%s') -- invalid fmt '%%l%c'\n",
-							  method_name,
-							  method_arg_fmt,
-							  c);
-					}
-				}
-				else
-				{
-					// Invalid fmt, warn.
-					log_error("call_method_parsed('%s','%s') -- invalid fmt '%%%c'\n",
-						  method_name,
-						  method_arg_fmt,
-						  c);
-				}
-			}
-			else
-			{
-				// Ignore whitespace and commas.
-				if (c == ' ' || c == '\t' || c == ',')
-				{
-					// OK
-				}
-				else
-				{
-					// Invalid arg; warn.
-					log_error("call_method_parsed('%s','%s') -- invalid char '%c'\n",
-						  method_name,
-						  method_arg_fmt,
-						  c);
-				}
-			}
-		}
-
-		array<with_stack_entry>	dummy_with_stack;
-		as_value	method = env->get_variable(method_name, dummy_with_stack);
-
-		// check method
-
-		// Reverse the order of pushed args
-		int	nargs = env->get_top_index() - starting_index;
-		for (int i = 0; i < (nargs >> 1); i++)
-		{
-			int	i0 = starting_index + 1 + i;
-			int	i1 = starting_index + nargs - i;
-			assert(i0 < i1);
-
-			swap(&(env->bottom(i0)), &(env->bottom(i1)));
-		}
-
-		// Do the call.
-		as_value	result = call_method(method, env, this_ptr, nargs, env->get_top_index());
-		env->drop(nargs);
-
-		// Return pointer to static string for return value.
-		static tu_string	s_retval;
-		s_retval = result.to_tu_string();
-		return s_retval.c_str();
-	}
-
 
 	//
 	// sound object
 	//
+	// The three method bodies below exist in SwiffPlayer.dll (0x1008A1B0,
+	// 0x1008A1F0, 0x1008C6E0) but nothing in the image references them: retail
+	// registers no Sound class (action_init 0x10090FF0), so scripts cannot reach
+	// them. They are kept as recovered bodies, equally unreferenced here.
 
 	struct sound_as_object : public as_object
 	{
@@ -1816,20 +1636,6 @@ namespace gameswf
 	//
 
 
-	void	as_global_sound_ctor(const fn_call& fn)
-	// Constructor for ActionScript class Sound.
-	{
-		smart_ptr<as_object>	sound_obj(new sound_as_object);
-
-		// methods
-		sound_obj->set_member("attachSound", &sound_attach);
-		sound_obj->set_member("start", &sound_start);
-		sound_obj->set_member("stop", &sound_stop);
-
-		fn.result->set_as_object_interface(sound_obj.get_ptr());
-	}
-
-
 	void	as_global_object_ctor(const fn_call& fn)
 	// Constructor for ActionScript class Object.
 	// SwiffPlayer.dll 0x1008B180; native storage is the existing as_object bridge.
@@ -1982,13 +1788,15 @@ namespace gameswf
 		{
 			s_inited = true;
 
-			// @@ s_global should really be a
-			// client-visible player object, which
-			// contains one or more actual movie
-			// instances.  We're currently just hacking it
-			// in as an app-global mutable object :(
+			// SwiffPlayer.dll 0x10091012-0x10091021: the module table's _global is the
+			// empty common object 0x1000B320, without as_object's own members.
+			// [CHOSEN, not recovered] S3 bridge: the native type is as_object with its
+			// member bag emptied (its object live count is native bookkeeping).
+			// 0x10091030/0x100910E4/0x10091198 also link each module into the
+			// collector list (slot +0xC); owner decision 2026-11-09 keeps it inactive.
 			assert(s_global == NULL);
 			s_global = new as_object;
+			s_global->m_members.clear();
 			// SwiffPlayer.dll 0x10091072 publishes _global before registering modules.
 			s_modules.set("_global", as_value(s_global.get_ptr()));
 			// SwiffPlayer.dll 0x10091126 / 0x100911DA publishes String then Object,
@@ -2001,10 +1809,9 @@ namespace gameswf
 			object_class->m_members.set("registerClass", as_member(as_value(object_register_class)));
 			s_modules.set("Object", as_value(object_class));
 
-			// [UNRESOLVED] Sound/attachSound publication is explicitly excluded
-			// from S4 removal pending the retail-presence decision in PROBE.md.
-			s_global->set_member("Sound", as_value(as_global_sound_ctor));
-
+			// SwiffPlayer.dll 0x10090FF0 publishes no Sound class: the image has no
+			// "attachSound" name, no Sound constructor and no reference to the
+			// three method bodies 0x1008A1B0 / 0x1008A1F0 / 0x1008C6E0.
 
 			// ASSetPropFlags
 			register_global_function("ASSetPropFlags", as_global_assetpropflags);
@@ -2034,6 +1841,9 @@ namespace gameswf
 	static as_environment	s_property_env;
 
 	static as_environment* property_environment(as_object_interface* self)
+	// Retail objects store their environment at +0x24 (as_object constructor
+	// 0x1009A36B) and return it from vtable slot +0x2C (0x10077DC0).
+	// [CHOSEN, not recovered] issue #7: native objects store no environment.
 	{
 		// SwiffPlayer.dll 0x10099F23/0x10099DF3 uses the environment published by execute.
 		if (s_current_environment) return s_current_environment;
@@ -3005,8 +2815,12 @@ namespace gameswf
 				{
 					movie::drag_state	st;
 
-					// [CHOSEN, not recovered] S3 bridge: native drag storage takes a movie;
-					// retail converts its common object interface to the character owner.
+					// SwiffPlayer.dll 0x10092E5B-0x10092E91: a missing target logs the
+					// error and continues with a null character.
+					// [CHOSEN, not recovered] issue #7 native type adjustment: retail
+					// subtracts 8 from any found interface without a type check
+					// (0x10092E68), so a non-movie OBJECT would be used as a character;
+					// the native cast treats it as an invalid target instead.
 					as_object_interface* drag_target = env->find_target(env->top(0));
 					st.m_character = drag_target ? drag_target->to_movie() : NULL;
 					if (st.m_character == NULL)
@@ -3263,11 +3077,13 @@ namespace gameswf
 						}
 					}
 
+					// SwiffPlayer.dll 0x10093714-0x10093730: a result other than the
+					// published root's object is linked into the collector list (common
+					// slot +0xC, 0x10008F10) before the drop/push.
+					// [CHOSEN, not recovered] owner decision 2026-11-09 (issue #7): the
+					// collector list stays inactive; native reference counting owns it.
 					env->drop(nargs);
 					env->push(new_obj);
-#if 0
-					log_msg("new object %s at %p\n", classname.to_tu_string().c_str(), new_obj);
-#endif
 					break;
 				}
 				case 0x41:	// declare local
@@ -3493,41 +3309,48 @@ namespace gameswf
 					const bool direct_call = method_name == "undefined";
 					if (!obj && env->top(1).get_type() == as_value::AS_FUNCTION)
 					{
-						as_value function;
 						as_as_function* receiver = env->top(1).to_as_function();
 						if (direct_call)
 						{
-							// SwiffPlayer.dll 0x10094120 / 0x10094147: direct super()
-							// takes its next context from that function's prototype.
-							function = env->top(1);
-							as_object_interface* proto = receiver ? receiver->m_properties->m_instance_prototype : NULL;
-							if (proto && env->m_this_object)
+							// SwiffPlayer.dll 0x10094120-0x10094141: copy the operand and
+							// call only a non-null script function (super() of a class whose
+							// superclass is not a script function runs nothing).
+							as_value function = env->top(1);
+							if (function.to_as_function())
 							{
-								as_value constructor;
-								if (proto->get_member("__constructor__", &constructor))
-									s_call_super = constructor.to_as_function();
+								// 0x10094147-0x100941DF: the next super context comes from
+								// that function's prototype when a current receiver exists.
+								as_object_interface* proto = receiver->m_properties->m_instance_prototype;
+								if (proto && env->m_this_object)
+								{
+									as_value constructor;
+									if (proto->get_member("__constructor__", &constructor))
+										s_call_super = constructor.to_as_function();
+								}
+								result = call_method(function, env, env->m_this_object, nargs, env->get_top_index() - 3);
 							}
 						}
-						else if (receiver)
+						else
 						{
-							receiver->m_properties->get_member(method_name, &function);
+							// SwiffPlayer.dll 0x1009423A-0x10094250: member lookup on the
+							// function object itself, without a null-function guard.
+							as_value function;
+							if (receiver->m_properties->get_member(method_name, &function))
+							{
+								if (function.get_type() == as_value::C_FUNCTION
+								    || function.get_type() == as_value::AS_FUNCTION)
+								{
+									// 0x100942BF: the call keeps the current receiver.
+									result = call_method(function, env, env->m_this_object, nargs, env->get_top_index() - 3);
+								}
+								else
+								{
+									// 0x1009426B-0x100942A7 gates the error on verbose actions.
+									IF_VERBOSE_ACTION(log_error("error: call_method: '%s' is not a method\n",
+										  method_name.c_str()));
+								}
+							}
 						}
-						if (function.to_as_function() || function.to_c_function())
-							result = call_method(function, env, env->m_this_object, nargs, env->get_top_index() - 3);
-					}
-					else if (direct_call && env->top(1).get_type() == as_value::UNDEFINED)
-					{
-						// super() in a class whose superclass is not a script function: DICE's
-						// `MovieClip` is a no-op C function, so ActionExtends leaves __constructor__
-						// undefined and the call has nothing to run. Quietly nothing, as in the
-						// shipped player.
-					}
-					else if (direct_call && env->top(1).get_type() == as_value::C_FUNCTION)
-					{
-						// [CHOSEN, not recovered] S3 bridge: native builtins still have
-						// function values rather than retail's class-object representation.
-						result = call_method(env->top(1), env, env->m_this_object,
-							nargs, env->get_top_index() - 3);
 					}
 					else if (obj)
 					{
@@ -3607,6 +3430,9 @@ namespace gameswf
 						as_object_interface* proto = ctor_as_func->m_properties->m_instance_prototype;
 						smart_ptr<as_object>	new_obj_ptr(new as_object(proto));
 						new_obj.set_as_object_interface(new_obj_ptr.get_ptr());
+						// SwiffPlayer.dll 0x100944FF links the new object into the collector
+						// list (slot +0xC) before the call. [CHOSEN, not recovered] owner
+						// decision 2026-11-09 (issue #7): that list stays inactive.
 						call_method(constructor, env, new_obj_ptr.get_ptr(), nargs, env->get_top_index());
 					}
 					else

@@ -87,7 +87,6 @@ static short GetKeyState(int vkey)
 #include "gameswf_impl.h"   // existing movie frame navigation used by the offline popup policy
 #include "gameswf_render.h"
 #include "gameswf_log.h"    // [TEMP] c-swf-disconnect: SWF_LIST_TRACE
-#include "gameswf_prefix_trace.h"
 
 
 namespace dice {
@@ -713,14 +712,6 @@ void as_locale_getString(const gameswf::fn_call& fn)
     renddx9abi::HostString ids(fn.arg(0).to_string());
     std::wstring out;
     h->getLocalizedString(out, ids);
-    if (gameswf::prefix_trace_enabled() && ids == "LOGIN_prefix")
-    {
-        char units[257] = {};
-        const size_t count = out.size() < 32 ? out.size() : 32;
-        for (size_t i = 0; i < count; ++i)
-            std::snprintf(units + i * 8, sizeof(units) - i * 8, "%06x, ", unsigned(out[i]));
-        gameswf::prefix_trace_log("locale key='LOGIN_prefix' wideUnits=%zu units=[%s]", out.size(), units);
-    }
     gameswf::assign_dice_string_object_wide(text, BF2_DICE_UTF16(out.c_str()));
     fn.result->set_as_object_interface(text);
 }
@@ -10118,7 +10109,6 @@ bool SwiffPlayer::loadMovie(const char* movieName)
 
     ::renddx9abi::logf("[SwiffPlayer::loadMovie] returning true");
     SWF_LIST_TRACE("loadMovie '%s'", movieName ? movieName : "");   // [TEMP] c-swf-disconnect
-    gameswf::prefix_trace_log("loadMovie '%s' (watching prefixField and LOGIN_prefix)", movieName ? movieName : "");
     return true;
 }
 

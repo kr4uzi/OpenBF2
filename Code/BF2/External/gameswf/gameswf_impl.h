@@ -387,24 +387,6 @@ namespace gameswf
 		virtual const char* call_method(const Uint16* expression) { return NULL; }
 		virtual const char* call_method(const char* expression) { return NULL; }
 
-		// Forward vararg call to version taking va_list.
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...)
-		{
-			va_list	args;
-			va_start(args, method_arg_fmt);
-			const char*	result = call_method_args(method_name, method_arg_fmt, args);
-			va_end(args);
-
-			return result;
-		}
-
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args)
-		// Override this if you implement call_method.
-		{
-			assert(0);
-			return NULL;
-		}
-
 		virtual void	execute_frame_tags(int frame, bool state_only = false) {}
 
 		// SwiffPlayer.dll 0x1007ED80: characters without editable text ignore this.

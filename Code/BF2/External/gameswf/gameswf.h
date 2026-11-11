@@ -15,7 +15,7 @@
 #include <memory>
 #include <string>
 #include <ctype.h>	// for poxy wchar_t
-#include <stdarg.h>	// for va_list arg to movie_interface::call_method_args()
+#include <stdarg.h>
 
 class tu_file;
 class render_handler;
@@ -120,6 +120,11 @@ namespace gameswf
 		ref_counted(const ref_counted&) = default;
 		ref_counted& operator=(const ref_counted&) = default;
 		virtual ~ref_counted();
+		// [CHOSEN, not recovered] issue #7: retail script interfaces carry a
+		// "reference counted" query in slot 0 and add_ref in slot +4 (characters:
+		// 0x1007EDA0 true / 0x1007EFE0; intermediate stage 0x1007DF50 false; plain
+		// objects 0x10008EE0 false), tested before each value-construction add_ref
+		// (e.g. 0x10091048-0x10091055). Native objects are always reference counted.
 		void	add_ref() const;
 		void	drop_ref() const;
 		int	get_ref_count() const { return m_ref_count; }
@@ -494,41 +499,6 @@ namespace gameswf
 		virtual const char* call_method(const unsigned short* expression) = 0;
 		virtual const char* call_method(const char* expression) = 0;
 
-		// ActionScript method call.  Return value points to a
-		// static string buffer with the result; caller should
-		// use the value immediately before making more calls
-		// to gameswf.  NOT THREAD SAFE!!!
-		// 
-		// method_name is the name of the method (possibly namespaced).
-		//
-		// method_arg_fmt is a printf-style declaration of
-		// the method call, where the arguments are
-		// represented by { %d, %s, %f, %ls }, followed by the
-		// vararg list of actual arguments.
-		// 
-		// E.g.
-		//
-		// m->call_method("path.to.method_name", "%d, %s, %f", i, "hello", 2.7f);
-		//
-		// The format args are a small subset of printf, namely:
-		//
-		// %d -- integer arg
-		// %s -- 0-terminated char* string arg
-		// %ls -- 0-terminated wchar_t* string arg
-		// %f -- float/double arg
-		//
-		// Whitespace and commas in the format string are ignored.
-		//
-		// This is not an ActionScript language parser, it
-		// doesn't recognize expressions or anything tricky.
-#ifdef __GNUC__
-		// use the following to catch errors: (only with gcc)
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...)
-			__attribute__((format (printf, 3, 4))) = 0;	// "this" is an implied param, so fmt is 3 and ... is 4!
-#else	// not __GNUC__
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...) = 0;
-#endif	// not __GNUC__
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args) = 0;
 
 
 		// Make the movie visible/invisible.  An invisible

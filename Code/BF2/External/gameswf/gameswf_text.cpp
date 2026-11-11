@@ -21,7 +21,6 @@
 #include "gameswf_font.h"
 #include "gameswf_fontlib.h"
 #include "gameswf_render.h"
-#include "gameswf_prefix_trace.h"
 
 namespace gameswf
 {
@@ -356,11 +355,8 @@ namespace gameswf
 
 		// SwiffPlayer.dll 0x10086B70, definition table 0x100E1154 +0x10.
 		// The shipped static-text definition has no drawing effects.
-		void	display(character* inst)
+		void	display(character* /*inst*/)
 		{
-			if (prefix_trace_display(inst, true))
-				prefix_trace_log("static-text display object=%p records=%d (retail display has no drawing effects)",
-					static_cast<void*>(inst), m_text_glyph_records.size());
 		}
 	};
 
@@ -772,28 +768,6 @@ namespace gameswf
 			}
 
 			set_text_value(m_def->m_default_text.c_str());
-			trace_prefix_text("construct");
-		}
-
-		// [TEMP] See gameswf_prefix_trace.h; inspect storage without AS coercion.
-		void trace_prefix_text(const char* event)
-		{
-			if (!prefix_trace_target(this)) return;
-			char units[97] = {};
-			const int n = m_wide_text.size() < 16 ? m_wide_text.size() : 16;
-			for (int i = 0; i < n; ++i)
-				std::snprintf(units + i * 6, sizeof(units) - i * 6, "%04x, ", unsigned(m_wide_text[i]));
-			prefix_trace_log("text %s object=%p name='%s' fontId=%d font='%s' outlines=%d "
-				"height=%.9g bounds=(%.9g,%.9g,%.9g,%.9g) narrow='%.64s' wideUnits=%d wide=[%s] "
-				"lines=%d glyphRecords=%d color=%08x",
-				event, static_cast<void*>(this), get_name().c_str(), m_def->m_font_id, m_font_name.c_str(),
-				int(m_def->m_use_outlines), m_def->m_text_height,
-				m_def->m_rect.m_x_min, m_def->m_rect.m_y_min, m_def->m_rect.m_x_max, m_def->m_rect.m_y_max,
-				m_text.c_str(), m_wide_text.size(), units, m_lines.size(), m_text_glyph_records.size(),
-				pack_color(m_text_color));
-			for (int i = 0; i < m_lines.size(); ++i)
-				prefix_trace_log("line object=%p index=%d renderer=%p", static_cast<void*>(this), i, m_lines[i]);
-			prefix_trace_geometry(this, event);
 		}
 
 		// SwiffPlayer.dll 0x10089D50; deleting wrapper 0x10089D10. The member
@@ -1187,11 +1161,9 @@ namespace gameswf
 			if (m_lines.size() > 0)
 			{
 				format_text_lines();
-				trace_prefix_text("format-lines");
 				return;
 			}
 			format_text_glyphs();
-			trace_prefix_text("format-glyphs");
 		}
 
 		// SwiffPlayer.dll 0x10085F50. [CHOSEN, not recovered] S3 bridge:
@@ -1668,7 +1640,6 @@ namespace gameswf
 		// advanced by leading + height. The stock glyph records are never drawn (the shipped does not).
 		void	display()
 		{
-			if (prefix_trace_display(this, true)) trace_prefix_text("display");
 			if (m_lines_dirty)
 			{
 				for (int i = 0; i < m_lines.size(); i++)
@@ -2179,7 +2150,6 @@ namespace gameswf
 		// [CHOSEN, not recovered] S3 bridge: the public native key is still tu_stringi.
 		bool	dice_set_member(const tu_stringi& member_name, const as_value& val)
 		{
-			prefix_trace_member(this, member_name, val);
 			const tu_string& name = member_name.to_tu_string();
 			if (name == "_x" || name == "_y")
 			{

@@ -15,6 +15,10 @@ namespace gameswf
     struct xml_node : public as_object
     {
         xml_node(const char* name = NULL, int type = 0, xml_node* parent = NULL);
+        // SwiffPlayer.dll 0x100A8E20 destroys attributes, name, then value before
+        // the object base; deleting wrappers 0x100A94F0 (xml_node) and 0x100A9530
+        // (xml_document). The reverse declaration order below gives the same order;
+        // the native child/sibling links additionally release their nodes.
         virtual bool get_member(const tu_stringi& name, as_value* value);
         virtual void enumerate(as_environment* env);
         virtual void clear_children();

@@ -22,7 +22,6 @@
 #include "../../Platform/X87Compat.h"
 #include "base/utility.h"
 #include "gameswf_action.h"
-#include "gameswf_prefix_trace.h"
 #include "gameswf_button.h"
 #include "gameswf_impl.h"
 #include "gameswf_font.h"
@@ -1446,29 +1445,6 @@ namespace gameswf
 		const char* call_method(const char* expression) override
 		{
 			return m_movie->call_method(expression);
-		}
-
-		// [CHOSEN, not recovered] S3 bridge: retain the native printf-style API.
-		// [RETIRE-WHEN: swf-core-command-call] Migrate native host callers to
-		// the single-command overloads and validate their menu callbacks before
-		// removing this separate 2006 formatter API.
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...)
-		{
-			assert(m_movie != NULL);
-
-			va_list	args;
-			va_start(args, method_arg_fmt);
-			const char*	result = m_movie->call_method_args(method_name, method_arg_fmt, args);
-			va_end(args);
-
-			return result;
-		}
-
-		/*movie_root*/
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args)
-		{
-			assert(m_movie != NULL);
-			return m_movie->call_method_args(method_name, method_arg_fmt, args);
 		}
 
 		// SwiffPlayer.dll 0x10073880 / 0x10073890.
@@ -4554,7 +4530,6 @@ namespace gameswf
 		virtual void	set_member(const tu_stringi& name, const as_value& val)
 		// Assign an accessor, display property, matching text field or script member.
 		{
-			prefix_trace_member(this, name, val);
 			// SwiffPlayer.dll 0x10083A20, secondary interface 0x100E0C3C +0x20.
 			// SwiffPlayer.dll 0x10083A49 tries the script object's setter
 			// before handler detection or built-ins. [CHOSEN, not recovered]
@@ -5362,17 +5337,6 @@ namespace gameswf
 		{
 			smart_ptr<as_object_interface> receiver(this);
 			return call_method_expression(&m_as_environment, this, expression);
-		}
-
-	/*sprite_instance*/
-		// [CHOSEN, not recovered] S3 bridge: the native formatter below is not
-		// retail's single-command parser. See swf-core-command-call above.
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args)
-		{
-			// Keep m_as_environment alive during any method calls!
-			smart_ptr<as_object_interface>	this_ptr(this);
-
-			return call_method_parsed(&m_as_environment, this, method_name, method_arg_fmt, args);
 		}
 
 		/* sprite_instance */

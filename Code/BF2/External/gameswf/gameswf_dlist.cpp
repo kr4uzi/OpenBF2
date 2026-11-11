@@ -11,7 +11,6 @@
 #include "gameswf_log.h"
 #include "gameswf_render.h"
 #include "gameswf.h"
-#include "gameswf_prefix_trace.h"
 #include <typeinfo>
 
 
@@ -515,8 +514,6 @@ namespace gameswf
 
 			character*	ch = dobj.m_character.get_ptr();
 			assert(ch);
-			if (prefix_trace_display(ch)) prefix_trace_geometry(ch, "display-list");
-
 			if (ch->get_visible() == false)
 			{
 				// Don't display.

@@ -40,6 +40,7 @@ namespace gameswf
 		//
 		// The error tolerance tells the tesselator how much
 		// geometric error is allowed along curve edges.
+		// SwiffPlayer.dll 0x100A9FF0 uses 1.0 for nonpositive or unordered tolerance.
 		void	begin_shape(trapezoid_accepter* accepter, float curve_error_tolerance);
 		void	end_shape();
 
