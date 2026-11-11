@@ -334,7 +334,7 @@ jobs:
 
       - name: Build, test and package the app
         run: |
-          bash out/openbf2-setup/macos/build-release.sh out/client-universal out/packages-app/openbf2-macos-app.dmg out/setup-build
+          bash out/openbf2-setup/macos/build-release.sh "$GITHUB_WORKSPACE/out/client-universal" "$GITHUB_WORKSPACE/out/packages-app/openbf2-macos-app.dmg" "$GITHUB_WORKSPACE/out/setup-build"
           cd out/packages-app
           rm -f openbf2-macos-app.dmg.sha256
           shasum -a 256 openbf2-macos-app.dmg > openbf2-macos-app.dmg.sha256
