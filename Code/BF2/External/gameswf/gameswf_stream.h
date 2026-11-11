@@ -33,6 +33,7 @@ namespace gameswf
 		Sint16	read_s16();
 		Uint32	read_u32();
 		Sint32	read_s32();
+		// SwiffPlayer.dll 0x1009F5B0: 0xFF extends the count to an unsigned word.
 		int     read_variable_count()
 		{
 			int count = read_u8();

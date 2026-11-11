@@ -16,6 +16,8 @@
 
 namespace gameswf
 {
+	// SwiffPlayer.dll 0x100A14D0. [CHOSEN, not recovered] S3 bridge:
+	// retain the existing native resource/container layout.
 	font::font()
 		:
 		m_texture_glyph_nominal_size(96),	// Default is not important; gets overridden during glyph generation
@@ -33,6 +35,7 @@ namespace gameswf
 	{
 	}
 
+	// SwiffPlayer.dll 0x100A1580; deleting entry 0x100A1BB0.
 	font::~font()
 	{
 		m_glyphs.resize(0);
@@ -45,6 +48,7 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x100A0700.
 	shape_character_def*	font::get_glyph(int index) const
 	{
 		if (index >= 0 && index < m_glyphs.size())
@@ -58,6 +62,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A0E00.
 	const texture_glyph&	font::get_texture_glyph(int glyph_index) const
 	// Return a pointer to a texture_glyph struct corresponding to
 	// the given glyph_index, if we have one.  Otherwise return NULL.
@@ -72,6 +77,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A13B0.
 	void	font::add_texture_glyph(int glyph_index, const texture_glyph& glyph)
 	// Register some texture info for the glyph at the specified
 	// index.  The texture_glyph can be used later to render the
@@ -87,6 +93,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A0F00.
 	void	font::wipe_texture_glyphs()
 	// Delete all our texture glyph info.
 	{
@@ -101,6 +108,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A1610 (DefineFont and DefineFont2).
 	void	font::read(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 10 || tag_type == 48);
@@ -290,6 +298,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A13D0; both tag 13 and tag 62 call this reader unchanged.
 	void	font::read_font_info(stream* in)
 	// Read additional information about this font, from a
 	// DefineFontInfo tag.  The caller has already read the tag
@@ -298,7 +307,6 @@ namespace gameswf
 		if (m_name)
 		{
 			delete m_name;
-			m_name = NULL;
 		}
 
 		m_name = in->read_string_with_length();
@@ -315,6 +323,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A0F80.
 	void	font::read_code_table(stream* in)
 	// Read the table that maps from glyph indices to character
 	// codes.
@@ -341,6 +350,7 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x100A1450.
 	int	font::get_glyph_index(Uint16 code) const
 	{
 		int glyph_index;
@@ -351,29 +361,17 @@ namespace gameswf
 		return -1;
 	}
 
+	// SwiffPlayer.dll 0x100A0720; an empty table reports on every call.
 	float	font::get_advance(int glyph_index) const
 	{
-		if (glyph_index == -1)
-		{
-			// Default advance.
-			return 512.0f;
-		}
-
 		if (m_advance_table.size() == 0)
 		{
-			// No layout info for this font!!!
-			static bool	s_logged = false;
-			if (s_logged == false)
-			{
-				s_logged = true;
-				log_error("error: empty advance table in font %s\n", get_name());
-			}
+			log_error("error: empty advance table in font\n");
 			return 0;
 		}
 
 		if (glyph_index < m_advance_table.size())
 		{
-			assert(glyph_index >= 0);
 			return m_advance_table[glyph_index];
 		}
 		else
@@ -385,6 +383,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A1480.
 	float	font::get_kerning_adjustment(int last_code, int code) const
 	// Return the adjustment in advance between the given two
 	// characters.  Normally this will be 0; i.e. the 
@@ -401,6 +400,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A01A0; cached shape output is disabled in retail too.
 	void	font::output_cached_data(tu_file* out, const cache_options& options)
 	// Dump our cached data into the given stream.
 	{
@@ -423,6 +423,7 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x100A01B0; cached shape input is disabled in retail too.
 	void	font::input_cached_data(tu_file* in)
 	// Read our cached data from the given stream.
 	{

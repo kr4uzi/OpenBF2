@@ -80,7 +80,7 @@ static bool optionDefaults(GeneralSettings& g)
         && F::minimapTransparency(g)==204.0f && F::viewIntroMovie(g) && !F::outOfVoting(g)
         && F::bftv(g).empty() && !F::confirmQuit(g) && !F::lcdDisplayModes(g)
         && F::mapIconAlpha(g)==255.0f && F::allowPunkBuster(g) && F::itemSelectionReverseItems(g)
-        && F::autoReload(g) && F::toggleFilters(g)==63616;
+        && F::autoReload(g) && F::toggleFilters(g)==63616 && g.getShowTutorialMessages();
 }
 // The remainder setDefaults (+1C) owns before dispatching +20.
 static bool outerDefaults(GeneralSettings& g,int earliest,int latest)
@@ -102,7 +102,8 @@ static std::string defaultScript(int date)
         "GeneralSettings.setUseAdvancedServerBrowser 0\nGeneralSettings.setUseBots 0\nGeneralSettings.setMaxBots 64\n"
         "GeneralSettings.setMaxBotsIncludeHumans 0\nGeneralSettings.setBotSkill 0.5\n")+row+
         "GeneralSettings.setAllowPunkBuster 1\nGeneralSettings.setItemSelectionReverseItems 1\nGeneralSettings.setToggleFilters 63616\n"
-        "GeneralSettings.setAutoReload 1\nGeneralSettings.setAutoReady 0\nGeneralSettings.setConnectionType 5\nGeneralSettings.setLCDDisplayModes 0\n";
+        "GeneralSettings.setAutoReload 1\nGeneralSettings.setAutoReady 0\nGeneralSettings.setConnectionType 5\nGeneralSettings.setLCDDisplayModes 0\n"
+        "GeneralSettings.setShowTutorialMessages 1\n";
 }
 static void scramble(GeneralSettings& g)
 {
@@ -114,6 +115,7 @@ static void scramble(GeneralSettings& g)
     F::maxBots(g)=16;F::maxBotsIncludeHumans(g)=true;F::botSkill(g)=0.75f;F::lastAwardsCheckDate(g)=7;F::allowPunkBuster(g)=false;
     F::itemSelectionReverseItems(g)=false;F::autoReload(g)=false;F::connectionType(g)=2;F::toggleFilters(g)=3;F::autoReady(g)=true;
     F::lcdDisplayModes(g)=true;
+    g.setShowTutorialMessages(false);
     F::playedVOHelp(g).clear();F::favourites(g).clear();F::history(g).clear();
     F::playedVOHelp(g).push_back("HUD_HELP_A");F::playedVOHelp(g).push_back("HUD_HELP_B");
     GeneralServerEntry fav;fav.name="Fav Server";fav.address="10.0.0.1:16567";fav.queryPort=29900;fav.lastPlayed=0;
@@ -158,6 +160,8 @@ int main()
         "float rows use the default stream precision");
     check(scrambled.find("GeneralSettings.setToggleFilters 3\nGeneralSettings.setAutoReload 0\nGeneralSettings.setAutoReady 1\nGeneralSettings.setConnectionType 2\nGeneralSettings.setLCDDisplayModes 1\n")!=std::string::npos,
         "tail rows keep the retail order with toggle filters before auto reload");
+    check(!owner.getShowTutorialMessages() && scrambled.find("GeneralSettings.setShowTutorialMessages 0\n")!=std::string::npos,
+        "the chosen tutorial preference serializes OFF without changing played-help history");
     F::sortKey(owner)=std::string("pi\0ng",5);F::playedVOHelp(owner)[0]=std::string("a\0b",3);
     const std::string mixed=api->getSettingsScript();
     check(mixed.find("GeneralSettings.setSortKey \"pi\"\n")!=std::string::npos,"scalar string rows insert c_str and truncate at an embedded NUL");

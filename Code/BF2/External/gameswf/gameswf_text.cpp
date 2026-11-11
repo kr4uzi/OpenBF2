@@ -6,19 +6,21 @@
 // Code for the text tags.
 
 
+#include <cerrno>
+#include <clocale>
+#include <cstdlib>
+#include <cwchar>
 #include "base/utf8.h"
-#if defined(__APPLE__)
-#include "../../Platform/X87Compat.h" // [CHOSEN, not recovered] bf2x87::lowUInt32
-#endif
+#include "../../Platform/X87Compat.h"
 #include "base/utility.h"
 #include "gameswf_impl.h"
 #include "gameswf_shape.h"
 #include "gameswf_stream.h"
 #include "gameswf_log.h"
+#include "gameswf_profile.h"
 #include "gameswf_font.h"
 #include "gameswf_fontlib.h"
 #include "gameswf_render.h"
-#include "gameswf_textformat.h"
 
 namespace gameswf
 {
@@ -39,6 +41,7 @@ namespace gameswf
 		bool	m_has_x_offset;
 		bool	m_has_y_offset;
 
+		// SwiffPlayer.dll 0x10084DB0.
 		text_style()
 			:
 			m_font_id(-1),
@@ -78,6 +81,14 @@ namespace gameswf
 		text_style	m_style;
 		array<glyph_entry>	m_glyphs;
 
+		// SwiffPlayer.dll 0x100864E0 / 0x10086520; deleting entry 0x10086640.
+		// Native members own their storage.
+		text_glyph_record() = default;
+		~text_glyph_record() = default;
+		// SwiffPlayer.dll 0x10085E80: style assignment followed by a deep glyph-array copy.
+		text_glyph_record& operator=(const text_glyph_record&) = default;
+
+		// SwiffPlayer.dll 0x10085990.
 		void	read(stream* in, int glyph_count, int glyph_bits, int advance_bits)
 		{
 			m_glyphs.resize(glyph_count);
@@ -215,13 +226,15 @@ namespace gameswf
 	}
 
 
-	struct text_character_def : public character_def
+	struct text_character_def : public character_def, public definition_bounds_provider
 	{
 		movie_definition_sub*	m_root_def;
 		rect	m_rect;
 		matrix	m_matrix;
 		array<text_glyph_record>	m_text_glyph_records;
 
+		// SwiffPlayer.dll 0x10086AB0. [CHOSEN, not recovered] S3 bridge:
+		// the loader publishes the native resource ID separately.
 		text_character_def(movie_definition_sub* root_def)
 			:
 			m_root_def(root_def)
@@ -229,6 +242,18 @@ namespace gameswf
 			assert(m_root_def);
 		}
 
+		// SwiffPlayer.dll 0x100875A0; deleting entry 0x10087570.
+		// Array cleanup precedes the resource base.
+		~text_character_def() = default;
+
+		// SwiffPlayer.dll 0x10086B40.
+		// [CHOSEN, not recovered] S3 bridge:
+		// retained out-parameter adapter for the native text callers.
+		rect* get_text_bounds(rect* out) const { *out = m_rect; return out; }
+		// SwiffPlayer.dll 0x10086B40, exposed through native typed dispatch.
+		rect get_bound_copy() const override { return m_rect; }
+
+		// SwiffPlayer.dll 0x100867A0.
 		void	read(stream* in, int tag_type, movie_definition_sub* m)
 		{
 			assert(m != NULL);
@@ -242,8 +267,6 @@ namespace gameswf
 
 			IF_VERBOSE_PARSE(log_msg("begin text records\n"));
 
-			bool	last_record_was_style_change = false;
-
 			text_style	style;
 			for (;;)
 			{
@@ -256,13 +279,9 @@ namespace gameswf
 					break;
 				}
 
-				// Style changes and glyph records just alternate.
-				// (Contrary to what most SWF references say!)
-				if (last_record_was_style_change == false)
+				if ((first_byte & 0x80) != 0)
 				{
 					// This is a style change.
-
-					last_record_was_style_change = true;
 
 					bool	has_font = (first_byte >> 3) & 1;
 					bool	has_color = (first_byte >> 2) & 1;
@@ -322,15 +341,7 @@ namespace gameswf
 				{
 					// Read the glyph record.
 
- 					last_record_was_style_change = false;
-
-					int	glyph_count = first_byte;
-
-// 					if (! last_record_was_style_change)
-// 					{
-// 						glyph_count &= 0x7F;
-// 					}
-// 					// else { Don't mask the top bit; the first record is allowed to have > 127 glyphs. }
+					int	glyph_count = first_byte & 0x7F;
 
 					m_text_glyph_records.resize(m_text_glyph_records.size() + 1);
 					m_text_glyph_records.back().m_style = style;
@@ -342,14 +353,16 @@ namespace gameswf
 		}
 
 
-		void	display(character* inst)
-		// Draw the string.
+		// SwiffPlayer.dll 0x10086B70, definition table 0x100E1154 +0x10.
+		// The shipped static-text definition has no drawing effects.
+		void	display(character* /*inst*/)
 		{
-			display_glyph_records(m_matrix, inst, m_text_glyph_records, m_root_def);
 		}
 	};
 
 
+	// SwiffPlayer.dll 0x10086B80. [CHOSEN, not recovered] S3 bridge:
+	// the native factory assigns the resource ID when publishing the definition.
 	void	define_text_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Read a DefineText tag.
 	{
@@ -372,14 +385,13 @@ namespace gameswf
 	//
 
 
-	struct edit_text_character_def : public character_def
+	struct edit_text_character_def : public character_def, public definition_bounds_provider
 	// A definition for a text display character, whose text can
 	// be changed at runtime (by script or host).
 	{
 		movie_definition_sub*	m_root_def;
 		rect			m_rect;
 		tu_string		m_default_name;
-		text_format		m_format;
 		bool			m_word_wrap;
 		bool			m_multiline;
 		bool			m_password;	// show asterisks instead of actual characters
@@ -438,6 +450,9 @@ namespace gameswf
 		float	m_leading;	// extra space between lines (in addition to default font line spacing)
 		tu_string	m_default_text;
 
+		// SwiffPlayer.dll 0x10085300 initializes the flags, font/layout and colors.
+		// [CHOSEN, not recovered] S3 bridge: the loader assigns the native resource
+		// ID separately.
 		edit_text_character_def(movie_definition_sub* root_def)
 			:
 			m_root_def(root_def),
@@ -453,7 +468,7 @@ namespace gameswf
 			m_font_id(-1),
 			m_font(NULL),
 			m_text_height(1.0f),
-			m_max_length(0),
+			m_max_length(1024),
 			m_alignment(ALIGN_LEFT),
 			m_left_margin(0.0f),
 			m_right_margin(0.0f),
@@ -465,20 +480,29 @@ namespace gameswf
 			m_color.set(0, 0, 0, 255);
 		}
 
-		// Set the format of the text
-		void	set_format(text_format &format)
-		{
-			m_format = format;
-		}
-		
+		// SwiffPlayer.dll 0x10085C70; deleting entry 0x10085C40.
 		~edit_text_character_def()
 		{
 		}
+
+		// SwiffPlayer.dll 0x100853E0.
+		// [CHOSEN, not recovered] S3 bridge:
+		// retained out-parameter adapter for the native text callers.
+		rect* get_text_bounds(rect* out) const { *out = m_rect; return out; }
+		// SwiffPlayer.dll 0x100853E0, exposed through native typed dispatch.
+		rect get_bound_copy() const override { return m_rect; }
+
+		// SwiffPlayer.dll 0x10085410 / 0x10085420.
+		virtual float get_height_local() { return m_rect.height(); }
+		virtual float get_width_local() { return m_rect.width(); }
+		// SwiffPlayer.dll 0x10085430, forwarding to rect::point_test at 0x1009E320.
+		virtual bool point_test_local(float x, float y) { return m_rect.point_test(x, y); }
 
 
 		character*	create_character_instance(movie* parent, int id);
 
 
+		// SwiffPlayer.dll 0x10085A00.
 		void	read(stream* in, int tag_type, movie_definition_sub* m)
 		{
 			assert(m != NULL);
@@ -552,7 +576,7 @@ namespace gameswf
 	//
 
 
-	// [DICE-MOD SwiffPlayer #37: DICE's text field. The shipped SwiffPlayer replaced gameswf's
+	// DICE's text field. The shipped SwiffPlayer replaced gameswf's
 	// edit_text_character with a field that lays its text out through RENDERER-SIDE text-line objects
 	// (render::text_* - one "font wrapper" per laid-out line, filled a character at a time so the
 	// renderer can measure for word wrap), draws them at device size, and is the game's keyboard
@@ -561,12 +585,84 @@ namespace gameswf
 	// display sub_100882F0, mouse sub_10088650, key sub_10088ED0, insert sub_10088A70, delete
 	// sub_10088DB0, focus sub_10087AC0, members sub_10089440 / sub_10087C60, notify paths
 	// SwiffPlayer_notifyChar / setTextInput / getTextInput0/1. The stock glyph layout stays as the
-	// fallback the shipped keeps (sub_10086C00) for a field whose font has no renderer name.]
+	// fallback the shipped keeps (sub_10086C00) for a field whose font has no renderer name.
 	struct edit_text_character;
 	static edit_text_character*		s_focused_field = NULL;		// dword_100F8EE0
+	// SwiffPlayer.dll 0x100D6C80 -> 0x10072300 destroys this borrowed-pointer array.
 	static array<edit_text_character*>	s_tab_table;			// dword_100F8CB4 / dword_100F8CB8
+
+	// SwiffPlayer.dll 0x10085950; the caller supplies a valid Tab index.
+	static void register_text_tab(int index, edit_text_character* field)
+	{
+		if (s_tab_table.size() <= index)
+		{
+			s_tab_table.resize(index + 1);
+		}
+		s_tab_table[index] = field;
+	}
 	static tu_string			s_text_clipboard;			// `src`
 	static bool	s_mod_shift = false, s_mod_alt = false, s_mod_ctrl = false, s_mod_caps = false;	// byte_100F8EE8..EB
+
+	// Convert narrow text into a bounded UTF-16 buffer. Return the unit count
+	// excluding a copied terminator, or size_t(-1) on decoding failure. Do not
+	// repair or terminate the buffer after failure or capacity exhaustion.
+	static size_t text_mbstowcs(Uint16* destination, const char* source, size_t capacity)
+	{
+		// MSVCR71 7.10.3052 mbstowcs 0x7C3550C3 -> 0x7C354FC8:
+		// the C locale widens unsigned bytes, including bytes above 0x7F.
+		const char* locale = std::setlocale(LC_CTYPE, NULL);
+		if (strcmp(locale, "C") == 0 || strcmp(locale, "POSIX") == 0)
+		{
+			size_t count = 0;
+			while (count < capacity)
+			{
+				destination[count] = static_cast<unsigned char>(source[count]);
+				if (source[count] == 0) return count;
+				++count;
+			}
+			return count;
+		}
+#if defined(_WIN32)
+		static_assert(sizeof(wchar_t) == sizeof(Uint16), "Windows text uses UTF-16");
+		return std::mbstowcs(reinterpret_cast<wchar_t*>(destination), source, capacity);
+#else
+		// [CHOSEN, not recovered] POSIX locale/wchar_t adapter for the macOS
+		// port: native multibyte decoding, encoded as UTF-16. Its locale names,
+		// code pages and error-prefix writes are not MSVCR71 emulation.
+		std::mbstate_t state = {};
+		size_t count = 0;
+		while (count < capacity)
+		{
+			wchar_t character;
+			const size_t bytes = std::mbrtowc(&character, source, MB_CUR_MAX, &state);
+			if (bytes == static_cast<size_t>(-1) || bytes == static_cast<size_t>(-2))
+			{
+				errno = EILSEQ;
+				return static_cast<size_t>(-1);
+			}
+			if (bytes == 0)
+			{
+				destination[count] = 0;
+				return count;
+			}
+			const Uint32 codepoint = static_cast<Uint32>(character);
+			if (codepoint > 0x10FFFFu)
+			{
+				errno = EILSEQ;
+				return static_cast<size_t>(-1);
+			}
+			if (codepoint <= 0xFFFFu) destination[count++] = static_cast<Uint16>(codepoint);
+			else
+			{
+				if (capacity - count < 2) return count;
+				destination[count++] = static_cast<Uint16>(0xD800u + ((codepoint - 0x10000u) >> 10));
+				destination[count++] = static_cast<Uint16>(0xDC00u + ((codepoint - 0x10000u) & 0x3FFu));
+			}
+			source += bytes;
+		}
+		return count;
+#endif
+	}
 
 	// The digit-row keymap byte_100EC988 (three entries per key code 48..57: plain, shifted, AltGr).
 	// A Swedish layout: shift-2 is ", shift-4 is ¤, AltGr-2 is @, AltGr-7 is {.
@@ -582,12 +678,9 @@ namespace gameswf
 		array<text_glyph_record>	m_text_glyph_records;
 		array<fill_style>	m_dummy_style;	// used to pass a color on to shape_character::display()
 		array<line_style>	m_dummy_line_style;
-		rect	m_text_bounding_box;	// bounds of dynamic text, as laid out
 		tu_string	m_text;				// +300
 
 		// DICE's members (shipped offsets in the comments).
-		array<void*>	m_lines;		// +8696/+8700: the renderer text-line objects, one per laid-out line
-		tu_string	m_font_name;		// +8680
 		array<Uint16>	m_wide_text;	// +316 (a std::wstring): set through a wide String object; empty -> m_text
 		bool	m_border;				// +264
 		bool	m_background;			// +269
@@ -599,13 +692,14 @@ namespace gameswf
 		bool	m_first_mouse_frame;	// +288
 		bool	m_dragging;				// +289
 		float	m_drag_x, m_drag_y;		// +292 / +296 (twips, local)
-		Uint16	m_sel_start, m_sel_end, m_caret;	// +244 / +246 / +248
+		Sint16	m_caret_x, m_caret_y;	// +244 / +246: glyph-layout caret coordinates
+		Uint16	m_caret;			// +248: character index, independent of renderer selection
 		float	m_blink_time;			// +252: advance() accumulates, display blinks on (int)(t*3)&1, edits reset
 		bool	m_lines_dirty;			// +344
 		bool	m_password;				// +345
 		int	m_tab_index;				// +348
 		int	m_max_chars;				// +352
-		// [DICE-MOD SwiffPlayer #53] +368 (0x170): the last height sub_10084DE0 was asked for
+		//  +368 (0x170): the last height sub_10084DE0 was asked for
 		// (0x10084E01 stores its int argument before the scale test), i.e. formatText's laid-out
 		// height in pixels. `textHeight` answers it (vslot 0x10C = 0x10087A90, `mov eax,[ecx+170h]`);
 		// the constructor seeds 666 (0x1008772C).
@@ -614,6 +708,10 @@ namespace gameswf
 		as_value	m_on_changed;		// +376
 		as_value	m_on_set_focus;		// +408
 		as_environment	m_as_environment;	// +440
+		// SwiffPlayer.dll 0x10089E16..0x10089E58 destroys the font name,
+		// environment and focus handler in that order after releasing lines.
+		tu_string	m_font_name;		// +8680
+		array<void*>	m_lines;		// +8696/+8700: renderer text lines
 
 		edit_text_character(movie* parent, edit_text_character_def* def, int id)
 			:
@@ -629,7 +727,7 @@ namespace gameswf
 			m_first_mouse_frame(true),
 			m_dragging(false),
 			m_drag_x(0), m_drag_y(0),
-			m_sel_start(0), m_sel_end(0), m_caret(0),
+			m_caret_x(0), m_caret_y(0), m_caret(0),
 			m_blink_time(0),
 			m_lines_dirty(false),
 			m_password(false),
@@ -637,6 +735,8 @@ namespace gameswf
 			m_max_chars(0),
 			m_text_height_px(666)
 		{
+			// SwiffPlayer.dll 0x100875C0. Native character/Array/environment
+			// ownership uses the S3 bridges declared on those types.
 			assert(parent);
 			assert(m_def);
 			m_as_environment.set_target(this);
@@ -646,53 +746,49 @@ namespace gameswf
 			m_border = m_def->m_border;
 			m_background = m_def->m_border;
 			m_text_color = m_def->m_color;
+			// 0x10087815 appends the initial fill style before the parent Tab
+			// query and renderer callbacks, even for empty text.
+			m_dummy_style.push_back(fill_style());
 			m_password = m_def->m_password;
 			m_max_chars = m_def->m_max_length;
 
-			// The Tab index the parent hands out (shipped: parent vslot +112). [INFERRED: the
-			// character id - the value the shipped call returns is not attested beyond "an int >= 0".]
-			set_tab_index(id);
+			// SwiffPlayer.dll 0x10087879 calls parent +0x70, the inherited Tab
+			// index (sprite target 0x1007FB40), independently of placement ID.
+			if (parent) set_tab_index(parent->get_tab_index());
 
-			// The renderer font: when the movie resolves the def's font to a NAME (the export name of
-			// the font sharing its face - "StandardTextBold" for the login page's TradeGothic fields,
-			// see get_exported_font_name), the first text line is created now (height in pixels);
-			// without one the field keeps the stock glyph layout and draws no text - as the shipped
-			// does for a face the archive has no file for.
-			if (m_def->m_font && m_def->m_root_def)
+			// 0x100878AC..0x100878F4 resolves the definition's font ID, calls
+			// the renderer even for an empty exported name, and appends its
+			// result even when null. [CHOSEN, not recovered] S3 bridge: the
+			// definition's native dictionary replaces retail's current-root owner.
+			if (m_def->m_root_def->get_export_name(m_def->m_font_id, &m_font_name))
 			{
-				tu_string	exported;
-				if (m_def->m_root_def->get_exported_font_name(m_def->m_font, &exported) && exported.length() > 0)
-				{
-					m_font_name = exported;
-					void*	line = render::text_create(m_font_name.c_str(), (int) (m_def->m_text_height * 0.05f));
-					if (line)
-					{
-						m_lines.push_back(line);
-					}
-				}
+				const int height = bf2x87::toIntTruncate(bf2x87::mul(
+					bf2x87::Real(m_def->m_text_height), bf2x87::Real(0.05f)));
+				m_lines.push_back(render::text_create(m_font_name.c_str(), height));
 			}
 
 			set_text_value(m_def->m_default_text.c_str());
-			m_dummy_style.push_back(fill_style());
-			reset_bounding_box(0, 0);
 		}
 
+		// SwiffPlayer.dll 0x10089D50; deleting wrapper 0x10089D10. The member
+		// and base destructors supply the inspected release sequence below.
+		// [CHOSEN, not recovered] S3 bridge: the separately owned arguments
+		// Array can outlive this field, unlike retail's embedded Array. Native
+		// mask/prototype ownership and issue #7 graph teardown remain in use.
 		~edit_text_character()
 		{
-			// sub_10089D50: release the renderer lines, leave the Tab table and the focus.
+			// SwiffPlayer.dll 0x10089D50 removes Tab before renderer callbacks.
+			// Members then release in declaration-reverse order; text_input
+			// destruction clears focus before the character base is destroyed.
+			if (m_tab_index >= 0 && m_tab_index < s_tab_table.size() && s_tab_table[m_tab_index] == this)
+			{
+				s_tab_table[m_tab_index] = NULL;
+			}
 			for (int i = 0; i < m_lines.size(); i++)
 			{
 				if (m_lines[i]) render::text_release(m_lines[i]);
 			}
 			m_lines.resize(0);
-			if (m_tab_index >= 0 && m_tab_index < s_tab_table.size() && s_tab_table[m_tab_index] == this)
-			{
-				s_tab_table[m_tab_index] = NULL;
-			}
-			if (s_focused_field == this)
-			{
-				s_focused_field = NULL;
-			}
 		}
 
 		// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Adds the
@@ -707,7 +803,34 @@ namespace gameswf
 			m_on_set_focus.set_undefined();
 		}
 
-		void	set_tab_index(int index)	// sub_10087B50
+		// SwiffPlayer.dll 0x100881A0: inspect members without stamping this field.
+		virtual void gc_mark()
+		{
+			if (m_gc_generation == get_gc_mark_generation()) return;
+			for (stringi_hash<as_value>::iterator it = m_as_environment.m_variables.begin();
+				it != m_as_environment.m_variables.end(); ++it)
+				gc_mark_value(it->second);
+		}
+
+		// SwiffPlayer.dll 0x10088250: release OBJECT members, then clear the bag.
+		virtual void gc_release()
+		{
+			if (m_gc_generation == get_gc_release_generation()) return;
+			for (stringi_hash<as_value>::iterator it = m_as_environment.m_variables.begin();
+				it != m_as_environment.m_variables.end(); ++it)
+			{
+				if (it->second.get_type() == as_value::OBJECT)
+				{
+					as_object_interface* object = it->second.to_object_raw();
+					if (object) object->gc_release();
+				}
+			}
+			m_as_environment.m_variables.clear();
+		}
+
+		// SwiffPlayer.dll 0x10087B50. [CHOSEN, not recovered] S3 bridge:
+		// retain the existing native pointer-array storage.
+		void	set_tab_index(int index)
 		{
 			if (m_tab_index >= 0 && m_tab_index < s_tab_table.size() && s_tab_table[m_tab_index] == this)
 			{
@@ -716,13 +839,7 @@ namespace gameswf
 			m_tab_index = index;
 			if (index >= 0)
 			{
-				if (index >= s_tab_table.size())
-				{
-					const int	old = s_tab_table.size();
-					s_tab_table.resize(index + 1);
-					for (int i = old; i < s_tab_table.size(); i++) s_tab_table[i] = NULL;
-				}
-				s_tab_table[index] = this;
+				register_text_tab(index, this);
 			}
 		}
 
@@ -731,25 +848,43 @@ namespace gameswf
 		// pixels here scaled every label clip (whose only child is its field) twenty-fold (retail run X,
 		// 1640 px line widths, no wrapping). The shipped vslot 252 is in pixels; the AS-visible `_width`
 		// stays in pixels through the conversions at the use sites below.
-		virtual float	get_width()  { return m_def->m_rect.width(); }
-		virtual float	get_height() { return m_def->m_rect.height(); }
-		// [DICE-MOD SwiffPlayer #39] the unscaled local extent Flash's `_width`/`_height` build on.
+		// SwiffPlayer.dll 0x10087A60 / 0x10087A30.
+		// [CHOSEN, not recovered] S3 bridge:
+		// native extent virtuals return twips; their consumers convert to retail pixels.
+		virtual float	get_width()  { rect bounds; return get_text_bounds(&bounds)->width(); }
+		virtual float	get_height() { rect bounds; return get_text_bounds(&bounds)->height(); }
+		// [CHOSEN, not recovered] S3 bridge from native twip-returning extent
+		// virtuals to retail pixel consumers, without another float store.
+		bf2x87::Real extent_pixels(bool width)
+		{
+			return bf2x87::mul(bf2x87::Real(width ? get_width() : get_height()), bf2x87::Real(0.05f));
+		}
+		//  the unscaled local extent Flash's `_width`/`_height` build on.
 		virtual float	get_local_width()  { return m_def->m_rect.width(); }
 		virtual float	get_local_height() { return m_def->m_rect.height(); }
 
+		// SwiffPlayer.dll 0x10087C20.
 		virtual const char*	get_text_name() const { return m_def->m_default_name.c_str(); }
 
+		// SwiffPlayer.dll 0x10087970.
+		// [CHOSEN, not recovered] S3 bridge:
+		// retained out-parameter adapter for the native text callers.
+		rect* get_text_bounds(rect* out) const { m_def->get_text_bounds(out); return out; }
+		// SwiffPlayer.dll 0x10087970 forwards the definition rectangle.
+		rect get_bound_copy() const override { return m_def->get_bound_copy(); }
 
-		void	reset_bounding_box(float x, float y)
-		// Reset our text bounding box to the given point.
+		// SwiffPlayer.dll 0x10087990.
+		bool point_test_text_local(float x, float y) const
 		{
-			m_text_bounding_box.m_x_min = x;
-			m_text_bounding_box.m_x_max = x;
-			m_text_bounding_box.m_y_min = y;
-			m_text_bounding_box.m_y_max = y;
+			rect bounds;
+			return get_text_bounds(&bounds)->point_test(x, y);
 		}
 
+		// SwiffPlayer.dll 0x10087A90.
+		virtual int get_text_height() const { return m_text_height_px; }
 
+
+		// SwiffPlayer.dll 0x10087510.
 		virtual void	set_text_value(const char* new_text)
 		// Set our text to the given string. sub_10087510: same text -> nothing; the field's own
 		// maxChars clamps; then the layout. The WIDE store is NOT touched: the two stores are
@@ -773,11 +908,13 @@ namespace gameswf
 		// The wide setter (shipped vslot +272, sub_100893E0): a String object carrying UTF-16 text.
 		// Same text -> nothing; else the wide store alone is replaced (the narrow one at +300 is NOT
 		// synced), clamped to maxChars, and the layout runs.
+		// SwiffPlayer.dll 0x100893E0. [CHOSEN, not recovered] S3 bridge:
+		// store UTF-16 in the existing array, including its terminator.
 		void	set_wide_text_value(const Uint16* wide)
 		{
 			int	n = 0;
 			for (const Uint16* p = wide; p && *p; ++p) n++;
-			if (m_wide_text.size() == n + 1)
+			if (m_wide_text.size() == n + 1 || (n == 0 && m_wide_text.size() == 0))
 			{
 				bool	same = true;
 				for (int i = 0; i < n; i++) { if (m_wide_text[i] != wide[i]) { same = false; break; } }
@@ -796,6 +933,7 @@ namespace gameswf
 			format_text();
 		}
 
+		// SwiffPlayer.dll 0x10087C40.
 		virtual const char*	get_text_value() const
 		{
 			return m_text.c_str();
@@ -807,7 +945,7 @@ namespace gameswf
 		{
 			// @@ TODO need to inherit basic stuff like _x, _y, _xscale, _yscale etc
 
-			if (dice_set_member(name, val))		// [DICE-MOD #37] the shipped member surface, sub_10089440
+			if (dice_set_member(name, val))		//  the shipped member surface, sub_10089440
 			{
 				return;
 			}
@@ -888,10 +1026,15 @@ namespace gameswf
 
 		bool	get_member(const tu_stringi& name, as_value* val)
 		{
-			if (dice_get_member(name, val))		// [DICE-MOD #37] the shipped member surface, sub_10087C60
+			if (dice_get_member(name, val))		//  the shipped member surface, sub_10087C60
 			{
 				return true;
 			}
+			// SwiffPlayer.dll 0x10087C60 compares member names case-sensitively.
+			// Route the four remaining shared properties through the native switch.
+			const tu_string& exact_name = name.to_tu_string();
+			if (exact_name != "_x" && exact_name != "_y" && exact_name != "_visible"
+			    && exact_name != "_alpha") return false;
 			as_standard_member	std_member = get_standard_member(name);
 			switch (std_member)
 			{
@@ -963,37 +1106,21 @@ namespace gameswf
 				val->set_double(TWIPS_TO_PIXELS(transformed_rect.height()));
 				return true;
 			}
-			case M_TEXTWIDTH:
-				//else if (name == "textWidth")
-			{
-				// Return the width, in pixels, of the text as laid out.
-				// (I.e. the actual text content, not our defined
-				// bounding box.)
-				//
-				// In local coords.  Verified against Macromedia Flash.
-				val->set_double(TWIPS_TO_PIXELS(m_text_bounding_box.width()));
-
-				return true;
-			}
 			}	// end switch
 
 			return false;
 		}
 
 		
-		// @@ WIDTH_FUDGE is a total fudge to make it match the Flash player!  Maybe
-		// we have a bug?
-		#define WIDTH_FUDGE 80.0f
-
-
+		// SwiffPlayer.dll 0x10085440. [CHOSEN, not recovered] S3 bridge:
+		// get_width already returns twips in the current character interface.
 		void	align_line(edit_text_character_def::alignment align, int last_line_start_record, float x)
 		// Does LEFT/CENTER/RIGHT alignment on the records in
 		// m_text_glyph_records[], starting with
 		// last_line_start_record and going through the end of
 		// m_text_glyph_records.
 		{
-			float	extra_space = (m_def->m_rect.width() - m_def->m_right_margin) - x - WIDTH_FUDGE;
-			assert(extra_space >= 0.0f);
+			float	extra_space = (get_width() - m_def->m_right_margin) - x;
 
 			float	shift_right = 0.0f;
 
@@ -1027,7 +1154,7 @@ namespace gameswf
 
 		// Convert the characters in m_text into a series of
 		// text_glyph_records to be rendered.
-		// [DICE-MOD #37] sub_10086C00: with renderer lines the renderer lays the text out, otherwise the
+		//  sub_10086C00: with renderer lines the renderer lays the text out, otherwise the
 		// stock glyph layout below runs (the shipped keeps both).
 		void	format_text()
 		{
@@ -1039,7 +1166,8 @@ namespace gameswf
 			format_text_glyphs();
 		}
 
-		// sub_10085F50: put `text` on line `index`, creating the line when it is the next one.
+		// SwiffPlayer.dll 0x10085F50. [CHOSEN, not recovered] S3 bridge:
+		// keep UTF-16 in the native array and widen only at the renderer boundary.
 		void	set_line_text(int index, float width_px, const array<Uint16>& text)
 		{
 			if (index >= m_lines.size())
@@ -1068,44 +1196,49 @@ namespace gameswf
 		}
 
 		// sub_10084DE0: grow the field's y scale so at least `height_px` is visible (auto-size).
-		void	set_height_at_least(float height_px)
+		// SwiffPlayer.dll 0x10084DE0. [CHOSEN, not recovered] S3 bridge:
+		// the current character extent API returns twips rather than retail pixels.
+		void	set_height_at_least(int height_px)
 		{
-			m_text_height_px = (int) height_px;		// 0x10084E01, before the test
+			m_text_height_px = height_px;
 			matrix	m = get_matrix();
-			const float	h = TWIPS_TO_PIXELS(get_height());
-			if (h * m.m_[1][1] < height_px && h > 0)
+			if (TWIPS_TO_PIXELS(get_height()) * m.m_[1][1] < height_px)
 			{
-				m.m_[1][1] = height_px / h;
+				m.m_[1][1] = height_px / TWIPS_TO_PIXELS(get_height());
 				set_matrix(m);
 			}
 		}
 
-		// sub_10086080 - formatText: the renderer-line layout.
+		// SwiffPlayer.dll 0x10086080.
+		// [CHOSEN, not recovered] S3 bridge: native UTF-16 storage. Non-C
+		// POSIX conversion follows the explicit native-locale adapter above.
 		void	format_text_lines()
 		{
-			if (m_font_name.length() == 0)
-			{
-				return;
-			}
-
-			// The wide source: the wide copy when one was set, else the narrow text widened byte by
-			// byte (the shipped mbstowcs of +300).
-			array<Uint16>	wide;
+			static profile_record counter("formatTextObjects");
+			if (s_profiling) counter.begin();
+			// Borrow the wide payload, or allocate the narrow byte count including
+			// its terminator. Retail ignores the conversion result and does not
+			// initialize the remaining buffer after conversion failure.
+			Uint16* converted = NULL;
+			size_t converted_bytes = 0;
+			const Uint16* text;
 			if (m_wide_text.size() > 1)
 			{
-				wide = m_wide_text;
+				text = &m_wide_text[0];
 			}
 			else
 			{
-				for (int i = 0; i < m_text.length(); i++) wide.push_back((Uint16) (unsigned char) m_text[i]);
-				wide.push_back(0);
+				const size_t count = static_cast<size_t>(m_text.length()) + 1;
+				converted_bytes = count * sizeof(Uint16);
+				converted = static_cast<Uint16*>(tu_malloc(converted_bytes));
+				text_mbstowcs(converted, m_text.c_str(), count);
+				text = converted;
 			}
 
 			const matrix	world = get_world_matrix();
-			const float	width_px = TWIPS_TO_PIXELS(get_width()) * world.m_[0][0];
-			const float	height_limit = get_height() * world.m_[1][1];		// twips
-			const float	line_height = m_def->m_leading + m_def->m_text_height;		// twips (+100 + +72)
-			const float	wrap_limit = width_px - m_def->m_right_margin * 0.05f;
+			const float width_px = bf2x87::store(bf2x87::mul(extent_pixels(true), bf2x87::Real(world.m_[0][0])));
+			const float height_limit = bf2x87::store(bf2x87::mul(
+				bf2x87::mul(extent_pixels(false), bf2x87::Real(20.0f)), bf2x87::Real(world.m_[1][1])));
 
 			array<Uint16>	buf;
 			buf.push_back(0);
@@ -1114,10 +1247,11 @@ namespace gameswf
 			int	last_space = -1;
 			bool	overflowed = false;
 			int	i = 0;
+			Uint16 c;
 			for (;;)
 			{
-				const Uint16	c = wide[i++];
-				if (y > height_limit)
+				c = text[i++];
+				if (bf2x87::greater(bf2x87::Real(y), bf2x87::Real(height_limit)))
 				{
 					overflowed = true;
 					break;
@@ -1127,7 +1261,8 @@ namespace gameswf
 					set_line_text(line++, width_px, buf);
 					buf.resize(0);
 					buf.push_back(0);
-					y += line_height;
+					y = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::Real(m_def->m_leading),
+						bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y)));
 				}
 				else
 				{
@@ -1142,7 +1277,9 @@ namespace gameswf
 					{
 						float	w = 0, h = 0;
 						render::text_extent(m_lines[line], buf.size() - 1, &w, &h);
-						if (wrap_limit > w)
+						const bf2x87::Real wrap_limit = bf2x87::sub(bf2x87::Real(width_px),
+							bf2x87::mul(bf2x87::Real(m_def->m_right_margin), bf2x87::Real(0.05f)));
+						if (!bf2x87::lessEqual(wrap_limit, bf2x87::Real(w)))
 						{
 							// fits
 						}
@@ -1155,7 +1292,8 @@ namespace gameswf
 							buf.resize(0);
 							buf.push_back(c);
 							buf.push_back(0);
-							y += line_height;
+							y = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::Real(m_def->m_leading),
+								bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y)));
 						}
 						else
 						{
@@ -1167,7 +1305,8 @@ namespace gameswf
 							set_line_text(line++, width_px, buf);
 							buf = tail;
 							last_space = -1;
-							y += line_height;
+							y = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::Real(m_def->m_leading),
+								bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y)));
 						}
 					}
 				}
@@ -1180,10 +1319,11 @@ namespace gameswf
 			{
 				line--;
 			}
-			else if (buf.size() <= 1)
+			if ((!overflowed || c == 0) && buf.size() <= 1)
 			{
 				line--;
 			}
+			if (converted) tu_free(converted, converted_bytes);
 
 			const int	count = m_lines.size();
 			if (line >= count && line > 0)
@@ -1203,27 +1343,29 @@ namespace gameswf
 				m_lines.resize(line + 1);
 			}
 
-			// [DICE-MOD SwiffPlayer #52] sub_10086080's tail (0x10086433..0x10086495): the height the
+			//  sub_10086080's tail (0x10086433..0x10086495): the height the
 			// field must show is the font's LEADING (+0x40, the same term as the caret's, #47) plus the
 			// definition's text height, plus the laid-out y for word-wrapped fields or the definition's
 			// leading otherwise, in pixels. Until 2026-09-13 this port added the font's ASCENT instead,
 			// which grew every input field's y scale three to four times: the caret and text sat low
 			// in the box and the field's hit rectangle reached two rows down, so a click on the e-mail
 			// field still belonged to ACCOUNT NAME (owner's report, the CREATE ACCOUNT page).
-			const float	leading = m_def->m_font ? m_def->m_font->get_leading() : 0.0f;
-			float	height_px;
+			const float	leading = m_def->m_font->get_leading();
+			bf2x87::Real height;
 			if (m_def->m_word_wrap)
 			{
-				height_px = (leading + m_def->m_text_height + y) * 0.05f;
+				height = bf2x87::add(bf2x87::add(bf2x87::Real(leading), bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y));
 			}
 			else
 			{
-				height_px = (leading + m_def->m_leading + m_def->m_text_height) * 0.05f;
+				height = bf2x87::add(bf2x87::add(bf2x87::Real(leading), bf2x87::Real(m_def->m_leading)), bf2x87::Real(m_def->m_text_height));
 			}
-			set_height_at_least((float) (int) height_px);
+			set_height_at_least(bf2x87::toIntTruncate(bf2x87::mul(height, bf2x87::Real(0.05f))));
 			m_lines_dirty = true;
+			counter.end();
 		}
 
+		// SwiffPlayer.dll 0x10086C00, glyph fallback arm.
 		void	format_text_glyphs()
 		{
 			m_text_glyph_records.resize(0);
@@ -1232,6 +1374,8 @@ namespace gameswf
 			{
 				return;
 			}
+			static profile_record counter("formatText");
+			if (s_profiling) counter.begin();
 
 			// @@ mostly for debugging
 			// Font substitution -- if the font has no
@@ -1264,52 +1408,54 @@ namespace gameswf
 			}
 
 
-			float	scale = m_def->m_text_height / 1024.0f;	// the EM square is 1024 x 1024
+			float scale = bf2x87::store(bf2x87::mul(bf2x87::Real(m_def->m_text_height), bf2x87::Real(1.0f / 1024.0f)));
 
 			text_glyph_record	rec;	// one to work on
 			rec.m_style.m_font = m_def->m_font;
-			rec.m_style.m_color = m_def->m_color;
-			rec.m_style.m_x_offset = tu_util::fmax(0, m_def->m_left_margin + m_def->m_indent);
-			rec.m_style.m_y_offset = m_def->m_text_height
-				+ (m_def->m_font->get_leading() - m_def->m_font->get_descent()) * scale;
+			rec.m_style.m_color = m_text_color;
+			const bf2x87::Real indent = bf2x87::add(bf2x87::Real(m_def->m_indent), bf2x87::Real(m_def->m_left_margin));
+			rec.m_style.m_x_offset = bf2x87::greater(indent, bf2x87::Real(0)) ? bf2x87::store(indent) : 0.0f;
+			rec.m_style.m_y_offset = bf2x87::store(bf2x87::add(
+				bf2x87::mul(bf2x87::sub(bf2x87::Real(m_def->m_font->get_leading()),
+					bf2x87::Real(m_def->m_font->get_descent())), bf2x87::Real(scale)), bf2x87::Real(m_def->m_text_height)));
 			rec.m_style.m_text_height = m_def->m_text_height;
 			rec.m_style.m_has_x_offset = true;
 			rec.m_style.m_has_y_offset = true;
+			rect bounds;
+			get_text_bounds(&bounds);
+			rec.m_style.m_x_offset += bounds.get_corner(0).m_x;
+			rec.m_style.m_y_offset += bounds.get_corner(0).m_y;
 
 			float	x = rec.m_style.m_x_offset;
 			float	y = rec.m_style.m_y_offset;
+			m_caret_x = text_coord(x);
+			m_caret_y = text_coord(bf2x87::add(bf2x87::add(bf2x87::mul(bf2x87::Real(scale),
+				bf2x87::Real(m_def->m_font->get_descent())), bf2x87::Real(y)), bf2x87::Real(40.0f)));
 
-			// Start the bbox at the upper-left corner of the first glyph.
- 			reset_bounding_box(x, y - m_def->m_font->get_descent() * scale + m_def->m_text_height);
-
-			float	leading = m_def->m_leading;
-			leading += m_def->m_font->get_leading() * scale;
+			float leading = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(scale),
+				bf2x87::Real(m_def->m_font->get_leading())), bf2x87::Real(m_def->m_leading)));
 
 			int	last_code = -1;
 			int	last_space_glyph = -1;
 			int	last_line_start_record = 0;
 
-			const char*	text = &m_text[0];
+			const char*	text_start = m_text.c_str();
+			const char*	text = text_start;
 			while (Uint32 code = utf8::decode_next_unicode_character(&text))
 			{
-// @@ try to truncate overflow text??
-#if 0
-				if (y + m_def->m_font->get_descent() * scale > m_def->m_rect.height())
+				// 0x10086E33..0x10086E60 clips the unfinished line at the height limit.
+				const float baseline = bf2x87::store(bf2x87::add(bf2x87::mul(
+					bf2x87::Real(m_def->m_font->get_descent()), bf2x87::Real(scale)), bf2x87::Real(y)));
+				if (bf2x87::less(bf2x87::mul(extent_pixels(false), bf2x87::Real(20.0f)), bf2x87::Real(baseline)))
 				{
-					// Text goes below the bottom of our bounding box.
 					rec.m_glyphs.resize(0);
 					break;
 				}
-#endif // 0
 
-				//Uint16	code = m_text[j];
-
-				x += m_def->m_font->get_kerning_adjustment(last_code, (int) code) * scale;
+				x = bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(m_def->m_font->get_kerning_adjustment(last_code, (int) code)),
+					bf2x87::Real(scale)), bf2x87::Real(x)));
 				last_code = (int) code;
 
-				// Expand the bounding-box to the lower-right corner of each glyph as
-				// we generate it.
-				m_text_bounding_box.expand_to_point(x, y + m_def->m_font->get_descent() * scale);
 
 				if (code == 13 || code == 10)
 				{
@@ -1324,8 +1470,9 @@ namespace gameswf
 					m_text_glyph_records.push_back(rec);
 					align_line(m_def->m_alignment, last_line_start_record, x);
 
-					x = tu_util::fmax(0, m_def->m_left_margin + m_def->m_indent);	// new paragraphs get the indent.
-					y += m_def->m_text_height + leading;
+					const bf2x87::Real paragraph_indent = bf2x87::add(bf2x87::Real(m_def->m_indent), bf2x87::Real(m_def->m_left_margin));
+					x = bf2x87::greater(paragraph_indent, bf2x87::Real(0)) ? bf2x87::store(paragraph_indent) : 0.0f;
+					y = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::Real(leading), bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y)));
 
 					// Start a new record on the next line.
 					rec.m_glyphs.resize(0);
@@ -1340,32 +1487,6 @@ namespace gameswf
 					last_space_glyph = -1;
 					last_line_start_record = m_text_glyph_records.size();
 
-					continue;
-				}
-
-				if (code == 8)
-				{
-					// backspace (ASCII BS).
-
-					// This is a limited hack to enable overstrike effects.
-					// It backs the cursor up by one character and then continues
-					// the layout.  E.g. you can use this to display an underline
-					// cursor inside a simulated text-entry box.
-					//
-					// ActionScript understands the '\b' escape sequence
-					// for inserting a BS character.
-					//
-					// ONLY WORKS FOR BACKSPACING OVER ONE CHARACTER, WON'T BS
-					// OVER NEWLINES, ETC.
-
-					if (rec.m_glyphs.size() > 0)
-					{
-						// Peek at the previous glyph, and zero out its advance
-						// value, so the next char overwrites it.
-						float	advance = rec.m_glyphs.back().m_glyph_advance;
-						x -= advance;	// maintain formatting
-						rec.m_glyphs.back().m_glyph_advance = 0;	// do the BS effect
-					}
 					continue;
 				}
 
@@ -1392,8 +1513,8 @@ namespace gameswf
 							  m_def->m_font->get_name());
 					}
 
-					// Drop through and use index == -1; this will display
-					// using the empty-box glyph
+					// SwiffPlayer.dll 0x10086EB4..0x10086EE5 skips missing glyphs.
+					continue;
 				}
 				text_glyph_record::glyph_entry	ge;
 				ge.m_glyph_index = index;
@@ -1404,7 +1525,9 @@ namespace gameswf
 				x += ge.m_glyph_advance;
 
 				
-				if (x >= m_def->m_rect.width() - m_def->m_right_margin - WIDTH_FUDGE)
+				// SwiffPlayer.dll 0x10086F2B..0x10086F4C.
+				if (bf2x87::lessEqual(bf2x87::sub(bf2x87::mul(extent_pixels(true), bf2x87::Real(20.0f)),
+					bf2x87::Real(m_def->m_right_margin)), bf2x87::Real(x)))
 				{
 					// Whoops, we just exceeded the box width.  Do word-wrap.
 
@@ -1415,7 +1538,7 @@ namespace gameswf
 					float	previous_x = x;
 
 					x = m_def->m_left_margin;
-					y += m_def->m_text_height + leading;
+					y = bf2x87::store(bf2x87::add(bf2x87::add(bf2x87::Real(leading), bf2x87::Real(m_def->m_text_height)), bf2x87::Real(y)));
 
 					// Start a new record on the next line.
 					rec.m_glyphs.resize(0);
@@ -1428,12 +1551,27 @@ namespace gameswf
 					rec.m_style.m_has_y_offset = true;
 					
 					text_glyph_record&	last_line = m_text_glyph_records.back();
-					if (last_space_glyph == -1)
+					if (!m_def->m_word_wrap)
+					{
+						// 0x10087207: discard overflow and scan through the next newline.
+						if (last_line.m_glyphs.size() > 0)
+						{
+							last_line.m_glyphs.resize(last_line.m_glyphs.size() - 1);
+						}
+						do { code = utf8::decode_next_unicode_character(&text); }
+						while (code != 0 && code != 13 && code != 10);
+						if (code == 0) break;
+					}
+					else if (last_space_glyph == -1)
 					{
 						// Pull the previous glyph down onto the
 						// new line.
 						if (last_line.m_glyphs.size() > 0)
 						{
+							if ((Uint16) (text - text_start - 1) == m_caret)
+							{
+								set_glyph_caret(x, y, scale, (int) code, (int) code);
+							}
 							rec.m_glyphs.push_back(last_line.m_glyphs.back());
 							x += last_line.m_glyphs.back().m_glyph_advance;
 							previous_x -= last_line.m_glyphs.back().m_glyph_advance;
@@ -1442,15 +1580,24 @@ namespace gameswf
 					}
 					else
 					{
-						// Move the previous word down onto the next line.
-
+						// The removed space contributes to the old line's aligned width.
 						previous_x -= last_line.m_glyphs[last_space_glyph].m_glyph_advance;
+						const int byte_start = (int) (text - text_start) - last_line.m_glyphs.size();
+						if (byte_start + last_space_glyph + 1 == m_caret)
+						{
+							set_glyph_caret(x, y, scale, (int) code, (int) code);
+						}
+						// Move the previous word down onto the next line.
 
 						for (int i = last_space_glyph + 1; i < last_line.m_glyphs.size(); i++)
 						{
 							rec.m_glyphs.push_back(last_line.m_glyphs[i]);
 							x += last_line.m_glyphs[i].m_glyph_advance;
 							previous_x -= last_line.m_glyphs[i].m_glyph_advance;
+							if (byte_start + i + 1 == m_caret)
+							{
+								set_glyph_caret(x, y, scale, (int) code, (int) code);
+							}
 						}
 						last_line.m_glyphs.resize(last_space_glyph);
 					}
@@ -1460,6 +1607,10 @@ namespace gameswf
 					last_space_glyph = -1;
 					last_line_start_record = m_text_glyph_records.size();
 				}
+				if ((Uint16) (text - text_start) == m_caret)
+				{
+					set_glyph_caret(x, y, scale, last_code, (int) code);
+				}
 
 				// TODO: HTML markup
 			}
@@ -1467,10 +1618,23 @@ namespace gameswf
 			// Add this line to our output.
 			m_text_glyph_records.push_back(rec);
 			align_line(m_def->m_alignment, last_line_start_record, x);
+			counter.end();
+		}
+
+		// SwiffPlayer.dll 0x100872A6..0x100872E8 and the wrap branches.
+		void set_glyph_caret(float x, float y, float scale, int previous, int code)
+		{
+			m_caret_x = text_coord(bf2x87::add(bf2x87::mul(bf2x87::Real(m_def->m_font->get_kerning_adjustment(previous, code)),
+				bf2x87::Real(scale)), bf2x87::Real(x)));
+			m_caret_y = text_coord(bf2x87::add(bf2x87::add(bf2x87::mul(bf2x87::Real(scale),
+				bf2x87::Real(m_def->m_font->get_descent())), bf2x87::Real(y)), bf2x87::Real(40.0f)));
 		}
 
 
-		// [DICE-MOD #37] sub_100882F0 - display: refresh dirty lines, the world matrix with its SCALE
+		// SwiffPlayer.dll 0x100882F0.
+		// [CHOSEN, not recovered] S3 bridge:
+		// read the definition rectangle through the current native field.
+		//  display: refresh dirty lines, the world matrix with its SCALE
 		// reset to one (text is drawn at device size, translation only), background quad and border,
 		// the blinking caret when focused, then every line through render::text_draw with the y
 		// advanced by leading + height. The stock glyph records are never drawn (the shipped does not).
@@ -1492,23 +1656,25 @@ namespace gameswf
 			render::set_cxform(get_world_cxform());
 
 			point	coords[4];
-			coords[0] = m_def->m_rect.get_corner(0);
-			coords[1] = m_def->m_rect.get_corner(1);
-			coords[2] = m_def->m_rect.get_corner(3);
-			coords[3] = m_def->m_rect.get_corner(2);
+			rect bounds;
+			get_text_bounds(&bounds);
+			coords[0] = bounds.get_corner(0);
+			coords[1] = bounds.get_corner(1);
+			coords[2] = bounds.get_corner(3);
+			coords[3] = bounds.get_corner(2);
 			Sint16	icoords[18] =
 			{
 				// strip (fill in)
-				(Sint16) coords[0].m_x, (Sint16) coords[0].m_y,
-				(Sint16) coords[1].m_x, (Sint16) coords[1].m_y,
-				(Sint16) coords[2].m_x, (Sint16) coords[2].m_y,
-				(Sint16) coords[3].m_x, (Sint16) coords[3].m_y,
+				text_coord(coords[0].m_x), text_coord(coords[0].m_y),
+				text_coord(coords[1].m_x), text_coord(coords[1].m_y),
+				text_coord(coords[2].m_x), text_coord(coords[2].m_y),
+				text_coord(coords[3].m_x), text_coord(coords[3].m_y),
 				// outline
-				(Sint16) coords[0].m_x, (Sint16) coords[0].m_y,
-				(Sint16) coords[1].m_x, (Sint16) coords[1].m_y,
-				(Sint16) coords[3].m_x, (Sint16) coords[3].m_y,
-				(Sint16) coords[2].m_x, (Sint16) coords[2].m_y,
-				(Sint16) coords[0].m_x, (Sint16) coords[0].m_y,
+				text_coord(coords[0].m_x), text_coord(coords[0].m_y),
+				text_coord(coords[1].m_x), text_coord(coords[1].m_y),
+				text_coord(coords[3].m_x), text_coord(coords[3].m_y),
+				text_coord(coords[2].m_x), text_coord(coords[2].m_y),
+				text_coord(coords[0].m_x), text_coord(coords[0].m_y),
 			};
 			if (m_background)
 			{
@@ -1527,12 +1693,12 @@ namespace gameswf
 				const float	em = m_def->m_text_height * (1.0f / 1024.0f);
 				if (s_focused_field == this)
 				{
-					if (((int) (m_blink_time * 3.0f) & 1) == 0)
+					if ((bf2x87::toIntTruncate(m_blink_time * 3.0f) & 1) == 0)
 					{
 						float	w = 0, h = 0;
 						render::text_extent(m_lines[0], m_caret, &w, &h);
 						const float	x = w * 20.0f;
-						// [DICE-MOD SwiffPlayer #47] The font term is the font's LEADING, not its
+						//  The font term is the font's LEADING, not its
 						// ascent. 100885 8B..9E reads def+0x44 (the font) and multiplies em by
 						// FONT+0x40, and font::read fills +0x38/+0x3C/+0x40 with ascent/descent/
 						// leading in that order (100A1A7D..100A1AAB), so +0x40 is the third of the
@@ -1544,8 +1710,8 @@ namespace gameswf
 						const float	fontLeading = m_def->m_font->get_leading();
 						Sint16	caret[4] =
 						{
-							(Sint16) x, 0,
-							(Sint16) x, (Sint16) (em * fontLeading + m_def->m_leading + m_def->m_text_height),
+							text_coord(x), 0,
+							text_coord(x), text_coord(em * fontLeading + m_def->m_leading + m_def->m_text_height),
 						};
 						render::line_style_color(m_text_color);
 						render::line_style_width(1.0f);
@@ -1554,7 +1720,7 @@ namespace gameswf
 				}
 
 				float	left = m_def->m_indent + m_def->m_left_margin;
-				if (left < 0) left = 0;
+				if (!(left > 0)) left = 0;
 				mat.m_[0][2] += left + 40.0f;
 				mat.m_[1][2] += 30.0f;
 				for (int i = 0; i < m_lines.size(); i++)
@@ -1564,10 +1730,17 @@ namespace gameswf
 				}
 			}
 
-			do_display_callback();
+			// SwiffPlayer.dll 0x10088649 returns after drawing the last renderer line.
 		}
 
-		virtual void	advance(float delta_time)	// sub_10087AA0
+		// SwiffPlayer.dll 0x100883F5..0x10088463: _ftol then the low word.
+		static Sint16 text_coord(bf2x87::Real value)
+		{
+			return bf2x87::lowShort(bf2x87::toInt64Truncate(value));
+		}
+
+		// SwiffPlayer.dll 0x10087AA0.
+		virtual void	advance(float delta_time)
 		{
 			m_blink_time += delta_time;
 		}
@@ -1580,13 +1753,17 @@ namespace gameswf
 
 		void	call_callback(as_value& fn)	// sub_1008EAA0: the field's AS object is `this`
 		{
-			if (fn.is_function())
+			// SwiffPlayer.dll 0x10087B01 / 0x10088E6E tests only undefined.
+			// [CHOSEN, not recovered] S3 bridge to the native call wrapper.
+			if (fn.get_type() != as_value::UNDEFINED)
 			{
 				call_method0(fn, &m_as_environment, this);
 			}
 		}
 
-		void	focus()	// sub_10087AC0
+		// SwiffPlayer.dll 0x10087AC0. [CHOSEN, not recovered] S3 bridge:
+		// tolerate the current factory's absence of renderer lines.
+		void	focus()
 		{
 			s_focused_field = this;
 			m_caret = (Uint16) m_text.length();
@@ -1598,25 +1775,27 @@ namespace gameswf
 			call_callback(m_on_set_focus);
 		}
 
-		static bool	focus_next(int from)	// sub_100891E0: the next Tab index with a field, wrapping
+		// SwiffPlayer.dll 0x100891E0; from is the registered Tab index.
+		static bool	focus_next(int from)
 		{
 			const int	n = s_tab_table.size();
 			for (int i = from + 1; i < n; i++)
 			{
 				if (s_tab_table[i]) { s_tab_table[i]->focus(); return true; }
 			}
-			for (int i = 0; i < from && i < n; i++)
+			for (int i = 0; i < from; i++)
 			{
 				if (s_tab_table[i]) { s_tab_table[i]->focus(); return true; }
 			}
 			return false;
 		}
-		static bool	focus_prev(int from)	// sub_10089230
+		// SwiffPlayer.dll 0x10089230; from is the registered Tab index.
+		static bool	focus_prev(int from)
 		{
 			const int	n = s_tab_table.size();
 			for (int i = from - 1; i >= 0; i--)
 			{
-				if (i < n && s_tab_table[i]) { s_tab_table[i]->focus(); return true; }
+				if (s_tab_table[i]) { s_tab_table[i]->focus(); return true; }
 			}
 			for (int i = n - 1; i > from; i--)
 			{
@@ -1625,21 +1804,22 @@ namespace gameswf
 			return false;
 		}
 
-		// [DICE-MOD SwiffPlayer #51] sub_100879C0: the world-space point through the inverse world
-		// matrix, then the definition's rectangle. [INFERRED: the rectangle the shipped body fetches
-		// through slot 60 is the definition's.]
+		// SwiffPlayer.dll 0x100879C0: inverse world transform, then the local rectangle.
 		virtual bool	point_test_world(float x, float y)
 		{
 			matrix	world = get_world_matrix();
 			point	p;
 			world.transform_by_inverse(&p, point(x, y));
-			return m_def->m_rect.point_test(p.m_x, p.m_y);
+			return point_test_text_local(p.m_x, p.m_y);
 		}
 
-		// sub_10088650 - the mouse: per-frame state machine on (inside, button) against the previous
+		// SwiffPlayer.dll 0x10088650.
+		// [CHOSEN, not recovered] S3 bridge:
+		// definition rectangles and optional renderer lines use the native interfaces.
+		// The mouse: per-frame state machine on (inside, button) against the previous
 		// frame; a press inside starts a drag/selection, its release focuses the field, a press
 		// outside a focused field blurs it. [INFERRED: the selection arguments the hit test takes.]
-		// [DICE-MOD SwiffPlayer #51] This is the text field's mouse pass (vtable slot 4): it ignores
+		//  This is the text field's mouse pass (vtable slot 4): it ignores
 		// what the siblings above consumed - the argument is unread by the shipped body - so a click
 		// reaches the field through any decoration drawn over it, and it answers "inside" (the state's
 		// bit 0) for the siblings below. Read-only fields, and every field but the focused one while
@@ -1651,20 +1831,20 @@ namespace gameswf
 			{
 				return false;
 			}
+			matrix	world = get_world_matrix();
+			get_parent()->get_active_mouse_entity();
 			if (s_focused_field != NULL && s_focused_field != this)
 			{
 				return false;
 			}
 			int	mx = 0, my = 0, mb = 0;
-			movie*	root = get_root_movie();
-			if (root) root->get_mouse_state(&mx, &my, &mb);
+			get_parent()->get_mouse_state(&mx, &my, &mb);
 
 			m_prev_mouse_state = m_mouse_state;
-			m_mouse_state = (mb & 1) ? 2 : 0;
-			matrix	world = get_world_matrix();
+			m_mouse_state = mb ? 2 : 0;
 			point	p;
 			world.transform_by_inverse(&p, point((float) mx * 20.0f, (float) my * 20.0f));
-			if (m_def->m_rect.point_test(p.m_x, p.m_y))
+			if (point_test_text_local(p.m_x, p.m_y))
 			{
 				m_mouse_state |= 1;
 			}
@@ -1693,32 +1873,32 @@ namespace gameswf
 				// 0x10088823..0x1008883B: the sorted floats are pushed as raw dwords.
 				render::text_set_selection(m_lines[0], x1, y1, x2, y2);
 			}
-			const bool	result = (m_mouse_state & 1) != 0;
 			if (m_mouse_state == m_prev_mouse_state)
 			{
-				return result;
+				return (m_mouse_state & 1) != 0;
 			}
+			world.transform_by_inverse(&p, point((float) mx * 20.0f, (float) my * 20.0f));
 			switch (m_mouse_state | (m_prev_mouse_state << 2))
 			{
 			case 12:
 			case 13:
 				// released after a press inside: focus
 				m_dragging = false;
-				if (s_focused_field == this) return result;
+				if (s_focused_field == this) return (m_mouse_state & 1) != 0;
 				focus_from_click();
-				return result;
+				return (m_mouse_state & 1) != 0;
 			case 8:
-				if (!m_dragging) return result;
+				if (!m_dragging) return (m_mouse_state & 1) != 0;
 				m_dragging = false;
-				if (s_focused_field == this) return result;
+				if (s_focused_field == this) return (m_mouse_state & 1) != 0;
 				focus_from_click();
-				return result;
+				return (m_mouse_state & 1) != 0;
 			case 7:
 				// pressed inside
-				m_drag_x = p.m_x;
 				m_drag_y = p.m_y;
 				m_dragging = true;
-				return result;
+				m_drag_x = p.m_x;
+				return (m_mouse_state & 1) != 0;
 			case 2:
 				// pressed outside: blur
 				if (s_focused_field == this)
@@ -1729,11 +1909,13 @@ namespace gameswf
 						render::text_caret(m_lines[0], 0);
 						render::text_blur(m_lines[0]);
 					}
-					s_focused_field = NULL;
+					// 0x100889A0 rechecks focus after the renderer calls.
+					if (s_focused_field == this) s_focused_field = NULL;
 				}
-				return result;
+				return (m_mouse_state & 1) != 0;
 			}
-			return result;
+			// 0x10088A40 reads the state after focus callbacks have returned.
+			return (m_mouse_state & 1) != 0;
 		}
 		void	focus_from_click()
 		{
@@ -1753,13 +1935,14 @@ namespace gameswf
 		{
 			*start = 0; *end = 0;
 			if (m_lines.size() == 0) return false;
-			// [DICE-MOD SwiffPlayer #46] the RENDERER answers whether a selection exists: the
+			//  the RENDERER answers whether a selection exists: the
 			// shipped delete_selection (sub_10088D60) tests the Boolean of render::text_selection
 			// (sub_1009A910 -> render_handler +112) and only then deletes [start, end). The port's
 			// former `start != end` test read the forwarder's scratch start value as a selection
 			// whenever the renderer had none, so Backspace and Delete deleted nothing (2026-09-12).
 			return render::text_selection(m_lines[0], start, end);
 		}
+		// SwiffPlayer.dll 0x10088DB0; endpoints are used in the supplied order.
 		void	delete_range(int new_length, int end, bool relayout)
 		{
 			if (new_length == end || new_length < 0) return;
@@ -1776,32 +1959,34 @@ namespace gameswf
 			call_callback(m_on_changed);
 			if (m_lines.size() > 0) render::text_blur(m_lines[0]);
 		}
+		// SwiffPlayer.dll 0x10088D60. [CHOSEN, not recovered] S3 bridge:
+		// get_selection permits fields with no native renderer line.
 		bool	delete_selection(bool relayout)
 		{
 			int	s = 0, e = 0;
 			if (!get_selection(&s, &e)) return false;
-			if (s > e) { int t = s; s = e; e = t; }
 			delete_range(s, e, relayout);
 			return true;
 		}
+		// SwiffPlayer.dll 0x10088A70.
 		void	insert_text(const char* str)
 		{
 			delete_selection(false);
 			tu_string	ins(str);
 			if (m_restrict.length() > 0)
 			{
-				tu_string	kept;
+				int kept = 0;
 				for (int i = 0; i < ins.length(); i++)
 				{
 					for (int k = 0; k < m_restrict.length(); k++)
 					{
-						if (ins[i] == m_restrict[k]) { kept += ins[i]; break; }
+						if (str[i] == m_restrict[k]) { ins[kept++] = str[i]; break; }
 					}
 				}
-				if (kept.length() == 0) return;
-				ins = kept;
+				if (kept == 0) return;
+				ins[kept] = 0;
+				ins.resize(kept);
 			}
-			if (m_caret > m_text.length()) m_caret = (Uint16) m_text.length();
 			tu_string	t = m_text;
 			t.resize(m_caret);
 			t += ins;
@@ -1820,7 +2005,8 @@ namespace gameswf
 		}
 
 		// ---- text_input (the shipped +200 interface) ----
-		virtual void	on_key(int vkey)	// sub_10088ED0
+		// SwiffPlayer.dll 0x10088ED0.
+		virtual void	on_key(int vkey)
 		{
 			if (vkey == 9 && m_tab_index > 0)
 			{
@@ -1835,6 +2021,7 @@ namespace gameswf
 				return;
 			}
 			char	ch = 0;
+			bool insert_char = true;
 			if (vkey >= 65 && vkey <= 90)
 			{
 				ch = (char) (vkey + (s_mod_shift ? 0 : 0x20));
@@ -1866,26 +2053,32 @@ namespace gameswf
 				{
 				case 46:	// Delete
 					if (s_mod_alt) return;
+					insert_char = false;
 					if (!delete_selection(true)) delete_range(m_caret, m_caret + 1, true);
 					break;
 				case 8:		// Backspace
 					if (s_mod_alt) return;
+					insert_char = false;
 					if (!delete_selection(true)) delete_range(m_caret - 1, m_caret, true);
 					break;
 				case 37:	// Left
+					insert_char = false;
 					m_caret = (Uint16) (m_caret > 0 ? m_caret - 1 : 0);
 					format_text();
 					break;
 				case 39:	// Right
+					insert_char = false;
 					m_caret = (Uint16) (m_caret + 1 < m_text.length() ? m_caret + 1 : m_text.length());
 					format_text();
 					break;
 				case 36:	// Home
+					insert_char = false;
 					m_caret = 0;
 					render::text_caret(m_lines[0], 0);
 					render::text_blur(m_lines[0]);
 					break;
 				case 35:	// End
+					insert_char = false;
 					m_caret = (Uint16) m_text.length();
 					render::text_caret(m_lines[0], m_caret);
 					render::text_blur(m_lines[0]);
@@ -1902,7 +2095,7 @@ namespace gameswf
 					return;
 				}
 			}
-			if (ch)
+			if (insert_char)
 			{
 				char	s[2] = { ch, 0 };
 				insert_text(s);
@@ -1910,12 +2103,15 @@ namespace gameswf
 			m_blink_time = 0;
 			if (m_lines.size() > 0) render::text_blur(m_lines[0]);
 		}
-		virtual void	on_char(int character)	// sub_10088A50
+		// SwiffPlayer.dll 0x10088A50.
+		virtual void	on_char(int character)
 		{
 			char	s[2] = { (char) character, 0 };
 			insert_text(s);
 		}
-		virtual void	paste()	// sub_10089280
+		// SwiffPlayer.dll 0x10089280. [CHOSEN, not recovered] S3 bridge:
+		// retain the native no-renderer-line case at the blur boundary.
+		virtual void	paste()
 		{
 			tu_string	text;
 			if (m_def->m_multiline)
@@ -1932,17 +2128,17 @@ namespace gameswf
 			if (text.length() > 0) insert_text(text.c_str());
 			if (m_lines.size() > 0) render::text_blur(m_lines[0]);
 		}
-		virtual void	copy()	// sub_10087BB0 (guarded by a byte at character+153 [INFERRED: password])
+		// SwiffPlayer.dll 0x10087BB0; the renderer owns endpoint order and validity.
+		virtual void	copy()
 		{
 			if (m_password) return;
 			int	s = 0, e = 0;
 			if (!get_selection(&s, &e)) return;
-			if (s > e) { int t = s; s = e; e = t; }
-			if (e > m_text.length()) e = m_text.length();
 			s_text_clipboard = m_text.c_str() + s;
 			s_text_clipboard.resize(e - s);
 		}
-		virtual void	cut()	// sub_100893C0
+		// SwiffPlayer.dll 0x100893C0.
+		virtual void	cut()
 		{
 			if (m_password) return;
 			copy();
@@ -1950,14 +2146,25 @@ namespace gameswf
 		}
 
 		// ---- the AS member surface (sub_10089440 set, sub_10087C60 get) ----
-		bool	dice_set_member(const tu_stringi& name, const as_value& val)
+		// SwiffPlayer.dll 0x10089440 uses the exact comparison at 0x100858F0.
+		// [CHOSEN, not recovered] S3 bridge: the public native key is still tu_stringi.
+		bool	dice_set_member(const tu_stringi& member_name, const as_value& val)
 		{
+			const tu_string& name = member_name.to_tu_string();
+			if (name == "_x" || name == "_y")
+			{
+				matrix m = get_matrix();
+				m.m_[name == "_x" ? 0 : 1][2] = bf2x87::store(bf2x87::mul(
+					bf2x87::Real(val.to_number()), bf2x87::Real(20.0)));
+				set_matrix(m);
+				return true;
+			}
 			if (name == "text")
 			{
 				// sub_10089440: a DICE String object always goes through the wide setter with its
 				// wide text, empty when it carries none (the shipped narrow arm at 0x10089599 is
 				// unreachable: it needs a null std::wstring c_str()); any other value goes narrow.
-				as_object_interface*	obj = val.to_object();
+				as_object_interface*	obj = val.to_object_raw();
 				if (obj)
 				{
 					const Uint16*	wide = obj->get_wide_text_value();
@@ -1977,14 +2184,21 @@ namespace gameswf
 				}
 				return true;
 			}
+			if (name == "_visible") { set_visible(val.to_bool()); return true; }
+			if (name == "_alpha")
+			{
+				cxform cx = get_cxform();
+				const bf2x87::Real alpha = bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(0.01f));
+				// Retail selects one for unordered input, then narrows before max.
+				const float upper = alpha < bf2x87::Real(1.0f) ? bf2x87::store(alpha) : 1.0f;
+				cx.m_[3][0] = tu_util::fmax(0.0f, upper);
+				set_cxform(cx);
+				return true;
+			}
 			if (name == "textColor")
 			{
-#if defined(__APPLE__)
-				// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
-				const Uint32	rgb = bf2x87::lowUInt32(val.to_number());
-#else
-				const Uint32	rgb = (Uint32) val.to_number();
-#endif
+				// 0x100896D0 uses a signed dword FISTP, including integer indefinite.
+				const Uint32	rgb = (Uint32) bf2x87::toIntTruncate(val.to_number());
 				const Uint32	cur = ((Uint32) m_text_color.m_r << 16) | ((Uint32) m_text_color.m_g << 8) | m_text_color.m_b;
 				if (rgb != cur)
 				{
@@ -1996,35 +2210,45 @@ namespace gameswf
 			if (name == "_width" || name == "_height")
 			{
 				const bool	is_w = name == "_width";
-				const float	cur = TWIPS_TO_PIXELS(is_w ? get_width() : get_height());
 				const double	v = val.to_number();
-				if (v == cur) return true;
+				const bf2x87::Real cur = extent_pixels(is_w);
+				if (bf2x87::Real(v) == cur) return true;
 				matrix	m = get_matrix();
 				float&	s = is_w ? m.m_[0][0] : m.m_[1][1];
-				s = (v == 0.0 || cur == 0.0f) ? 0.0f : (float) (v / cur);
+				// 0x1008977E..0x100897CE / 0x10089852..0x100898A2:
+				// repeat the conversions and extent calls, narrowing the numerator to float.
+				if (val.to_number() == 0.0 || extent_pixels(is_w) == bf2x87::Real(0.0f))
+				{
+					s = 0.0f;
+				}
+				else
+				{
+					const float numerator = (float) val.to_number();
+					s = bf2x87::store(bf2x87::div(bf2x87::Real(numerator), extent_pixels(is_w)));
+				}
 				set_matrix(m);
 				format_text();
 				return true;
 			}
 			if (name == "border")          { m_border = val.to_bool(); return true; }
-#if defined(__APPLE__)
-			// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
-			if (name == "borderColor")     { const Uint32 c = bf2x87::lowUInt32(val.to_number()); m_border_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
-#else
-			if (name == "borderColor")     { const Uint32 c = (Uint32) val.to_number(); m_border_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
-#endif
+			// 0x10089915 / 0x10089999 use the same signed dword conversion.
+			if (name == "borderColor")     { const Uint32 c = (Uint32) bf2x87::toIntTruncate(val.to_number()); m_border_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
 			if (name == "background")      { m_background = val.to_bool(); return true; }
-#if defined(__APPLE__)
-			// [CHOSEN, not recovered] Keep the x86 wrap of a negative number (arm64 saturates to 0).
-			if (name == "backgroundColor") { const Uint32 c = bf2x87::lowUInt32(val.to_number()); m_background_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
-#else
-			if (name == "backgroundColor") { const Uint32 c = (Uint32) val.to_number(); m_background_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
-#endif
+			if (name == "backgroundColor") { const Uint32 c = (Uint32) bf2x87::toIntTruncate(val.to_number()); m_background_color = rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, 255); return true; }
 			if (name == "password")        { m_password = val.to_bool(); return true; }
-			if (name == "tabIndex")        { set_tab_index((int) val.to_number()); return true; }
+			if (name == "tabIndex")
+			{
+				// Unregister before conversion: an object conversion can run code.
+				if (m_tab_index >= 0 && m_tab_index < s_tab_table.size() && s_tab_table[m_tab_index] == this)
+					s_tab_table[m_tab_index] = NULL;
+				m_tab_index = bf2x87::lowWord(bf2x87::toInt64Truncate(bf2x87::Real(val.to_number())));
+				// As in 0x10089A3B, negative/invalid indices are unchecked here.
+				register_text_tab(m_tab_index, this);
+				return true;
+			}
 			if (name == "onChanged")       { m_on_changed = val; return true; }
 			if (name == "onSetFocus")      { m_on_set_focus = val; return true; }
-			if (name == "maxChars")        { m_max_chars = (int) val.to_number(); return true; }
+			if (name == "maxChars")        { m_max_chars = bf2x87::toIntTruncate(val.to_number()); return true; }
 			if (name == "restrict")
 			{
 				m_restrict = "";
@@ -2054,54 +2278,80 @@ namespace gameswf
 				}
 				return true;
 			}
-			if (name == "_x" || name == "_y" || name == "_visible" || name == "_alpha")
-			{
-				return false;	// the stock switch below handles these four the same way
-			}
 			// Anything else lives in the field's own environment (the shipped falls through to it).
 			m_as_environment.set_member(name, val);
 			return true;
 		}
-		bool	dice_get_member(const tu_stringi& name, as_value* val)
+		// SwiffPlayer.dll 0x10087C60; exact names, then the environment bag.
+		// [CHOSEN, not recovered] S3 bridge: native keys remain tu_stringi and
+		// native extent virtuals return twips, converted at their consumers.
+		bool	dice_get_member(const tu_stringi& member_name, as_value* val)
 		{
-			if (name == "text")            { val->set_tu_string(m_text); return true; }
-			if (name == "textColor")
+			const tu_string& name = member_name.to_tu_string();
+			if (name == "_x" || name == "_y")
 			{
-				val->set_double((double) (int) (((Uint32) m_text_color.m_a << 24) | ((Uint32) m_text_color.m_r << 16) | ((Uint32) m_text_color.m_g << 8) | m_text_color.m_b));
+				const matrix m = get_matrix();
+				// Both coordinates publish the product directly as double.
+				val->set_double(double(bf2x87::mul(
+					bf2x87::Real(m.m_[name == "_x" ? 0 : 1][2]), bf2x87::Real(0.05f))));
 				return true;
 			}
-			if (name == "_width")          { val->set_double(TWIPS_TO_PIXELS(get_width())); return true; }
-			if (name == "_height")         { val->set_double(TWIPS_TO_PIXELS(get_height())); return true; }
-			// [DICE-MOD #53] sub_10087C60: `textHeight` is vslot 0x10C, the laid-out height formatText
+			if (name == "text")
+			{
+				// The caller may supply a String object to fill in place. Retail
+				// extracts OBJECT only and does not validate its concrete type.
+				if (as_object_interface* string = val->to_object_raw())
+					assign_dice_string_object_narrow(string, m_text.c_str());
+				else val->set_tu_string(m_text);
+				return true;
+			}
+			if (name == "_visible") { val->set_bool(get_visible()); return true; }
+			if (name == "_alpha")
+			{
+				val->set_double(double(bf2x87::mul(bf2x87::Real(get_cxform().m_[3][0]), bf2x87::Real(100.0f))));
+				return true;
+			}
+			if (name == "textColor")
+			{
+				const int color = (int) (((Uint32) m_text_color.m_a << 24) | ((Uint32) m_text_color.m_r << 16) | ((Uint32) m_text_color.m_g << 8) | m_text_color.m_b);
+				val->set_int(color);
+				return true;
+			}
+			if (name == "_width")          { val->set_double(double(extent_pixels(true))); return true; }
+			if (name == "_height")         { val->set_double(double(extent_pixels(false))); return true; }
+			//  sub_10087C60: `textHeight` is vslot 0x10C, the laid-out height formatText
 			// last requested (m_text_height_px), not the font size. The loading screen's label
 			// component sets `_height = textHeight`; with the font size every multi-line field shrank
 			// to one line and the next formatText stopped after the first wrap.
-			if (name == "textHeight")      { val->set_double((double) m_text_height_px); return true; }
+			if (name == "textHeight")      { val->set_int(get_text_height()); return true; }
 			if (name == "border")          { val->set_bool(m_border); return true; }
-			if (name == "borderColor")     { val->set_double((double) (int) (((Uint32) m_border_color.m_a << 24) | ((Uint32) m_border_color.m_r << 16) | ((Uint32) m_border_color.m_g << 8) | m_border_color.m_b)); return true; }
+			if (name == "borderColor")     { val->set_int((int) (((Uint32) m_border_color.m_a << 24) | ((Uint32) m_border_color.m_r << 16) | ((Uint32) m_border_color.m_g << 8) | m_border_color.m_b)); return true; }
 			if (name == "background")      { val->set_bool(m_background); return true; }
-			if (name == "backgroundColor") { val->set_double((double) (int) (((Uint32) m_background_color.m_a << 24) | ((Uint32) m_background_color.m_r << 16) | ((Uint32) m_background_color.m_g << 8) | m_background_color.m_b)); return true; }
+			if (name == "backgroundColor") { val->set_int((int) (((Uint32) m_background_color.m_a << 24) | ((Uint32) m_background_color.m_r << 16) | ((Uint32) m_background_color.m_g << 8) | m_background_color.m_b)); return true; }
 			if (name == "password")        { val->set_bool(m_password); return true; }
 			if (name == "tabIndex")        { if (m_tab_index < 0) return false; val->set_int(m_tab_index); return true; }
 			if (name == "onChanged")       { *val = m_on_changed; return true; }
 			if (name == "onSetFocus")      { *val = m_on_set_focus; return true; }
-			if (name == "maxChars")        { val->set_int(m_max_chars); return true; }
-			if (name == "restrict")        { val->set_string(""); return true; }
+			if (name == "maxChars")        { *val = as_value(m_max_chars); return true; }
+			if (name == "restrict")        { *val = as_value(""); return true; }
 			if (name == "_focus")          { val->set_bool(s_focused_field == this); return true; }
 			if (name == "_parent")
 			{
 				val->set_as_object_interface(get_parent() ? static_cast<as_object_interface*>(get_parent()) : NULL);
 				return true;
 			}
-			if (name == "_x" || name == "_y" || name == "_visible" || name == "_alpha")
-			{
-				return false;	// the stock switch below
-			}
 			return m_as_environment.get_member(name, val);
 		}
 	};
 
-	// [DICE-MOD #37] the focused-field surface SwiffPlayer's key/char/clipboard entries use.
+	// SwiffPlayer.dll 0x10084D90; the native focus stores the field owner rather
+	// than its secondary interface, so compare the adjusted interface pointer.
+	text_input::~text_input()
+	{
+		if (get_focused_text_input() == this) s_focused_field = NULL;
+	}
+
+	//  the focused-field surface SwiffPlayer's key/char/clipboard entries use.
 	text_input*	get_focused_text_input()
 	{
 		return s_focused_field;
@@ -2119,6 +2369,9 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10089C50.
+	// [CHOSEN, not recovered] S3 bridge:
+	// native factories return raw storage instead of a smart-pointer result.
 	character*	edit_text_character_def::create_character_instance(movie* parent, int id)
 	{
 		if (m_font == NULL)
@@ -2137,6 +2390,8 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10085CE0. [CHOSEN, not recovered] S3 bridge:
+	// the native factory assigns the resource ID when publishing the definition.
 	void	define_edit_text_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Read a DefineText tag.
 	{

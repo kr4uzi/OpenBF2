@@ -1,4 +1,4 @@
-// tu_file.h	-- Ignacio Castaño, Thatcher Ulrich 2003
+// tu_file.h	-- Ignacio CastaÃ±o, Thatcher Ulrich 2003
 
 // This source code has been donated to the Public Domain.  Do
 // whatever you want with it.
@@ -72,9 +72,12 @@ public:
 	enum memory_buffer_enum { memory_buffer };
 	tu_file(memory_buffer_enum m);
 
-	// A read-only memory-buffer with predefined data.
+	// Borrow a fixed-size buffer. In-range writes modify data; growth is refused.
+	// The caller keeps data alive until this file is destroyed.
 	tu_file(memory_buffer_enum m, int size, void* data);
 
+	// SwiffPlayer.dll 0x1006E380; scalar deleting wrapper 0x1006F300.
+	// The wrapper alone does not establish a virtual destructor slot.
 	~tu_file();
 
 	// Copy remaining contents of *in into *this.
@@ -106,9 +109,10 @@ public:
 	// Read/write a byte buffer.
 	// Returns number of bytes read/written.
 	int 	read_bytes(void* dst, int num) { return m_read(dst, num, m_data); }
+	// Retail SwiffPlayer.dll 0x1006DC10.
 	int 	write_bytes(const void* src, int num) { return m_write(src, num, m_data); }
 	
-	// write a 0-terminated string.
+	// Write the bytes of a nonempty 0-terminated string, excluding the terminator.
 	void 	write_string(const char* src);
 	
 	// Read up to max_length characters, returns the number of characters 
@@ -126,14 +130,20 @@ public:
 	double	read_double64();
 
 	// get/set pos
+	// Retail SwiffPlayer.dll 0x1006EA70.
 	int	get_position() const { return m_tell(m_data); }
+	// Retail SwiffPlayer.dll 0x1009D1F0 discards the seek callback's result.
 	void 	set_position(int p) { m_seek(p, m_data); }
+	// Retail SwiffPlayer.dll 0x100A47B0 forwards only the application data.
 	void	go_to_end() { m_seek_to_end(m_data); }
+	// Retail SwiffPlayer.dll 0x1006DC30.
 	bool	get_eof() { return m_get_eof(m_data); }
 
+	// Retail SwiffPlayer.dll 0x1006DC40.
 	int	get_error() { return m_error; }
 
-	// printf-style convenience function.
+	// Formats into a 1000-byte workspace and returns the write callback's result.
+	// A full workspace remains unterminated when its length is scanned.
 	int	printf(const char* fmt, ...);
 
 	// UNSAFE back door, for testing only.
@@ -142,13 +152,16 @@ public:
 
 private:
 	Uint64	read64() { Uint64 u; m_read(&u, 8, m_data); return u; }
+	// Retail SwiffPlayer.dll 0x1006EA80 / 0x1006EAA0 (integer/float callers).
 	Uint32	read32() { Uint32 u; m_read(&u, 4, m_data); return u; }
 	Uint16	read16() { Uint16 u; m_read(&u, 2, m_data); return u; }
+	// Retail SwiffPlayer.dll 0x1006DC50 / 0x1009D340: discard the callback result.
 	Uint8	read8() { Uint8 u; m_read(&u, 1, m_data); return u; }
 
 	void	write64(Uint64 u) { m_write(&u, 8, m_data); }
 	void	write32(Uint32 u) { m_write(&u, 4, m_data); }
 	void	write16(Uint16 u) { m_write(&u, 2, m_data); }
+	// Retail SwiffPlayer.dll 0x1006DC70 / 0x100A4F40.
 	void	write8(Uint8 u) { m_write(&u, 1, m_data); }
 
 	void	close();

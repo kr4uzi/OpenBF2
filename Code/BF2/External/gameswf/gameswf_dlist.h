@@ -24,12 +24,14 @@ namespace gameswf
 		bool	m_ref;
 		smart_ptr<character>	m_character;	// state is held in here
 
+		// SwiffPlayer.dll 0x10071500: unreferenced, null character.
 		display_object_info()
 			:
 			m_ref(false)
 		{
 		}
 
+		// SwiffPlayer.dll 0x100A7EB0: copy the flag before acquiring the character.
 		display_object_info(const display_object_info& di)
 			:
 			m_ref(false)
@@ -37,16 +39,19 @@ namespace gameswf
 			*this = di;
 		}
 
+		// SwiffPlayer.dll 0x10071510 releases only the held character.
 		~display_object_info()
 		{
 		}
 
+		// SwiffPlayer.dll 0x100A7C80: write the flag before replacing the character.
 		void	operator=(const display_object_info& di)
 		{
 			m_ref = di.m_ref;
 			m_character = di.m_character;
 		}
 
+		// SwiffPlayer.dll 0x100A7CD0.
 		void	set_character(character* ch)
 		{
 			m_character = ch;
@@ -89,7 +94,7 @@ namespace gameswf
 			const matrix& mat,
 			float ratio,
 			Uint16 clip_depth);
-		void	remove_display_object(Uint16 depth, int id);
+		void	remove_display_object(Uint16 depth);
 
 		// clear the display list.
 		void	clear();
@@ -112,13 +117,15 @@ namespace gameswf
 		void	display();
 		void	display(const display_info& di);
 
-		int	get_character_count() { return m_display_object_array.size(); }
-		// [DICE-MOD SwiffPlayer #32: a character whose reference flag is cleared - removed by AS or a
+		// [INFERRED] Source-level constness of the native read-only accessors.
+		int	get_character_count() const { return m_display_object_array.size(); }
+		// a character whose reference flag is cleared - removed by AS or a
 		// RemoveObject tag, awaiting the next sweep - is INVISIBLE here, exactly as the shipped
 		// display_list::get_character (sub_10071550: `m_ref ? m_character : 0`). Stock 2006 returned
 		// it, so a `removeMovieClip` + `attachMovie` of the same name resolved the dead clip by name
-		// for the rest of the frame (the login list's `contents`). Walks must null-check.]
-		character*	get_character(int index)
+		// for the rest of the frame (the login list's `contents`). Walks must null-check.
+		// SwiffPlayer.dll 0x10071550.
+		character*	get_character(int index) const
 		{
 			const display_object_info&	di = m_display_object_array[index];
 			return di.m_ref ? di.m_character.get_ptr() : NULL;

@@ -15,6 +15,7 @@
 
 #include "base/tu_config.h"
 #include "base/utility.h"
+#include "base/hash_capacity.h"
 #include <stdlib.h>
 #include <string.h>	// for strcmp and friends
 #include <new>	// for placement new
@@ -87,6 +88,7 @@ public:
 		std::vector<T>::insert(end(), other.begin(), other.end());
 	}
 
+	// SwiffPlayer.dll 0x10097AA0: append eight-byte records after one resize.
 	void	append(const T other[], int count)
 	{
 		// This will probably work.  Depends on std::vector<T>::iterator being typedef'd as T*
@@ -108,6 +110,12 @@ public:
 		// Drop all storage.
 		std::vector<T>	temp;
 		this->swap(temp);
+	}
+	// [CHOSEN, not recovered] S3 bridge; same reverse value lifetime as below.
+	void clear_reverse()
+	{
+		while (this->size()) this->pop_back();
+		release();
 	}
 };
 
@@ -202,6 +210,7 @@ class array {
 // Default constructor and destructor get called on the elements as
 // they are added or removed from the active part of the array.
 public:
+	// Retail SwiffPlayer.dll 0x1006FE10 / 0x10070280.
 	array() : m_buffer(0), m_size(0), m_buffer_size(0) {}
 	array(int size_hint) : m_buffer(0), m_size(0), m_buffer_size(0) { resize(size_hint); }
 	array(const array<T>& a)
@@ -217,10 +226,14 @@ public:
 	}
 
 	// Basic array access.
+	// Retail SwiffPlayer.dll 0x1006FD60 / 0x1006FE20 / 0x10070290.
 	T&	operator[](int index) { assert(index >= 0 && index < m_size); return m_buffer[index]; }
 	const T&	operator[](int index) const { assert(index >= 0 && index < m_size); return m_buffer[index]; }
+	// Retail SwiffPlayer.dll 0x1006FD70 / 0x1006FE30 / 0x100702B0.
 	int	size() const { return m_size; }
 
+	// Retail SwiffPlayer.dll 0x10074760 / 0x10085DB0 / 0x10098850 (path):
+	// resize before assignment, including the nested edge array and final flag.
 	void	push_back(const T& val)
 	// Insert the given element at the end of the array.
 	{
@@ -234,6 +247,7 @@ public:
 		(*this)[new_size-1] = val;
 	}
 
+	// Retail SwiffPlayer.dll 0x10085DE0 / 0x1009D570.
 	void	pop_back()
 	// Remove the last element.
 	{
@@ -246,9 +260,15 @@ public:
 	const T&	front() const { return (*this)[0]; }
 
 	// Access the last element.
+	// Retail SwiffPlayer.dll 0x10084F30 / 0x10084F80 / 0x1009D530.
 	T&	back() { return (*this)[m_size-1]; }
 	const T&	back() const { return (*this)[m_size-1]; }
 
+	// Retail SwiffPlayer.dll 0x10074900 / 0x10074DC0: resize to zero.
+	// Trivial-element instances: 0x10072490 (edge), 0x10074810 (byte),
+	// 0x10074860 (dictionary pointer), 0x10074980 / 0x10074DF0 / 0x10074E40
+	// (word; exact type unproved), 0x10072AB0 (pointer), 0x100A5830 (recti).
+	// 0x10074370 is the edge tail veneer. Live trivial destructors have no effects.
 	void	clear()
 	// Empty and destruct all elements.
 	{
@@ -257,6 +277,16 @@ public:
 
 	void	release() { clear(); }
 
+	// [CHOSEN, not recovered] S3 bridge for native storage of fixed arrays:
+	// destroy the last value first, retaining every element address until finished.
+	void clear_reverse()
+	{
+		for (int i = m_size; i > 0; --i) (m_buffer + i - 1)->~T();
+		m_size = 0;
+		reserve(0);
+	}
+
+	// Retail SwiffPlayer.dll 0x10085740 / 0x10085EB0 / 0x100748B0 (as_value).
 	void	operator=(const array<T>& a)
 	// Array copy.  Copies the contents of a into this array.
 	{
@@ -267,6 +297,7 @@ public:
 	}
 
 
+	// Retail SwiffPlayer.dll 0x10081550 / 0x100A63B0.
 	void	remove(int index)
 	// Removing an element from the array is an expensive operation!
 	// It compacts only after removing the last element.
@@ -287,6 +318,7 @@ public:
 	}
 
 
+	// Retail SwiffPlayer.dll 0x100A24E0.
 	void	insert(int index, const T& val = T())
 	// Insert the given object at the given index shifting all the elements up.
 	{
@@ -328,6 +360,9 @@ public:
 	}
 
 
+	// Retail SwiffPlayer.dll 0x10075280 / 0x100741F0 / 0x100A5480,
+	// 0x100A0760 (texture_glyph) / 0x100A64F0 (pending_glyph_info):
+	// shrink destructors precede reserve; only newly active elements are constructed.
 	void	resize(int new_size)
 	// Preserve existing elements via realloc.
 	// 
@@ -361,6 +396,8 @@ public:
 		}}
 	}
 
+	// Retail SwiffPlayer.dll 0x100752E0 / 0x100851B0 (4-byte elements),
+	// 0x100A4C00 (8), 0x100A4BA0 (16), 0x100A4E20 (48): allocate raw capacity.
 	void	reserve(int rsize)
 	// @@ TODO change this to use ctor, dtor, and operator=
 	// instead of preserving existing elements via binary copy via
@@ -383,7 +420,6 @@ public:
 				m_buffer = (T*) tu_realloc(m_buffer, sizeof(T) * m_buffer_size, sizeof(T) * old_size);
 			} else {
 				m_buffer = (T*) tu_malloc(sizeof(T) * m_buffer_size);
-				memset(m_buffer, 0, (sizeof(T) * m_buffer_size));
 			}
 			assert(m_buffer);	// need to throw (or something) on malloc failure!
 		}			
@@ -424,7 +460,9 @@ class hash {
 public:
 	hash() : m_table(NULL) { }
 	hash(int size_hint) : m_table(NULL) { set_capacity(size_hint); }
-	~hash() { clear(); }
+	// Retail SwiffPlayer.dll 0x100724E0 / 0x10082E10: destruction leaves the word alone.
+	// Interval-record instance: 0x1007DA60, tail veneer 0x1007EB10.
+	~hash() { destroy_table(); }
 
 	hash(const hash<T,U,hash_functor>& src)
 		:
@@ -447,7 +485,10 @@ public:
 		}
 	}
 
-	// @@ need a "remove()"
+	// SwiffPlayer.dll 0x1007DA10 (interval records). The key must exist.
+	// [INFERRED] Source-level name. Retail destroys only this entry: neither
+	// the chain nor the entry count is repaired, including for a chain head.
+	void invalidate(const T& key) { E(find_index(key)).clear(); }
 
 	void	set(const T& key, const U& value)
 	// Set a new or existing value under the key, to the value.
@@ -463,6 +504,8 @@ public:
 		add(key, value);
 	}
 
+	// Retail SwiffPlayer.dll 0x10071E30 / 0x10074550 / 0x10076CF0:
+	// expand, increment count, hash, then insert or relocate a chain head.
 	void	add(const T& key, const U& value)
 	// Add a new value to the hash table, under the specified key.
 	{
@@ -544,20 +587,9 @@ public:
 	void	clear()
 	// Remove all entries from the hash table.
 	{
-		if (m_table)
-		{
-			// Delete the entries.
-			for (int i = 0, n = m_table->m_size_mask; i <= n; i++)
-			{
-				entry*	e = &E(i);
-				if (e->is_empty() == false)
-				{
-					e->clear();
-				}
-			}
-			tu_free(m_table, sizeof(table) + sizeof(entry) * (m_table->m_size_mask + 1));
-			m_table = NULL;
-		}
+		// Retail SwiffPlayer.dll 0x1008BEF0 / 0x100975C0.
+		destroy_table();
+		m_table = NULL;
 	}
 
 	bool	is_empty() const
@@ -567,6 +599,8 @@ public:
 	}
 
 
+	// Retail SwiffPlayer.dll 0x10074430 / 0x10076E90.
+	// SwiffPlayer.dll 0x10074720: optional output assignment on a successful lookup.
 	bool	get(const T& key, U* value) const
 	// Retrieve the value under the given key.
 	//
@@ -597,6 +631,7 @@ public:
 	}
 
 
+	// Retail SwiffPlayer.dll 0x100705B0 / 0x10070730: grow from entry count.
 	void	check_expand()
 	// Resize the hash table to fit one more entry.  Often this
 	// doesn't involve any action.
@@ -606,7 +641,7 @@ public:
 			set_raw_capacity(16);
 		} else if (m_table->m_entry_count * 3 > (m_table->m_size_mask + 1) * 2) {
 			// Table is more than 2/3rds full.  Expand.
-			set_raw_capacity((m_table->m_size_mask + 1) * 2);
+			set_raw_capacity(m_table->m_entry_count * 2);
 		}
 	}
 
@@ -643,17 +678,29 @@ public:
 		U	second;
 
 		entry() : m_next_in_chain(-2) {}
+		// SwiffPlayer.dll 0x10077CA0 (interval records); 0x10075090 (word/string),
+		// 0x100761A0 (string/word), 0x10076220 (string/held pointer),
+		// 0x10072B80 (word/held pointer), 0x10076400 (16-bit key/as_value).
 		entry(const entry& e)
 			: m_next_in_chain(e.m_next_in_chain), m_hash_value(e.m_hash_value), first(e.first), second(e.second)
 		{
 		}
+		// SwiffPlayer.dll 0x10077CD0 (interval records), 0x100750C0 (word/string),
+		// 0x100761E0 (string/word), 0x10076270 (string/held pointer),
+		// 0x10072BC0 (word/held pointer), 0x10076450 (16-bit key/as_value).
+		// Hash width is a native port choice; unidentified pointee types stay inferred.
 		entry(const T& key, const U& value, int next_in_chain, size_t hash_value)	// [CHOSEN, not recovered] x64 (issue 7): was int
 			: m_next_in_chain(next_in_chain), m_hash_value(hash_value), first(key), second(value)
 		{
 		}
+		// Retail SwiffPlayer.dll 0x100707D0 / 0x100707E0.
 		bool	is_empty() const { return m_next_in_chain == -2; }
 		bool	is_end_of_chain() const { return m_next_in_chain == -1; }
 
+		// Retail SwiffPlayer.dll 0x10072C00 / 0x10084910.
+		// Interval-record instance: 0x1007CD50.
+		// 0x10072DE0 destroys a trivial key/as_value; 0x10074E90 destroys a
+		// string key before releasing the held pointer, then writes the sentinel.
 		void	clear()
 		{
 			first.~T();	// placement delete
@@ -669,6 +716,7 @@ public:
 		T	get_key() const { return m_hash->E(m_index).first; }
 		U	get_value() const { return m_hash->E(m_index).second; }
 
+		// Retail SwiffPlayer.dll 0x100707C0 / 0x10071F90: hash/index to entry.
 		const entry&	operator*() const
 		{
 			assert(is_end() == false && (m_hash->E(m_index).is_empty() == false));
@@ -676,6 +724,7 @@ public:
 		}
 		const entry*	operator->() const { return &(operator*()); }
 
+		// Retail SwiffPlayer.dll 0x10071FA0 / 0x10079A90 / 0x10072120.
 		void	operator++()
 		{
 			assert(m_hash);
@@ -692,6 +741,7 @@ public:
 			}
 		}
 
+		// Retail SwiffPlayer.dll 0x10072890 / 0x10079AE0: any two ends compare equal.
 		bool	operator==(const const_iterator& it) const
 		{
 			if (is_end() && it.is_end())
@@ -706,9 +756,11 @@ public:
 			}
 		}
 
+		// Retail SwiffPlayer.dll 0x100744D0 / 0x100747F0.
 		bool	operator!=(const const_iterator& it) const { return ! (*this == it); }
 
 
+		// Retail SwiffPlayer.dll 0x10070F50 / 0x100710D0.
 		bool	is_end() const
 		{
 			return
@@ -718,7 +770,7 @@ public:
 		}
 
 	protected:
-		friend class hash<T,U,hash_functor>;
+		friend class ::hash<T,U,hash_functor>;	// [BUILD-FIX SwiffPlayer: qualified; MSVC finds std::hash too in TUs with using namespace std]
 
 		const_iterator(const hash* h, int index)
 			:
@@ -736,6 +788,7 @@ public:
 	struct iterator : public const_iterator
 	{
 		// Allow non-const access to entries.
+		// SwiffPlayer.dll 0x10072100: reload the current table through its owner.
 		entry&	operator*() const
 		{
 			assert(const_iterator::is_end() == false);
@@ -744,7 +797,7 @@ public:
 		entry*	operator->() const { return &(operator*()); }
 
 	private:
-		friend class hash<T,U,hash_functor>;
+		friend class ::hash<T,U,hash_functor>;	// [BUILD-FIX SwiffPlayer: qualified; MSVC finds std::hash too in TUs with using namespace std]
 
 		iterator(hash* h, int i0)
 			:
@@ -755,6 +808,7 @@ public:
 	friend struct iterator;
 
 
+	// Retail SwiffPlayer.dll 0x10074470 / 0x10079B40 / 0x10097F80.
 	iterator	begin()
 	{
 		if (m_table == 0) return iterator(NULL, 0);
@@ -787,6 +841,31 @@ public:
 
 private:
 
+	// Retail SwiffPlayer.dll 0x10074910 / 0x10074AC0 / 0x10074D30 / 0x10074A40:
+	// destroy occupied entries in index order, then free storage.
+	// 0x10075C90 / 0x10075CB0 / 0x10075CC0 / 0x10075CD0 / 0x10075CE0
+	// are destructor tail veneers; no final null-word write is made.
+	// Further destructor veneers: 0x10074420 -> 0x100724E0,
+	// 0x10075C60 -> 0x10074910, 0x10075C80 / 0x10076690 -> 0x100749D0,
+	// 0x10075CF0 / 0x100766B0 -> 0x10074CC0,
+	// 0x10075D00 / 0x100766D0 -> 0x10074D30,
+	// 0x10075DE0 -> 0x100746A0, 0x10076F10 / 0x10077790 -> 0x10075D50.
+	// Template types remain [INFERRED]; native compiler emits forwarding as needed.
+	void destroy_table()
+	{
+		if (m_table)
+		{
+			for (int i = 0, n = m_table->m_size_mask; i <= n; i++)
+			{
+				entry* e = &E(i);
+				if (e->is_empty() == false) e->clear();
+			}
+			tu_free(m_table, sizeof(table) + sizeof(entry) * (m_table->m_size_mask + 1));
+		}
+	}
+
+	// Retail SwiffPlayer.dll 0x10078560 / 0x10075FE0 / 0x100A0C90:
+	// reject empty/displaced heads, then compare cached hash and key along the chain.
 	int	find_index(const T& key) const
 	// Find the index of the matching entry.  If no match, then return -1.
 	{
@@ -823,6 +902,10 @@ private:
 	}
 
 	// Helpers.
+	// Retail SwiffPlayer.dll 0x100705E0 / 0x10070600 / 0x10070620 / 0x10070640
+	// and 0x10070660 / 0x10070680 / 0x100706A0 use 16-byte retail entries;
+	// 0x10070760 / 0x10070780 / 0x100707A0 use 28-byte entries.
+	// [INFERRED] template arguments; native sizeof(entry) includes pointer widths.
 	entry&	E(int index)
 	{
 		assert(m_table);
@@ -837,6 +920,12 @@ private:
 	}
 
 
+	// SwiffPlayer.dll capacity instances (template arguments remain [INFERRED]):
+	// 0x10074F90, 0x100762C0, 0x100764A0, 0x10077240, 0x10077370,
+	// 0x10077510, 0x10078FC0, 0x10079100, 0x10079240, 0x10079380,
+	// 0x1007A330, 0x1007A950, 0x1007EB20, 0x100830A0, 0x100836C0,
+	// 0x100847F0, 0x1008DFC0, 0x10097C20, 0x10099B80, 0x100A11B0,
+	// 0x100A12B0, 0x100A65F0. Native entry widths/ownership remain adapted.
 	void	set_raw_capacity(int new_size)
 	// Resize the hash table to the given size (Rehash the
 	// contents of the current table).  The arg is the number of
@@ -844,30 +933,27 @@ private:
 	// actually contain (which will be less than this).
 	{
 		if (new_size <= 0) {
-			// Special case.
+			// [CHOSEN, not recovered] Existing native clear adapter: older PE
+			// instances (0x10074F90) call destruction without nulling; later
+			// instances (0x10097C20 / 0x1008DFC0) call clear and null the word.
+			// [RETIRE-WHEN: swf-hash-clear-generation] Establish each concrete
+			// template's cleanup variant and validate nonpositive resize ownership.
 			clear();
 			return;
 		}
 
-		// Force new_size to be a power of two.
-		int	bits = fchop(tu_util::log2((float)(new_size-1)) + 1);
-		assert((1 << bits) >= new_size);
-
-		new_size = 1 << bits;
-
-		// Minimum size; don't incur rehashing cost when
-		// expanding very small tables.
-		if (new_size < 16)
-		{
-			new_size = 16;
-		}
+		// [CHOSEN, not recovered] Native mode binding selects the normal
+		// client's 24-bit/nearest contract instead of querying host FP control.
+		// The helper's integer results are recovered for that mode.
+		const uint32_t capacity = tu_util::hash_raw_capacity(new_size);
+		new_size = capacity <= 0x7fffffffu ? int(capacity) : (-2147483647 - 1);
 
 		hash<T, U, hash_functor>	new_hash;
-		new_hash.m_table = (table*) tu_malloc(sizeof(table) + sizeof(entry) * new_size);
+		new_hash.m_table = (table*) tu_malloc(sizeof(table) + sizeof(entry) * capacity);
 		assert(new_hash.m_table);	// @@ need to throw (or something) on malloc failure!
 
 		new_hash.m_table->m_entry_count = 0;
-		new_hash.m_table->m_size_mask = new_size - 1;
+		new_hash.m_table->m_size_mask = int(capacity - 1u);
 		{for (int i = 0; i < new_size; i++)
 		{
 			new_hash.E(i).m_next_in_chain = -2;	// mark empty
@@ -914,7 +1000,8 @@ class tu_stringi;
 class tu_string
 {
 public:
-	tu_string() { m_local.m_size = 1; memset(m_local.m_buffer, 0, 15); }
+	// Retail SwiffPlayer.dll 0x100924FF: initialize only the size and terminator.
+	tu_string() { m_local.m_size = 1; m_local.m_buffer[0] = 0; }
 	tu_string(const char* str)
 	{
 		m_local.m_size = 1;
@@ -924,6 +1011,7 @@ public:
 		resize(new_size);
 		strcpy(get_buffer(), str);
 	}
+	// Retail SwiffPlayer.dll 0x1006E510.
 	tu_string(const char* buf, int buflen)
 	{
 		m_local.m_size = 1;
@@ -934,6 +1022,7 @@ public:
 		memcpy(get_buffer(), buf, buflen);
 		get_buffer()[buflen] = 0;	// terminate.
 	}
+	// Retail SwiffPlayer.dll 0x10009770 (also used by base template instances).
 	tu_string(const tu_string& str)
 	{
 		m_local.m_size = 1;
@@ -947,14 +1036,16 @@ public:
 		m_local.m_size = 1;
 		m_local.m_buffer[0] = 0;
 
-		*this = wide_char_str;
+		// [CHOSEN, not recovered] S3 bridge for the 2006 32-bit-unit overload.
+		encode_utf8_from_wchar(this, wide_char_str);
 	}
 	tu_string(const uint16* wide_char_str)
 	{
 		m_local.m_size = 1;
 		m_local.m_buffer[0] = 0;
 
-		*this = wide_char_str;
+		// Retail helper 0x1006E5A0, constructed-empty caller 0x100924FF.
+		encode_utf8_from_wchar(this, wide_char_str);
 	}
 
 	~tu_string()
@@ -993,6 +1084,16 @@ public:
 		strcpy(get_buffer(), str.get_buffer());
 	}
 
+	// Retail SwiffPlayer.dll 0x10089360; method name [INFERRED].
+	// Copy exactly buflen bytes and append a NUL. The source must survive resize.
+	void assign(const char* buf, int buflen)
+	{
+		resize(buflen);
+		memcpy(get_buffer(), buf, buflen);
+		get_buffer()[buflen] = 0;
+	}
+
+	// Retail SwiffPlayer.dll 0x100858F0.
 	bool	operator==(const char* str) const
 	{
 		return strcmp(*this, str) == 0;
@@ -1026,6 +1127,7 @@ public:
 	}
 	int	size() const { return length(); }
 
+	// Retail SwiffPlayer.dll 0x1006E580.
 	char&	operator[](int index)
 	{
 		assert(index >= 0 && index <= size());
@@ -1036,6 +1138,7 @@ public:
 		return (*(const_cast<tu_string*>(this)))[index];
 	}
 
+	// Retail SwiffPlayer.dll 0x10072F30.
 	void	operator+=(const char* str)
 	{
 		int	str_length = strlen(str);
@@ -1051,12 +1154,16 @@ public:
 		assert(old_length >= 0);
 		resize(old_length + 1);
 		strncpy(get_buffer() + old_length, (char *)&ch, 1);
+		// [CHOSEN, not recovered] S3 bridge: the retained 2006 character append
+		// needs its own terminator when retail resize moves local data to the heap.
+		get_buffer()[old_length + 1] = 0;
 	}
 
 	// Append wide char.  Both versions of wide char.
 	void	append_wide_char(uint16 ch);
 	void	append_wide_char(uint32 ch);
 
+	// Retail SwiffPlayer.dll 0x10088CA0.
 	void	operator+=(const tu_string& str)
 	{
 		int	str_length = str.length();
@@ -1066,12 +1173,13 @@ public:
 		strcpy(get_buffer() + old_length, str.c_str());
 	}
 
+	// Retail SwiffPlayer.dll 0x10088D10: copy the appended temporary into the result.
 	tu_string	operator+(const char* str) const
 	// NOT EFFICIENT!  But convenient.
 	{
 		tu_string	new_string(*this);
 		new_string += str;
-		return new_string;
+		return tu_string(new_string);
 	}
 
 	bool	operator<(const char* str) const
@@ -1098,6 +1206,8 @@ public:
 	
 	// Sets buffer size to new_size+1 (i.e. enough room for
 	// new_size chars, plus terminating 0).
+	// Growing from local to heap storage preserves the old terminator but leaves
+	// the new tail uninitialized; callers that fill the tail must terminate it.
 	void	resize(int new_size);
 
 	// Set *result to the UTF-8 encoded version of wstr[].
@@ -1113,7 +1223,8 @@ public:
 	static int	stricmp(const char* a, const char* b);
 
 	// Return the Unicode char at the specified character
-	// position.  index is in UTF-8 chars, NOT bytes.
+	// position. Positive positions are one-based; zero and negative positions
+	// also decode the first character. Returns zero at the terminator.
 	uint32	utf8_char_at(int index) const;
 
 	// Return the string in this container as all upper case letters
@@ -1264,7 +1375,9 @@ class string_hash_functor
 public:
 	size_t	operator()(const T& data) const
 	{
-		int	size = data.length();
+		// Retail SwiffPlayer.dll 0x100846F0: string comparison and hashing both
+		// stop at the first NUL, even when the stored byte length is larger.
+		int	size = (int) strlen((const char*) data);
 
 		return bernstein_hash((const char*) data, size);
 	}
@@ -1285,7 +1398,9 @@ class stringi_hash_functor
 public:
 	size_t	operator()(const T& data) const
 	{
-		int	size = data.length();
+		// Retail SwiffPlayer.dll 0x10075FE0 / 0x10079E40 / 0x10099860:
+		// key hashing stops at the first NUL, as the comparison does.
+		int	size = (int) strlen((const char*) data);
 
 		return bernstein_hash_case_insensitive((const char*) data, size);
 	}

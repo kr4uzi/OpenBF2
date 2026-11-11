@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 namespace dice { namespace meme { class System; class Bf2ObjectSelectionNode; } }
+namespace dice { namespace hfe { struct PlayerVOHelp; } }
 namespace dice { namespace hfe { namespace world {
 class IObject; class IPlayer; class IPlayerControlObject; class IWeaponObject; class IAbilityGLComp;
 } } }
@@ -39,6 +40,7 @@ public:
     static bool canChangeWeapon(world::IObject*); // 7A5400, ECX unused; name inferred
 private:
     friend class BF2HudManager;
+    friend struct ::dice::hfe::PlayerVOHelp;
     friend struct HudAmmoFixture;
     friend struct HudAmmoConstructionFixture;
     friend struct HudAmmoFrameFixture;

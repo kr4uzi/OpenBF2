@@ -22,7 +22,8 @@ enum ServerQueryKey
     SQK_friendlyFireEnabled, SQK_punish, SQK_startDelay, SQK_spawnTime, SQK_sponsorText,
     SQK_sponsorLogoURL, SQK_ticketRatio, SQK_teamRatioPercent, SQK_teamName1, SQK_teamName2, SQK_hasBots,
     SQK_useContentChecking, SQK_currentMapSize, SQK_serverPort, SQK_useGlobalUnlocks, SQK_avgFps,
-    SQK_communityLogoURL, SQK_usesPlasma, SQK_numReservedSlots, SQK_unused41, SQK_unused42, SQK_unused43,
+    SQK_communityLogoURL, SQK_usesPlasma, SQK_numReservedSlots,
+    SQK_coopBotRatio, SQK_coopBotCount, SQK_coopBotDifficulty,
     SQK_noVehicles,
     NUM_SERVER_KEYS
 };

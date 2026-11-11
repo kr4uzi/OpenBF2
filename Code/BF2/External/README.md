@@ -13,6 +13,7 @@ local changes small and documented alongside the affected dependency.
 | TinyXML | `TinyXML/`; upstream TinyXML source | XML parsing through engine wrappers |
 | GameSpy SDK | `GameSpy/`; December 2007 SDK, including qr2 3.04.00 | Network service integrations |
 | gameswf and base | `gameswf/` and `base/`; Thatcher Ulrich's tu-testbed snapshot of 27 February 2006 | SwiffPlayer menu playback |
+| Expat 1.95.0 | `expat/`; official `libexpat` tag `R_1_95_0`, unchanged MIT sources ([provenance and hashes](expat/README.md)); [CHOSEN, not recovered] substitute for DICE's modified parser | SwiffPlayer XML |
 | libogg 1.3.6 and libvorbis 1.3.7 | `libogg-1.3.6/` and `libvorbis-1.3.7/`; Xiph.Org sources | BF2Audio Ogg/Vorbis decoding |
 | Dear ImGui | `imgui/`; `v1.92.9b-docking`, commit `b48d1af` | Editor UI |
 | ImGuizmo | `ImGuizmo/`; tag `1.10`, commit `b796ac3` | Editor transform gizmo |

@@ -2,6 +2,8 @@
 // [CHOSEN] Translation-unit placement; no retail __FILE__ attests this filename.
 // Bindings retain their receiver signatures and client-only compilation boundary.
 
+#include <string>
+
 #include "../Core/BuildConfig.h"
 
 #if !DEDICATED
@@ -13,8 +15,6 @@
 #include "HapticSettings.h"
 #include "VideoSettings.h"
 #include "Main/BF2ClientSeams.h"        // g_audioSettings ... g_gameServerSettings (ds:0x987354..0x987394)
-
-#include <string>
 
 namespace dice {
 namespace hfe {
@@ -186,6 +186,13 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setConnectionType, generalSettings()->setConn
 // setLCDDisplayModes: ctor 416906 (name 0x883E84 stored at 0x416913, return type "void" 0x881214 at
 // +0x4C by 0x416943), exec 4169C4 -> +0x160, conv 416977
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setLCDDisplayModes, generalSettings()->setLCDDisplayModes, ::dice::hfe::g_generalSettings != 0, bool, kSettingsConsoleTag)
+
+// [CHOSEN, not recovered] Owner's tutorial option, saved with the general settings.
+// See docs/macos-feat-tutoff.md for the content-preserving config fallback.
+// Only these new commands are available at end-user access; retail bindings keep access 2.
+BF2_CONSOLE_OBJECT("GeneralSettings", 1, 0)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setShowTutorialMessages, generalSettings()->setShowTutorialMessages, ::dice::hfe::g_generalSettings != 0, bool, kSettingsConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getShowTutorialMessages, generalSettings()->getShowTutorialMessages, bool, ::dice::hfe::g_generalSettings != 0, kSettingsConsoleTag)
 
 // Haptic settings use console access level 1. The load binding reloads the current
 // profile file and returns its Boolean result.

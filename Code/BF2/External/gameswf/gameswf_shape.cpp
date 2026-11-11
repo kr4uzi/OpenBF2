@@ -6,6 +6,9 @@
 // Quadratic bezier outline shapes, the basis for most SWF rendering.
 
 
+#include <float.h>
+#include <new>
+
 #include "gameswf_shape.h"
 
 #include "gameswf_impl.h"
@@ -15,23 +18,8 @@
 #include "gameswf_tesselate.h"
 
 #include "base/tu_file.h"
+#include "../../Platform/X87Compat.h"
 
-#include <float.h>
-
-
-// [BUILD-FIX SwiffPlayer: the unconditional #define pulls base/ogl.h and 8 OpenGL calls
-// (debug_display_shape_paths / show_fill_number) into the link. The shipped SwiffPlayer.dll imports
-// NO opengl32 (dumpbin /dependents), so DICE's build had this debug-only path OFF; linking opengl32
-// instead would add a dependent the shipped image does not have. gameswf_debug_show_paths is a
-// runtime flag defaulting to false, so the path is never taken - only its OpenGL references are the
-// problem. Disabled to match the shipped image. Evidence: no opengl32 in SwiffPlayer.dll dependents.
-// Indexed in Code/BF2/External/gameswf/GAMESWF_DIVERGENCES.md.]
-//#define DEBUG_DISPLAY_SHAPE_PATHS
-#ifdef DEBUG_DISPLAY_SHAPE_PATHS
-	// For debugging only!
-	bool	gameswf_debug_show_paths = false;
-#endif // DEBUG_DISPLAY_SHAPE_PATHS
-// [/BUILD-FIX]
 
 
 namespace gameswf
@@ -84,6 +72,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x10097D20.
 	path::path()
 		:
 		m_new_shape(false)
@@ -91,6 +80,7 @@ namespace gameswf
 		reset(0, 0, 0, 0, 0);
 	}
 
+	// SwiffPlayer.dll 0x10097D50 leaves m_new_shape untouched.
 	path::path(float ax, float ay, int fill0, int fill1, int line)
 	{
 		reset(ax, ay, fill0, fill1, line);
@@ -350,11 +340,19 @@ namespace gameswf
 	//
 
 	
+	// SwiffPlayer.dll 0x10097D90.
 	mesh::mesh()
 	{
 	}
 
 
+	// SwiffPlayer.dll 0x100977A0 and 0x10097DC0 keep AX after qword _ftol.
+	static Sint16	shape_coord(float value)
+	{
+		return bf2x87::lowShort(bf2x87::toInt64Truncate(bf2x87::Real(value)));
+	}
+
+	// SwiffPlayer.dll 0x100977A0 (adjacent dependency).
 	void	mesh::set_tri_strip(const point pts[], int count)
 	{
 		m_triangle_strip.resize(count * 2);	// 2 coords per point
@@ -362,8 +360,8 @@ namespace gameswf
 		// convert to ints.
 		for (int i = 0; i < count; i++)
 		{
-			m_triangle_strip[i * 2] = Sint16(pts[i].m_x);
-			m_triangle_strip[i * 2 + 1] = Sint16(pts[i].m_y);
+			m_triangle_strip[i * 2] = shape_coord(pts[i].m_x);
+			m_triangle_strip[i * 2 + 1] = shape_coord(pts[i].m_y);
 		}
 
 //		m_triangle_strip.resize(count);
@@ -401,6 +399,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x10097DA0.
 	line_strip::line_strip()
 	// Default constructor, for array<>.
 		:
@@ -408,6 +407,7 @@ namespace gameswf
 	{}
 
 
+	// SwiffPlayer.dll 0x10097DC0.
 	line_strip::line_strip(int style, const point coords[], int coord_count)
 	// Construct the line strip (polyline) made up of the given sequence of points.
 		:
@@ -424,8 +424,8 @@ namespace gameswf
 		// convert to ints.
 		for (int i = 0; i < coord_count; i++)
 		{
-			m_coords[i * 2] = Sint16(coords[i].m_x);
-			m_coords[i * 2 + 1] = Sint16(coords[i].m_y);
+			m_coords[i * 2] = shape_coord(coords[i].m_x);
+			m_coords[i * 2 + 1] = shape_coord(coords[i].m_y);
 		}
 	}
 
@@ -462,16 +462,19 @@ namespace gameswf
 	// tesselator.
 	struct tri_stripper
 	{
+		// Implicit strip-array destruction: SwiffPlayer.dll 0x10098AA0 (deleting veneer).
 		// A set of strips; we'll join them together into one
 		// strip during the flush.
 		array< array<point> >	m_strips;
 		int	m_last_strip_used;
 
+		// SwiffPlayer.dll 0x100985B0.
 		tri_stripper()
 			: m_last_strip_used(-1)
 		{
 		}
 
+		// SwiffPlayer.dll 0x10098090.
 		void	add_trapezoid(const point& l0, const point& r0, const point& l1, const point& r1)
 		// Add two triangles to our strip.
 		{
@@ -530,6 +533,7 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x100988C0.
 		void	flush(mesh_set* m, int style) const
 		// Join sub-strips together, and push the whole thing into the given mesh_set,
 		// under the given style.
@@ -583,6 +587,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x10098A80.
 	mesh_set::mesh_set()
 		:
 //		m_last_frame_rendered(-1),
@@ -590,6 +595,7 @@ namespace gameswf
 	{
 	}
 
+	// SwiffPlayer.dll 0x100992F0.
 	mesh_set::mesh_set(const tesselate::tesselating_shape* sh, float error_tolerance)
 	// Tesselate the shape's paths into a different mesh for each fill style.
 		:
@@ -598,15 +604,18 @@ namespace gameswf
 	{
 		struct collect_traps : public tesselate::trapezoid_accepter
 		{
+			// Implicit hash destruction: SwiffPlayer.dll 0x10097E60 / 0x10097E70.
 			mesh_set*	m;	// the mesh_set that receives trapezoids.
 
 			// strips-in-progress.
 			hash<int, tri_stripper*>	m_strips;
 
+			// SwiffPlayer.dll 0x10097E40.
 			collect_traps(mesh_set* set) : m(set) {}
 			virtual ~collect_traps() {}
 
 			// Overrides from trapezoid_accepter
+			// SwiffPlayer.dll 0x100985D0.
 			virtual void	accept_trapezoid(int style, const tesselate::trapezoid& tr)
 			{
 				// Add trapezoid to appropriate stripper.
@@ -626,12 +635,14 @@ namespace gameswf
 					point(tr.m_rx1, tr.m_y1));
 			}
 
+			// SwiffPlayer.dll 0x10099110.
 			virtual void	accept_line_strip(int style, const point coords[], int coord_count)
 			// Remember this line strip in our mesh set.
 			{
 				m->add_line_strip(style, coords, coord_count);
 			}
 
+			// SwiffPlayer.dll 0x10099120.
 			void	flush() const
 			// Push our strips into the mesh set.
 			{
@@ -660,11 +671,16 @@ namespace gameswf
 //	void	mesh_set::set_last_frame_rendered(int frame_counter) { m_last_frame_rendered = frame_counter; }
 
 
+	// SwiffPlayer.dll 0x10098B30; member arrays destroy lines before meshes.
+	mesh_set::~mesh_set() = default;
+
+	// SwiffPlayer.dll 0x10096D60.
 	void	mesh_set::display(
 		const matrix& mat,
 		const cxform& cx,
 		const array<fill_style>& fills,
-		const array<line_style>& line_styles) const
+		const array<line_style>& line_styles,
+		int depth) const
 	// Throw our meshes at the renderer.
 	{
 		assert(m_error_tolerance > 0);
@@ -672,6 +688,7 @@ namespace gameswf
 		// Setup transforms.
 		render::set_matrix(mat);
 		render::set_cxform(cx);
+		render::set_depth(depth);
 
 		// Dump meshes into renderer, one mesh per style.
 		for (int i = 0; i < m_meshes.size(); i++)
@@ -687,12 +704,13 @@ namespace gameswf
 		}}
 	}
 
+	// SwiffPlayer.dll 0x10096E20.
 	void	mesh_set::display(
 		const matrix& mat,
 		const cxform& cx,
 		const array<morph_fill_style>& fills,
 		const array<morph_line_style>& line_styles,
-		float ratio) const
+		float ratio, int depth) const
 	// Throw our meshes at the renderer.
 	{
 		assert(m_error_tolerance > 0);
@@ -700,6 +718,7 @@ namespace gameswf
 		// Setup transforms.
 		render::set_matrix(mat);
 		render::set_cxform(cx);
+		render::set_depth(depth);
 
 		// Dump meshes into renderer, one mesh per style.
 		for (int i = 0; i < m_meshes.size(); i++)
@@ -715,6 +734,7 @@ namespace gameswf
 		}}
 	}
 
+	// SwiffPlayer.dll 0x100986A0.
 	void	mesh_set::set_tri_strip(int style, const point pts[], int count)
 	// Set mesh associated with the given fill style to the
 	// specified triangle strip.
@@ -732,6 +752,7 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x10098AD0.
 	void	mesh_set::add_line_strip(int style, const point coords[], int coord_count)
 	// Add the specified line strip to our list of things to render.
 	{
@@ -765,6 +786,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100986E0.
 	void	mesh_set::input_cached_data(tu_file* in)
 	// Grab our data from the input stream.
 	{
@@ -791,6 +813,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x10097840.
 	static void	read_fill_styles(array<fill_style>* styles, stream* in, int tag_type, movie_definition_sub* m)
 	// Read fill styles, and push them onto the given style array.
 	{
@@ -806,7 +829,7 @@ namespace gameswf
 			}
 		}
 
-		IF_VERBOSE_PARSE(log_msg("  read_fill_styles: count = %d\n", fill_style_count));
+		IF_VERBOSE_PARSE(log_msg("rfs: fsc = %d\n", fill_style_count));
 
 		// Read the styles.
 		for (int i = 0; i < fill_style_count; i++)
@@ -817,13 +840,14 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100978C0.
 	static void	read_line_styles(array<line_style>* styles, stream* in, int tag_type)
 	// Read line styles and push them onto the back of the given array.
 	{
 		// Get the count.
 		int	line_style_count = in->read_u8();
 
-		IF_VERBOSE_PARSE(log_msg("  read_line_styles: count = %d\n", line_style_count));
+		IF_VERBOSE_PARSE(log_msg("rls: lsc = %d\n", line_style_count));
 
 		// @@ does the 0xFF flag apply to all tag types?
 		// if (tag_type > 2)
@@ -831,9 +855,9 @@ namespace gameswf
 			if (line_style_count == 0xFF)
 			{
 				line_style_count = in->read_u16();
-				IF_VERBOSE_PARSE(log_msg("  read_line_styles: count2 = %d\n", line_style_count));
 			}
 		// }
+		IF_VERBOSE_PARSE(log_msg("rls: lsc2 = %d\n", line_style_count));
 
 		// Read the styles.
 		for (int i = 0; i < line_style_count; i++)
@@ -849,11 +873,14 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x100991E0.
+	// [CHOSEN, not recovered] S3 bridge: native loaders assign definition IDs separately.
 	shape_character_def::shape_character_def()
 	{
 	}
 
 
+	// SwiffPlayer.dll 0x10099350; deleting veneer 0x10099670.
 	shape_character_def::~shape_character_def()
 	{
 		// Free our mesh_sets.
@@ -864,6 +891,48 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10097940.
+	int	shape_character_def::add_fill_style(const rgba& color)
+	{
+		int index = m_fill_styles.size();
+		m_fill_styles.resize(index + 1);
+		m_fill_styles[index].set_solid(color);
+		return index;
+	}
+
+
+	// SwiffPlayer.dll 0x10097980.
+	int	shape_character_def::add_line_style(const rgba& color, Uint16 width)
+	{
+		int index = m_line_styles.size();
+		m_line_styles.resize(index + 1);
+		m_line_styles[index].set(width, color);
+		return index;
+	}
+
+	// SwiffPlayer.dll 0x100987B0.
+	int	shape_character_def::append_fill_style(const fill_style& style)
+	{
+		int index = m_fill_styles.size();
+		m_fill_styles.resize(index + 1);
+		m_fill_styles[index] = style;
+		return index;
+	}
+
+	// SwiffPlayer.dll 0x100990F0 calls array<path>::push_back at 0x10098850.
+	void	shape_character_def::append_path(const path& p)
+	{
+		m_paths.push_back(p);
+	}
+
+	// SwiffPlayer.dll 0x10099290.
+	rect	shape_character_def::get_bound_copy() const
+	{
+		return m_bound;
+	}
+
+
+	// SwiffPlayer.dll 0x10098B50.
 	void	shape_character_def::read(stream* in, int tag_type, bool with_style, movie_definition_sub* m)
 	{
 		if (with_style)
@@ -879,7 +948,7 @@ namespace gameswf
 		int	num_fill_bits = in->read_uint(4);
 		int	num_line_bits = in->read_uint(4);
 
-		IF_VERBOSE_PARSE(log_msg("  shape_character read: nfillbits = %d, nlinebits = %d\n", num_fill_bits, num_line_bits));
+		IF_VERBOSE_PARSE(log_msg("scr: nfb = %d, nlb = %d\n", num_fill_bits, num_line_bits));
 
 		// These are state variables that keep the
 		// current position & style of the shape
@@ -997,7 +1066,7 @@ namespace gameswf
 				if (flags & 0x10) {
 					assert(tag_type >= 22);
 
-					IF_VERBOSE_PARSE(log_msg("  shape_character read: more fill styles\n"));
+					IF_VERBOSE_PARSE(log_msg("scr: more fill styles\n"));
 
 					// Store the current path if any.
 					if (! current_path.is_empty())
@@ -1070,7 +1139,7 @@ namespace gameswf
 
 					if (SHAPE_LOG) IF_VERBOSE_PARSE(log_msg("  shape_character_read: straight edge = %4g %4g - %4g %4g\n", x, y, x + dx, y + dy));
 
-					current_path.m_edges.push_back(edge(x + dx, y + dy, x + dx, y + dy));
+					current_path.m_edges.push_back(edge(x + dx * 0.5f, y + dy * 0.5f, x + dx, y + dy));
 
 					x += dx;
 					y += dy;
@@ -1080,230 +1149,83 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10099600.
 	void	shape_character_def::display(character* inst)
 	// Draw the shape using our own inherent styles.
 	{
 		matrix	mat = inst->get_world_matrix();
 		cxform	cx = inst->get_world_cxform();
 
-		float	pixel_scale = inst->get_parent()->get_pixel_scale();
-		display(mat, cx, pixel_scale, m_fill_styles, m_line_styles);
+		movie*	parent = inst->get_parent();
+		float	pixel_scale = parent ? parent->get_pixel_scale() : 1.0f;
+		display(mat, cx, pixel_scale, m_fill_styles, m_line_styles, inst->get_depth());
 	}
 
 
-#ifdef DEBUG_DISPLAY_SHAPE_PATHS
-
-#include "base/ogl.h"
-
-
-	static void	point_normalize(point* p)
-	{
-		float	mag2 = p->m_x * p->m_x + p->m_y * p->m_y;
-		if (mag2 < 1e-9f)
-		{
-			// Very short vector.
-			// @@ log error
-
-			// Arbitrary unit vector.
-			p->m_x = 1;
-			p->m_y = 0;
-		}
-
-		float	inv_mag = 1.0f / sqrtf(mag2);
-		p->m_x *= inv_mag;
-		p->m_y *= inv_mag;
-	}
-
-
-	static void	show_fill_number(const point& p, int fill_number)
-	{
-		// We're inside a glBegin(GL_LINES)
-
-		// Eh, let's do it in binary, least sig four bits...
-		float	x = p.m_x;
-		float	y = p.m_y;
-
-		int	mask = 8;
-		while (mask)
-		{
-			if (mask & fill_number)
-			{
-				// Vert line --> 1.
-				glVertex2f(x, y - 40.0f);
-				glVertex2f(x, y + 40.0f);
-			}
-			else
-			{
-				// Rectangle --> 0.
-				glVertex2f(x - 10.0f, y - 40.0f);
-				glVertex2f(x + 10.0f, y - 40.0f);
-
-				glVertex2f(x + 10.0f, y - 40.0f);
-				glVertex2f(x + 10.0f, y + 40.0f);
-
-				glVertex2f(x - 10.0f, y + 40.0f);
-				glVertex2f(x + 10.0f, y + 40.0f);
-
-				glVertex2f(x - 10.0f, y - 40.0f);
-				glVertex2f(x - 10.0f, y + 40.0f);
-			}
-			x += 40.0f;
-			mask >>= 1;
-		}
-	}
-
-
-	static void	debug_display_shape_paths(
-		const matrix& mat,
-		float object_space_max_error,
-		const array<path>& paths,
-		const array<fill_style>& fill_styles,
-		const array<line_style>& line_styles)
-	{
-		for (int i = 0; i < paths.size(); i++)
-		{
-//			if (i > 0) break;//xxxxxxxx
-			const path&	p = paths[i];
-
-			if (p.m_fill0 == 0 && p.m_fill1 == 0)
-			{
-				continue;
-			}
-
-			gameswf::render::set_matrix(mat);
-
-			// Color the line according to which side has
-			// fills.
-			if (p.m_fill0 == 0) glColor4f(1, 0, 0, 0.5);
-			else if (p.m_fill1 == 0) glColor4f(0, 1, 0, 0.5);
-			else glColor4f(0, 0, 1, 0.5);
-
-			// Offset according to which loop we are.
-			float	offset_x = (i & 1) * 80.0f;
-			float	offset_y = ((i & 2) >> 1) * 80.0f;
-			glMatrixMode(GL_MODELVIEW);
-			glPushMatrix();
-			glTranslatef(offset_x, offset_y, 0.f);
-
-			point	pt;
-
-			glBegin(GL_LINE_STRIP);
-
-			mat.transform(&pt, point(p.m_ax, p.m_ay));
-			glVertex2f(pt.m_x, pt.m_y);
-
-			for (int j = 0; j < p.m_edges.size(); j++)
-			{
-				mat.transform(&pt, point(p.m_edges[j].m_cx, p.m_edges[j].m_cy));
-				glVertex2f(pt.m_x, pt.m_y);
-				mat.transform(&pt, point(p.m_edges[j].m_ax, p.m_edges[j].m_ay));
-				glVertex2f(pt.m_x, pt.m_y);
-			}
-
-			glEnd();
-
-			// Draw arrowheads.
-			point	dir, right, p0, p1;
-			glBegin(GL_LINES);
-			{for (int j = 0; j < p.m_edges.size(); j++)
-			{
-				mat.transform(&p0, point(p.m_edges[j].m_cx, p.m_edges[j].m_cy));
-				mat.transform(&p1, point(p.m_edges[j].m_ax, p.m_edges[j].m_ay));
-				dir = point(p1.m_x - p0.m_x, p1.m_y - p0.m_y);
-				point_normalize(&dir);
-				right = point(-dir.m_y, dir.m_x);	// perpendicular
-
-				const float	ARROW_MAG = 60.f;	// TWIPS?
-				if (p.m_fill0 != 0)
-				{
-					glColor4f(0, 1, 0, 0.5);
-					glVertex2f(p0.m_x,
-						   p0.m_y);
-					glVertex2f(p0.m_x - dir.m_x * ARROW_MAG - right.m_x * ARROW_MAG,
-						   p0.m_y - dir.m_y * ARROW_MAG - right.m_y * ARROW_MAG);
-
-					show_fill_number(point(p0.m_x - right.m_x * ARROW_MAG * 4,
-							       p0.m_y - right.m_y * ARROW_MAG * 4),
-							 p.m_fill0);
-				}
-				if (p.m_fill1 != 0)
-				{
-					glColor4f(1, 0, 0, 0.5);
-					glVertex2f(p0.m_x,
-						   p0.m_y);
-					glVertex2f(p0.m_x - dir.m_x * ARROW_MAG + right.m_x * ARROW_MAG,
-						   p0.m_y - dir.m_y * ARROW_MAG + right.m_y * ARROW_MAG);
-
-					show_fill_number(point(p0.m_x + right.m_x * ARROW_MAG * 4,
-							       p0.m_y + right.m_y * ARROW_MAG * 4),
-							 p.m_fill1);
-				}
-			}}
-			glEnd();
-
-			glPopMatrix();
-		}
-	}
-#endif // DEBUG_DISPLAY_SHAPE_PATHS
 
 		
+	// SwiffPlayer.dll 0x10099460.
 	void	shape_character_def::display(
 		const matrix& mat,
 		const cxform& cx,
 		float pixel_scale,
 		const array<fill_style>& fill_styles,
-		const array<line_style>& line_styles) const
+		const array<line_style>& line_styles,
+		int depth) const
 	// Display our shape.  Use the fill_styles arg to
 	// override our default set of fill styles (e.g. when
 	// rendering text).
 	{
 		// Compute the error tolerance in object-space.
-		float	max_scale = mat.get_max_scale();
-		if (fabsf(max_scale) < 1e-6f)
+		bf2x87::Real max_scale = shape_matrix_max_scale(mat);
+		// SwiffPlayer.dll 0x10099460: only an exactly zero scale is substituted.
+		if (max_scale == bf2x87::Real(0.0f))
 		{
-			// Scale is essentially zero.
-			return;
+			max_scale = bf2x87::Real(0.001f);
 		}
 
-		float	object_space_max_error = 20.0f / max_scale / pixel_scale * s_curve_max_pixel_error;
+		float object_space_max_error = bf2x87::store(bf2x87::mul(
+			bf2x87::div(bf2x87::div(bf2x87::Real(1.0f), bf2x87::Real(pixel_scale)), max_scale),
+			bf2x87::Real(20.0f)));
 
-#ifdef DEBUG_DISPLAY_SHAPE_PATHS
-		// Render a debug view of shape path outlines, instead
-		// of the tesselated shapes themselves.
-		if (gameswf_debug_show_paths)
-		{
-			debug_display_shape_paths(mat, object_space_max_error, m_paths, fill_styles, line_styles);
-
-			return;
-		}
-#endif // DEBUG_DISPLAY_SHAPE_PATHS
 
 		// See if we have an acceptable mesh available; if so then render with it.
 		for (int i = 0, n = m_cached_meshes.size(); i < n; i++)
 		{
 			const mesh_set*	candidate = m_cached_meshes[i];
 
-			if (object_space_max_error > candidate->get_error_tolerance() * 3.0f)
+			if (bf2x87::less(bf2x87::mul(bf2x87::Real(candidate->get_error_tolerance()),
+				bf2x87::Real(3.0f)), bf2x87::Real(object_space_max_error)))
 			{
 				// Mesh is too high-res; the remaining meshes are higher res,
 				// so stop searching and build an appropriately scaled mesh.
 				break;
 			}
 
-			if (object_space_max_error > candidate->get_error_tolerance())
+			if (bf2x87::less(bf2x87::Real(candidate->get_error_tolerance()),
+				bf2x87::Real(object_space_max_error)))
 			{
 				// Do it.
-				candidate->display(mat, cx, fill_styles, line_styles);
+				candidate->display(mat, cx, fill_styles, line_styles, depth);
 				return;
 			}
 		}
 
 		// Construct a new mesh to handle this error tolerance.
-		mesh_set*	m = new mesh_set(this, object_space_max_error * 0.75f);
+		// SwiffPlayer.dll 0x100994F0-0x1009957B appends null on allocation failure.
+		mesh_set*	m = new (std::nothrow) mesh_set(this, object_space_max_error * 0.75f);
 		m_cached_meshes.push_back(m);
-		m->display(mat, cx, fill_styles, line_styles);
+		m->display(mat, cx, fill_styles, line_styles, depth);
 		
 		sort_and_clean_meshes();
+	}
+
+	// [CHOSEN, not recovered] S3 bridge for the retained 2006 glyph renderer.
+	void shape_character_def::display(const matrix& mat, const cxform& cx,
+		float pixel_scale, const array<fill_style>& fills,
+		const array<line_style>& lines) const
+	{
+		display(mat, cx, pixel_scale, fills, lines, 0);
 	}
 
 
@@ -1376,26 +1298,10 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10096470 tests the definition rectangle only.
 	bool	shape_character_def::point_test_local(float x, float y)
-	// Return true if the specified point is on the interior of our shape.
-	// Incoming coords are local coords.
 	{
-		if (m_bound.point_test(x, y) == false)
-		{
-			// Early out.
-			return false;
-		}
-
-		// Try each of the paths.
-		for (int i = 0; i < m_paths.size(); i++)
-		{
-			if (m_paths[i].point_test(x, y))
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return m_bound.point_test(x, y);
 	}
 
 
@@ -1445,6 +1351,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10099070.
 	void	shape_character_def::input_cached_data(tu_file* in)
 	// Initialize our mesh data from the given stream.
 	{
@@ -1454,7 +1361,7 @@ namespace gameswf
 
 		for (int i = 0; i < n; i++)
 		{
-			mesh_set*	ms = new mesh_set();
+			mesh_set*	ms = new (std::nothrow) mesh_set();
 			ms->input_cached_data(in);
 			m_cached_meshes[i] = ms;
 		}

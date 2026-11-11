@@ -237,6 +237,10 @@ public:
 
     // Current HostModifier bits.
     unsigned int modifierFlags() const;
+    // [CHOSEN, not recovered] VK_RETURN asynchronous state for SwiffPlayer:
+    // 0x8000 while either Enter key is down, bit 0 for a press since last query.
+    // Consumes bit 0; auto-repeat does not create another press.
+    unsigned short consumeAsyncEnterState();
     // True when the most recently used keyboard is an ISO keyboard
     // (KBGetLayoutType(LMGetKbdType()) == 'ISO '). Key events carry their own keyboard's answer.
     bool isISOKeyboard() const;

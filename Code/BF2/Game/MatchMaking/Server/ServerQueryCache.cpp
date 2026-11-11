@@ -1,8 +1,9 @@
 // Refreshes browser query fields from live server, mod, and player state.
 
-#include "ServerQueryCache.h"
-
 #include <cstring>
+#include <list>
+
+#include "ServerQueryCache.h"
 
 #include "../../IGame.h"                      // game, getCurrentMapName / GameMode / Size
 #include "../../IGameLogic.h"                 // gameLogic
@@ -18,8 +19,6 @@
 #include "../../IModInfo.h"
 #include "../../MapList.h"
 #include "../../Main/BF2Engine.h"
-
-#include <list>
 
 namespace dice {
 namespace hfe {
@@ -135,6 +134,11 @@ void ServerQueryCache::update()
     m_serverKeys[SQK_ticketRatio]       = formatString("%d", sv->getTicketRatio());
     m_serverKeys[SQK_teamRatioPercent]  = formatString("%f", sv->getTeamRatioPercent());
     m_serverKeys[SQK_numReservedSlots]  = formatString("%d", sv->getNumReservedSlots());
+    // [CHOSEN, not recovered] Owner-approved R-main-1 improvement: retail leaves
+    // these registered bot keys empty. See docs/macos-srvinfo-bots.md.
+    m_serverKeys[SQK_coopBotRatio]      = formatString("%f", sv->getCoopBotRatio());
+    m_serverKeys[SQK_coopBotCount]      = formatString("%d", sv->getCoopBotCount());
+    m_serverKeys[SQK_coopBotDifficulty] = formatString("%f", sv->getCoopBotDifficulty());
     m_serverKeys[SQK_noVehicles]        = (sv->getNoVehicles() == true) ? "1" : "0";
 
     // the player rows, sorted by score, capped at 64

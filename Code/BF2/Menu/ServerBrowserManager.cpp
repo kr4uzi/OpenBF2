@@ -4,6 +4,7 @@
 #include "IServerBrowser.h"
 #include "../Core/ClassManager.h"
 #include "../Core/Ids.h"
+#include <new>
 
 namespace dice { namespace hfe {
 
@@ -79,14 +80,14 @@ bool ServerBrowserManager::createList(const std::string& name, bool internet)
     return true;
 }
 
-// every non-null list is handed to the engine's free (0x402D10, bf_free) straight from
-// the interface pointer - no release, no destructor - then the map is emptied.
+// PE 0x4865B0: free each non-null interface pointer (0x4865C0..0x4865C8 calls
+// 0x402D10, bf_free), without release or destruction, then empty the map.
 void ServerBrowserManager::clearLists()
 {
     for (std::map<std::string, ui::IServerBrowser*>::iterator it = m_lists.begin(); it != m_lists.end(); ++it)
     {
         if (it->second)
-            delete it->second;   // IServerBrowser has no virtual destructor: this is the PE's bare free, a retail leak
+            ::operator delete(it->second);   // Preserve the retail leak of the browser's owned resources.
     }
     m_lists.clear();
 }

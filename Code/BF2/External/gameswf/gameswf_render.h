@@ -25,7 +25,7 @@ namespace gameswf
 		bitmap_info*	create_bitmap_info_alpha(int w, int h, unsigned char* data);
 		bitmap_info*	create_bitmap_info_rgb(image::rgb* im);
 		bitmap_info*	create_bitmap_info_rgba(image::rgba* im);
-		bitmap_info*	create_bitmap_info_file(const char* path);	// [DICE-MOD SwiffPlayer: see gameswf.h]
+		bitmap_info*	create_bitmap_info_file(const char* path);	// see gameswf.h
 		void	delete_bitmap_info(bitmap_info* bi);
 
 		// Bracket the displaying of a frame from a movie.
@@ -41,6 +41,9 @@ namespace gameswf
 		// Geometric and color transforms for mesh and line_strip rendering.
 		void	set_matrix(const matrix& m);
 		void	set_cxform(const cxform& cx);
+		// Submit the display-list depth before this shape's meshes and lines.
+		// An absent handler has no effect; otherwise use its typed depth callback.
+		void	set_depth(int depth);
 
 		// Draw triangles using the current fill-style 0.
 		// Clears the style list after rendering.
@@ -69,7 +72,7 @@ namespace gameswf
 		void	end_submit_mask();
 		void	disable_mask();
 
-		// [DICE-MOD SwiffPlayer #36] the text-line slots (shipped render:: forwarders 0x1009A850..
+		//  the text-line slots (shipped render:: forwarders 0x1009A850..
 		// 0x1009AE90), see render_handler in gameswf.h.
 		void*	text_create(const char* font_name, int height_px);
 		void	text_release(void* line);
@@ -77,9 +80,9 @@ namespace gameswf
 		void	text_detach(void* line);
 		void	text_draw(void* line, const matrix* m, unsigned color, int flags);
 		bool	text_extent(void* line, int count, float* w, float* h);
-		// [DICE-MOD SwiffPlayer] float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
+		//  float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
 		bool	text_hit(void* line, int* out_pos, float x, float y);
-		bool	text_selection(void* line, int* a, int* b);	// [DICE-MOD SwiffPlayer #46] true = a selection exists
+		bool	text_selection(void* line, int* a, int* b);	//  true = a selection exists
 		bool	text_set_selection(void* line, float x1, float y1, float x2, float y2);
 		void	text_blur(void* line);
 		void	text_set_size(void* line, float size, int flag);

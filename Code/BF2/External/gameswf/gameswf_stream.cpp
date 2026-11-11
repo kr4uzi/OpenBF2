@@ -17,7 +17,10 @@
 
 namespace gameswf
 {
+	// [CHOSEN, not recovered] S3 bridge: the retail input callback record is
+	// represented by the existing tu_file API; byte order stays little-endian.
 	
+	// SwiffPlayer.dll 0x1009D670.
 	stream::stream(tu_file* input)
 		:
 		m_input(input),
@@ -27,6 +30,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D690; the tag stack owns its storage.
 	stream::~stream()
 	{
 	}
@@ -51,6 +55,7 @@ namespace gameswf
 // 	}
 
 	
+	// SwiffPlayer.dll 0x1009D360.
 	int	stream::read_uint(int bitcount)
 	// Reads a bit-packed unsigned integer from the stream
 	// and returns it.  The given bitcount determines the
@@ -66,7 +71,7 @@ namespace gameswf
 			if (m_unused_bits) {
 				if (bits_needed >= m_unused_bits) {
 					// Consume all the unused bits.
-					value |= (m_current_byte << (bits_needed - m_unused_bits));
+					value |= Uint32(m_current_byte) << ((bits_needed - m_unused_bits) & 31);
 
 					bits_needed -= m_unused_bits;
 
@@ -97,6 +102,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D410. x86 masks both shift counts, including 0 and 32.
 	int	stream::read_sint(int bitcount)
 	// Reads a bit-packed little-endian signed integer
 	// from the stream.  The given bitcount determines the
@@ -104,19 +110,20 @@ namespace gameswf
 	{
 		assert(bitcount <= 32 && bitcount >= 0);
 
-		Sint32	value = (Sint32) read_uint(bitcount);
+		Uint32	value = Uint32(read_uint(bitcount));
 
 		// Sign extend...
-		if (value & (1 << (bitcount - 1))) {
-			value |= -1 << bitcount;
+		if (value & (Uint32(1) << ((bitcount - 1) & 31))) {
+			value |= ~Uint32(0) << (bitcount & 31);
 		}
 
 //		IF_DEBUG(log_msg("stream::read_sint(%d) == %d\n", bitcount, value));
 
-		return value;
+		return Sint32(value);
 	}
 
 
+	// SwiffPlayer.dll 0x1009D210; only the unused-bit count is cleared.
 	float	stream::read_fixed()
 	{
 		m_unused_bits = 0;
@@ -124,10 +131,14 @@ namespace gameswf
 		return (float) val / 65536.0f;
 	}
 
+	// SwiffPlayer.dll 0x1009D240.
 	void	stream::align() { m_unused_bits = 0; m_current_byte = 0; }
 
+	// SwiffPlayer.dll 0x1009D440.
 	Uint8	stream::read_u8() { align(); return m_input->read_byte(); }
+	// SwiffPlayer.dll 0x1009D470.
 	Sint8	stream::read_s8() { align(); return m_input->read_byte(); }
+	// SwiffPlayer.dll 0x1009D250.
 	Uint16	stream::read_u16()
 	{
 		align();
@@ -136,16 +147,20 @@ namespace gameswf
 //		IF_DEBUG(log_msg("val = 0x%X\n", val));
 		return val;
 	}
+	// SwiffPlayer.dll 0x1009D280.
 	Sint16	stream::read_s16() { align(); return m_input->read_le16(); }
+	// SwiffPlayer.dll 0x1009D2B0.
 	Uint32	stream::read_u32()
 	{
 		align();
 		Uint32	val = m_input->read_le32();
 		return val;
 	}
+	// SwiffPlayer.dll 0x1009D2E0.
 	Sint32	stream::read_s32() { align(); return m_input->read_le32(); }
 
 
+	// SwiffPlayer.dll 0x1009D6A0.
 	char*	stream::read_string()
 	// Reads *and new[]'s* the string from the given file.
 	// Ownership passes to the caller; caller must delete[] the
@@ -173,6 +188,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D4A0.
 	char*	stream::read_string_with_length()
 	// Reads *and new[]'s* the string from the given file.
 	// Ownership passes to the caller; caller must delete[] the
@@ -200,6 +216,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D310.
 	int	stream::get_position()
 	// Return our current (byte) position in the input stream.
 	{
@@ -207,6 +224,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D540.
 	void	stream::set_position(int pos)
 	// Set the file position to the given value.
 	{
@@ -226,6 +244,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D560.
 	int	stream::get_tag_end_position()
 	// Return the file position of the end of the current tag.
 	{
@@ -235,6 +254,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D5B0.
 	int	stream::open_tag()
 	// Return the tag type.
 	{
@@ -257,6 +277,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D640; retain the current byte when discarding its bits.
 	void	stream::close_tag()
 	// Seek to the end of the most-recently-opened tag.
 	{

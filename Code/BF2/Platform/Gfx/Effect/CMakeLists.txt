@@ -76,8 +76,15 @@ if(BF2_FX_NATIVE_AVAILABLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/Fx*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/D3DAsm.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/data/d3dx-refusals.txt")
     list(SORT _id_inputs)
+    # [CHOSEN, not recovered] The linked archives are inputs too: the patch files above say what
+    # the deps should contain, not what a given BF2_FX_NATIVE_DEPS build contains. A stale deps
+    # build (fewer vkd3d/MojoShader patches) must not share cache keys with a current one, or
+    # its refusals poison the cache for good builds. Rebuilt archives reconfigure.
+    set(_id_libs "${_nd}/vkd3d/.libs/libvkd3d-shader.a" "${_nd}/vkd3d/.libs/libvkd3d-common.a"
+        "${_nd}/mojo/libmojoshader.a")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_id_libs})
     set(_id "vkd3d-2.1")
-    foreach(f IN LISTS _id_inputs)
+    foreach(f IN LISTS _id_inputs _id_libs)
         file(SHA256 "${f}" _h)
         string(APPEND _id "${_h}")
     endforeach()

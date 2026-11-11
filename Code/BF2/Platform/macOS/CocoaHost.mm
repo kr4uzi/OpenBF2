@@ -1,6 +1,11 @@
 // [CHOSEN, not recovered] macOS port: Cocoa implementation of CocoaHost. Compile with ARC
 // (-fobjc-arc). See CocoaHost.h for the contract and docs/macos-s2-4.md for the design.
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
 #include "CocoaHost.h"
 #include "MacRawMouse.h"
 #include "MacInputScript.h"          // [TEMP] BF2_INPUT_SCRIPT (docs/macos-c-input-script.md)
@@ -10,10 +15,6 @@
 #include <Carbon/Carbon.h>                  // LMGetKbdType, TIS input sources, UCKeyTranslate
 #include <IOKit/pwr_mgt/IOPMLib.h>          // display-sleep assertion
 
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
 
 #if !__has_feature(objc_arc)
 #error "CocoaHost.mm must be compiled with -fobjc-arc"
@@ -64,6 +65,10 @@ using dice::hfe::macos::CocoaHost;
     layer.opaque = YES;
     layer.contentsScale = 1.0;
     layer.contentsGravity = kCAGravityResize;
+    // [CHOSEN, not recovered] The internal-resolution drawable is enlarged by Core Animation
+    // on Retina. Preserve its pixel-snapped bitmap text instead of applying a second linear
+    // filter after the D3D font sampler. Keep linear minification for windows scaled to fit.
+    layer.magnificationFilter = kCAFilterNearest;
     CGColorRef black = CGColorCreateGenericGray(0.0, 1.0);
     layer.backgroundColor = black;
     CGColorRelease(black);
@@ -77,8 +82,8 @@ using dice::hfe::macos::CocoaHost;
 - (void)keyDown:(NSEvent*)event       { (void)event; }
 - (void)keyUp:(NSEvent*)event         { (void)event; }
 - (void)flagsChanged:(NSEvent*)event  { (void)event; }
-// AppKit resets the layer scale when the window moves between displays; the back buffer stays
-// at one pixel per point.
+// AppKit resets the layer scale when the window moves between displays; the drawable keeps
+// its internal resolution and Core Animation scales it to the view.
 - (void)viewDidChangeBackingProperties
 {
     [super viewDidChangeBackingProperties];
@@ -122,6 +127,9 @@ struct CocoaHost::Impl : IInputScriptSink
     HostCursorShape cursorShape = HostCursorArrow;
 
     unsigned int modifiers = 0;
+    // [CHOSEN, not recovered] Native GetAsyncKeyState(VK_RETURN) adapter.
+    bool enterHeld[2] = { false, false };
+    bool enterPressed = false;
     bool capsReleasePending = false;
     HostKeyEvent capsRelease;
     unsigned int buttonsDown = 0;   // buttons whose press was reported
@@ -153,6 +161,16 @@ struct CocoaHost::Impl : IInputScriptSink
     std::vector<IHostEventListener*> snapshot() const { return listeners; }
 
     bool hasFocus() const { return (window != nil || testHeadless) && windowKey && appActive; }
+
+    void updateAsyncEnter(unsigned short keyCode, bool down, bool repeat)
+    {
+        const int index = keyCode == kVK_Return ? 0 : keyCode == kVK_ANSI_KeypadEnter ? 1 : -1;
+        if (index < 0) return;
+        // A non-repeat Cocoa down is a fresh press even when its preceding
+        // release happened outside this application and was not delivered.
+        if (down && !repeat) enterPressed = true;
+        enterHeld[index] = down;
+    }
 
     // [CHOSEN, not recovered] Windowed content size in points for a back buffer of
     // width x height pixels. A back buffer that fits the screen's visible area keeps one point
@@ -303,11 +321,16 @@ struct CocoaHost::Impl : IInputScriptSink
         {
             NSScreen* s = window.screen ?: [NSScreen mainScreen];
             const NSRect c = [window contentRectForFrameRect:window.frame];
+            const NSRect backing = [view convertRectToBacking:view.bounds];
             std::fprintf(stderr, "[TEMP] [HOST] resize back=%dx%d fullscreen=%d content=%.0fx%.0f@(%.0f,%.0f) "
-                         "screen=%.0fx%.0f scale=%.1f drawable=%.0fx%.0f borderless=%d\n",
+                         "screen=%.0fx%.0f scale=%.1f drawable=%.0fx%.0f backing=%.0fx%.0f "
+                         "magnification=%s window=%ld borderless=%d\n",
                          backWidth, backHeight, fullscreen ? 1 : 0, NSWidth(c), NSHeight(c), NSMinX(c), NSMinY(c),
                          NSWidth(s.frame), NSHeight(s.frame), s.backingScaleFactor,
                          layer ? layer.drawableSize.width : 0.0, layer ? layer.drawableSize.height : 0.0,
+                         NSWidth(backing), NSHeight(backing),
+                         layer ? layer.magnificationFilter.UTF8String : "none",
+                         static_cast<long>(window.windowNumber),
                          window.styleMask == NSWindowStyleMaskBorderless ? 1 : 0);
             std::fflush(stderr);
         }
@@ -344,6 +367,7 @@ struct CocoaHost::Impl : IInputScriptSink
         key.isoLayout = eventIsISO(event);
         key.modifiers = modifiers = static_cast<unsigned int>(event.modifierFlags);
         key.timeMs    = msFromSeconds(event.timestamp);
+        updateAsyncEnter(key.keyCode, key.down, key.repeat);
         for (IHostEventListener* l : snapshot())
             l->onKey(key);
         if (!down)
@@ -631,6 +655,7 @@ struct CocoaHost::Impl : IInputScriptSink
         key.isoLayout = false;                   // scripts name ANSI positions
         key.modifiers = modifiers;
         key.timeMs    = CocoaHost::tickCountMs();
+        updateAsyncEnter(key.keyCode, key.down, key.repeat);
         for (IHostEventListener* l : snapshot())
             l->onKey(key);
         if (!down || deviceMask)
@@ -1107,6 +1132,20 @@ void CocoaHost::setRelativeMouseMode(bool enabled)
 }
 
 bool CocoaHost::relativeMouseMode() const { return m_impl->relativeMouse; }
+
+unsigned short CocoaHost::consumeAsyncEnterState()
+{
+    // [CHOSEN, not recovered] Cocoa supplies the consuming press bit. Quartz
+    // supplies hardware state independently of gameswf delivery/focus. Scripted
+    // and headless tests read their injected keys instead of the real keyboard.
+    const bool held = (m_impl->scripted || m_impl->testHeadless)
+        ? (m_impl->enterHeld[0] || m_impl->enterHeld[1])
+        : (CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Return)
+            || CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_ANSI_KeypadEnter));
+    const unsigned short state = (held ? 0x8000 : 0) | (m_impl->enterPressed ? 1 : 0);
+    m_impl->enterPressed = false;
+    return state;
+}
 bool CocoaHost::rawMouseAvailable() const { return rawMouseCount() > 0; }
 
 unsigned int CocoaHost::modifierFlags() const

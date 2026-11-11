@@ -89,11 +89,13 @@ void	operator delete[](void* ptr);
 // signed-zero inputs (fmax(NaN, 1) is 1 there, NaN or 1 here depending on order), so gameswf keeps
 // its own comparisons on every toolchain.]
 namespace tu_util {
+// Retail SwiffPlayer.dll 0x1006EAC0 / 0x1006EAE0: preserve unordered/equal operand choice.
 inline float	fmax(float a, float b) { if (a < b) return b; else return a; }
 inline float	fmin(float a, float b) { if (a < b) return a; else return b; }
 }
 
 inline int	iabs(int i) { if (i < 0) return -i; else return i; }
+// Retail SwiffPlayer.dll 0x1006DC90 / 0x1006DCA0: signed comparison.
 inline int	imax(int a, int b) { if (a < b) return b; else return a; }
 inline int	imin(int a, int b) { if (a < b) return a; else return b; }
 
@@ -103,6 +105,7 @@ inline int	iclamp(int i, int min, int max) {
 	return imax(min, imin(i, max));
 }
 
+// Retail SwiffPlayer.dll 0x1006EB00.
 inline float	fclamp(float f, float xmin, float xmax) {
 	assert( xmin <= xmax );
 	return tu_util::fmax(xmin, tu_util::fmin(f, xmax));
@@ -116,6 +119,10 @@ inline float	log2(float f) { return logf(f) / LN_2; }	// [BUILD-FIX SwiffPlayer:
 }
 
 inline int	fchop( float f ) { return (int) f; }	// replace w/ inline asm if desired
+// [UNRESOLVED] Retail 0x1009D7D0 adds in x87 then truncates to a signed dword.
+// [RETIRE-WHEN: swf-s3-base-rounding] Establish precision-control and integer-
+// indefinite behavior, and validate half-integers, range edges, infinities and NaN
+// before replacing this retained upstream expression.
 inline int	frnd(float f) { return fchop(f + 0.5f); }	// replace with inline asm if desired
 
 
@@ -148,6 +155,7 @@ inline size_t	bernstein_hash(const void* data_in, int size, unsigned int seed = 
 }
 
 
+// Retail SwiffPlayer.dll 0x1006EB30 (S1's bernstein_hash name was incorrect).
 inline size_t	sdbm_hash(const void* data_in, int size, unsigned int seed = 5381)
 // Alternative: "sdbm" hash function, suggested at same web page
 // above, http::/www.cs.yorku.ca/~oz/hash.html
@@ -166,6 +174,7 @@ inline size_t	sdbm_hash(const void* data_in, int size, unsigned int seed = 5381)
 }
 
 
+// Retail SwiffPlayer.dll 0x10008D30, called by the base string-key instances.
 inline size_t	bernstein_hash_case_insensitive(const void* data_in, int size, unsigned int seed = 5381)
 // Computes a hash of the given data buffer; does tolower() on each
 // byte.  Hash function suggested by

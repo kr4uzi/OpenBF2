@@ -148,7 +148,7 @@ namespace gameswf
 #if !defined(_MSC_VER)
 	const char*	swf_list_trace_path(character* ch);	// [TEMP] gameswf_impl.cpp
 #endif
-	// [DICE-MOD SwiffPlayer #51] generate_mouse_button_events (and the RW-89 tracer that lived in it)
+	//  generate_mouse_button_events (and the RW-89 tracer that lived in it)
 	// are gone: the shipped player has no root-level dispatcher, every character runs its own mouse
 	// pass - for buttons, button_character_instance::mouse_update below.
 
@@ -176,7 +176,7 @@ namespace gameswf
 			OVER
 		};
 		e_mouse_state m_mouse_state;
-		// [DICE-MOD SwiffPlayer #51] the shipped button's +216 first-frame latch and +217 held press;
+		//  the shipped button's +216 first-frame latch and +217 held press;
 		// m_last_mouse_flags / m_mouse_flags above are its +220 / +224 (bit 0 inside, bit 1 down).
 		bool	m_first_mouse_frame;
 		bool	m_mouse_pressed;
@@ -195,6 +195,7 @@ namespace gameswf
 			}
 		}
 
+		// SwiffPlayer.dll 0x100A2C50; native layout and tree-root ownership are retained.
 		button_character_instance(button_character_definition* def, movie* parent, int id)
 			:
 			character(parent, id),
@@ -235,13 +236,27 @@ namespace gameswf
 			}
 		}
 
+		// Compiler deleting wrapper: SwiffPlayer.dll 0x100A3BF0; the lifetime
+		// body at 0x100A3C30 remains separate from forwarding and conditional deletion.
 		~button_character_instance()
 		{
+			// SwiffPlayer.dll 0x100A3C30 releases this button's capture before
+			// record characters. Re-read the publication after the capture query.
+			if (get_global_root_movie() != NULL
+				&& get_global_root_movie()->get_active_mouse_entity() == this)
+			{
+				get_global_root_movie()->set_active_mouse_entity(NULL);
+			}
 		}
 
+		// SwiffPlayer.dll 0x100A2E20 delegates to the immediate parent's root.
 		movie_root*	get_root() { return get_parent()->get_root(); }
 		movie*	get_root_movie() { return get_parent()->get_root_movie(); }
 
+		// SwiffPlayer.dll 0x100A2E30 forwards to the definition bounds slot.
+		rect get_bound_copy() const override { return m_def->get_bound_copy(); }
+
+		// SwiffPlayer.dll 0x100A2EA0 leaves the first-frame and held-press latches alone.
 		void	restart()
 		{
 			m_last_mouse_flags = IDLE;
@@ -260,7 +275,6 @@ namespace gameswf
 			// Implement mouse-drag.
 			character::do_mouse_drag();
 
-			matrix	mat = get_world_matrix();
 
 			// Advance our relevant characters.
 			{for (int i = 0; i < m_def->m_button_records.size(); i++)
@@ -272,6 +286,9 @@ namespace gameswf
 				}
 
 				// Matrix
+				// SwiffPlayer.dll 0x100A2EE0
+				// fetches the world matrix once per non-null record, before testing state.
+				matrix mat = get_world_matrix();
 				matrix sub_matrix = mat;
 				sub_matrix.concatenate(rec.m_button_matrix);
 
@@ -286,6 +303,7 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x100A2FB0.
 		void	display()
 		{
 			for (int i = 0; i < m_def->m_button_records.size(); i++)
@@ -303,7 +321,6 @@ namespace gameswf
 				}
 			}
 
-			do_display_callback();
 		}
 
 		inline int	transition(int a, int b) const
@@ -313,7 +330,7 @@ namespace gameswf
 		}
 
 
-		// [DICE-MOD SwiffPlayer #51] sub_100A3020 (1109 bytes, read in full 2026-09-13) - the button's
+		//  sub_100A3020 (1109 bytes, read in full 2026-09-13) - the button's
 		// mouse pass, vtable slot 4: stock's generate_mouse_button_events + on_button_event fused into
 		// the same shape as the sprite's. A per-frame (inside, down) state against the previous frame,
 		// run only while nobody else holds the pointer; inside means one of the definition's hit-test
@@ -325,7 +342,9 @@ namespace gameswf
 		// actions never keeps the pointer captured.
 		virtual bool	mouse_update(bool consumed)
 		{
-			movie*	root = get_root_movie();
+			// [CHOSEN, not recovered] S2 bridge: tree ownership replaces the retail
+			// global root; 0x100A3020 uses the immediate parent for capture/input.
+			movie*	root = get_parent();
 			if (root == NULL)
 			{
 				return false;
@@ -473,17 +492,16 @@ namespace gameswf
 
 
 
-		// [DICE-MOD SwiffPlayer #51] the tail of sub_100A3020 for one transition (a button_action
+		//  the tail of sub_100A3020 for one transition (a button_action
 		// condition bit): the transition sound - the definition's sound records are indexed 0 roll
 		// out, 1 roll over, 2 press, 3 release - the capture dropped when the definition has no
 		// actions at all, the record restart, then the definition's actions whose conditions include
-		// the bit. Stock's on_button_event did the same from an event id. The actions still go through
-		// the parent's queue as stock did; the shipped runs them at once through the root
-		// [UNRESOLVED: whether that ordering is observable].
+		// the bit. SwiffPlayer.dll 0x100A3410..0x100A3436 executes actions immediately
+		// in the parent's environment.
 		void	fire_transition(int c)
 		{
 #if !defined(_MSC_VER)
-			// [TEMP] c-swf-disconnect: a button transition (its actions queue on the parent).
+			// [TEMP] c-swf-disconnect: a button transition.
 			if (swf_list_trace_on())
 			{
 				SWF_LIST_TRACE("button cond=0x%x on '%s' (%d action records)", c, swf_list_trace_path(this),
@@ -531,7 +549,7 @@ namespace gameswf
 			// restart the characters of the new state.
 			restart_characters(c);
 
-			// Add appropriate actions to the movie's execute list...
+			// Execute the matching transition actions.
 			{for (int i = 0; i < m_def->m_button_actions.size(); i++)
 			{
 				if (m_def->m_button_actions[i].m_conditions & c)
@@ -539,7 +557,9 @@ namespace gameswf
 					// Matching action.
 					for (int j = 0; j < m_def->m_button_actions[i].m_actions.size(); j++)
 					{
-						get_parent()->add_action_buffer(m_def->m_button_actions[i].m_actions[j]);
+						// [CHOSEN, not recovered] S2 bridge to retail's
+						// parent secondary +0x2C -> action_buffer::execute (0x100961E0).
+						m_def->m_button_actions[i].m_actions[j]->execute(get_parent()->get_action_environment());
 					}
 				}
 			}}
@@ -548,30 +568,11 @@ namespace gameswf
 
 		void restart_characters(int condition)
 		{
-			// Restart our relevant characters
+			// SwiffPlayer.dll 0x100A34A0:
+			// restart every non-null record, including transitions with condition zero.
 			for (int i = 0; i < m_def->m_button_records.size(); i++)
 			{
-				bool	restart = false;
-				button_record* rec = &m_def->m_button_records[i];
-
-				switch (m_mouse_state)
-				{
-				case OVER:
-				{
-					if ((rec->m_over) && (condition & button_action::IDLE_TO_OVER_UP))
-					{
-						restart = true;
-					}
-					break;
-				}
-				// @@ Hm, are there other cases where we restart stuff?
-				default:
-				{
-					break;
-				}
-				}
-
-				if (restart == true)
+				if (m_record_character[i] != NULL)
 				{
 					m_record_character[i]->restart();
 				}
@@ -584,6 +585,11 @@ namespace gameswf
 			get_parent()->get_mouse_state(x, y, buttons);
 		}
 
+		// [CHOSEN, not recovered] S2 bridge: tree root replaces the retail global
+		// accessed by 0x100A2E70/0x100A2E80. It owns the same shared capture state.
+		virtual movie* get_active_mouse_entity() { return get_root_movie()->get_active_mouse_entity(); }
+		virtual void set_active_mouse_entity(movie* m) { get_root_movie()->set_active_mouse_entity(m); }
+
 
 		//
 		// ActionScript overrides
@@ -591,87 +597,47 @@ namespace gameswf
 
 		virtual void	set_member(const tu_stringi& name, const as_value& val)
 		{
-			// TODO: pull these up into a base class, to
-			// share as much as possible with sprite_instance.
-			as_standard_member	std_member = get_standard_member(name);
-			switch (std_member)
+			// SwiffPlayer.dll 0x100A34E0.
+			// Retail compares these names case-sensitively and has no width/height arm.
+			const char* key = name.c_str();
+			if (strcmp(key, "_x") == 0 || strcmp(key, "_y") == 0)
 			{
-			default:
-			case M_INVALID_MEMBER:
-				break;
-			case M_VISIBLE:  // _visible
+				matrix m = get_matrix();
+				m.m_[strcmp(key, "_x") == 0 ? 0 : 1][2] = float(val.to_number() * 20.0);
+				set_matrix(m);
+				return;
+			}
+			if (strcmp(key, "_xscale") == 0)
+			{
+				matrix m = get_matrix();
+				const float scale = float(val.to_number() * 0.01f);
+				const float y_scale = m.get_y_scale();
+				const float rotation = m.get_rotation();
+				m.set_scale_rotation(scale, y_scale, rotation);
+				set_matrix(m);
+				return;
+			}
+			if (strcmp(key, "_yscale") == 0)
+			{
+				matrix m = get_matrix();
+				const float x_scale = m.get_x_scale();
+				const float scale = float(val.to_number() * 0.01f);
+				const float rotation = m.get_rotation();
+				m.set_scale_rotation(x_scale, scale, rotation);
+				set_matrix(m);
+				return;
+			}
+			if (strcmp(key, "_alpha") == 0)
+			{
+				cxform cx = get_cxform();
+				cx.m_[3][0] = float(val.to_number() * 0.01f);
+				set_cxform(cx);
+				return;
+			}
+			if (strcmp(key, "_visible") == 0)
 			{
 				m_visible = val.to_bool();
 				return;
-			}
-			case M_ALPHA:  // _alpha
-			{
-				// Set alpha modulate, in percent.
-				cxform	cx = get_cxform();
-				cx.m_[3][0] = float(val.to_number()) / 100.f;
-				set_cxform(cx);
-				//m_accept_anim_moves = false;
-				return;
-			}
-			case M_X:  // _x
-			{
-				matrix	m = get_matrix();	// @@ get_world_matrix()???
-				m.m_[0][2] = float(PIXELS_TO_TWIPS(val.to_number()));
-				this->set_matrix(m);
-				return;
-			}
-			case M_Y:  // _y
-			{
-				matrix	m = get_matrix();	// @@ get_world_matrix()???
-				m.m_[1][2] = float(PIXELS_TO_TWIPS(val.to_number()));
-				this->set_matrix(m);
-				return;
-			}
-// evan : need set_width and set_height function for struct character
-#if 0
-			case M_WIDTH:  // _width
-			{
-				for (int i = 0; i < m_def->m_button_records.size(); i++)
-				{
-					button_record&	rec = m_def->m_button_records[i];
-					if (m_record_character[i] == NULL)
-					{
-						continue;
-					}
-					if ((m_mouse_state == UP && rec.m_up)
-					    || (m_mouse_state == DOWN && rec.m_down)
-					    || (m_mouse_state == OVER && rec.m_over))
-					{
-						m_record_character[i]->set_width(val.to_number);
-						// @@ evan: should we return here?
-						return;
-					}
-				}
-
-				return;
-			}
-			case M_HEIGHT:  // _height
-			{
-				for (int i = 0; i < m_def->m_button_records.size(); i++)
-				{
-					button_record&	rec = m_def->m_button_records[i];
-					if (m_record_character[i] == NULL)
-					{
-						continue;
-					}
-					if ((m_mouse_state == UP && rec.m_up)
-					    || (m_mouse_state == DOWN && rec.m_down)
-					    || (m_mouse_state == OVER && rec.m_over))
-					{
-						m_record_character[i]->set_height(val.to_number);
-						// @@ evan: should we return here?
-						return;
-					}
-				}
-
-				return;
-			}
-#endif
 			}
 
 			log_error("error: button_character_instance::set_member('%s', '%s') not implemented yet\n",
@@ -681,85 +647,32 @@ namespace gameswf
 
 		virtual bool	get_member(const tu_stringi& name, as_value* val)
 		{
-			// TODO: pull these up into a base class, to
-			// share as much as possible with sprite_instance.
-			as_standard_member	std_member = get_standard_member(name);
-			switch (std_member)
+			// SwiffPlayer.dll 0x100A37D0.
+			const char* key = name.c_str();
+			if (strcmp(key, "_x") == 0 || strcmp(key, "_y") == 0)
 			{
-			default:
-			case M_INVALID_MEMBER:
-				break;
-			case M_VISIBLE:  // _visible
-			{
-				val->set_bool(this->get_visible());
+				matrix m = get_matrix();
+				val->set_double(double(m.m_[strcmp(key, "_x") == 0 ? 0 : 1][2]) * double(0.05f));
 				return true;
 			}
-			case M_ALPHA:  // _alpha
+			if (strcmp(key, "_xscale") == 0 || strcmp(key, "_yscale") == 0)
 			{
-				// @@ TODO this should be generic to struct character!
-				// Alpha units are in percent.
-				val->set_double(get_cxform().m_[3][0] * 100.f);
+				matrix m = get_matrix();
+				const float scale = strcmp(key, "_xscale") == 0 ? m.get_x_scale() : m.get_y_scale();
+				val->set_double(double(scale) * 100.0);
 				return true;
 			}
-			case M_X:  // _x
+			if (strcmp(key, "_alpha") == 0)
 			{
-				matrix	m = get_matrix();	// @@ get_world_matrix()???
-				val->set_double(TWIPS_TO_PIXELS(m.m_[0][2]));
+				val->set_double(double(get_cxform().m_[3][0]) * 100.0);
 				return true;
 			}
-			case M_Y:  // _y
+			if (strcmp(key, "_visible") == 0)
 			{
-				matrix	m = get_matrix();	// @@ get_world_matrix()???
-				val->set_double(TWIPS_TO_PIXELS(m.m_[1][2]));
+				val->set_bool(m_visible);
 				return true;
 			}
-			case M_WIDTH:  // _width
-			{
-				for (int i = 0; i < m_def->m_button_records.size(); i++)
-				{
-					button_record&	rec = m_def->m_button_records[i];
-					if (m_record_character[i] == NULL)
-					{
-						continue;
-					}
-					if ((m_mouse_state == UP && rec.m_up)
-					    || (m_mouse_state == DOWN && rec.m_down)
-					    || (m_mouse_state == OVER && rec.m_over))
-					{
-						val->set_double(TWIPS_TO_PIXELS(m_record_character[i]->get_width()));
-						// @@ evan: should we return here?
-						return true;
-					}
-				}
-
-				// from the experiments with macromedia flash player
-				val->set_double(0);
-				return true;
-			}
-			case M_HEIGHT:  // _height
-			{
-				for (int i = 0; i < m_def->m_button_records.size(); i++)
-				{
-					button_record&	rec = m_def->m_button_records[i];
-					if (m_record_character[i] == NULL)
-					{
-						continue;
-					}
-					if ((m_mouse_state == UP && rec.m_up)
-					    || (m_mouse_state == DOWN && rec.m_down)
-					    || (m_mouse_state == OVER && rec.m_over))
-					{
-						val->set_double(TWIPS_TO_PIXELS(m_record_character[i]->get_height()));
-						// @@ evan: should we return here?
-						return true;
-					}
-				}
-
-				// from the experiments with macromedia flash player
-				val->set_double(0);
-				return true;
-			}
-			}
+			log_error("error: button_character_instance::get_member('%s') not implemented yet\n", key);
 
 			return false;
 		}
@@ -773,6 +686,7 @@ namespace gameswf
 	// button_record
 	//
 
+	// SwiffPlayer.dll 0x100A1BE0.
 	bool	button_record::read(stream* in, int tag_type, movie_definition_sub* m)
 	// Return true if we read a record; false if this is a null record.
 	{
@@ -805,6 +719,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x100A2710.
 	button_action::~button_action()
 	{
 		for (int i = 0, n = m_actions.size(); i < n; i++)
@@ -814,6 +729,7 @@ namespace gameswf
 		m_actions.resize(0);
 	}
 
+	// SwiffPlayer.dll 0x100A2580.
 	void	button_action::read(stream* in, int tag_type)
 	{
 		// Read condition flags.
@@ -839,6 +755,7 @@ namespace gameswf
 	// button_character_definition
 	//
 
+	// SwiffPlayer.dll 0x100A3A60; the tree assigns character IDs separately.
 	button_character_definition::button_character_definition()
 		:
 		m_sound(NULL)
@@ -846,12 +763,43 @@ namespace gameswf
 	{
 	}
 
+	// SwiffPlayer.dll 0x100A3AF0; compiler deleting wrapper 0x100A3CB0.
 	button_character_definition::~button_character_definition()
 	{
 		delete m_sound;
 	}
 
+	// SwiffPlayer.dll 0x100A2010.
+	// Keep equal-layer insertion and the shipped halving search order.
+	int button_character_definition::find_record_index(int layer) const
+	{
+		const int count = m_button_records.size();
+		if (count == 0) return 0;
+		int index = count >> 1;
+		int step = index;
+		for (;;)
+		{
+			step >>= 1;
+			if (step < 1) step = 1;
+			const int current = m_button_records[index].m_button_layer;
+			if (layer > current)
+			{
+				if (index == count - 1) return count;
+				index += step;
+			}
+			else
+			{
+				if (layer == current || index == 0 || m_button_records[index - 1].m_button_layer < layer)
+				{
+					return index;
+				}
+				index -= step;
+			}
+		}
+	}
 
+
+	// SwiffPlayer.dll 0x100A22D0.
 	void button_character_definition::sound_info::read(stream* in)
 	{
 		m_in_point = m_out_point = m_loop_count = 0;
@@ -895,6 +843,25 @@ namespace gameswf
 
 
 
+	// SwiffPlayer.dll 0x100A1F90. Retail does not initialize this accumulator,
+	// even for nonempty buttons; preserve that defect rather than inventing a seed.
+	rect button_character_definition::get_bound_copy() const
+	{
+		rect bounds;
+		for (int i = 0, n = m_button_records.size(); i < n; ++i)
+		{
+			character_def* definition = m_button_records[i].m_character_def;
+			if (definition)
+			{
+				rect child = get_definition_bounds(definition);
+				child.transform(m_button_records[i].m_button_matrix);
+				bounds.expand_to_rect(child);
+			}
+		}
+		return bounds;
+	}
+
+	// SwiffPlayer.dll 0x100A2960.
 	void	button_character_definition::read(stream* in, int tag_type, movie_definition_sub* m)
 	// Initialize from the given stream.
 	{
@@ -913,7 +880,8 @@ namespace gameswf
 					// Null record; marks the end of button records.
 					break;
 				}
-				m_button_records.push_back(r);
+				// SwiffPlayer.dll 0x100A2960.
+				m_button_records.insert(find_record_index(r.m_button_layer), r);
 			}
 
 			// Read actions.
@@ -958,7 +926,8 @@ namespace gameswf
 					// Null record; marks the end of button records.
 					break;
 				}
-				m_button_records.push_back(r);
+				// SwiffPlayer.dll 0x100A2960.
+				m_button_records.insert(find_record_index(r.m_button_layer), r);
 			}
 
 			if (button_2_action_offset > 0)
@@ -989,6 +958,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x100A3B70.
 	character*	button_character_definition::create_character_instance(movie* parent, int id)
 	// Create a mutable instance of our definition.
 	{

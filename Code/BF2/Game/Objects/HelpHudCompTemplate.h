@@ -14,6 +14,7 @@
 
 namespace dice {
 namespace hfe {
+struct PlayerVOHelp;
 namespace world {
 
 // Exact field order.  The close-to group is three strings followed by three sounds;
@@ -142,6 +143,7 @@ public:
 
 private:
     friend class HelpHudComp;
+    friend struct ::dice::hfe::PlayerVOHelp;
 
     int m_refCount;
     bool m_firstComponentPending;

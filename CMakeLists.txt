@@ -210,6 +210,7 @@ list(REMOVE_ITEM bf2_engine_sources "${BF2_ROOT}/VoipServer/BF2VoipServerShell.c
 # carries the mirror list). Client-only REGIONS of shared TUs are not a manifest matter: they sit
 # under #if !DEDICATED, and bf2_set_image() below is what selects them per target.
 set(bf2_client_only_sources
+    "${BF2_ROOT}/Game/GameLogic/PlayerVOHelp.cpp" # BF2.exe client tutorial owner; placement inferred
     "${BF2_ROOT}/Math/Mat4Inverse.cpp" # client PE inverse; explicitly reused by x86 bf2_aidll below
     "${BF2_ROOT}/Game/Main/BF2Window.cpp"    # the game window (2026-09-02); its body is #if !DEDICATED as well
     "${BF2_ROOT}/Game/Main/BF2FrameInterpolator.cpp"    # attested client-only TU; ctor recovered 2026-09-03
@@ -1861,13 +1862,13 @@ if(BF2_BUILD_MACOS)
     foreach(rel
             base/config.cpp base/container.cpp base/file_util.cpp base/image.cpp
             base/image_filters.cpp base/jpeg.cpp base/membuf.cpp base/tu_file.cpp base/tu_random.cpp
-            base/tu_timer.cpp base/tu_types.cpp base/utf8.cpp base/utility.cpp base/zlib_adapter.cpp
+            base/tu_timer.cpp base/tu_types.cpp base/utf8.cpp base/utility.cpp
             gameswf/gameswf_action.cpp gameswf/gameswf_button.cpp gameswf/gameswf_dlist.cpp
             gameswf/gameswf_font.cpp gameswf/gameswf_fontlib.cpp gameswf/gameswf_impl.cpp
-            gameswf/gameswf_log.cpp gameswf/gameswf_morph2.cpp gameswf/gameswf_movie.cpp
+            gameswf/gameswf_log.cpp gameswf/gameswf_morph2.cpp
             gameswf/gameswf_render.cpp gameswf/gameswf_shape.cpp gameswf/gameswf_sound.cpp
             gameswf/gameswf_stream.cpp gameswf/gameswf_string.cpp gameswf/gameswf_styles.cpp
-            gameswf/gameswf_tesselate.cpp gameswf/gameswf_text.cpp gameswf/gameswf_textformat.cpp
+            gameswf/gameswf_tesselate.cpp gameswf/gameswf_text.cpp
             gameswf/gameswf_timers.cpp gameswf/gameswf_types.cpp gameswf/gameswf_xml.cpp)
         list(APPEND BF2_SWIFFPLAYER_STATIC_SOURCES "${BF2_EXTERNAL_ROOT}/${rel}")
     endforeach()
@@ -1985,6 +1986,18 @@ if(BF2_BUILD_MACOS)
     target_include_directories(bf2_swiffplayer_static PRIVATE
         "${BF2_EXTERNAL_ROOT}" "${BF2_EXTERNAL_ROOT}/gameswf")
 
+    # [CHOSEN, not recovered] Owner-approved Expat 1.95.0 substitute. The other
+    # xmltok .c files are included fragments, not separate translation units.
+    add_library(bf2_expat_static STATIC EXCLUDE_FROM_ALL
+        "${BF2_EXTERNAL_ROOT}/expat/xmlparse.c"
+        "${BF2_EXTERNAL_ROOT}/expat/xmltok.c"
+        "${BF2_EXTERNAL_ROOT}/expat/xmlrole.c")
+    bf2_configure_c_target(bf2_expat_static)
+    bf2_set_image(bf2_expat_static 0)
+    target_include_directories(bf2_expat_static PRIVATE "${BF2_EXTERNAL_ROOT}/expat")
+    set_property(TARGET bf2_expat_static PROPERTY FOLDER "BF2")
+    target_link_libraries(bf2_swiffplayer_static PUBLIC bf2_expat_static)
+
     add_library(bf2_vorbis_static STATIC EXCLUDE_FROM_ALL ${BF2_VORBIS_STATIC_SOURCES})
     bf2_configure_c_target(bf2_vorbis_static)
     target_include_directories(bf2_vorbis_static PRIVATE
@@ -2086,7 +2099,7 @@ if(BF2_BUILD_MACOS)
     bf2_prelink_static_plugin(bf2_client bf2_bf2audio_static
         "${CMAKE_CURRENT_SOURCE_DIR}/Code/StaticPlugins/bf2audio-private-symbols.txt")
     target_link_libraries(bf2_client PRIVATE
-        bf2_vorbis_static bf2_plugin_kit_static
+        bf2_vorbis_static bf2_expat_static bf2_plugin_kit_static
         Threads::Threads ${CMAKE_DL_LIBS} ${CURSES_LIBRARIES})
     target_link_options(bf2_client PRIVATE
         "-Wl,-map,${BF2_DEDICATED_OUTPUT_DIR}/bf2_client.map")
@@ -2228,6 +2241,30 @@ set_property(TARGET bf2_syntaxcheck PROPERTY FOLDER "Diagnostics")
 endif()
 
 include(CTest)
+
+if(BF2_BUILD_MACOS AND TARGET bf2_swiffplayer_static)
+    # [TEMP] [CHOSEN, not recovered] Content-free offline popup VM regression.
+    add_executable(bf2_swiff_offline_connect_popup_check EXCLUDE_FROM_ALL
+        Code/Tests/swiff_offline_connect_popup.cpp
+        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp)
+    bf2_configure_static_plugin(bf2_swiff_offline_connect_popup_check BF2_IMAGE_SWIFFPLAYER)
+    target_include_directories(bf2_swiff_offline_connect_popup_check PRIVATE
+        "${BF2_EXTERNAL_ROOT}" "${BF2_EXTERNAL_ROOT}/gameswf")
+    target_link_libraries(bf2_swiff_offline_connect_popup_check PRIVATE
+        bf2_swiffplayer_static bf2_plugin_kit_static)
+
+    # [TEMP] [CHOSEN, not recovered] Production gameswf XML/string/file fixture.
+    add_executable(bf2_gameswf_xml_check EXCLUDE_FROM_ALL
+        Code/Tests/gameswf_xml/xml_check.cpp
+        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp)
+    bf2_configure_static_plugin(bf2_gameswf_xml_check BF2_IMAGE_SWIFFPLAYER)
+    target_include_directories(bf2_gameswf_xml_check PRIVATE "${BF2_EXTERNAL_ROOT}")
+    target_link_libraries(bf2_gameswf_xml_check PRIVATE bf2_swiffplayer_static bf2_plugin_kit_static)
+    if(BUILD_TESTING)
+        add_test(NAME bf2_gameswf_xml_check COMMAND bf2_gameswf_xml_check
+            "${CMAKE_CURRENT_BINARY_DIR}/gameswf-xml-fixture.xml")
+    endif()
+endif()
 
 # bf2_memory - the rebuilt Memory.dll (Code/BF2/Memory). Built on request only (EXCLUDE_FROM_ALL)
 # and linked into no game image (issue #7). Its tests join CTest when BF2_MEMORY_TESTS is ON.

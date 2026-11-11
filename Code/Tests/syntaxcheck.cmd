@@ -1132,6 +1132,9 @@ if errorlevel 1 set /a RC+=1
 @rem Player.cpp likewise (shared, client-compiled, DEDICATED=1-only here until 2026-09-26).
 cl %FLAGS0% "%~dp0..\BF2\Game\GameLogic\Player.cpp"
 if errorlevel 1 set /a RC+=1
+@rem BF2.exe client VO-help recovery; compile its !DEDICATED body on MSVC too.
+cl %FLAGS0% "%~dp0..\BF2\Game\GameLogic\PlayerVOHelp.cpp"
+if errorlevel 1 set /a RC+=1
 @rem The projectile pair likewise: GenericProjectileNetworkable::predict and its interpolation
 @rem proxy are CLIENT-only bodies (RW-224), yet both TUs were DEDICATED=1-only here.
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Networkables\GenericProjectileNetworkable.cpp"

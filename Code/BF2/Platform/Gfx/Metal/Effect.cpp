@@ -220,8 +220,17 @@ HRESULT nativeEntry(const char* api, LPCVOID source, UINT size, const std::vecto
             {
                 std::lock_guard<std::mutex> lock(gPendingMutex);
                 future = nt::submit(key, request, std::move(text), [root, request, key](const bf2fx::Entry& e) {
-                    const auto r = bf2fx::publish(root, request, e);
-                    if (!r) std::fprintf(stderr, "BF2FX native: publish %s: %s\n", key.c_str(), r.detail.c_str());
+                    // [CHOSEN, not recovered] D3DX accepts this request, so a failed native build is a
+                    // toolchain fault, not a D3DX refusal. Publishing it turned this run's working
+                    // skeleton into a refused CreateEffect on the next run (an effect without
+                    // techniques); now every run takes this path and ensureShaders stops loudly.
+                    if (e.kind != bf2fx::EffectEntry) {
+                        std::fprintf(stderr, "BF2FX native: build of accepted request %s failed, not cached: %s",
+                                     key.c_str(), e.log.c_str());
+                    } else {
+                        const auto r = bf2fx::publish(root, request, e);
+                        if (!r) std::fprintf(stderr, "BF2FX native: publish %s: %s\n", key.c_str(), r.detail.c_str());
+                    }
                     std::lock_guard<std::mutex> lock(gPendingMutex);
                     gPending.erase(key);
                 });

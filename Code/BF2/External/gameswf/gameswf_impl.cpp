@@ -13,8 +13,13 @@
 // @@ Need to break this file into pieces
 
 
+#include <string.h>
+#include <typeinfo>
+#include <float.h>
+
 #include "base/tu_file.h"
 #include "../../Core/MsvcCrtCompat.h"   // [CHOSEN, not recovered] _snprintf_s/_TRUNCATE outside MSVC
+#include "../../Platform/X87Compat.h"
 #include "base/utility.h"
 #include "gameswf_action.h"
 #include "gameswf_button.h"
@@ -22,6 +27,7 @@
 #include "gameswf_font.h"
 #include "gameswf_fontlib.h"
 #include "gameswf_log.h"
+#include "gameswf_profile.h"
 #include "gameswf_morph2.h"
 #include "gameswf_render.h"
 #include "gameswf_shape.h"
@@ -31,21 +37,98 @@
 #include "gameswf_timers.h"
 #include "base/image.h"
 #include "base/jpeg.h"
-#include "base/zlib_adapter.h"
-#include <string.h>	// for memset
-#include <typeinfo>
-#include <float.h>
+#include "base/tu_timer.h"
 
 
-#if TU_CONFIG_LINK_TO_ZLIB
-#include <zlib.h>
-#endif // TU_CONFIG_LINK_TO_ZLIB
 
 
 namespace gameswf
 {
+	// SwiffPlayer.dll 0x100F8CAC; source-level name [INFERRED].
+	static smart_ptr<movie> s_global_root_movie;
+
+	movie* get_global_root_movie()
+	{
+		// SwiffPlayer.dll 0x10071710: borrow the published sprite, without lookup.
+		return s_global_root_movie.get_ptr();
+	}
+
+	void set_global_root_movie(movie* root)
+	{
+		// SwiffPlayer.dll 0x100738A0: identity check, release, store, retain.
+		s_global_root_movie = root;
+	}
+
+	// SwiffPlayer.dll 0x100F8B78; source-level name [INFERRED].
+	static Uint32 s_character_live_count = 0;
+
+	character::character(movie* parent, int id)
+		:
+		m_arguments(create_array_object()),
+		m_id(id),
+		m_parent(parent),
+		m_depth(-1),
+		m_ratio(0.0f),
+		m_clip_depth(0),
+		m_visible(true),
+		m_is_mask_only(false),
+		m_mouse_enabled(false)
+	{
+		assert((parent == NULL && m_id == -1)
+		       || (parent != NULL && m_id >= 0));
+		// SwiffPlayer.dll 0x1007EC60 increments after initializing character
+		// members. Common/embedded-Array construction retains the native S3 bridges.
+		++s_character_live_count;
+	}
+
+	character::~character()
+	{
+		// SwiffPlayer.dll 0x1007F0A0 and its inline copy in 0x10089D50
+		// decrement before event-handler, name and embedded-Array destruction.
+		// Native mask/Array ownership and common lifetime remain S3 bridges.
+		--s_character_live_count;
+	}
+
 	bool	s_verbose_action = false;
 	bool	s_verbose_parse = false;
+	// SwiffPlayer.dll 0x1006F120 / 0x1006F130; source-level names [INFERRED].
+	bool s_verbose_loader = false;
+	bool s_verbose_gc = false;
+	void set_verbose_loader(bool verbose) { s_verbose_loader = verbose; }
+	void set_verbose_gc(bool verbose) { s_verbose_gc = verbose; }
+	// SwiffPlayer.dll 0x1006F110 writes the mouse-event verbosity switch.
+	// No retail caller is known. The event dispatcher reads it at 0x10081650.
+	static bool s_verbose_mouse_events = false;
+	void set_verbose_mouse_events(bool verbose) { s_verbose_mouse_events = verbose; }
+	// SwiffPlayer.dll 0x1006F140; [INFERRED] source-level names.
+	bool s_profiling = false;
+	void set_profiling(bool enabled) { s_profiling = enabled; }
+
+	// [INFERRED] source-level type and field names. The registry borrows the
+	// static records; destroying a record releases its name, without unregistering.
+	static array<profile_record*> s_profile_records;
+	profile_record::profile_record(const char* name)
+		: m_count(0), m_ticks(0), m_name(name)
+	{
+		s_profile_records.push_back(this);
+	}
+
+	const array<profile_record*>& get_profile_records() { return s_profile_records; }
+
+	// [CHOSEN, not recovered] S3 bridge to the native provider hierarchy.
+	// [RETIRE-WHEN: swf-native-definition-bounds] Replace the cross-cast when
+	// the common retail definition hierarchy is recovered and its callers validated.
+	rect get_definition_bounds(const character_def* definition)
+	{
+		if (const definition_bounds_provider* provider =
+			dynamic_cast<const definition_bounds_provider*>(definition))
+			return provider->get_bound_copy();
+		// [TEMP] [CHOSEN, not recovered] Only unmapped legacy/native definitions
+		// reach this boundary; every shipped loader's concrete definition is a provider.
+		std::fprintf(stderr, "[FRONTIER] gameswf::get_definition_bounds unsupported native provider reached\n");
+		std::fflush(stderr);
+		std::abort();
+	}
 
 #ifndef NDEBUG
 	bool	s_verbose_debug = true;
@@ -57,6 +140,7 @@ namespace gameswf
 	void	set_verbose_action(bool verbose)
 	// Enable/disable log messages re: actions.
 	{
+		// SwiffPlayer.dll 0x1006F0F0.
 		s_verbose_action = verbose;
 	}
 
@@ -64,9 +148,13 @@ namespace gameswf
 	void	set_verbose_parse(bool verbose)
 	// Enable/disable log messages re: parsing the movie.
 	{
+		// SwiffPlayer.dll 0x1006F100.
 		s_verbose_parse = verbose;
 	}
 
+
+	// SwiffPlayer.dll 0x1006F0E0; [INFERRED] native name of the placement/removal gate.
+	void set_verbose_debug(bool verbose) { s_verbose_debug = verbose; }
 
 	static bool	s_use_cache_files = true;
 
@@ -74,6 +162,7 @@ namespace gameswf
 	// Enable/disable attempts to read cache files when loading
 	// movies.
 	{
+		// SwiffPlayer.dll 0x1006F150 stores the initially true byte; name [INFERRED].
 		s_use_cache_files = use_cache;
 	}
 
@@ -81,6 +170,7 @@ namespace gameswf
 	// Keep a table of loader functions for the different tag types.
 	static hash<int, loader_function>	s_tag_loaders;
 
+	// SwiffPlayer.dll 0x10073220.
 	void	register_tag_loader(int tag_type, loader_function lf)
 	// Associate the specified tag type with the given tag loader
 	// function.
@@ -102,31 +192,20 @@ namespace gameswf
 	// Host calls this to register a function for opening files,
 	// for loading movies.
 	{
+		// SwiffPlayer.dll 0x1006F160; 0x1006F386 / 0x1007D3C6 use this opener.
 		s_opener_function = opener;
 	}
 
-	//
-	// progress callback stuff (from Vitaly)
-	//
-
-	static progress_callback	s_progress_function = NULL;
-
-	void	register_progress_callback(progress_callback progress_handle)
-	// Host calls this to register a function for progress bar handling
-	// during loading movies.
-	{
-		s_progress_function = progress_handle;
-	}
-	
 	//
 	// some utility stuff
 	//
 
 
-	// [DICE-MOD SwiffPlayer #48] execute_actions (index walk over the live list) is gone: its
+	//  execute_actions (index walk over the live list) is gone: its
 	// only caller, sprite_instance::do_actions, now drains the list the way the shipped body does.
 
 
+	// SwiffPlayer.dll 0x1006F170.
 	static void	dump_tag_bytes(stream* in)
 	// Log the contents of the current tag, in hex.
 	{
@@ -168,6 +247,8 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1007F2C0. [CHOSEN, not recovered] S3 bridge:
+	// the native factory hands its borrowed raw result to the caller's smart_ptr.
 	character*	character_def::create_character_instance(movie* parent, int id)
 	// Default.  Make a generic_character.
 	{
@@ -180,6 +261,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1006F240.
 	ref_counted::ref_counted()
 		:
 		m_ref_count(0),
@@ -187,6 +269,7 @@ namespace gameswf
 	{
 	}
 
+	// SwiffPlayer.dll 0x1006F260; deleting entry 0x10071570.
 	ref_counted::~ref_counted()
 	{
 		assert(m_ref_count == 0);
@@ -198,12 +281,14 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x1006F290.
 	void	ref_counted::add_ref() const
 	{
 		assert(m_ref_count >= 0);
 		m_ref_count++;
 	}
 
+	// SwiffPlayer.dll 0x1006F2A0; character secondary entry 0x1007EFF0.
 	void	ref_counted::drop_ref() const
 	{
 		assert(m_ref_count > 0);
@@ -215,6 +300,7 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x1006F2C0: allocate and retain one proxy on first request.
 	weak_proxy* ref_counted::get_weak_proxy() const
 	{
 		assert(m_ref_count > 0);	// By rights, somebody should be holding a ref to us.
@@ -237,50 +323,47 @@ namespace gameswf
 	void	character::do_mouse_drag()
 	// Implement mouse-dragging for this movie.
 	{
-		drag_state	st;
+		// SwiffPlayer.dll 0x10073250.
+		drag_state st;
 		get_drag_state(&st);
 		if (this == st.m_character)
 		{
-			// We're being dragged!
-			int	x, y, buttons;
+			int x, y, buttons;
 			get_root_movie()->get_mouse_state(&x, &y, &buttons);
-
-			point	world_mouse(PIXELS_TO_TWIPS(x), PIXELS_TO_TWIPS(y));
-			if (st.m_bound)
-			{
-				// Clamp mouse coords within a defined rect.
-				world_mouse.m_x =
-					fclamp(world_mouse.m_x, st.m_bound_x0, st.m_bound_x1);
-				world_mouse.m_y =
-					fclamp(world_mouse.m_y, st.m_bound_y0, st.m_bound_y1);
-			}
-
+			point world_mouse(float(x) * 20.0f, float(y) * 20.0f);
+			matrix parent_world;
 			if (st.m_lock_center)
 			{
-				matrix	world_mat = get_world_matrix();
-				point	local_mouse;
-				world_mat.transform_by_inverse(&local_mouse, world_mouse);
-
-				matrix	parent_world_mat;
-				if (m_parent)
+				if (st.m_bound)
 				{
-					parent_world_mat = m_parent->get_world_matrix();
+					world_mouse.m_x = fclamp(world_mouse.m_x, st.m_bound_x0, st.m_bound_x1);
+					world_mouse.m_y = fclamp(world_mouse.m_y, st.m_bound_y0, st.m_bound_y1);
 				}
-
-				point	parent_mouse;
-				parent_world_mat.transform_by_inverse(&parent_mouse, world_mouse);
-					
-				// Place our origin so that it coincides with the mouse coords
-				// in our parent frame.
-				matrix	local = get_matrix();
-				local.m_[0][2] = parent_mouse.m_x;
-				local.m_[1][2] = parent_mouse.m_y;
-				set_matrix(local);
+				matrix world = get_world_matrix();
+				point local_mouse;
+				world.transform_by_inverse(&local_mouse, world_mouse);
+				if (m_parent) parent_world = m_parent->get_world_matrix();
 			}
 			else
 			{
-				// Implement relative drag...
+				matrix world = get_world_matrix();
+				point local_mouse;
+				world.transform_by_inverse(&local_mouse, world_mouse);
+				if (m_parent) parent_world = m_parent->get_world_matrix();
+				world_mouse.m_x -= st.m_offset_x;
+				world_mouse.m_y -= st.m_offset_y;
+				if (st.m_bound)
+				{
+					world_mouse.m_x = fclamp(world_mouse.m_x, st.m_bound_x0, st.m_bound_x1);
+					world_mouse.m_y = fclamp(world_mouse.m_y, st.m_bound_y0, st.m_bound_y1);
+				}
 			}
+			point parent_mouse;
+			parent_world.transform_by_inverse(&parent_mouse, world_mouse);
+			matrix local = get_matrix();
+			local.m_[0][2] = parent_mouse.m_x;
+			local.m_[1][2] = parent_mouse.m_y;
+			set_matrix(local);
 		}
 	}
 
@@ -328,9 +411,13 @@ namespace gameswf
 		hash<int, smart_ptr<bitmap_character_def> >	m_bitmap_characters;
 		hash<int, smart_ptr<sound_sample> >	m_sound_samples;
 		array<array<execute_tag*> >	   m_playlist;	// A list of movie control events for each frame.
-		array<array<execute_tag*> >	   m_init_action_list;	// Init actions for each frame.
+		array<execute_tag*>	   m_init_action_list;
+		// [CHOSEN, not recovered] S3 bridge: retail stores the pending bit
+		// in each action_buffer; the native do_action wrapper owns that buffer.
+		array<bool> m_init_action_pending;
 		stringi_hash<int>	           m_named_frames;	// 0-based frame #'s
 		stringi_hash<smart_ptr<resource> > m_exports;
+		hash<int, tu_string> m_export_names;
 
 		// Items we import.
 		array<import_info>	m_imports;
@@ -350,11 +437,16 @@ namespace gameswf
 		int	m_frame_count;
 		int	m_version;
 		int	m_loading_frame;
+		// [UNRESOLVED] Retail +0x88 starts at 1000 (0x1007807D), separately
+		// from the file header's length. [INFERRED] word name and unsigned type.
+		Uint32 m_retail_word_88;
 		uint32	m_file_length;
 
 		jpeg::input*	m_jpeg_in;
 
 
+		// SwiffPlayer.dll 0x10077FB0; native containers/virtual bases supply
+		// the empty inherited and owned storage without retail x86 offsets.
 		movie_def_impl(create_bitmaps_flag cbf, create_font_shapes_flag cfs)
 			:
 			m_create_bitmaps(cbf),
@@ -363,27 +455,29 @@ namespace gameswf
 			m_frame_count(0),
 			m_version(0),
 			m_loading_frame(0),
+			m_retail_word_88(1000),
 			m_jpeg_in(0)
 		{
+			// SwiffPlayer.dll 0x10077FB0 initializes the root definition ID to zero.
+			set_character_id(0);
 		}
 
 		~movie_def_impl()
 		{
+			// SwiffPlayer.dll 0x1007CE20 (deleting entry 0x1007CDE0)
+			// deletes init actions before frame tags, rechecking the init count.
+			// [CHOSEN, not recovered] S3 bridge: native execute_tag wrappers own the buffers.
+			{for (int i = 0; i < m_init_action_list.size(); i++)
+			{
+				delete m_init_action_list[i];
+			}}
+
 			// Release our playlist data.
 			{for (int i = 0, n = m_playlist.size(); i < n; i++)
 			{
 				for (int j = 0, m = m_playlist[i].size(); j < m; j++)
 				{
 					delete m_playlist[i][j];
-				}
-			}}
-
-			// Release init action data.
-			{for (int i = 0, n = m_init_action_list.size(); i < n; i++)
-			{
-				for (int j = 0, m = m_init_action_list[i].size(); j < m; j++)
-				{
-					delete m_init_action_list[i][j];
 				}
 			}}
 
@@ -394,18 +488,34 @@ namespace gameswf
 		movie_interface*	create_instance();
 
 		// ...
+		// SwiffPlayer.dll 0x100780A0.
 		int	get_frame_count() const { return m_frame_count; }
+		// SwiffPlayer.dll 0x100780B0.
 		float	get_frame_rate() const { return m_frame_rate; }
-		float	get_width_pixels() const { return ceilf(TWIPS_TO_PIXELS(m_frame_size.width())); }
-		float	get_height_pixels() const { return ceilf(TWIPS_TO_PIXELS(m_frame_size.height())); }
+		// SwiffPlayer.dll 0x100780C0.
+		float	get_width_pixels() const
+		{
+			return static_cast<float>(ceil(bf2x87::storeDouble(bf2x87::mul(
+				bf2x87::sub(bf2x87::Real(m_frame_size.m_x_max), bf2x87::Real(m_frame_size.m_x_min)),
+				bf2x87::Real(0.05f)))));
+		}
+		// SwiffPlayer.dll 0x100780E0.
+		float	get_height_pixels() const
+		{
+			return static_cast<float>(ceil(bf2x87::storeDouble(bf2x87::mul(
+				bf2x87::sub(bf2x87::Real(m_frame_size.m_y_max), bf2x87::Real(m_frame_size.m_y_min)),
+				bf2x87::Real(0.05f)))));
+		}
 
+		// SwiffPlayer.dll 0x10078100.
 		virtual int	get_version() const { return m_version; }
 
+		// SwiffPlayer.dll 0x10078110.
 		virtual int	get_loading_frame() const { return m_loading_frame; }
 
 		uint32	get_file_bytes() const { return m_file_length; }
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x10078120.
 		virtual create_bitmaps_flag	get_create_bitmaps() const
 		// Returns DO_CREATE_BITMAPS if we're supposed to
 		// initialize our bitmap infos, or DO_NOT_INIT_BITMAPS
@@ -416,7 +526,7 @@ namespace gameswf
 			return m_create_bitmaps;
 		}
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x10078130.
 		virtual create_font_shapes_flag	get_create_font_shapes() const
 		// Returns DO_LOAD_FONT_SHAPES if we're supposed to
 		// initialize our font shape info, or
@@ -427,6 +537,7 @@ namespace gameswf
 			return m_create_font_shapes;
 		}
 
+		// SwiffPlayer.dll 0x100781B0.
 		virtual void	add_bitmap_info(bitmap_info* bi)
 		// All bitmap_info's used by this movie should be
 		// registered with this API.
@@ -435,9 +546,9 @@ namespace gameswf
 		}
 
 
-		// [DICE-MOD SwiffPlayer: walk m_exports, keeping the entries whose resource is a bitmap
+		// walk m_exports, keeping the entries whose resource is a bitmap
 		// character. The NAME is the ExportAssets symbol, which for BF2's menu bitmaps is the
-		// external image path. See gameswf.h and GAMESWF_DIVERGENCES.md.]
+		// external image path. See gameswf.h and GAMESWF_DIVERGENCES.md.
 		virtual int	get_exported_bitmaps(int max, tu_string* names,
 						     gameswf::bitmap_info** infos) const
 		{
@@ -459,40 +570,43 @@ namespace gameswf
 			return n;
 		}
 
-		// [DICE-MOD SwiffPlayer #37] see gameswf_impl.h.
+		// SwiffPlayer.dll 0x10078260, definition vtable +0x3C.
+		virtual bool get_export_name(int id, tu_string* out)
+		{
+			return m_export_names.get(id, out);
+		}
+
+		// [CHOSEN, not recovered] S3 bridge: legacy pointer-to-ID query,
+		// retained until the swf-text-font-id menu validation gate.
 		virtual bool	get_exported_font_name(const font* f, tu_string* out)
 		{
-			if (f == NULL || f->get_name() == NULL) return false;
-			for (stringi_hash<smart_ptr<resource> >::const_iterator it = m_exports.begin();
-			     it != m_exports.end(); ++it)
+			for (hash<int, smart_ptr<font> >::const_iterator it = m_fonts.begin();
+			     it != m_fonts.end(); ++it)
 			{
-				resource*	res = it.get_value().get_ptr();
-				if (res == NULL) continue;
-				font*	ef = res->cast_to_font();
-				if (ef == NULL || ef->get_name() == NULL) continue;
-				if (strcmp(ef->get_name(), f->get_name()) == 0)
-				{
-					*out = it.get_key();
-					return true;
-				}
+				if (it->second.get_ptr() == f) return get_export_name(it->first, out);
 			}
 			return false;
 		}
 
+		// SwiffPlayer.dll 0x10078170.
 		virtual int	get_bitmap_info_count() const { return m_bitmap_list.size(); }
+		// SwiffPlayer.dll 0x10078180.
 		virtual bitmap_info*	get_bitmap_info(int i) const
 		{
 			return m_bitmap_list[i].get_ptr();
 		}
 
-		virtual void	export_resource(const tu_string& symbol, resource* res)
+		// SwiffPlayer.dll 0x10079FF0 stores both symbol-to-resource and ID-to-name.
+		virtual void	export_resource(int id, const tu_string& symbol, resource* res)
 		// Expose one of our resources under the given symbol,
 		// for export.  Other movies can import it.
 		{
 			// SWF sometimes exports the same thing more than once!
 			m_exports.set(symbol, res);
+			m_export_names.set(id, symbol);
 		}
 
+		// SwiffPlayer.dll 0x10079D50.
 		virtual smart_ptr<resource>	get_exported_resource(const tu_string& symbol)
 		// Get the named exported resource, if we expose it.
 		// Otherwise return NULL.
@@ -514,8 +628,12 @@ namespace gameswf
 					cdef->m_registered_class = NULL;
 				}
 			}
+			// [CHOSEN, not recovered] issue #7: the cached definition must
+			// initialize the next movie's script classes after action_clear().
+			for (int i = 0; i < m_init_action_pending.size(); ++i) m_init_action_pending[i] = true;
 		}
 
+		// SwiffPlayer.dll 0x100794C0.
 		virtual void	add_import(const char* source_url, int id, const char* symbol)
 		// Adds an entry to a table of resources that need to
 		// be imported from other movies.  Client code must
@@ -542,6 +660,8 @@ namespace gameswf
 			return false;
 		}
 
+		// SwiffPlayer.dll 0x1007A480: snapshot the count, visit once per URL,
+		// and record the URL only after its callback returns.
 		virtual void	visit_imported_movies(import_visitor* visitor)
 		// Calls back the visitor for each movie that we
 		// import symbols from.
@@ -560,6 +680,7 @@ namespace gameswf
 			}
 		}
 
+		// SwiffPlayer.dll 0x10079560 removes matching imports even on refusal.
 		virtual void	resolve_import(const char* source_url, movie_definition* source_movie)
 		// Grabs the stuff we want from the source movie.
 		{
@@ -613,12 +734,14 @@ namespace gameswf
 			}
 		}
 
+		// SwiffPlayer.dll 0x100782A0.
 		void	add_character(int character_id, character_def* c)
 		{
 			assert(c);
 			m_characters.add(character_id, c);
 		}
 
+		// SwiffPlayer.dll 0x100784F0, definition vtable +0x40.
 		character_def*	get_character_def(int character_id)
 		{
 #ifndef NDEBUG
@@ -636,18 +759,21 @@ namespace gameswf
 			return ch.get_ptr();
 		}
 
+		// SwiffPlayer.dll 0x10079F20.
 		bool	get_labeled_frame(const char* label, int* frame_number)
 		// Returns 0-based frame #
 		{
 			return m_named_frames.get(label, frame_number);
 		}
 
+		// SwiffPlayer.dll 0x100785E0.
 		void	add_font(int font_id, font* f)
 		{
 			assert(f);
 			m_fonts.add(font_id, f);
 		}
 
+		// SwiffPlayer.dll 0x10078830.
 		font*	get_font(int font_id)
 		{
 #ifndef NDEBUG
@@ -665,6 +791,7 @@ namespace gameswf
 			return f.get_ptr();
 		}
 
+		// SwiffPlayer.dll 0x10078920.
 		bitmap_character_def*	get_bitmap_character(int character_id)
 		{
 			smart_ptr<bitmap_character_def>	ch;
@@ -673,6 +800,7 @@ namespace gameswf
 			return ch.get_ptr();
 		}
 
+		// SwiffPlayer.dll 0x10078A10.
 		void	add_bitmap_character(int character_id, bitmap_character_def* ch)
 		{
 			assert(ch);
@@ -681,6 +809,7 @@ namespace gameswf
 			add_bitmap_info(ch->get_bitmap_info());
 		}
 
+		// SwiffPlayer.dll 0x10078C20.
 		sound_sample*	get_sound_sample(int character_id)
 		{
 			smart_ptr<sound_sample>	ch;
@@ -689,28 +818,29 @@ namespace gameswf
 			return ch.get_ptr();
 		}
 
+		// SwiffPlayer.dll 0x10078D50.
 		virtual void	add_sound_sample(int character_id, sound_sample* sam)
 		{
 			assert(sam);
 			m_sound_samples.add(character_id, sam);
 		}
 
+		// SwiffPlayer.dll 0x10078F50.
 		void	add_execute_tag(execute_tag* e)
 		{
 			assert(e);
 			m_playlist[m_loading_frame].push_back(e);
 		}
 
-		void	add_init_action(int sprite_id, execute_tag* e)
-		// Need to execute the given tag before entering the
-		// currently-loading frame for the first time.
-		//
-		// @@ AFAIK, the sprite_id is totally pointless -- correct?
+		// SwiffPlayer.dll 0x10078F90 appends to one definition-wide list.
+		void	add_init_action(execute_tag* e)
 		{
 			assert(e);
-			m_init_action_list[m_loading_frame].push_back(e);
+			m_init_action_list.push_back(e);
+			m_init_action_pending.push_back(true);
 		}
 
+		// SwiffPlayer.dll 0x10079F90.
 		void	add_frame_name(const char* name)
 		// Labels the frame currently being loaded with the
 		// given name.  A copy of the name string is made and
@@ -723,6 +853,7 @@ namespace gameswf
 			m_named_frames.add(n, m_loading_frame);	// stores 0-based frame #
 		}
 
+		// SwiffPlayer.dll 0x10078140.
 		void	set_jpeg_loader(jpeg::input* j_in)
 		// Set an input object for later loading DefineBits
 		// images (JPEG images without the table info).
@@ -731,6 +862,7 @@ namespace gameswf
 			m_jpeg_in = j_in;
 		}
 
+		// SwiffPlayer.dll 0x10078150.
 		jpeg::input*	get_jpeg_loader()
 		// Get the jpeg input loader, to load a DefineBits
 		// image (one without table info).
@@ -739,15 +871,16 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x10078190.
 		virtual const array<execute_tag*>&	get_playlist(int frame_number) { return m_playlist[frame_number]; }
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x10078160 returns the entire init-action list.
 		virtual const array<execute_tag*>*	get_init_actions(int frame_number)
 		{
-			return &m_init_action_list[frame_number];
+			return &m_init_action_list;
 		}
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x1007AA80. Font-name aliases are built after all tags.
 		void	read(tu_file* in)
 		// Read a .SWF movie.
 		{
@@ -768,24 +901,11 @@ namespace gameswf
 
 			IF_VERBOSE_PARSE(log_msg("version = %d, file_length = %d\n", m_version, m_file_length));
 
-			tu_file*	original_in = NULL;
 			if (compressed)
 			{
-#if TU_CONFIG_LINK_TO_ZLIB == 0
 				log_error("movie_def_impl::read(): unable to read zipped SWF data; TU_CONFIG_LINK_TO_ZLIB is 0\n");
 				return;
-#endif
 
-				IF_VERBOSE_PARSE(log_msg("file is compressed.\n"));
-				original_in = in;
-
-				// Uncompress the input as we read it.
-				in = zlib_adapter::make_inflater(original_in);
-
-				// Subtract the size of the 8-byte header, since
-				// it's not included in the compressed
-				// stream length.
-				file_end_pos = m_file_length - 8;
 			}
 
 			stream	str(in);
@@ -795,7 +915,6 @@ namespace gameswf
 			m_frame_count = str.read_u16();
 
 			m_playlist.resize(m_frame_count);
-			m_init_action_list.resize(m_frame_count);
 
 			IF_VERBOSE_PARSE(m_frame_size.print());
 			IF_VERBOSE_PARSE(log_msg("frame rate = %f, frames = %d\n", m_frame_rate, m_frame_count));
@@ -804,17 +923,11 @@ namespace gameswf
 			{
 				int	tag_type = str.open_tag();
 
-				if (s_progress_function != NULL)
-				{
-					s_progress_function((Uint32) str.get_position(), file_end_pos);
-				}
-
 				loader_function	lf = NULL;
-				//IF_VERBOSE_PARSE(log_msg("tag_type = %d\n", tag_type));
+				IF_VERBOSE_PARSE(log_msg("tag_type = %d\n", tag_type));
 				if (tag_type == 1)
 				{
 					// show frame tag -- advance to the next frame.
-					IF_VERBOSE_PARSE(log_msg("  show_frame\n"));
 					m_loading_frame++;
 				}
 				else if (s_tag_loaders.get(tag_type, &lf))
@@ -844,28 +957,45 @@ namespace gameswf
 				}
 			}
 
+			stringi_hash<int> exported_font_ids;
+			for (hash<int, smart_ptr<font> >::iterator it = m_fonts.begin();
+			     it != m_fonts.end(); ++it)
+			{
+				tu_string name;
+				if (get_export_name(it->first, &name))
+				{
+					exported_font_ids.set(it->second->get_name(), it->first);
+				}
+			}
+			for (hash<int, smart_ptr<font> >::iterator it = m_fonts.begin();
+			     it != m_fonts.end(); ++it)
+			{
+				tu_string name;
+				if (!get_export_name(it->first, &name))
+				{
+					int exported_id;
+					if (exported_font_ids.get(it->second->get_name(), &exported_id))
+					{
+						get_export_name(exported_id, &name);
+						m_export_names.set(it->first, name);
+					}
+				}
+			}
+
 			if (m_jpeg_in)
 			{
 				delete m_jpeg_in;
 				m_jpeg_in = NULL;
 			}
 
-			if (original_in)
-			{
-				// Done with the zlib_adapter.
-				delete in;
-			}
 		}
 
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x100798E0 appends owned fonts in dictionary order.
 		void	get_owned_fonts(array<font*>* fonts)
 		// Fill up *fonts with fonts that we own.
 		{
 			assert(fonts);
-			fonts->resize(0);
-
-			array<int>	font_ids;
 
 			for (hash<int, smart_ptr<font> >::iterator it = m_fonts.begin();
 			     it != m_fonts.end();
@@ -874,28 +1004,13 @@ namespace gameswf
 				font*	f = it->second.get_ptr();
 				if (f->get_owning_movie() == this)
 				{
-					// Sort by character id, so the ordering is
-					// consistent for cache read/write.
-					int	id = it->first;
-
-					// Insert in correct place.
-					int	insert;
-					for (insert = 0; insert < font_ids.size(); insert++)
-					{
-						if (font_ids[insert] > id)
-						{
-							// We want to insert here.
-							break;
-						}
-					}
-					fonts->insert(insert, f);
-					font_ids.insert(insert, id);
+					fonts->push_back(f);
 				}
 			}
 		}
 
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x100797E0.
 		void	generate_font_bitmaps()
 		// Generate bitmaps for our fonts, if necessary.
 		{
@@ -907,10 +1022,11 @@ namespace gameswf
 
 
 		// Increment this when the cache data format changes.
-		#define CACHE_FILE_VERSION 4
+		// SwiffPlayer.dll 0x100799BA and 0x10079C0F use version 3.
+		#define CACHE_FILE_VERSION 3
 
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x10079990.
 		void	output_cached_data(tu_file* out, const cache_options& options)
 		// Dump our cached data into the given stream.
 		{
@@ -940,7 +1056,7 @@ namespace gameswf
 		}
 
 
-		/* movie_def_impl */
+		// SwiffPlayer.dll 0x10079BD0.
 		void	input_cached_data(tu_file* in)
 		// Read in cached data and use it to prime our loaded characters.
 		{
@@ -1006,6 +1122,10 @@ namespace gameswf
 	// Global, shared root state for a movie and all its characters.
 	//
 
+	// SwiffPlayer.dll 0x10073560 / 0x10075370. [CHOSEN, not recovered]
+	// S3 bridge: the native root owns its movie per tree, in place of the retail
+	// global. Userdata and initialized drag offsets
+	// remain native extensions; this class does not reproduce the x86 layout.
 	struct movie_root : public movie_interface
 	{
 		smart_ptr<movie_def_impl>	m_def;
@@ -1019,13 +1139,10 @@ namespace gameswf
 		void *			m_userdata;
 		movie::drag_state	m_drag_state;	// @@ fold this into m_mouse_button_state?
 		mouse_button_state	m_mouse_button_state;
+		// SwiffPlayer.dll: non-owning +0x34
+		// capture pointer (0x10073560, 0x1007FBF0, 0x1007FC00).
+		movie*	m_active_mouse_entity = NULL;
 		bool			m_on_event_load_called;
-
-		// Flags for event handlers
-		bool			m_on_event_xmlsocket_ondata_called;
-		bool			m_on_event_xmlsocket_onxml_called;
-		bool			m_on_event_load_progress_called;
-		array<Timer *>	m_interval_timers;
 
 		movie_root(movie_def_impl* def)
 			:
@@ -1042,19 +1159,27 @@ namespace gameswf
 			m_mouse_y(0),
 			m_mouse_buttons(0),
 			m_userdata(NULL),
-			m_on_event_load_called(false),
-			m_on_event_xmlsocket_ondata_called(false),
-			m_on_event_xmlsocket_onxml_called(false),
-			m_on_event_load_progress_called(false)
+			m_on_event_load_called(false)
 		{
 			assert(m_def != NULL);
 
-			set_display_viewport(0, 0, (int) m_def->get_width_pixels(), (int) m_def->get_height_pixels());
+			// SwiffPlayer.dll 0x10073560 reads height before width, with
+			// truncating dword conversions before setting the viewport.
+			movie_def_impl* const definition = m_def.get_ptr();
+			const int height = bf2x87::toIntTruncate(definition->get_height_pixels());
+			const int width = bf2x87::toIntTruncate(definition->get_width_pixels());
+			set_display_viewport(0, 0, width, height);
 		}
 
+		// SwiffPlayer.dll 0x10075370 / deleting entry 0x10075340:
+		// release the movie before the definition, through the native owners above.
 		~movie_root()
 		{
 			assert(m_def != NULL);
+			// [CHOSEN, not recovered] S3 bridge to issue #7: the native
+			// wrapper also owns its sprite. Drop the published root before that
+			// wrapper dies, without clearing a newer movie's publication.
+			if (get_global_root_movie() == m_movie.get_ptr()) set_global_root_movie(NULL);
 			m_movie = NULL;
 			m_def = NULL;
 		}
@@ -1071,6 +1196,7 @@ namespace gameswf
 			assert(m_movie != NULL);
 		}
 
+		// SwiffPlayer.dll 0x100716B0.
 		void	set_display_viewport(int x0, int y0, int w, int h)
 		{
 			m_viewport_x0 = x0;
@@ -1079,12 +1205,17 @@ namespace gameswf
 			m_viewport_height = h;
 
 			// Recompute pixel scale.
-			float	scale_x = m_viewport_width / TWIPS_TO_PIXELS(m_def->m_frame_size.width());
-			float	scale_y = m_viewport_height / TWIPS_TO_PIXELS(m_def->m_frame_size.height());
-			m_pixel_scale = tu_util::fmax(scale_x, scale_y);
+			const bf2x87::Real scale_x = bf2x87::div(bf2x87::Real(m_viewport_width),
+				bf2x87::mul(bf2x87::sub(bf2x87::Real(m_def->m_frame_size.m_x_max),
+					bf2x87::Real(m_def->m_frame_size.m_x_min)), bf2x87::Real(0.05f)));
+			const float scale_y = bf2x87::store(bf2x87::div(bf2x87::Real(m_viewport_height),
+				bf2x87::mul(bf2x87::sub(bf2x87::Real(m_def->m_frame_size.m_y_max),
+					bf2x87::Real(m_def->m_frame_size.m_y_min)), bf2x87::Real(0.05f))));
+			m_pixel_scale = bf2x87::less(scale_x, bf2x87::Real(scale_y)) ? scale_y : bf2x87::store(scale_x);
 		}
 
 
+		// SwiffPlayer.dll 0x10073670.
 		void	notify_mouse_state(int x, int y, int buttons)
 		// The host app uses this to tell the movie where the
 		// user's mouse pointer is.
@@ -1094,6 +1225,7 @@ namespace gameswf
 			m_mouse_buttons = buttons;
 		}
 
+		// SwiffPlayer.dll 0x10073690.
 		virtual void	get_mouse_state(int* x, int* y, int* buttons)
 		// Use this to retrieve the last state of the mouse, as set via
 		// notify_mouse_state().  Coordinates are in PIXELS, NOT TWIPS.
@@ -1107,20 +1239,22 @@ namespace gameswf
 			*buttons = m_mouse_buttons;
 		}
 
-		// [DICE-MOD SwiffPlayer #51] the shipped root's +0xB4 / +0xB8: the character holding the
-		// pointer since its press. A weak reference, as the stock active entity was.
-		movie*	get_active_entity() { smart_ptr<movie> p(m_mouse_button_state.m_active_entity); return p.get_ptr(); }
-		void	set_active_entity(movie* m) { m_mouse_button_state.m_active_entity = m; }
+		// Capture since the press. Retail 0x1007FBF0/0x1007FC00 reads/writes a raw
+		// pointer in movie_root.
+		movie*	get_active_entity() { return m_active_mouse_entity; }
+		void	set_active_entity(movie* m) { m_active_mouse_entity = m; }
 
 		movie*	get_root_movie() { return m_movie.get_ptr(); }
 
 
+		// SwiffPlayer.dll 0x1007FD00 reaches this record through the sprite's root.
 		void	stop_drag()
 		{
 			m_drag_state.m_character = NULL;
 		}
 
 
+		// SwiffPlayer.dll 0x10073770; native per-tree root delegate.
 		movie_definition*	get_movie_definition() { return m_movie->get_movie_definition(); }
 
 		uint32	get_file_bytes() const
@@ -1128,29 +1262,12 @@ namespace gameswf
 			return m_def->get_file_bytes();
 		}
 
-		virtual int    add_interval_timer(void *timer)
-		{
-			Timer *ptr = static_cast<Timer *>(timer);
-			
-			m_interval_timers.push_back(ptr);
-			return m_interval_timers.size();
-		}
-	
-		virtual void    clear_interval_timer(int x)
-		{
-			m_interval_timers.remove(x-1);
-			//m_interval_timers[x]->clearInterval();
-		}
-	
-		virtual void    do_something(void *timer)
-		{
-			log_msg("FIXME: %s: unimplemented\n", __FUNCTION__);
-		}
-		
+		// SwiffPlayer.dll 0x10073780.
 		// 0-based!!
 		int	get_current_frame() const { return m_movie->get_current_frame(); }
 		float	get_frame_rate() const { return m_def->get_frame_rate(); }
 
+		// SwiffPlayer.dll 0x100736B0.
 		virtual float	get_pixel_scale() const
 		// Return the size of a logical movie pixel as
 		// displayed on-screen, with the current device
@@ -1165,34 +1282,40 @@ namespace gameswf
 			return m_movie->get_character(character_id);
 		}
 
+		// SwiffPlayer.dll 0x100736D0.
 		void	set_background_color(const rgba& color)
 		{
 			m_background_color = color;
 		}
 
-		// [DICE-MOD SwiffPlayer: the shipped getter (sub_100736C0) - see gameswf.h.]
+		// SwiffPlayer.dll 0x100736C0; the native API copies the stored color.
 		rgba	get_background_color() const
 		{
 			return m_background_color;
 		}
 
+		// SwiffPlayer.dll 0x100736E0.
 		void	set_background_alpha(float alpha)
 		{
-			m_background_color.m_a = iclamp(frnd(alpha * 255.0f), 0, 255);
+			const float rounded = bf2x87::store(bf2x87::add(
+				bf2x87::mul(bf2x87::Real(alpha), bf2x87::Real(255.0f)), bf2x87::Real(0.5f)));
+			m_background_color.m_a = iclamp(bf2x87::toIntTruncate(rounded), 0, 255);
 		}
 
+		// SwiffPlayer.dll 0x10073720.
 		float	get_background_alpha() const
 		{
-			return m_background_color.m_a / 255.0f;
+			return m_background_color.m_a * (1.0f / 255.0f);
 		}
 
 		float	get_timer() const { return m_timer; }
 
+		// SwiffPlayer.dll 0x10073790. Root delegates use the native per-tree
+		// owner in place of retail's global root [CHOSEN, not recovered] S3 bridge.
 		void	restart() { m_movie->restart(); }
 		
 		void	advance(float delta_time)
 		{
-			int i;
 			if (m_on_event_load_called == false)
 			{
 				// Must do loading events.  For child sprites this is
@@ -1201,53 +1324,44 @@ namespace gameswf
 				m_on_event_load_called = true;
 				m_movie->on_event_load();
 			}
-#if 0
-			// Must check the socket connection for data
-			if (m_on_event_xmlsocket_ondata_called == true) {
-				m_movie->on_event_xmlsocket_ondata();
+			// SwiffPlayer.dll 0x1007AED0 calls 0x10077910 before mouse input
+			// and before adding delta_time to the movie clock.
+			if (s_profiling)
+			{
+				static profile_record counter("updateIntervals");
+				counter.begin();
+				update_intervals(m_timer);
+				counter.end();
 			}
-			
-			if (m_on_event_xmlsocket_onxml_called == true) {
-				m_movie->on_event_xmlsocket_onxml();
-			}
-
-
-			// Must check the progress of the MovieClip being loaded
-			if (m_on_event_load_progress_called == true) {
-				m_movie->on_event_load_progress();				
-			}
-#endif
-			if (m_interval_timers.size() > 0) {
-				for (i=0; i<m_interval_timers.size(); i++) {
-					if (m_interval_timers[i]->expired()) {
-						// printf("FIXME: Interval Timer Expired!\n");
-						//m_movie->on_event_interval_timer();
-						m_movie->do_something(m_interval_timers[i]);
-						// clear_interval_timer(m_interval_timers[i]->getIntervalID()); // FIXME: we shouldn't really disable the timer here
-					}
-				}
-			}
+			else update_intervals(m_timer);
 			
 			
-			m_timer += delta_time;
 			// @@ TODO handle multi-frame catch-up stuff
 			// here, and make it optional.  Make
 			// movie::advance() a fixed framerate w/ no
 			// dt.
 
-			// Handle the mouse. [DICE-MOD SwiffPlayer #51] one recursive pass down the tree, every
+			// Handle the mouse.  one recursive pass down the tree, every
 			// character its own state machine (sprite 0x10080010, text 0x10088650, button 0x100A3020).
 			// Stock 2006 picked a single "topmost entity" here and fed generate_mouse_button_events.
 			m_movie->mouse_update(false);
 
+			// SwiffPlayer.dll 0x1007AED0 calls the
+			// mouse pass before incrementing the movie clock, then advances the timeline.
+			m_timer += delta_time;
 			m_movie->advance(delta_time);
 		}
 
 		// 0-based!!
-		void	goto_frame(int target_frame_number) { m_movie->goto_frame(target_frame_number); }
+		// SwiffPlayer.dll 0x100737A0 calls primary +0x18 (0x100822A0),
+		// distinct from the sprite's secondary numeric queue entry.
+		void	goto_frame(int target_frame_number);
 
+		// SwiffPlayer.dll 0x100737B0.
 		virtual bool	has_looped() const { return m_movie->has_looped(); }
 
+		// SwiffPlayer.dll 0x10075160. The per-tree movie is the existing
+		// [CHOSEN, not recovered] S3 bridge for retail's global root.
 		void	display()
 		{
 			if (m_movie->get_visible() == false)
@@ -1263,72 +1377,90 @@ namespace gameswf
 				m_def->m_frame_size.m_x_min, m_def->m_frame_size.m_x_max,
 				m_def->m_frame_size.m_y_min, m_def->m_frame_size.m_y_max);
 
-			m_movie->display();
+			if (s_profiling)
+			{
+				static profile_record counter("display");
+				// The timer abstraction uses QueryPerformanceCounter on Windows,
+				// as retail 0x100D0BA0 does. Its existing POSIX clock backend is
+				// [CHOSEN, not recovered] platform policy; counters stay in ticks.
+				counter.m_start = tu_timer::get_profile_ticks();
+				m_movie->display();
+				counter.m_ticks += tu_timer::get_profile_ticks() - counter.m_start;
+				++counter.m_count;
+			}
+			else
+			{
+				m_movie->display();
+			}
 
 			gameswf::render::end_display();
 		}
 
 		virtual bool	goto_labeled_frame(const char* label)
 		{
-			// [DICE-MOD SwiffPlayer #45] a label applies at once on the root sprite too (the
-			// numeric goto_frame above is the deferred form).
-			return m_movie->goto_labeled_frame(label);
+			// SwiffPlayer.dll 0x100737C0 resolves against the root definition.
+			int frame = -1;
+			if (m_def->get_labeled_frame(label, &frame))
+			{
+				goto_frame(frame);
+				return true;
+			}
+			log_error("error: movie_impl::goto_labeled_frame('%s') unknown label\n", label);
+			return false;
 		}
 
+		// SwiffPlayer.dll 0x10073810.
 		virtual void	set_play_state(play_state s) { m_movie->set_play_state(s); }
+		// SwiffPlayer.dll 0x10073820.
 		virtual play_state	get_play_state() const { return m_movie->get_play_state(); }
 
 		/* movie_root */
+		// SwiffPlayer.dll 0x10073830.
 		virtual void	set_variable(const char* path_to_var, const char* new_value)
 		{
 			m_movie->set_variable(path_to_var, new_value);
 		}
 
 		/* movie_root */
+		// SwiffPlayer.dll 0x10073840.
 		virtual void	set_variable(const char* path_to_var, const wchar_t* new_value)
 		{
 			m_movie->set_variable(path_to_var, new_value);
 		}
 
+		// SwiffPlayer.dll 0x10073850.
 		virtual const char*	get_variable(const char* path_to_var) const
 		{
 			return m_movie->get_variable(path_to_var);
 		}
 
 		/*movie_root*/
-		// For ActionScript interfacing convenience.
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...)
+		// SwiffPlayer.dll 0x10073870 / 0x10073860 forward one command string.
+		// [CHOSEN, not recovered] S3 bridge: the native instance owns its root
+		// instead of dispatching through retail's process-global root pointer.
+		const char* call_method(const Uint16* expression) override
 		{
-			assert(m_movie != NULL);
-
-			va_list	args;
-			va_start(args, method_arg_fmt);
-			const char*	result = m_movie->call_method_args(method_name, method_arg_fmt, args);
-			va_end(args);
-
-			return result;
+			return m_movie->call_method(expression);
+		}
+		const char* call_method(const char* expression) override
+		{
+			return m_movie->call_method(expression);
 		}
 
-		/*movie_root*/
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args)
-		{
-			assert(m_movie != NULL);
-			return m_movie->call_method_args(method_name, method_arg_fmt, args);
-		}
-
+		// SwiffPlayer.dll 0x10073880 / 0x10073890.
 		virtual void	set_visible(bool visible) { m_movie->set_visible(visible); }
 		virtual bool	get_visible() const { return m_movie->get_visible(); }
 
+		// SwiffPlayer.dll 0x10073750 / 0x10073760.
 		virtual void * get_userdata() { return m_userdata; }
 		virtual void set_userdata(void * ud ) { m_userdata = ud;  }
 
-		virtual void	attach_display_callback(const char* path_to_object, void (*callback)(void* user_ptr), void* user_ptr)
-		{
-			m_movie->attach_display_callback(path_to_object, callback, user_ptr);
-		}
 	};
 
 
+	static void define_font_info_2_loader(stream* in, int tag_type, movie_definition_sub* m);
+
+	// SwiffPlayer.dll 0x1007CF60.
 	static void	ensure_loaders_registered()
 	{
 		static bool	s_registered = false;
@@ -1340,7 +1472,6 @@ namespace gameswf
 			register_tag_loader(0, end_loader);
 			register_tag_loader(2, define_shape_loader);
 			register_tag_loader(4, place_object_2_loader);
-			register_tag_loader(5, remove_object_2_loader);
 			register_tag_loader(6, define_bits_jpeg_loader);
 			register_tag_loader(7, button_character_loader);
 			register_tag_loader(8, jpeg_tables_loader);
@@ -1371,11 +1502,14 @@ namespace gameswf
 			register_tag_loader(56, export_loader);
 			register_tag_loader(57, import_loader);
 			register_tag_loader(59, do_init_action_loader);   
+			register_tag_loader(62, define_font_info_2_loader);
 		}
 	}
 
 
 
+	// SwiffPlayer.dll 0x1006F380.
+	// [CHOSEN, not recovered] The host still uses the extra native tag-count output.
 	void	get_movie_info(
 		const char* filename,
 		int* version,
@@ -1422,22 +1556,10 @@ namespace gameswf
 		}
 		bool	compressed = (header & 255) == 'C';
 
-		tu_file*	original_in = NULL;
 		if (compressed)
 		{
-#if TU_CONFIG_LINK_TO_ZLIB == 0
 			log_error("get_movie_info(): can't read zipped SWF data; TU_CONFIG_LINK_TO_ZLIB is 0!\n");
 			return;
-#endif
-			original_in = in;
-
-			// Uncompress the input as we read it.
-			in = zlib_adapter::make_inflater(original_in);
-
-			// Subtract the size of the 8-byte header, since
-			// it's not included in the compressed
-			// stream length.
-			file_length -= 8;
 		}
 
 		stream	str(in);
@@ -1449,8 +1571,12 @@ namespace gameswf
 		int	local_frame_count = str.read_u16();
 
 		if (version) *version = local_version;
-		if (width) *width = int(frame_size.width() / 20.0f + 0.5f);
-		if (height) *height = int(frame_size.height() / 20.0f + 0.5f);
+		if (width) *width = bf2x87::toIntTruncate(
+			bf2x87::add(bf2x87::mul(bf2x87::sub(bf2x87::Real(frame_size.m_x_max),
+				bf2x87::Real(frame_size.m_x_min)), bf2x87::Real(0.05f)), bf2x87::Real(0.5f)));
+		if (height) *height = bf2x87::toIntTruncate(
+			bf2x87::add(bf2x87::mul(bf2x87::sub(bf2x87::Real(frame_size.m_y_max),
+				bf2x87::Real(frame_size.m_y_min)), bf2x87::Real(0.05f)), bf2x87::Real(0.5f)));
 		if (frames_per_second) *frames_per_second = local_frame_rate;
 		if (frame_count) *frame_count = local_frame_count;
 
@@ -1468,12 +1594,11 @@ namespace gameswf
 		}
 
 		delete in;
-		delete original_in;
 	}
 
 
 
-	// [DICE-MOD SwiffPlayer: see gameswf.h. Default preserves stock behaviour.]
+	// see gameswf.h. Default preserves stock behaviour.
 	static create_bitmaps_flag	s_default_create_bitmaps = DO_LOAD_BITMAPS;
 
 	void	set_default_create_bitmaps(create_bitmaps_flag cbf)
@@ -1481,6 +1606,7 @@ namespace gameswf
 		s_default_create_bitmaps = cbf;
 	}
 
+	// SwiffPlayer.dll 0x1007E010: tail entry to create_movie_sub.
 	movie_definition*	create_movie(const char* filename)
 	// Create the movie definition from the specified .swf file.
 	{
@@ -1488,6 +1614,8 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1007D3C0. The default bitmap policy remains a native
+	// [CHOSEN, not recovered] S3 bridge; retail constructs both load flags as zero.
 	movie_definition_sub*	create_movie_sub(const char* filename)
 	{
 		if (s_opener_function == NULL)
@@ -1512,7 +1640,7 @@ namespace gameswf
 
 		ensure_loaders_registered();
 
-		// [DICE-MOD SwiffPlayer: was hardcoded DO_LOAD_BITMAPS - see set_default_create_bitmaps.]
+		// was hardcoded DO_LOAD_BITMAPS - see set_default_create_bitmaps.
 		movie_def_impl*	m = new movie_def_impl(s_default_create_bitmaps, DO_LOAD_FONT_SHAPES);
 		m->read(in);
 
@@ -1530,7 +1658,8 @@ namespace gameswf
 				// Can't open cache file; don't sweat it.
 				IF_VERBOSE_PARSE(log_msg("note: couldn't open cache file '%s'\n", cache_filename.c_str()));
 
-				m->generate_font_bitmaps();	// can't read cache, so generate font texture data.
+				// SwiffPlayer.dll 0x1007D4BA..0x1007D4DC only reports a
+				// missing cache; it does not generate font textures here.
 			}
 			else
 			{
@@ -1549,6 +1678,7 @@ namespace gameswf
 	static bool	s_no_recurse_while_loading = false;	// @@ TODO get rid of this; make it the normal mode.
 
 
+	// SwiffPlayer.dll 0x1007D520.
 	movie_definition*	create_movie_no_recurse(
 		tu_file* in,
 		create_bitmaps_flag cbf,
@@ -1580,6 +1710,8 @@ namespace gameswf
 
 	// For built-in sprite ActionScript methods.
 	as_object*	s_sprite_builtins = 0;	// shared among all sprites.
+	// SwiffPlayer.dll 0x1007FB20 / 0x10084B60; source-level name [INFERRED].
+	static Uint32 s_sprite_live_count = 0;
 	static void	sprite_builtins_init();
 	static void	sprite_builtins_clear();
 
@@ -1620,6 +1752,7 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x10075440 appends a borrowed external-movie pointer.
 	void save_extern_movie(movie_interface* m)
 	{
 		s_extern_sprites.push_back(m);
@@ -1644,18 +1777,23 @@ namespace gameswf
 	}
 //#endif // 0
 
+	// SwiffPlayer.dll 0x1006F560.
 	movie_interface* get_current_root()
 	{
 		assert(s_current_root != NULL);
 		return s_current_root;
 	}
 
+	// SwiffPlayer.dll 0x1006F570.
 	void set_current_root(movie_interface* m)
 	{
 		assert(m != NULL);
 		s_current_root = m;
 	}
 
+	// SwiffPlayer.dll 0x1006F580 / 0x1006F590.
+	// [CHOSEN, not recovered] S3 bridge: native string storage replaces the
+	// retail fixed buffer; callers still borrow it until the next assignment.
 	const char* get_workdir()
 	{
 		return s_workdir.c_str();
@@ -1671,6 +1809,7 @@ namespace gameswf
 	// Drop all library references to movie_definitions, so they
 	// can be cleaned up.
 	{
+		// SwiffPlayer.dll 0x10076700 clears definitions before instances.
 		s_movie_library.clear();
 		s_movie_library_inst.clear();
 	}
@@ -1710,6 +1849,7 @@ namespace gameswf
 // 	}
 
 
+	// SwiffPlayer.dll 0x1007E020: tail entry to create_library_movie_sub.
 	movie_definition*	create_library_movie(const char* filename)
 	// Try to load a movie from the given url, if we haven't
 	// loaded it already.  Add it to our library on success, and
@@ -1719,6 +1859,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1007D580.
 	movie_definition_sub*	create_library_movie_sub(const char* filename)
 	{
 		tu_string	fn(filename);
@@ -1758,6 +1899,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10075470; forwarding entry 0x10076720.
 	movie_interface*	create_library_movie_inst_sub(movie_definition_sub* md)
 	{
 		// Is the movie instance already in the library?
@@ -1791,6 +1933,8 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10071720; the handler save/restore helpers are
+	// 0x1006F5B0 / 0x1006F5E0.
 	void	precompute_cached_data(movie_definition* movie_def)
 	// Fill in cached data in movie_def.
 	// @@@@ NEEDS TESTING -- MIGHT BE BROKEN!!!
@@ -1807,6 +1951,7 @@ namespace gameswf
 			render_handler*	m_original_rh;
 			sound_handler*	m_original_sh;
 
+			// SwiffPlayer.dll 0x1006F5B0.
 			save_stuff()
 			{
 				// Save.
@@ -1816,6 +1961,7 @@ namespace gameswf
 				set_sound_handler(NULL);
 			}
 
+			// SwiffPlayer.dll 0x1006F5E0.
 			~save_stuff()
 			{
 				// Restore.
@@ -1854,7 +2000,9 @@ namespace gameswf
 			m->advance(0.010f);
 			m->display();
 
-			if (m->get_current_frame() == movie_def->get_frame_count() - 1)
+			// SwiffPlayer.dll 0x100717A5 / 0x10071839 queries the definition first.
+			const int frame_count = movie_def->get_frame_count();
+			if (m->get_current_frame() == frame_count - 1)
 			{
 				// Done.
 				break;
@@ -1895,11 +2043,13 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1006F600 is an empty tag loader.
 	void	null_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Silently ignore the contents of this tag.
 	{
 	}
 
+	// SwiffPlayer.dll 0x1006F610.
 	void	frame_label_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Label the current frame of m with the name from the stream.
 	{
@@ -1910,30 +2060,36 @@ namespace gameswf
 
 	struct set_background_color : public execute_tag
 	{
+		// SwiffPlayer.dll 0x10071900: implicit destruction has no owned members.
+		// SwiffPlayer.dll 0x10071890: implicit rgba construction sets every component to 255.
 		rgba	m_color;
 
+		// SwiffPlayer.dll 0x100718B0 stores once after multiply and add,
+		// then truncates the float argument and keeps its low byte.
 		void	execute(movie* m)
 		{
 			float	current_alpha = m->get_background_alpha();
-			m_color.m_a = frnd(current_alpha * 255.0f);
+			const float rounded = bf2x87::store(bf2x87::add(
+				bf2x87::mul(bf2x87::Real(current_alpha), bf2x87::Real(255.0f)), bf2x87::Real(0.5f)));
+			m_color.m_a = static_cast<Uint8>(bf2x87::toIntTruncate(rounded));
 			m->set_background_color(m_color);
 		}
 
+		// SwiffPlayer.dll 0x100718F0.
 		void	execute_state(movie* m)
 		{
 			execute(m);
 		}
 
+		// SwiffPlayer.dll 0x1006F640.
 		void	read(stream* in)
 		{
 			m_color.read_rgb(in);
-
-			IF_VERBOSE_PARSE(log_msg("  set_background_color: (%d %d %d)\n",
-						 m_color.m_r, m_color.m_g, m_color.m_b));
 		}
 	};
 
 
+	// SwiffPlayer.dll 0x100738F0.
 	void	set_background_color_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 9);
@@ -1981,21 +2137,31 @@ namespace gameswf
 	};
 #endif
 
+	// SwiffPlayer.dll 0x1006F660 is empty in the shipped JPEG-disabled build.
 	void	jpeg_tables_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load JPEG compression tables that can be used to load
 	// images further along in the stream.
 	{
 		assert(tag_type == 8);
 
-#if TU_CONFIG_LINK_TO_JPEGLIB
-		jpeg::input*	j_in = jpeg::input::create_swf_jpeg2_header_only(in->get_underlying_stream());
-		assert(j_in);
-
-		m->set_jpeg_loader(j_in);
-#endif // TU_CONFIG_LINK_TO_JPEGLIB
 	}
 
 
+	// SwiffPlayer.dll 0x10073A50/0x10073B80/0x10073C60/0x10073D40.
+	// These loaders create a named-host-image descriptor without decoding payloads.
+	static bitmap_character* make_movie_bitmap_character(int id)
+	{
+		named_bitmap_info* bi = new named_bitmap_info;
+		bi->m_texture_id = static_cast<unsigned>(-1);
+		bi->m_original_width = 256;
+		bi->m_original_height = 256;
+		bitmap_character* ch = new bitmap_character(bi);
+		// [CHOSEN, not recovered] S3 bridge: native constructor ID adapter.
+		ch->set_character_id(id);
+		return ch;
+	}
+
+	// SwiffPlayer.dll 0x10073A50.
 	void	define_bits_jpeg_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// A JPEG image without included tables; those should be in an
 	// existing jpeg::input object stored in the movie.
@@ -2004,131 +2170,26 @@ namespace gameswf
 
 		Uint16	character_id = in->read_u16();
 
-		//
-		// Read the image data.
-		//
-		bitmap_info*	bi = NULL;
-
-		if (m->get_create_bitmaps() == DO_LOAD_BITMAPS)
-		{
-#if TU_CONFIG_LINK_TO_JPEGLIB
-			jpeg::input*	j_in = m->get_jpeg_loader();
-			assert(j_in);
-			j_in->discard_partial_buffer();
-
-			image::rgb*	im = image::read_swf_jpeg2_with_tables(j_in);
-			bi = render::create_bitmap_info_rgb(im);
-			delete im;
-#else
-			log_error("gameswf is not linked to jpeglib -- can't load jpeg image data!\n");
-			bi = render::create_bitmap_info_empty();
-#endif
-		}
-		else
-		{
-			bi = render::create_bitmap_info_empty();
-		}
-
-		assert(bi->get_ref_count() == 0);
-
-		bitmap_character*	ch = new bitmap_character(bi);
-
-		m->add_bitmap_character(character_id, ch);
+		m->add_bitmap_character(character_id, make_movie_bitmap_character(character_id));
 	}
 
 
+	// SwiffPlayer.dll 0x10073B80.
 	void	define_bits_jpeg2_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 21);
 		
 		Uint16	character_id = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  define_bits_jpeg2_loader: charid = %d pos = 0x%x\n", character_id, in->get_position()));
+		IF_VERBOSE_PARSE(log_msg("define_bits_jpeg2_loader: charid = %d pos = 0x%x\n", character_id, in->get_position()));
 
-		//
-		// Read the image data.
-		//
-		
-		bitmap_info*	bi = NULL;
-
-		if (m->get_create_bitmaps() == DO_LOAD_BITMAPS)
-		{
-#if TU_CONFIG_LINK_TO_JPEGLIB
-			image::rgb* im = image::read_swf_jpeg2(in->get_underlying_stream());
-			bi = render::create_bitmap_info_rgb(im);
-			delete im;
-#else
-			log_error("gameswf is not linked to jpeglib -- can't load jpeg image data!\n");
-			bi = render::create_bitmap_info_empty();
-#endif
-		}
-		else
-		{
-			bi = render::create_bitmap_info_empty();
-		}
-
-		assert(bi->get_ref_count() == 0);
-
-		bitmap_character*	ch = new bitmap_character(bi);
-
-		m->add_bitmap_character(character_id, ch);
+		m->add_bitmap_character(character_id, make_movie_bitmap_character(character_id));
 	}
 
 
-#if TU_CONFIG_LINK_TO_ZLIB
-	void	inflate_wrapper(tu_file* in, void* buffer, int buffer_bytes)
-	// Wrapper function -- uses Zlib to uncompress in_bytes worth
-	// of data from the input file into buffer_bytes worth of data
-	// into *buffer.
-	{
-		assert(in);
-		assert(buffer);
-		assert(buffer_bytes > 0);
-
-		int err;
-		z_stream d_stream; /* decompression stream */
-
-		d_stream.zalloc = (alloc_func)0;
-		d_stream.zfree = (free_func)0;
-		d_stream.opaque = (voidpf)0;
-
-		d_stream.next_in  = 0;
-		d_stream.avail_in = 0;
-
-		d_stream.next_out = (Byte*) buffer;
-		d_stream.avail_out = (uInt) buffer_bytes;
-
-		err = inflateInit(&d_stream);
-		if (err != Z_OK) {
-			log_error("error: inflate_wrapper() inflateInit() returned %d\n", err);
-			return;
-		}
-
-		Uint8	buf[1];
-
-		for (;;) {
-			// Fill a one-byte (!) buffer.
-			buf[0] = in->read_byte();
-			d_stream.next_in = &buf[0];
-			d_stream.avail_in = 1;
-
-			err = inflate(&d_stream, Z_SYNC_FLUSH);
-			if (err == Z_STREAM_END) break;
-			if (err != Z_OK)
-			{
-				log_error("error: inflate_wrapper() inflate() returned %d\n", err);
-			}
-		}
-
-		err = inflateEnd(&d_stream);
-		if (err != Z_OK)
-		{
-			log_error("error: inflate_wrapper() inflateEnd() return %d\n", err);
-		}
-	}
-#endif // TU_CONFIG_LINK_TO_ZLIB
 
 
+	// SwiffPlayer.dll 0x10073C60.
 	void	define_bits_jpeg3_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// loads a define_bits_jpeg3 tag. This is a jpeg file with an alpha
 	// channel using zlib compression.
@@ -2137,307 +2198,23 @@ namespace gameswf
 
 		Uint16	character_id = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  define_bits_jpeg3_loader: charid = %d pos = 0x%x\n", character_id, in->get_position()));
+		IF_VERBOSE_PARSE(log_msg("define_bits_jpeg3_loader: charid = %d pos = 0x%x\n", character_id, in->get_position()));
 
-		Uint32	jpeg_size = in->read_u32();
-		Uint32	alpha_position = in->get_position() + jpeg_size;
-
-		bitmap_info*	bi = NULL;
-
-		if (m->get_create_bitmaps() == DO_LOAD_BITMAPS)
-		{
-#if TU_CONFIG_LINK_TO_JPEGLIB == 0 || TU_CONFIG_LINK_TO_ZLIB == 0
-			log_error("gameswf is not linked to jpeglib/zlib -- can't load jpeg/zipped image data!\n");
-			bi = render::create_bitmap_info_empty();
-#else
-			//
-			// Read the image data.
-			//
-		
-			// Read rgb data.
-			image::rgba*	im = image::read_swf_jpeg3(in->get_underlying_stream());
-
-			// Read alpha channel.
-			in->set_position(alpha_position);
-
-			int	buffer_bytes = im->m_width * im->m_height;
-			Uint8*	buffer = new Uint8[buffer_bytes];
-
-			inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-
-			for (int i = 0; i < buffer_bytes; i++)
-			{
-				im->m_data[4*i+3] = buffer[i];
-			}
-
-			delete [] buffer;
-
-			bi = render::create_bitmap_info_rgba(im);
-
-			delete im;
-#endif
-
-		}
-		else
-		{
-			bi = render::create_bitmap_info_empty();
-		}
-
-		// Create bitmap character.
-		bitmap_character*	ch = new bitmap_character(bi);
-
-		m->add_bitmap_character(character_id, ch);
+		m->add_bitmap_character(character_id, make_movie_bitmap_character(character_id));
 	}
 
 
+	// SwiffPlayer.dll 0x10073D40.
 	void	define_bits_lossless_2_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 20 || tag_type == 36);
 
 		Uint16	character_id = in->read_u16();
-		Uint8	bitmap_format = in->read_u8();	// 3 == 8 bit, 4 == 16 bit, 5 == 32 bit
-		Uint16	width = in->read_u16();
-		Uint16	height = in->read_u16();
-
-		IF_VERBOSE_PARSE(log_msg("  defbitslossless2: tag_type = %d, id = %d, fmt = %d, w = %d, h = %d\n",
-				tag_type,
-				character_id,
-				bitmap_format,
-				width,
-				height));
-
-		bitmap_info*	bi = NULL;
-		if (m->get_create_bitmaps() == DO_LOAD_BITMAPS)
-		{
-#if TU_CONFIG_LINK_TO_ZLIB == 0
-			log_error("gameswf is not linked to zlib -- can't load zipped image data!\n");
-			return;
-#else
-			if (tag_type == 20)
-			{
-				// RGB image data.
-				image::rgb*	image = image::create_rgb(width, height);
-
-				if (bitmap_format == 3)
-				{
-					// 8-bit data, preceded by a palette.
-
-					const int	bytes_per_pixel = 1;
-					int	color_table_size = in->read_u8();
-					color_table_size += 1;	// !! SWF stores one less than the actual size
-
-					int	pitch = (width * bytes_per_pixel + 3) & ~3;
-
-					int	buffer_bytes = color_table_size * 3 + pitch * height;
-					Uint8*	buffer = new Uint8[buffer_bytes];
-
-					inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-					assert(in->get_position() <= in->get_tag_end_position());
-
-					Uint8*	color_table = buffer;
-
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_in_row = buffer + color_table_size * 3 + j * pitch;
-						Uint8*	image_out_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint8	pixel = image_in_row[i * bytes_per_pixel];
-							image_out_row[i * 3 + 0] = color_table[pixel * 3 + 0];
-							image_out_row[i * 3 + 1] = color_table[pixel * 3 + 1];
-							image_out_row[i * 3 + 2] = color_table[pixel * 3 + 2];
-						}
-					}
-
-					delete [] buffer;
-				}
-				else if (bitmap_format == 4)
-				{
-					// 16 bits / pixel
-					const int	bytes_per_pixel = 2;
-					int	pitch = (width * bytes_per_pixel + 3) & ~3;
-
-					int	buffer_bytes = pitch * height;
-					Uint8*	buffer = new Uint8[buffer_bytes];
-
-					inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-					assert(in->get_position() <= in->get_tag_end_position());
-			
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_in_row = buffer + j * pitch;
-						Uint8*	image_out_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint16	pixel = image_in_row[i * 2] | (image_in_row[i * 2 + 1] << 8);
-					
-							// @@ How is the data packed???  I'm just guessing here that it's 565!
-							image_out_row[i * 3 + 0] = (pixel >> 8) & 0xF8;	// red
-							image_out_row[i * 3 + 1] = (pixel >> 3) & 0xFC;	// green
-							image_out_row[i * 3 + 2] = (pixel << 3) & 0xF8;	// blue
-						}
-					}
-			
-					delete [] buffer;
-				}
-				else if (bitmap_format == 5)
-				{
-					// 32 bits / pixel, input is ARGB format (???)
-					const int	bytes_per_pixel = 4;
-					int	pitch = width * bytes_per_pixel;
-
-					int	buffer_bytes = pitch * height;
-					Uint8*	buffer = new Uint8[buffer_bytes];
-
-					inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-					assert(in->get_position() <= in->get_tag_end_position());
-			
-					// Need to re-arrange ARGB into RGB.
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_in_row = buffer + j * pitch;
-						Uint8*	image_out_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint8	a = image_in_row[i * 4 + 0];
-							Uint8	r = image_in_row[i * 4 + 1];
-							Uint8	g = image_in_row[i * 4 + 2];
-							Uint8	b = image_in_row[i * 4 + 3];
-							image_out_row[i * 3 + 0] = r;
-							image_out_row[i * 3 + 1] = g;
-							image_out_row[i * 3 + 2] = b;
-							a = a;	// Inhibit warning.
-						}
-					}
-
-					delete [] buffer;
-				}
-
-//				bitmap_character*	ch = new bitmap_character(image);
-				bi = render::create_bitmap_info_rgb(image);
-				delete image;
-
-// 				// add image to movie, under character id.
-// 				m->add_bitmap_character(character_id, ch);
-			}
-			else
-			{
-				// RGBA image data.
-				assert(tag_type == 36);
-
-				image::rgba*	image = image::create_rgba(width, height);
-
-				if (bitmap_format == 3)
-				{
-					// 8-bit data, preceded by a palette.
-
-					const int	bytes_per_pixel = 1;
-					int	color_table_size = in->read_u8();
-					color_table_size += 1;	// !! SWF stores one less than the actual size
-
-					int	pitch = (width * bytes_per_pixel + 3) & ~3;
-
-					int	buffer_bytes = color_table_size * 4 + pitch * height;
-					Uint8*	buffer = new Uint8[buffer_bytes];
-
-					inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-					assert(in->get_position() <= in->get_tag_end_position());
-
-					Uint8*	color_table = buffer;
-
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_in_row = buffer + color_table_size * 4 + j * pitch;
-						Uint8*	image_out_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint8	pixel = image_in_row[i * bytes_per_pixel];
-							image_out_row[i * 4 + 0] = color_table[pixel * 4 + 0];
-							image_out_row[i * 4 + 1] = color_table[pixel * 4 + 1];
-							image_out_row[i * 4 + 2] = color_table[pixel * 4 + 2];
-							image_out_row[i * 4 + 3] = color_table[pixel * 4 + 3];
-						}
-					}
-
-					delete [] buffer;
-				}
-				else if (bitmap_format == 4)
-				{
-					// 16 bits / pixel
-					const int	bytes_per_pixel = 2;
-					int	pitch = (width * bytes_per_pixel + 3) & ~3;
-
-					int	buffer_bytes = pitch * height;
-					Uint8*	buffer = new Uint8[buffer_bytes];
-
-					inflate_wrapper(in->get_underlying_stream(), buffer, buffer_bytes);
-					assert(in->get_position() <= in->get_tag_end_position());
-			
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_in_row = buffer + j * pitch;
-						Uint8*	image_out_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint16	pixel = image_in_row[i * 2] | (image_in_row[i * 2 + 1] << 8);
-					
-							// @@ How is the data packed???  I'm just guessing here that it's 565!
-							image_out_row[i * 4 + 0] = 255;			// alpha
-							image_out_row[i * 4 + 1] = (pixel >> 8) & 0xF8;	// red
-							image_out_row[i * 4 + 2] = (pixel >> 3) & 0xFC;	// green
-							image_out_row[i * 4 + 3] = (pixel << 3) & 0xF8;	// blue
-						}
-					}
-			
-					delete [] buffer;
-				}
-				else if (bitmap_format == 5)
-				{
-					// 32 bits / pixel, input is ARGB format
-
-					inflate_wrapper(in->get_underlying_stream(), image->m_data, width * height * 4);
-					assert(in->get_position() <= in->get_tag_end_position());
-			
-					// Need to re-arrange ARGB into RGBA.
-					for (int j = 0; j < height; j++)
-					{
-						Uint8*	image_row = image::scanline(image, j);
-						for (int i = 0; i < width; i++)
-						{
-							Uint8	a = image_row[i * 4 + 0];
-							Uint8	r = image_row[i * 4 + 1];
-							Uint8	g = image_row[i * 4 + 2];
-							Uint8	b = image_row[i * 4 + 3];
-							image_row[i * 4 + 0] = r;
-							image_row[i * 4 + 1] = g;
-							image_row[i * 4 + 2] = b;
-							image_row[i * 4 + 3] = a;
-						}
-					}
-				}
-
-				bi = render::create_bitmap_info_rgba(image);
-//				bitmap_character*	ch = new bitmap_character(image);
-				delete image;
-
-//	 			// add image to movie, under character id.
-//	 			m->add_bitmap_character(character_id, ch);
-			}
-#endif // TU_CONFIG_LINK_TO_ZLIB
-		}
-		else
-		{
-			bi = render::create_bitmap_info_empty();
-		}
-		assert(bi->get_ref_count() == 0);
-
-		bitmap_character*	ch = new bitmap_character(bi);
-
-		// add image to movie, under character id.
-		m->add_bitmap_character(character_id, ch);
+		m->add_bitmap_character(character_id, make_movie_bitmap_character(character_id));
 	}
 
 
+	// SwiffPlayer.dll 0x1006F670.
 	void	define_shape_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 2
@@ -2445,22 +2222,26 @@ namespace gameswf
 		       || tag_type == 32);
 
 		Uint16	character_id = in->read_u16();
-		IF_VERBOSE_PARSE(log_msg("  shape_loader: id = %d\n", character_id));
-
 		shape_character_def*	ch = new shape_character_def;
+		// [CHOSEN, not recovered] S3 bridge: the native constructor has
+		// no ID argument; retain retail's definition ID before reading.
+		ch->set_character_id(character_id);
 		ch->read(in, tag_type, true, m);
 
-		IF_VERBOSE_PARSE(log_msg("  bound rect:"); ch->get_bound().print());
+		IF_VERBOSE_PARSE(log_msg("shape_loader: id = %d, rect ", character_id); ch->get_bound().print());
 
 		m->add_character(character_id, ch);
 	}
 
+	// SwiffPlayer.dll 0x1006F700.
 	void define_shape_morph_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 46);
 		Uint16 character_id = in->read_u16();
-		IF_VERBOSE_PARSE(log_msg("  shape_morph_loader: id = %d\n", character_id));
+		IF_VERBOSE_PARSE(log_msg("shape_morph_loader: id = %d\n", character_id));
 		morph2_character_def* morph = new morph2_character_def;
+		// [CHOSEN, not recovered] S3 bridge: constructor ID adapter, as above.
+		morph->set_character_id(character_id);
 		morph->read(in, tag_type, true, m);
 		m->add_character(character_id, morph);
 	}
@@ -2470,6 +2251,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1006F780.
 	void	define_font_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load a DefineFont or DefineFont2 tag.
 	{
@@ -2489,6 +2271,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1006F7E0.
 	void	define_font_info_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load a DefineFontInfo tag.  This adds information to an
 	// existing font.
@@ -2505,6 +2288,23 @@ namespace gameswf
 		else
 		{
 			log_error("define_font_info_loader: can't find font w/ id %d\n", font_id);
+		}
+	}
+
+	// SwiffPlayer.dll 0x1006F820 uses the same reader as tag 13, including
+	// its lack of a separate language-byte read for DefineFontInfo2.
+	static void define_font_info_2_loader(stream* in, int tag_type, movie_definition_sub* m)
+	{
+		assert(tag_type == 62);
+		const Uint16 font_id = in->read_u16();
+		font* f = m->get_font(font_id);
+		if (f)
+		{
+			f->read_font_info(in);
+		}
+		else
+		{
+			log_error("define_font_info_2_loader: can't find font w/ id %d\n", font_id);
 		}
 	}
 
@@ -2530,11 +2330,13 @@ namespace gameswf
 		{
 		}
 
+		// SwiffPlayer.dll 0x1007B470; event IDs retain the S2 mapping.
 		void	attach_to(character* ch) const
 		{
 			ch->set_event_handler(m_event, m_method);
 		}
 
+		// SwiffPlayer.dll 0x10073E00.
 		void	read(stream* in, Uint32 flags)
 		{
 			assert(flags != 0);
@@ -2548,9 +2350,9 @@ namespace gameswf
 					  "unexpected! flags = 0x%x\n", flags);
 			}
 
-			// 14 bits reserved, 18 bits used
-
-			static const event_id	s_code_bits[19] =
+			// [CHOSEN, not recovered] S2 bridge: native event IDs differ;
+			// retain the shipped 21-entry bit mapping using the native names.
+			static const event_id	s_code_bits[21] =
 			{
 				event_id::LOAD,
 				event_id::ENTER_FRAME,
@@ -2570,7 +2372,9 @@ namespace gameswf
 				event_id::DRAG_OVER,
 				event_id::DRAG_OUT,
 				event_id::KEY_PRESS,	// bit 17 (still unhandled below)
-				event_id::CONSTRUCT,	// bit 18 [DICE-MOD SwiffPlayer #27]
+				event_id::CONSTRUCT,	// bit 18
+				event_id::DOUBLE_PRESS,
+				event_id::INVALID,
 			};
 
 			for (int i = 0, mask = 1; i < int(sizeof(s_code_bits)/sizeof(s_code_bits[0])); i++, mask <<= 1)
@@ -2605,6 +2409,8 @@ namespace gameswf
 
 			// Create a function to execute the actions.
 			array<with_stack_entry>	empty_with_stack;
+			// [CHOSEN, not recovered] S3 bridge: the native function
+			// constructor carries the extra (empty) with-stack parameter.
 			as_as_function*	func = new as_as_function(&m_action_buffer, NULL, 0, empty_with_stack);
 			func->set_length(m_action_buffer.get_length());
 
@@ -2624,6 +2430,8 @@ namespace gameswf
 	
 	struct place_object_2 : public execute_tag
 	{
+		// [CHOSEN, not recovered] S3 bridge for 2006 reverse-tag APIs;
+		// retail 0x10076760 does not retain the input tag number.
 		int	m_tag_type;
 		char*	m_name;
 		float	m_ratio;
@@ -2642,6 +2450,7 @@ namespace gameswf
 		array<swf_event*>	m_event_handlers;
 
 
+		// SwiffPlayer.dll 0x100755E0; m_tag_type is the native bridge above.
 		place_object_2()
 			:
 			m_tag_type(0),
@@ -2656,6 +2465,7 @@ namespace gameswf
 		{
 		}
 
+		// SwiffPlayer.dll 0x1007B4C0; deleting veneer 0x1007B490.
 		~place_object_2()
 		{
 			delete [] m_name;
@@ -2668,6 +2478,7 @@ namespace gameswf
 			m_event_handlers.resize(0);
 		}
 
+		// SwiffPlayer.dll 0x10076760.
 		void	read(stream* in, int tag_type, int movie_version)
 		{
 			assert(tag_type == 4 || tag_type == 26);
@@ -2681,18 +2492,9 @@ namespace gameswf
 				m_depth = in->read_u16();
 				m_matrix.read(in);
 
-				IF_VERBOSE_PARSE(
-					log_msg("  char_id = %d\n"
-						"  depth = %d\n"
-						"  mat = \n",
-						m_character_id,
-						m_depth);
-					m_matrix.print());
-
 				if (in->get_position() < in->get_tag_end_position())
 				{
 					m_color_transform.read_rgb(in);
-					IF_VERBOSE_PARSE(log_msg("  cxform:\n"); m_color_transform.print());
 				}
 			}
 			else if (tag_type == 26)
@@ -2709,36 +2511,30 @@ namespace gameswf
 				bool	flag_move = in->read_uint(1) ? true : false;
 
 				m_depth = in->read_u16();
-				IF_VERBOSE_PARSE(log_msg("  depth = %d\n", m_depth));
 
 				if (has_char) {
 					m_character_id = in->read_u16();
-					IF_VERBOSE_PARSE(log_msg("  char id = %d\n", m_character_id));
 				}
 
 				if (has_matrix) {
 					m_has_matrix = true;
 					m_matrix.read(in);
-					IF_VERBOSE_PARSE(log_msg("  mat:\n"); m_matrix.print());
 				}
 				if (has_cxform) {
 					m_has_cxform = true;
 					m_color_transform.read_rgba(in);
-					IF_VERBOSE_PARSE(log_msg("  cxform:\n"); m_color_transform.print());
 				}
 				
 				if (has_ratio) {
-					m_ratio = (float)in->read_u16() / (float)65535;
-					IF_VERBOSE_PARSE(log_msg("  ratio: %f\n", m_ratio));
+					m_ratio = in->read_u16() * (1.0f / 65535.0f);
 				}
 				
 				if (has_name) {
 					m_name = in->read_string();
-					IF_VERBOSE_PARSE(log_msg("  name = %s\n", m_name ? m_name : "<null>"));
 				}
 				if (has_clip_bracket) {
 					m_clip_depth = in->read_u16(); 
-					IF_VERBOSE_PARSE(log_msg("  clip_depth = %d\n", m_clip_depth));
+					IF_VERBOSE_PARSE(log_msg("HAS CLIP BRACKET!\n"));
 				}
 				if (has_actions)
 				{
@@ -2757,8 +2553,6 @@ namespace gameswf
 						all_flags = in->read_u16();
 					}
 					UNUSED(all_flags);
-
-					IF_VERBOSE_PARSE(log_msg("  actions: flags = 0x%X\n", all_flags));
 
 					// Read swf_events.
 					for (;;)
@@ -2806,11 +2600,13 @@ namespace gameswf
 					m_place_type = PLACE;
 				}
                                 
-				//log_msg("place object at depth %i\n", m_depth);
+				IF_VERBOSE_PARSE(log_msg("po2r: name = %s\n", m_name));
+				IF_VERBOSE_PARSE(log_msg("po2r: char id = %d, mat:\n", m_character_id); m_matrix.print());
 			}
 		}
 
 		
+		// SwiffPlayer.dll 0x10075640.
 		void	execute(movie* m)
 		// Place/move/whatever our object in the given movie.
 		{
@@ -2827,6 +2623,7 @@ namespace gameswf
 					m_matrix,
 					m_ratio,
 					m_clip_depth);
+				IF_VERBOSE_DEBUG(log_msg(">>>>>>>>> character (%s) placed at %d\n", m_name, m_depth));
 				break;
 
 			case MOVE:
@@ -2838,6 +2635,7 @@ namespace gameswf
 					m_matrix,
 					m_ratio,
 					m_clip_depth);
+				IF_VERBOSE_DEBUG(log_msg(">>>>>>>>> character (%s) moved at %d\n", m_name, m_depth));
 				break;
 
 			case REPLACE:
@@ -2851,18 +2649,22 @@ namespace gameswf
 					m_matrix,
 					m_ratio,
 					m_clip_depth);
+				IF_VERBOSE_DEBUG(log_msg(">>>>>>>>> character (%s) replaced at %d\n", m_name, m_depth));
 				break;
 			}
 		}
 
+		// SwiffPlayer.dll 0x10075770 delegates to execute.
 		void	execute_state(movie* m)
 		{
 			execute(m);
 		}
 
-		// [DICE-MOD SwiffPlayer #45] see execute_tag::execute_goto: the goto pass does nothing
+		//  see execute_tag::execute_goto: the goto pass does nothing
 		// with a place (0x10075760 is a nullsub); the state builder reads its depth and kind.
+		// SwiffPlayer.dll 0x10075760.
 		void	execute_goto(movie* /*m*/) {}
+		// SwiffPlayer.dll 0x10075630.
 		bool	is_place_tag() const { return true; }
 		int	get_tag_depth() const { return m_depth; }
 		int	get_place_type() const { return (int) m_place_type; }
@@ -2873,7 +2675,7 @@ namespace gameswf
 			{
 			case PLACE:
 				// reverse of add is remove
-				m->remove_display_object(m_depth, m_tag_type == 4 ? m_character_id : -1);
+				m->remove_display_object(m_depth);
 				break;
 
 			case MOVE:
@@ -2930,11 +2732,10 @@ namespace gameswf
 
 
 	
+	// SwiffPlayer.dll 0x10076A30.
 	void	place_object_2_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 4 || tag_type == 26);
-
-		IF_VERBOSE_PARSE(log_msg("  place_object_2\n"));
 
 		place_object_2*	ch = new place_object_2;
 		ch->read(in, tag_type, m->get_version());
@@ -2959,22 +2760,28 @@ namespace gameswf
 	// and displayed in the parent movie's display list.
 
 
-	struct sprite_definition : public movie_definition_sub
+	struct sprite_definition : public movie_definition_sub, public definition_bounds_provider
 	{
 		movie_definition_sub*	     m_movie_def;		// parent movie.
 		array<array<execute_tag*> >  m_playlist;	// movie control events for each frame.
+		array<execute_tag*> m_init_action_list;
 		stringi_hash<int>	     m_named_frames;	// stores 0-based frame #'s
 		int	                     m_frame_count;
 		int	                     m_loading_frame;
-		sprite_definition(movie_definition_sub* m)
+		sprite_definition(movie_definition_sub* m, int character_id = 0)
 			:
 			m_movie_def(m),
 			m_frame_count(0),
 			m_loading_frame(0)
 		{
+			// SwiffPlayer.dll 0x1007B5A0.
+			set_character_id(character_id);
 			assert(m_movie_def);
 		}
 
+		// SwiffPlayer.dll 0x1007D730 (deleting entry 0x1007D700):
+		// delete playlist tags in frame order;
+		// member destruction releases labels, init storage, then playlist storage.
 		~sprite_definition()
 		{
 			// Release our playlist data.
@@ -2988,53 +2795,100 @@ namespace gameswf
 		}
 
 		// overloads from movie_definition
+		// SwiffPlayer.dll 0x1006F970: definitions do not display their timelines.
+		virtual void	display(character* instance_info) {}
+
+		// SwiffPlayer.dll 0x1007B670 returns four zero floats even for a nonempty
+		// sprite definition; live sprite bounds come from its display list.
+		rect	get_bound_copy() const override
+		{
+			rect bounds;
+			bounds.m_x_min = 0.0f;
+			bounds.m_x_max = 0.0f;
+			bounds.m_y_min = 0.0f;
+			bounds.m_y_max = 0.0f;
+			return bounds;
+		}
+
+		// SwiffPlayer.dll 0x1007B6A0.
 		virtual float	get_width_pixels() const { return 1; }
+		// SwiffPlayer.dll 0x1007B6B0.
 		virtual float	get_height_pixels() const { return 1; }
+		// SwiffPlayer.dll 0x1007B6C0.
 		virtual int	get_frame_count() const { return m_frame_count; }
+		// SwiffPlayer.dll 0x1007B6D0.
 		virtual float	get_frame_rate() const { return m_movie_def->get_frame_rate(); }
+		// SwiffPlayer.dll 0x1007B6E0.
 		virtual int	get_loading_frame() const { return m_loading_frame; }
+		// SwiffPlayer.dll 0x1007B6F0.
 		virtual int	get_version() const { return m_movie_def->get_version(); }
+		// SwiffPlayer.dll 0x1007B700.
 		virtual void	add_character(int id, character_def* ch) { log_error("add_character tag appears in sprite tags!\n"); }
+		// SwiffPlayer.dll 0x1007B710.
 		virtual void	add_font(int id, font* ch) { log_error("add_font tag appears in sprite tags!\n"); }
+		// SwiffPlayer.dll 0x1007B720.
 		virtual font*	get_font(int id) { return m_movie_def->get_font(id); }
+		// SwiffPlayer.dll 0x1007B730.
 		virtual void	set_jpeg_loader(jpeg::input* j_in) { assert(0); }
+		// SwiffPlayer.dll 0x1007B740.
 		virtual jpeg::input*	get_jpeg_loader() { return NULL; }
+		// SwiffPlayer.dll 0x1007B750.
 		virtual bitmap_character_def*	get_bitmap_character(int id) { return m_movie_def->get_bitmap_character(id); }
+		// SwiffPlayer.dll 0x1007B760.
 		virtual void	add_bitmap_character(int id, bitmap_character_def* ch) { log_error("add_bc appears in sprite tags!\n"); }
+		// SwiffPlayer.dll 0x1007B770.
 		virtual sound_sample*	get_sound_sample(int id) { return m_movie_def->get_sound_sample(id); }
+		// SwiffPlayer.dll 0x1007B780.
 		virtual void	add_sound_sample(int id, sound_sample* sam) { log_error("add sam appears in sprite tags!\n"); }
 
 		// @@ would be nicer to not inherit these...
+		// SwiffPlayer.dll 0x1007B790.
 		virtual create_bitmaps_flag	get_create_bitmaps() const { assert(0); return DO_LOAD_BITMAPS; }
+		// SwiffPlayer.dll 0x1007B7A0.
 		virtual create_font_shapes_flag	get_create_font_shapes() const { assert(0); return DO_LOAD_FONT_SHAPES; }
+		// SwiffPlayer.dll 0x1007B7B0.
 		virtual int	get_bitmap_info_count() const { assert(0); return 0; }
+		// SwiffPlayer.dll 0x1007B7C0.
 		virtual bitmap_info*	get_bitmap_info(int i) const { assert(0); return NULL; }
+		// SwiffPlayer.dll 0x1007B7D0.
 		virtual void	add_bitmap_info(bitmap_info* bi) { assert(0); }
 
-		virtual void	export_resource(const tu_string& symbol, resource* res) { log_error("can't export from sprite\n"); }
+		// SwiffPlayer.dll 0x1007B7E0.
+		virtual void	export_resource(int id, const tu_string& symbol, resource* res) { log_error("can't export from sprite\n"); }
+		// SwiffPlayer.dll 0x1007B7F0.
+		virtual bool get_export_name(int id, tu_string* out) { return m_movie_def->get_export_name(id, out); }
+		// SwiffPlayer.dll 0x1007B8B0.
 		virtual smart_ptr<resource>	get_exported_resource(const tu_string& sym) { return m_movie_def->get_exported_resource(sym); }
-		virtual bool	get_exported_font_name(const font* f, tu_string* out) { return m_movie_def->get_exported_font_name(f, out); }	// [DICE-MOD #37]
+		virtual bool	get_exported_font_name(const font* f, tu_string* out) { return m_movie_def->get_exported_font_name(f, out); }	//
+		// SwiffPlayer.dll 0x1007B800.
 		virtual void	add_import(const char* source_url, int id, const char* symbol) { assert(0); }
+		// SwiffPlayer.dll 0x1007B810.
 		virtual void	visit_imported_movies(import_visitor* v) { assert(0); }
+		// SwiffPlayer.dll 0x1007B820.
 		virtual void	resolve_import(const char* source_url, movie_definition* d) { assert(0); }
+		// SwiffPlayer.dll 0x1007B830.
 		virtual character_def*	get_character_def(int id)
 		{
 			return m_movie_def->get_character_def(id);
 		}
+		// SwiffPlayer.dll 0x1007B840.
 		virtual void	generate_font_bitmaps() { assert(0); }
 
 
+		// SwiffPlayer.dll 0x1007B850; secondary-interface thunk 0x1007B890.
 		virtual void	output_cached_data(tu_file* out, const cache_options& options)
 		{
 			// Nothing to do.
 			return;
 		}
+		// SwiffPlayer.dll 0x1007B860; secondary-interface thunk 0x1007B8A0.
 		virtual void	input_cached_data(tu_file* in)
 		{
 			// Nothing to do.
 			return;
 		}
 
+		// SwiffPlayer.dll 0x1007B870.
 		virtual movie_interface*	create_instance()
 		{
 			return NULL;
@@ -3045,19 +2899,19 @@ namespace gameswf
 
 
 		/* sprite_definition */
+		// SwiffPlayer.dll 0x1007B8F0.
 		virtual void	add_execute_tag(execute_tag* c)
 		{
 			m_playlist[m_loading_frame].push_back(c);
 		}
 
-		/* sprite_definition */
-		virtual void	add_init_action(int sprite_id, execute_tag* c)
+		// SwiffPlayer.dll 0x10071630 ignores init actions inside a sprite.
+		virtual void	add_init_action(execute_tag* c)
 		{
-			// Sprite def's should not have do_init_action tags in them!  (@@ correct?)
-			log_error("sprite_definition::add_init_action called!  Ignored.\n");
 		}
 
 		/* sprite_definition */
+		// SwiffPlayer.dll 0x1007B990.
 		virtual void	add_frame_name(const char* name)
 		// Labels the frame currently being loaded with the
 		// given name.  A copy of the name string is made and
@@ -3078,44 +2932,37 @@ namespace gameswf
 		}
 
 		/* sprite_definition */
+		// SwiffPlayer.dll 0x1007B920.
 		bool	get_labeled_frame(const char* label, int* frame_number)
 		// Returns 0-based frame #
 		{
 			return m_named_frames.get(label, frame_number);
 		}
 
+		// SwiffPlayer.dll 0x1007B8D0.
 		const array<execute_tag*>&	get_playlist(int frame_number)
 		// frame_number is 0-based
 		{
 			return m_playlist[frame_number];
 		}
 
-		/* sprite_definition */
+		// SwiffPlayer.dll 0x1007B880 returns the empty sprite init-action list.
 		virtual const array<execute_tag*>*	get_init_actions(int frame_number)
 		{
-			// Sprites do not have init actions in their
-			// playlists!  Only the root movie
-			// (movie_def_impl) does (@@ correct?)
-			return NULL;
+			return &m_init_action_list;
 		}
 
 
-		/* sprite_definition */
+		// SwiffPlayer.dll 0x100777C0.
 		void	read(stream* in)
 		// Read the sprite info.  Consists of a series of tags.
 		{
 			int	tag_end = in->get_tag_end_position();
 
 			m_frame_count = in->read_u16();
-			// ALEX: some SWF files have been seen that have 0-frame sprites.
-			// The Macromedia player behaves as if they have 1 frame.
-			if (m_frame_count < 1)
-			{
-				m_frame_count = 1;
-			}
 			m_playlist.resize(m_frame_count);	// need a playlist for each frame
 
-			IF_VERBOSE_PARSE(log_msg("  frames = %d\n", m_frame_count));
+			IF_VERBOSE_PARSE(log_msg("sprite: frames = %d\n", m_frame_count));
 
 			m_loading_frame = 0;
 
@@ -3126,7 +2973,6 @@ namespace gameswf
 				if (tag_type == 1)
 				{
 					// show frame tag -- advance to the next frame.
-					IF_VERBOSE_PARSE(log_msg("  show_frame (sprite)\n"));
 					m_loading_frame++;
 				}
 				else if (s_tag_loaders.get(tag_type, &lf))
@@ -3144,7 +2990,6 @@ namespace gameswf
 				in->close_tag();
 			}
 
-			IF_VERBOSE_PARSE(log_msg("  -- sprite END --\n"));
 		}
 	};
 
@@ -3152,6 +2997,26 @@ namespace gameswf
 	//
 	// sprite_instance
 	//
+
+	// SwiffPlayer.dll 0x10080590/0x10083A20 compare built-in property
+	// spellings exactly. Keep the 2006 enum as a local dispatch adapter.
+	static as_standard_member sprite_standard_member(const tu_stringi& name)
+	{
+		static const char* const names[] = {
+			"_x", "_y", "_xscale", "_yscale", "_currentframe", "_totalframes",
+			"_alpha", "_visible", "_width", "_height", "_rotation", "_target",
+			"_framesloaded", "_name", "_droptarget", "_url", "_highquality",
+			"_focusrect", "_soundbuftime", "_xmouse", "_ymouse", "_parent"
+		};
+		for (int i = 0; i < ARRAYSIZE(names); ++i)
+		{
+			if (strcmp(name.c_str(), names[i]) == 0)
+			{
+				return static_cast<as_standard_member>(i);
+			}
+		}
+		return M_INVALID_MEMBER;
+	}
 
 
 	// [TEMP] RW-88 navigation tracer: a clip's dotted path, walked up to the root. The existing
@@ -3183,8 +3048,10 @@ namespace gameswf
 	// [TEMP] RW-89 mouse tracer: the press/release lines the interactive drives read, in the format
 	// of the stock-era tracer that lived beside generate_mouse_button_events. [RETIRE-WHEN: RW-89]
 #if !defined(_MSC_VER)
-	// [TEMP] c-swf-disconnect: BF2_SWF_EMPTY_LIST_GUARD=1 ends a sprite's mouse child pass when a
-	// handler emptied its list (off by default; not shipped behaviour, see the mouse_update loop).
+	// [TEMP] [CHOSEN, not recovered] BF2_SWF_EMPTY_LIST_GUARD=1 ends a sprite's mouse child
+	// pass when a handler emptied its list; off by default. Retail 0x10080270 has no guard.
+	// [RETIRE-WHEN: swf-empty-list-trigger] Remove after the maintainer identifies the
+	// emptying handler and validates the retail-equivalent path with this flag unset.
 	static bool	swf_empty_list_guard()
 	{
 		static int	s_on = -1;
@@ -3224,13 +3091,19 @@ namespace gameswf
 
 		play_state	m_play_state;
 		int		m_current_frame;
+		int		m_next_frame;
 		float		m_time_remainder;
 		bool		m_update_frame;
+		bool		m_force_frame_update;
+		bool		m_first_frame_initialized;
 		bool		m_has_looped;
 		bool	        m_accept_anim_moves;	// once we've been moved by ActionScript, don't accept moves from anim tags.
-		array<bool>	m_init_actions_executed;	// a bit-array class would be ideal for this
 
 		as_environment	m_as_environment;
+
+		// [CHOSEN, not recovered] S2 bridge; SwiffPlayer.dll 0x1007FB60
+		// returns this sprite's environment through its secondary interface.
+		virtual as_environment*	get_action_environment() { return &m_as_environment; }
 
 		enum mouse_state
 		{
@@ -3240,32 +3113,40 @@ namespace gameswf
 		};
 		mouse_state m_mouse_state;
 
-		// [DICE-MOD SwiffPlayer: Object.registerClass support - the class prototype this instance
-		// chains to (its __proto__) and whether the class constructor has run. See
-		// bind_registered_class() and gameswf.h character_def::m_registered_class.]
-		smart_ptr<as_object_interface>	m_class_proto;
-		bool	m_class_bound;
-		bool	m_class_ctor_run;	// [DICE-MOD SwiffPlayer #27] the constructor half of the binding
+		// SwiffPlayer.dll 0x10081870 creates a private script object for a bound class.
+		// [CHOSEN, not recovered] S3 bridge: native as_object storage and strong
+		// ownership replace the retail secondary-interface object at +0x104.
+		// [RETIRE-WHEN: swf-native-script-object] Retire after common script-object
+		// integration resolves movie-valued constructor/accessor prototypes and
+		// native GC ownership, and class accessors/events pass menu and reload gates.
+		smart_ptr<as_object>	m_script_object;
 
-		// [DICE-MOD SwiffPlayer: getNextHighestDepth's counter (the shipped sprite keeps one at
-		// +220, returned then incremented; ours also clears every depth already in use).]
+		// SwiffPlayer.dll 0x1007F3AB initializes the postincrement depth counter to 1000.
 		int	m_next_highest_depth;
+		// SwiffPlayer.dll 0x1007F433; a negative index is absent from member lookup.
+		int	m_tab_index;
+		// [UNRESOLVED] The constructor stores 1000 at primary +0x114 in
+		// addition to the depth counter at +0xDC. Keep the separate word;
+		// its meaning is not established by the inspected consumers.
+		Uint32 m_retail_word_114;
 
-		// [DICE-MOD SwiffPlayer: the drawing-API canvas - the shape definition behind the
-		// `_____defaultShape` child the shipped sub_1007C0D0 creates at depth 0 on first use.]
+		// the drawing-API canvas - the shape definition behind the
+		// `_____defaultShape` child the shipped sub_1007C0D0 creates at depth 0 on first use.
 		smart_ptr<shape_character_def>	m_canvas;
 
-		// [DICE-MOD SwiffPlayer #45] numeric gotos waiting for advance() (the shipped sprite's
+		//  numeric gotos waiting for advance() (the shipped sprite's
 		// pending_goto_frames array at +264, drained by 0x10081CF0).
 		array<int>	m_pending_goto_frames;
 
-		// [DICE-MOD SwiffPlayer #51] the shipped sprite's mouse state (+0x2150 previous, +0x2154 current:
+		//  the shipped sprite's mouse state (+0x2150 previous, +0x2154 current:
 		// bit 0 inside, bit 1 a button down), its first-frame latch (+255) and whether it took the
 		// press it still holds (+256).
 		int	m_mouse_flags, m_prev_mouse_flags;
 		bool	m_first_mouse_frame;
 		bool	m_mouse_pressed;
 
+		// SwiffPlayer.dll 0x1007F310. Native character/definition/environment
+		// storage uses their existing [CHOSEN, not recovered] S3 ownership bridges.
 		sprite_instance(movie_definition_sub* def, movie_root* r, movie* parent, int id)
 			:
 			character(parent, id),
@@ -3273,8 +3154,11 @@ namespace gameswf
 			m_root(r),
 			m_play_state(PLAY),
 			m_current_frame(0),
+			m_next_frame(0),
 			m_time_remainder(0),
 			m_update_frame(true),
+			m_force_frame_update(false),
+			m_first_frame_initialized(false),
 			m_has_looped(false),
 			m_accept_anim_moves(true),
 			m_mouse_state(UP),
@@ -3282,206 +3166,188 @@ namespace gameswf
 			m_prev_mouse_flags(0),
 			m_first_mouse_frame(true),
 			m_mouse_pressed(false),
-			m_class_bound(false),
-			m_class_ctor_run(false),
-			m_next_highest_depth(0),
-			m_dead(false),	// [DICE-MOD SwiffPlayer #42]
-			m_first_frame_actions_pending(false)	// [DICE-MOD SwiffPlayer #53]
+			m_next_highest_depth(1000),
+			m_tab_index(-1),
+			m_retail_word_114(1000),
+			m_dead(false)	//
 		{
 			assert(m_def != NULL);
 			assert(m_root != NULL);
 			
 			//m_root->add_ref();	// @@ circular!
 			m_as_environment.set_target(this);
+			// SwiffPlayer.dll 0x1007F310 preloads these undefined environment members.
+			// Class handlers precede the environment in get_member (0x10080590).
+			static const char* const event_names[] = {
+				"onPress", "onDoublePress", "onRelease", "onReleaseOutside",
+				"onRollOver", "onRollOut", "onDragOver", "onDragOut", "onKeyPress",
+				"onInitialize", "onLoad", "onUnload", "onEnterFrame", "onMouseDown",
+				"onMouseUp", "onMouseMove", "onKeyDown", "onKeyUp", "onData"
+			};
+			for (int i = 0; i < ARRAYSIZE(event_names); ++i)
+			{
+				m_as_environment.set_member(event_names[i], as_value());
+			}
 
 			sprite_builtins_init();
-
-			// Initialize the flags for init action executed.
-			m_init_actions_executed.resize(m_def->get_frame_count());
-			memset(&m_init_actions_executed[0], 0,
-			       sizeof(m_init_actions_executed[0]) * m_init_actions_executed.size());
+			++s_sprite_live_count;
 		}
 
-		// sprite instance of add_interval_handler()
-		virtual int    add_interval_timer(void *timer)
-		{
-			// log_msg("FIXME: %s:\n", __FUNCTION__);
-			return m_root->add_interval_timer(timer);
-		}
-
-		virtual void    clear_interval_timer(int x)
-		{
-			// log_msg("FIXME: %s:\n", __FUNCTION__);
-			m_root->clear_interval_timer(x);
-		}
-	
-
-		/* sprite_instance */
-		virtual void    do_something(void *timer)
-		{
-			as_value	val;
-			as_object_interface      *obj, *this_ptr;   // [DICE-MOD: the tick's this may be a sprite]
-			as_environment *as_env;
-
-			//printf("FIXME: %s:\n", __FUNCTION__);
-			Timer *ptr = (Timer *)timer;
-			//log_msg("INTERVAL ID is %d\n", ptr->getIntervalID());
-
-			const as_value&	timer_method = ptr->getASFunction();
-			as_env = ptr->getASEnvironment();
-			this_ptr = ptr->getASObject();
-			obj = ptr->getObject();
-			//m_as_environment.push(obj);
-			
-			as_c_function_ptr	cfunc = timer_method.to_c_function();
-			if (cfunc) {
-				// It's a C function. Call it.
-				//log_msg("Calling C function for interval timer\n");
-				//(*cfunc)(&val, obj, as_env, 0, 0);
-				(*cfunc)(fn_call(&val, obj, &m_as_environment, 0, 0));
-				
-			} else if (as_as_function* as_func = timer_method.to_as_function()) {
-				// It's an ActionScript function. Call it.
-				as_value method;
-				//log_msg("Calling ActionScript function for interval timer\n");
-				(*as_func)(fn_call(&val, (as_object_interface *)this_ptr, as_env, 0, 0));
-				//(*as_func)(&val, (as_object_interface *)this_ptr, &m_as_environment, 1, 1);
-			} else {
-				log_error("error in call_method(): method is not a function\n");
-			}    
-		}	
-
-		bool	m_dead;	// [DICE-MOD SwiffPlayer #42] see character::mark_dead
+		bool	m_dead;	//  see character::mark_dead
 		virtual void	mark_dead() { m_dead = true; }
 
+		virtual void gc_mark()
+		{
+			// SwiffPlayer.dll 0x10080F90: locals, members, referenced children,
+			// private script object. Registers, operands and handlers are omitted.
+			if (m_gc_generation == get_gc_mark_generation()) return;
+			m_gc_generation = get_gc_mark_generation();
+			for (int i = 0; i < m_as_environment.m_local_frames.size(); ++i)
+				gc_mark_value(m_as_environment.m_local_frames[i].m_value);
+			for (stringi_hash<as_value>::iterator it = m_as_environment.m_variables.begin();
+				it != m_as_environment.m_variables.end(); ++it)
+				gc_mark_value(it->second);
+			const int count = m_display_list.get_character_count();
+			for (int i = 0; i < count; ++i)
+				if (character* child = m_display_list.get_character(i)) child->gc_mark();
+			if (m_script_object != NULL) m_script_object->gc_mark();
+		}
+
+		virtual void gc_release()
+		{
+			// SwiffPlayer.dll 0x10081BB0: referenced children, OBJECT members,
+			// member-bag clear, private script object. Locals are retained.
+			if (m_gc_generation == get_gc_release_generation()) return;
+			m_gc_generation = get_gc_release_generation();
+			const int count = m_display_list.get_character_count();
+			for (int i = 0; i < count; ++i)
+				if (character* child = m_display_list.get_character(i)) child->gc_release();
+			for (stringi_hash<as_value>::iterator it = m_as_environment.m_variables.begin();
+				it != m_as_environment.m_variables.end(); ++it)
+				if (it->second.get_type() == as_value::OBJECT && it->second.to_object())
+					it->second.to_object()->gc_release();
+			m_as_environment.m_variables.clear();
+			if (m_script_object != NULL) m_script_object->gc_release();
+		}
+
 		// [CHOSEN, not recovered] issue #7: movie teardown, see release_script_objects. Adds the
-		// environment, the class prototype and every child to the base character's values.
+		// environment, the private script object and every child to the base character's values.
 		virtual void	release_script_values(array<as_value>* held)
 		{
 			character::release_script_values(held);
 			m_as_environment.release_values(held);
-			if (m_class_proto != NULL)
+			if (m_script_object != NULL)
 			{
-				held->push_back(as_value(m_class_proto.get_ptr()));
-				m_class_proto = NULL;
+				held->push_back(as_value(m_script_object.get_ptr()));
+				m_script_object = NULL;
 			}
 			m_display_list.release_characters(held);
 		}
 
-		// [DICE-MOD SwiffPlayer #53] frame 0's DoAction tags, queued by on_event_load's
-		// execute_frame_tags(0), are NOT run at placement: the shipped on_event_load
-		// (sub_10081870) frees the action list (+224) right after the tags, and the script runs
-		// when the sprite's first advance re-executes frame 0 - AFTER the parent's own frame
-		// script. This flag is that "frame 0's script still owed" state; advance_pass drains it.
-		bool	m_first_frame_actions_pending;
-
+		// SwiffPlayer.dll 0x10084B60; deleting wrapper 0x10084B20.
+		// Native definition/environment/base ownership retains its S3 bridges.
 		virtual ~sprite_instance()
 		{
-			// [TEMP] [CHOSEN, not recovered] RW-89: a child still referenced from ActionScript when its
-			// parent clip is destroyed (a page torn down by a frame change while a script callback
-			// keeps its objects) keeps a RAW m_parent in stock 2006, and the next get_world_matrix()
-			// through it faulted retail (interactive run drive1: a component's label field re-laid
-			// out from a callback after the login page was left). Until the shipped handling of such
-			// survivors is read, name the survivor and hand it the root as parent - it is in no
-			// display list, so nothing draws through that matrix. [RETIRE-WHEN: RW-88]
+			// SwiffPlayer.dll 0x10084B60 decrements before touching children.
+			--s_sprite_live_count;
+			// 0x10084B92..0x10084BB8 releases capture held by this sprite.
+			movie* owner = get_global_root_movie();
+			if (owner && owner->get_active_mouse_entity() == this)
 			{
-				movie*	root = m_root ? m_root->get_root_movie() : NULL;
-				for (int i = 0, n = m_display_list.get_character_count(); i < n; i++)
+				get_global_root_movie()->set_active_mouse_entity(NULL);
+			}
+			// 0x10084BC5..0x10084C05: sweep pending removals, then detach
+			// each remaining child before dropping its display-list reference.
+			m_display_list.update();
+			while (m_display_list.get_character_count() != 0)
+			{
+				character* child = m_display_list.get_character(0);
+				if (child)
 				{
-					character*	ch = m_display_list.get_character(i);
-					if (ch && ch->get_ref_count() > 1)
-					{
-						log_error("[orphan] child '%s' of destroyed sprite '%s' survives (refs=%d)" "\n",
-							ch->get_name().c_str(), get_name().c_str(), ch->get_ref_count());
-						if (root && root != this) ch->m_parent = root;
-						ch->mark_dead();
-					}
+					m_display_list.remove_display_object(child->get_depth());
+					m_display_list.update();
 				}
 			}
 			m_display_list.clear();
 			//m_root->drop_ref();
 		}
 
+		// SwiffPlayer.dll 0x1007FB80 / 0x1007FB70.
 		movie_interface*	get_root_interface() { return m_root; }
 		movie_root*	get_root() { return m_root; }
 		movie*	get_root_movie() { return m_root->get_root_movie(); }
 
+		// SwiffPlayer.dll 0x100803F0 copies presentation state before definition/root.
+		virtual void	copy_display_state(character* target) const
+		{
+			character::copy_display_state(target);
+			sprite_instance* sprite = static_cast<sprite_instance*>(target);
+			sprite->m_def = m_def;
+			sprite->m_root = m_root;
+		}
+
+		// SwiffPlayer.dll 0x1007FDC0.
 		movie_definition*	get_movie_definition() { return m_def.get_ptr(); }
 
-		float	get_width()
+		// SwiffPlayer.dll 0x1007FDD0: referenced children only, snapshot count,
+		// local matrix copied before the child virtual; first child seeds the union.
+		rect get_bound_copy() const override
 		{
-			float	w = 0;
-			int i, n = m_display_list.get_character_count();
-			character* ch;
-			for (i = 0; i < n; i++)
+			rect bounds = { 0, 0, 0, 0 };
+			bool first = true;
+			for (int i = 0, n = m_display_list.get_character_count(); i < n; ++i)
 			{
-				ch = m_display_list.get_character(i);
-				if (ch != NULL)
-				{
-					float ch_w = ch->get_width();
-					if (ch_w > w)
-					{
-						w = ch_w;
-					}
-				}
+				character* child = m_display_list.get_character(i);
+				if (child == NULL) continue;
+				const matrix transform = child->get_matrix();
+				rect current = child->get_bound_copy();
+				current.enclose_transformed_rect(transform, current);
+				if (first) { bounds = current; first = false; }
+				else bounds.expand_to_rect(current);
 			}
-
-			return w;
+			return bounds;
 		}
 
-
-
-		float	get_height()
+		// SwiffPlayer.dll 0x10081150: registration and ending clock/count are
+		// unconditional, while only the starting clock is gated on profiling.
+		float get_width()
 		{
-			float	h = 0; 
-			int i, n = m_display_list.get_character_count();
-			character* ch;
-			for (i=0; i < n; i++)
-			{
-				ch = m_display_list.get_character(i);
-				if (ch != NULL)
-				{
-					float	ch_h = ch->get_height();
-					if (ch_h > h)
-					{
-						h = ch_h;
-					}
-				}
-			}
-			return h;
+			static profile_record counter("sprite_get_width");
+			if (s_profiling) counter.begin();
+			const rect bounds = get_bound_copy();
+			const float width = (float)(((long double)bounds.m_x_max - bounds.m_x_min) * 0.05f);
+			counter.end();
+			return width;
 		}
 
-		// [DICE-MOD SwiffPlayer #39] the clip's unscaled local extent: the largest child extent, each
-		// child measured in this clip's space (its local extent times its own scale). get_width()
-		// above carries the WORLD scale and stays for the stock callers.
+		// SwiffPlayer.dll 0x10081230, including the same profiling quirk.
+		float get_height()
+		{
+			static profile_record counter("sprite_get_height");
+			if (s_profiling) counter.begin();
+			const rect bounds = get_bound_copy();
+			const float height = (float)(((long double)bounds.m_y_max - bounds.m_y_min) * 0.05f);
+			counter.end();
+			return height;
+		}
+
+		// [CHOSEN, not recovered] S3 bridge: the retained 2006 local-extent API
+		// returns twips; the retail pixel accessors above use the same rectangle.
 		virtual float	get_local_width()
 		{
-			float	w = 0;
-			for (int i = 0, n = m_display_list.get_character_count(); i < n; i++)
-			{
-				character*	ch = m_display_list.get_character(i);
-				if (ch == NULL) continue;
-				const float	cw = ch->get_local_width() * ch->get_matrix().m_[0][0];
-				if (cw > w) w = cw;
-			}
-			return w;
+			return get_bound_copy().width();
 		}
 		virtual float	get_local_height()
 		{
-			float	h = 0;
-			for (int i = 0, n = m_display_list.get_character_count(); i < n; i++)
-			{
-				character*	ch = m_display_list.get_character(i);
-				if (ch == NULL) continue;
-				const float	chh = ch->get_local_height() * ch->get_matrix().m_[1][1];
-				if (chh > h) h = chh;
-			}
-			return h;
+			return get_bound_copy().height();
 		}
 
+		// SwiffPlayer.dll 0x1007FB90.
 		int	get_current_frame() const { return m_current_frame; }
+		// SwiffPlayer.dll 0x100719E0.
 		int	get_frame_count() const { return m_def->get_frame_count(); }
 
+		// SwiffPlayer.dll 0x1007FF30.
 		void	set_play_state(play_state s)
 		// Stop or play the sprite.
 		{
@@ -3491,10 +3357,17 @@ namespace gameswf
 			}
 
 			m_play_state = s;
+			if (s == STOP)
+			{
+				m_next_frame = m_current_frame + 1;
+				if (m_next_frame >= m_def->get_frame_count()) m_next_frame = 0;
+			}
 		}
+		// SwiffPlayer.dll 0x1007FBA0.
 		play_state	get_play_state() const { return m_play_state; }
 
 
+		// SwiffPlayer.dll 0x1007FBB0: no character-ID lookup on a live sprite.
 		character*	get_character(int character_id)
 		{
 //			return m_def->get_character_def(character_id);
@@ -3502,12 +3375,33 @@ namespace gameswf
 			return NULL;
 		}
 
+		// SwiffPlayer.dll 0x1007FD60: snapshot the child count, skip deferred
+		// removals, and forward the same index without updating child sprites' members.
+		virtual void	set_tab_index(int index)
+		{
+			for (int i = 0, n = m_display_list.get_character_count(); i < n; ++i)
+			{
+				character* ch = m_display_list.get_character(i);
+				if (ch) ch->set_tab_index(index);
+			}
+		}
+
+		// SwiffPlayer.dll 0x1007FB40: inherit a parent's index only for the
+		// propagation interface; get_member("tabIndex") tests this clip's own value.
+		virtual int	get_tab_index() const
+		{
+			if (m_tab_index >= 0) return m_tab_index;
+			return m_parent ? m_parent->get_tab_index() : -1;
+		}
+
+		// SwiffPlayer.dll 0x1007FBC0.
 		float	get_background_alpha() const
 		{
 			// @@ this doesn't seem right...
 			return m_root->get_background_alpha();
 		}
 
+		// SwiffPlayer.dll 0x1007FBD0.
 		float	get_pixel_scale() const { return m_root->get_pixel_scale(); }
 
 		virtual void	get_mouse_state(int* x, int* y, int* buttons)
@@ -3515,28 +3409,34 @@ namespace gameswf
 			m_root->get_mouse_state(x, y, buttons);
 		}
 
+		// SwiffPlayer.dll 0x1007FC20.
+		rgba	get_background_color() const { return m_root->get_background_color(); }
+
+		// SwiffPlayer.dll 0x1007FC30.
 		void	set_background_color(const rgba& color)
 		{
 			m_root->set_background_color(color);
 		}
 
+		// SwiffPlayer.dll 0x1007FC40.
 		float	get_timer() const { return m_root->get_timer(); }
 
+		// SwiffPlayer.dll 0x1007FC50 resets timeline and first-mouse state only.
 		void	restart()
 		{
+			m_first_mouse_frame = true;
 			m_current_frame = 0;
+			m_next_frame = 0;
 			m_time_remainder = 0;
 			m_update_frame = true;
 			m_has_looped = false;
-			m_play_state = PLAY;
-
-			execute_frame_tags(m_current_frame);
-			m_display_list.update();
 		}
 
 
+		// SwiffPlayer.dll 0x1007FC80.
 		virtual bool	has_looped() const { return m_has_looped; }
 
+		// SwiffPlayer.dll 0x1007FC90.
 		virtual bool	get_accept_anim_moves() const { return m_accept_anim_moves; }
 
 		inline int	transition(int a, int b) const
@@ -3546,7 +3446,7 @@ namespace gameswf
 		}
 
 
-		// [DICE-MOD SwiffPlayer #51] sub_1007FF90 - does this sprite cover the world-space point: any
+		//  sub_1007FF90 - does this sprite cover the world-space point: any
 		// referenced, visible child that does, in display-list order. An invisible sprite covers nothing.
 		virtual bool	point_test_world(float x, float y)
 		{
@@ -3566,11 +3466,11 @@ namespace gameswf
 			return false;
 		}
 
-		// [DICE-MOD SwiffPlayer #51] the root's mouse capture, kept on the movie_root.
+		//  the root's mouse capture, kept on the movie_root.
 		virtual movie*	get_active_mouse_entity() { return m_root->get_active_entity(); }
 		virtual void	set_active_mouse_entity(movie* m) { m_root->set_active_entity(m); }
 
-		// [DICE-MOD SwiffPlayer #51] sub_10080010 (709 instructions, read in full 2026-09-13) - the
+		//  sub_10080010 (709 instructions, read in full 2026-09-13) - the
 		// sprite's mouse pass, vtable slot 4. Stock 2006 had none of this: movie_root picked ONE
 		// "topmost entity" through get_topmost_mouse_entity (the first hit walking each display list
 		// from the top, a bare shape included) and generate_mouse_button_events fed it. That is why a
@@ -3594,12 +3494,11 @@ namespace gameswf
 		//      this sprite holds the capture, in which case the children are skipped;
 		//   5. the answer: consumed by a child, or inside-and-enabled here.
 		//
-		// The world matrix the shipped body fetches first is never read; it is not fetched here. The
-		// [mouse] press/release lines are the RW-89 tracer the interactive drives read [TEMP].
+		// The [mouse] press/release lines are the RW-89 tracer the interactive drives read [TEMP].
 		virtual bool	mouse_update(bool consumed)
 		{
-			// Keep this (particularly m_as_environment) alive during any method calls!
-			smart_ptr<as_object_interface>	this_ptr(this);
+			// SwiffPlayer.dll 0x10080010 holds
+			// neither a self reference nor a reference to display-list storage.
 #if !defined(_MSC_VER)
 			// [TEMP] c-swf-disconnect: nesting of mouse passes for the [swf-list] tracer.
 			struct pass_depth { pass_depth() { g_swf_mouse_pass_depth++; } ~pass_depth() { g_swf_mouse_pass_depth--; } } depth_scope;
@@ -3622,6 +3521,10 @@ namespace gameswf
 			{
 				m_prev_mouse_flags = m_mouse_flags;
 				m_mouse_flags = 0;
+				// SwiffPlayer.dll 0x10080068's virtual
+				// world-matrix fetch. Its result is unused; retain the call and its order.
+				matrix world = get_world_matrix();
+				(void) world;
 				int	mx = 0, my = 0, mb = 0;
 				m_root->get_mouse_state(&mx, &my, &mb);
 				if (!consumed)
@@ -3776,106 +3679,69 @@ namespace gameswf
 			}
 		}
 
-		/* sprite_instance */
+		// SwiffPlayer.dll 0x10081CF0. A queued goto consumes the incoming
+		// delta; each pass sweeps and advances children after the parent's actions.
 		virtual void	advance(float delta_time)
 		{
-			// Keep this (particularly m_as_environment) alive during execution!
-			smart_ptr<as_object_interface>	this_ptr(this);
-
-			// [DICE-MOD SwiffPlayer #45] The shipped advance (0x10081CF0) first drains the
-			// deferred goto queue: each entry is applied, the duplicates right behind it are
-			// dropped, and the frame pass runs with a ZERO delta - once per applied goto. The pass
-			// runs once with the real delta only when nothing was queued.
-			if (m_pending_goto_frames.size() == 0)
-			{
-				advance_pass(delta_time);
-				return;
-			}
+			smart_ptr<as_object_interface> this_ptr(this);
 			do
 			{
-				const int	target = m_pending_goto_frames[0];
-				m_pending_goto_frames.remove(0);
-				apply_goto_frame(target);
-				while (m_pending_goto_frames.size() > 0 && m_pending_goto_frames[0] == target)
+				if (m_pending_goto_frames.size() > 0)
 				{
+					const int target = m_pending_goto_frames[0];
 					m_pending_goto_frames.remove(0);
+					apply_goto_frame(target);
+					while (m_pending_goto_frames.size() > 0 && m_pending_goto_frames[0] == target)
+					{
+						m_pending_goto_frames.remove(0);
+					}
+					delta_time = 0.0f;
 				}
-				advance_pass(0.0f);
+
+				character::do_mouse_drag();
+				if (m_play_state != STOP) m_time_remainder += delta_time;
+				const float frame_time = 1.0f / m_root->get_frame_rate();
+				const bool single_frame_movie = m_def->get_frame_count() == 1;
+				if (m_time_remainder >= frame_time)
+				{
+					m_update_frame = true;
+					m_time_remainder -= frame_time;
+				}
+				m_update_frame = m_update_frame || (m_play_state != STOP && m_force_frame_update);
+				if (m_update_frame)
+				{
+					m_current_frame = m_next_frame;
+					m_update_frame = false;
+					m_next_frame = m_current_frame + 1;
+					if (m_play_state == PLAY)
+					{
+						if (!single_frame_movie || !m_first_frame_initialized)
+						{
+							execute_frame_tags(m_current_frame);
+							m_first_frame_initialized = true;
+						}
+						on_event(event_id::ENTER_FRAME);
+						do_actions();
+					}
+				}
+				m_display_list.update();
+				m_display_list.advance(delta_time);
+				if (m_next_frame >= m_def->get_frame_count())
+				{
+					m_next_frame = 0;
+					m_has_looped = true;
+				}
+				if (m_time_remainder >= frame_time)
+				{
+					m_update_frame = true;
+					m_time_remainder -= frame_time;
+				}
 			}
 			while (m_pending_goto_frames.size() > 0);
 		}
 
-		// The 2006 frame pass, unchanged but for the #53 drain at its head.
-		void	advance_pass(float delta_time)
-		{
-			assert(m_def != NULL && m_root != NULL);
-
-			// [DICE-MOD SwiffPlayer #53] the first advance owes frame 0's script - see
-			// on_event_load. Only the DoAction tags are re-executed (queued in tag order) and the
-			// queue drained, before this sprite's own children advance: the shipped first pass
-			// is execute_frame_tags(0) -> onEnterFrame -> do_actions -> display_list::advance.
-			if (m_first_frame_actions_pending)
-			{
-				m_first_frame_actions_pending = false;
-				const array<execute_tag*>&	playlist = m_def->get_playlist(0);
-				for (int i = 0; i < playlist.size(); i++)
-				{
-					execute_tag*	e = playlist[i];
-					if (e->is_action_tag())
-					{
-						e->execute(this);
-					}
-				}
-				do_actions();
-			}
-
-			// Advance everything in the display list.
-			m_display_list.advance(delta_time);
-
-			// mouse drag.
-			character::do_mouse_drag();
-
-			m_time_remainder += delta_time;
-
-			const float	frame_time = 1.0f / m_root->get_frame_rate();	// @@ cache this
-
-			// Check for the end of frame
-			if (m_time_remainder >= frame_time)
-			{
-				m_time_remainder -= frame_time;
-
-				// Update current and next frames.
-				if (m_play_state == PLAY)
-				{
-					int	current_frame0 = m_current_frame;
-					increment_frame_and_check_for_loop();
-
-					// Execute the current frame's tags.
-					if (m_current_frame != current_frame0)
-					{
-						execute_frame_tags(m_current_frame);
-					}
-				}
-
-				// Dispatch onEnterFrame event.
-				on_event(event_id::ENTER_FRAME);
-
-				do_actions();
-
-				// Clean up display list (remove dead objects).
-				m_display_list.update();
-			}
-
-			// Skip excess time.  TODO root caller should
-			// loop to prevent this happening; probably
-			// only root should keep m_time_remainder, and
-			// advance(dt) should be a discrete tick()
-			// with no dt.
-			m_time_remainder = fmod(m_time_remainder, frame_time);
-		}
-
-		/*sprite_instance*/
-		void	execute_frame_tags(int frame, bool state_only = false)
+		// SwiffPlayer.dll 0x10081B10: state dispatch takes precedence over goto dispatch.
+		void	execute_frame_tags(int frame, bool state_only = false, bool goto_only = false)
 		// Execute the tags associated with the specified frame.
 		// frame is 0-based
 		{
@@ -3885,37 +3751,6 @@ namespace gameswf
 			assert(frame >= 0);
 			assert(frame < m_def->get_frame_count());
 
-			// Execute this frame's init actions, if necessary.
-			if (m_init_actions_executed[frame] == false)
-			{
-				const array<execute_tag*>*	init_actions = m_def->get_init_actions(frame);
-				if (init_actions && init_actions->size() > 0)
-				{
-					// Need to execute these actions.
-					for (int i= 0; i < init_actions->size(); i++)
-					{
-						execute_tag*	e = (*init_actions)[i];
-						e->execute(this);
-					}
-
-					// [DICE-MOD SwiffPlayer: run them NOW. A DoInitAction is loaded as a plain
-					// do_action, whose execute() only QUEUES its buffer for do_actions() - so stock
-					// 2006 ran every "init" action after this frame's placements, in the same batch
-					// as the frame script. Flash runs init actions before the frame's other tags,
-					// and the shipped load path (sub_10081870) executes the pending init actions
-					// before execute_frame_tags(0). mainMenu.swf depends on it: frame 0 places its
-					// components first and carries the 52 class definitions + 18
-					// Object.registerClass calls as DoInitAction tags after them, so on stock order
-					// every component was instanced before its class existed (retail 2026-09-02:
-					// "can't find method loadImg/setValue" ahead of the registerClass calls).]
-					do_actions();
-
-					// Mark this frame done, so we never execute these init actions
-					// again.
-					m_init_actions_executed[frame] = true;
-				}
-			}
-
 			const array<execute_tag*>&	playlist = m_def->get_playlist(frame);
 			for (int i = 0; i < playlist.size(); i++)
 			{
@@ -3923,6 +3758,10 @@ namespace gameswf
 				if (state_only)
 				{
 					e->execute_state(this);
+				}
+				else if (goto_only)
+				{
+					e->execute_goto(this);
 				}
 				else
 				{
@@ -4004,7 +3843,7 @@ namespace gameswf
 			// Keep m_as_environment alive during any method calls!
 			smart_ptr<as_object_interface>	this_ptr(this);
 
-			// [DICE-MOD SwiffPlayer #48] The shipped do_actions (sub_10081480, the loop at
+			//  The shipped do_actions (sub_10081480, the loop at
 			// 0x100814C0) is a queue DRAIN: while the list is non-empty it takes the FRONT buffer,
 			// removes it (sub_10081550 = remove(0)) and only THEN executes it (sub_100961E0 =
 			// execute(&m_as_environment)); the storage is released afterwards. Stock 2006 walked
@@ -4023,6 +3862,8 @@ namespace gameswf
 				m_action_list.remove(0);
 				buf->execute(&m_as_environment);
 			}
+			// SwiffPlayer.dll 0x100814DE clears the action storage.
+			m_action_list.clear();
 		}
 
 
@@ -4031,7 +3872,7 @@ namespace gameswf
 		// Set the sprite state at the specified frame number.
 		// 0-based frame numbers!!  (in contrast to ActionScript and Flash MX)
 		{
-			// [DICE-MOD SwiffPlayer #45] A numeric goto is DEFERRED. The shipped goto_frame (sprite
+			//  A numeric goto is DEFERRED. The shipped goto_frame (sprite
 			// vtable +168, sub_10081310) only appends the target to a per-sprite queue; advance()
 			// (0x10081CF0) drains it before its frame pass, applying each entry through
 			// apply_goto_frame (vtable +24) with the duplicates right behind it dropped, and runs
@@ -4045,17 +3886,21 @@ namespace gameswf
 			}
 #endif
 
-			// goto_frame stops by default.
-			m_play_state = STOP;
+			// SwiffPlayer.dll 0x10081310 only enqueues; it does not change play state.
 		}
 
-		// [DICE-MOD SwiffPlayer #45] The depth -> [placing tag, move tags...] state in effect after
+		//  The depth -> [placing tag, move tags...] state in effect after
 		// frames 0..frame inclusive, as the shipped sub_100832F0 builds it: PLACE and REPLACE start
 		// a depth's list, MOVE appends to an existing one (a move with no placement is dropped) and
 		// REMOVE leaves an EMPTY list, so a removed depth is distinguishable from an unused one.
 		void	build_timeline_state(int frame, hash<int, array<execute_tag*> >* out)
 		{
-			frame = iclamp(frame, 0, m_def->get_frame_count() - 1);
+			// SwiffPlayer.dll 0x100832F0 clamps only the upper bound,
+			// calling the definition again on that arm; a negative frame visits no tags.
+			if (m_def->get_frame_count() <= frame)
+			{
+				frame = m_def->get_frame_count() - 1;
+			}
 			for (int f = 0; f <= frame; f++)
 			{
 				const array<execute_tag*>&	playlist = m_def->get_playlist(f);
@@ -4090,7 +3935,7 @@ namespace gameswf
 			}
 		}
 
-		// [DICE-MOD SwiffPlayer #45] The shipped goto (sprite vtable +24, sub_100822A0) is a
+		//  The shipped goto (sprite vtable +24, sub_100822A0) is a
 		// TIMELINE DIFF, not a tag replay. Both directions build the depth state after the current
 		// and after the target frame, mark every referenced child by depth, and walk the target
 		// state: a depth with no list (removed), no current placement, or a DIFFERENT placing tag
@@ -4107,12 +3952,12 @@ namespace gameswf
 		// removing every page a long jump passes: FORGOT PASSWORD jumped the root 9 -> 259 through
 		// ten pages, and their scripts reached rows the native client gates - and replayed a
 		// backward jump in reverse, re-adding then removing then re-placing the same list twice
-		// (RETRIEVE ACCOUNT -> MANAGE ACCOUNTS lost its rows). The queued lists run in depth order;
-		// the shipped walks its own hash [CHOSEN, not recovered - unobservable].
-		void	apply_goto_frame(int target_frame_number)
+		// (RETRIEVE ACCOUNT -> MANAGE ACCOUNTS lost its rows).
+		// [CHOSEN, not recovered] S3 bridge: use the native base hash's traversal.
+		// [RETIRE-WHEN: swf-core-goto-hash-order] Certify its iteration/insertion
+		// policy after wave-3 base recovery and reentrant navigation/menu/reload gates.
+		void	apply_goto_frame(int target_frame_number) override
 		{
-			// Keep this (particularly m_as_environment) alive during execution!
-			smart_ptr<as_object_interface>	this_ptr(this);
 #if !defined(_MSC_VER)
 			// [TEMP] c-swf-disconnect: gotos inside a mouse pass, or any that change the list size.
 			const int	trace_dl0 = m_display_list.get_character_count();
@@ -4127,11 +3972,6 @@ namespace gameswf
 #define SWF_TRACE_GOTO_SWEPT()
 #endif
 
-			// [DICE-MOD SwiffPlayer #53] a goto applied before the first pass takes the owed
-			// frame-0 script with it: the target frame's actions are what runs from here on.
-			const bool	frame0_owed = m_first_frame_actions_pending;
-			m_first_frame_actions_pending = false;
-
 			target_frame_number = iclamp(target_frame_number, 0, m_def->get_frame_count() - 1);
 			// [TEMP] RW-88 nav tracer: which clip navigates where, and from what.
 			log_error("[goto_frame] '%s' %d -> %d (of %d) dlist=%d\n", swf_trace_path(this),
@@ -4140,37 +3980,16 @@ namespace gameswf
 
 			if (target_frame_number == m_current_frame)
 			{
-				// [DICE-MOD SwiffPlayer #56] The shipped same-frame arm (sub_100822A0's third
-				// branch): a goto to frame 0 while frame 0 has never run (+258
-				// first_frame_initialized clear) executes frame 0's tags, marks it run, and takes
-				// the common tail - current 0 / next 1, the time remainder and the update flag
-				// cleared, the sweep, ENTER_FRAME, the queued actions. Any other same-frame goto
-				// returns with nothing done. Under #53 a placed sprite's frame 0 has NOT run until
-				// its first advance, so this arm is live here: mainMenu.swf's `gotoPage` opens
-				// with `clearModalMessageTrigger()` -> `messageHandler.gotoAndStop("noMessage")`
-				// (frame 0) before the root-placed messageHandler's first advance. Dropping the
-				// owed script instead left `checkForMessages` undefined, the UpdateManager's first
-				// poll missed it ("can't find method checkForMessages"), unregistered the falsy
-				// callback, and no host message reached the screen for the rest of the session -
-				// the CREATE LOCAL page's STARTING SERVER modal stayed up over a "nomapsselected"
-				// the owner never saw (2026-09-29). As in #53's drain, only frame 0's ACTION tags
-				// are re-run: the shipped replay of its placements finds their live
-				// on_event_load occupants (same id and name, still referenced) and does nothing
-				// (sub_100837E0 - see the #44/#53 correction in GAMESWF_DIVERGENCES.md).
-				if (target_frame_number != 0 || !frame0_owed)
+				// SwiffPlayer.dll 0x10082AB1: frame zero is replayed once,
+				// including display tags, before taking the common goto tail.
+				if (target_frame_number != 0 || m_first_frame_initialized)
 				{
 					return;
 				}
-				const array<execute_tag*>&	playlist = m_def->get_playlist(0);
-				for (int i = 0; i < playlist.size(); i++)
-				{
-					execute_tag*	e = playlist[i];
-					if (e->is_action_tag())
-					{
-						e->execute(this);
-					}
-				}
+				execute_frame_tags(0);
+				m_first_frame_initialized = true;
 				m_current_frame = 0;
+				m_next_frame = 1;
 				m_time_remainder = 0;
 				m_update_frame = false;
 				m_display_list.update();
@@ -4198,26 +4017,12 @@ namespace gameswf
 			build_timeline_state(m_current_frame, &current_state);
 			build_timeline_state(target_frame_number, &target_state);
 
-			array<int>	depths;
+			array< array<execute_tag*> >	queued;
+			// SwiffPlayer.dll 0x10082381 / 0x100827A7: visit target hash entries directly.
 			for (hash<int, array<execute_tag*> >::iterator it = target_state.begin(); it != target_state.end(); ++it)
 			{
-				const int	d = it->first;
-				int	pos = depths.size();
-				depths.push_back(d);
-				while (pos > 0 && depths[pos - 1] > d)
-				{
-					depths[pos] = depths[pos - 1];
-					pos--;
-				}
-				depths[pos] = d;
-			}
-
-			array< array<execute_tag*> >	queued;
-			for (int di = 0; di < depths.size(); di++)
-			{
-				const int	depth = depths[di];
-				array<execute_tag*>	list;
-				target_state.get(depth, &list);
+				const int	depth = it->first;
+				array<execute_tag*>	list = it->second;
 				if (list.size() == 0)
 				{
 					continue;	// removed at the target: stays marked, removed below.
@@ -4235,7 +4040,7 @@ namespace gameswf
 				if (backward)
 				{
 					character*	ch = m_display_list.get_character_at_depth(depth);
-					if (ch && placing->is_place_tag())
+					if (ch)
 					{
 						place_object_2*	p = static_cast<place_object_2*>(placing);
 						if (ch->get_accept_anim_moves() && p->m_has_matrix)
@@ -4272,7 +4077,7 @@ namespace gameswf
 			{
 				if (it->second)
 				{
-					m_display_list.remove_display_object((Uint16) it->first, -1);
+					m_display_list.remove_display_object((Uint16) it->first);
 				}
 			}
 
@@ -4289,6 +4094,9 @@ namespace gameswf
 			// The target frame's own playlist through the goto slot (+12): actions queue, the
 			// display tags do nothing, anything else executes.
 			{
+				// SwiffPlayer.dll 0x100826BC / 0x10082A45: retain the receiver only
+				// around execute_goto, after placement execution and before the common tail.
+				smart_ptr<as_object_interface>	this_ptr(this);
 				const array<execute_tag*>&	playlist = m_def->get_playlist(target_frame_number);
 				for (int i = 0; i < playlist.size(); i++)
 				{
@@ -4297,6 +4105,7 @@ namespace gameswf
 			}
 
 			m_current_frame = target_frame_number;
+			m_next_frame = target_frame_number + 1;
 			m_time_remainder = 0;
 			m_update_frame = false;
 			m_display_list.update();
@@ -4306,15 +4115,29 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x1007FED0: ActionScript navigation queues the label.
+		void	queue_goto_labeled_frame(const char* label) override
+		{
+			int target_frame = -1;
+			if (m_def->get_labeled_frame(label, &target_frame))
+			{
+				goto_frame(target_frame);
+			}
+			else
+			{
+				log_error("error: movie_impl::goto_labeled_frame('%s') unknown label\n", label);
+			}
+		}
+
 		bool	goto_labeled_frame(const char* label)
 		// Look up the labeled frame, and jump to it.
 		{
 			int	target_frame = -1;
 			if (m_def->get_labeled_frame(label, &target_frame))
 			{
-				// [DICE-MOD SwiffPlayer #45] applied at once, as the shipped +28 (0x100802E0)
-				// dispatches straight to +24; the 2006 stop-by-default is kept for the callers
-				// that rely on it (the AS methods set their own state right after).
+				//  applied at once, as the shipped +28 (0x100802E0)
+				// dispatches straight to +24 and preserves the play state. ActionScript
+				// gotoAndStop/gotoAndPlay use the separate queued-label entry above.
 #if !defined(_MSC_VER)
 				if (g_swf_mouse_pass_depth > 0)
 				{
@@ -4322,13 +4145,12 @@ namespace gameswf
 				}
 #endif
 				apply_goto_frame(target_frame);
-				m_play_state = STOP;
 				return true;
 			}
 			else
 			{
-				IF_VERBOSE_ACTION(
-					log_error("error: movie_impl::goto_labeled_frame('%s') unknown label\n", label));
+				// SwiffPlayer.dll 0x1008031F logs every failed lookup.
+				log_error("error: movie_impl::goto_labeled_frame('%s') unknown label\n", label);
 				return false;
 			}
 		}
@@ -4345,7 +4167,7 @@ namespace gameswf
 
 			m_display_list.display();
 
-			do_display_callback();
+			// SwiffPlayer.dll 0x1007FCA0 ends after displaying the list.
 		}
 
 		/*sprite_instance*/
@@ -4370,19 +4192,20 @@ namespace gameswf
 				return NULL;
 			}
 
-			// [DICE-MOD SwiffPlayer #44] No "same character already on this plane -> move it
-			// instead" shortcut. Stock 2006 turned a PLACE whose depth already held the same id (and
-			// name) into a move_display_object, which re-references the occupant. Flash MX 2004
-			// encodes a new keyframe instance of the same symbol as RemoveObject2 + PlaceObject2 on
-			// one depth in one frame (mainMenu.swf: 337 such sites, none placing over a live
-			// occupant; e.g. the login container, sprite 402, frame 29 "manage": depths 3
-			// profilesList, 46, 48), so the shortcut resurrected the instance the same frame had
-			// just removed - unmoved, because a script-touched clip rejects anim moves - and the
-			// login page's list and buttons stayed drawn under the Account Management page. The
-			// shipped sprite::add_display_object (sub_1007BA80) instantiates unconditionally, and
-			// its display_list::add_display_object (sub_100A8080) unreferences whatever holds the
-			// depth (drops the focus if it was inside it, nulls its parent) before inserting; neither
-			// compares ids or names.
+			// SwiffPlayer.dll 0x100837E0 keeps an exact referenced occupant,
+			// without applying the new placement's transforms or handlers.
+			const int index = m_display_list.find_display_index(depth);
+			if (index >= 0 && index < m_display_list.get_character_count())
+			{
+				const display_object_info existing = m_display_list.get_display_object(index);
+				character* old = existing.m_character.get_ptr();
+				if (existing.m_ref && old->get_depth() == depth && old->get_id() == character_id
+					&& (name == NULL ? old->get_name().length() == 0
+						: strcmp(old->get_name().c_str(), name) == 0))
+				{
+					return old;
+				}
+			}
 
 			assert(cdef);
 			smart_ptr<character>	ch = cdef->create_character_instance(this, character_id);
@@ -4411,15 +4234,21 @@ namespace gameswf
 			return ch.get_ptr();
 		}
 
-		// [DICE-MOD SwiffPlayer: add an instance of an ARBITRARY definition (an exported symbol for
-		// attachMovie, a fresh anonymous sprite for createEmptyMovieClip) - the tail of
-		// add_display_object without the character-id lookup. The shipped player's own
-		// add_display_object (sub_1007BA80) takes the definition pointer directly.]
+		// Instantiates a runtime definition without a dictionary lookup.
+		// SwiffPlayer.dll 0x1007BA80; the native helper supplies default transforms
+		// and keeps the definition alive through deferred display-list removal.
 		character*	add_display_object_def(
 			character_def* cdef,
 			const char* name,
 			Uint16 depth)
 		{
+			// SwiffPlayer.dll 0x1007BA80 checks the definition before the factory.
+			if (cdef == NULL)
+			{
+				// Retail's diagnostic has an unmatched conversion; retain its format.
+				log_error("sprite::add_display_object(): cdef = NULL%d\n");
+				return NULL;
+			}
 			assert(cdef);
 			smart_ptr<character>	ch = cdef->create_character_instance(this, 0);
 			if (ch == NULL)
@@ -4442,12 +4271,12 @@ namespace gameswf
 				true,
 				cxform::identity,
 				matrix::identity,
-				0.0f,
+				1.0f,
 				0);
 			return ch.get_ptr();
 		}
 
-		// [DICE-MOD SwiffPlayer: the highest depth in use, -1 when empty - for getNextHighestDepth.]
+		// the highest depth in use, -1 when empty - for getNextHighestDepth.
 		int	get_highest_depth_in_use()
 		{
 			int	highest = -1;
@@ -4462,54 +4291,55 @@ namespace gameswf
 			return highest;
 		}
 
-		// [DICE-MOD SwiffPlayer: the shipped getNextHighestDepth/loadMovie counter semantics -
-		// return the current value, bump past everything in use.]
+		// SwiffPlayer.dll 0x1006F960 / 0x1006F9F0 / 0x1007BBF0:
+		// postincrement without a depth scan.
 		int	take_next_highest_depth()
 		{
-			int	d = m_next_highest_depth;
-			const int	in_use = get_highest_depth_in_use() + 1;
-			if (d < in_use)
-			{
-				d = in_use;
-			}
-			m_next_highest_depth = d + 1;
-			return d;
+			return m_next_highest_depth++;
 		}
 
-		// [DICE-MOD SwiffPlayer: the drawing-API canvas (sub_1007C0D0): a `_____defaultShape` child
-		// at depth 0 over a fresh shape definition, created on first use, mutated by
-		// lineStyle/moveTo/lineTo/beginFill/endFill.]
+		// SwiffPlayer.dll 0x1007C0D0 resolves the named canvas through member
+		// lookup on every call, and creates it at depth zero only when absent.
 		shape_character_def*	get_canvas_def()
 		{
-			if (m_canvas == NULL)
+			if (this == NULL) return NULL;
+			as_value canvas;
+			if (!get_member("_____defaultShape", &canvas))
 			{
 				m_canvas = new shape_character_def;
+				m_canvas->set_character_id(0);
 				add_display_object_def(m_canvas.get_ptr(), "_____defaultShape", 0);
+			}
+			else
+			{
+				// [CHOSEN, not recovered] S3 bridge: the native generic
+				// character carries the definition directly instead of retail +0xC8.
+				generic_character* ch = static_cast<generic_character*>(canvas.to_object()->to_movie());
+				m_canvas = static_cast<shape_character_def*>(ch->m_def.get_ptr());
 			}
 			return m_canvas.get_ptr();
 		}
 
-		// [DICE-MOD SwiffPlayer: remove every child - the first thing the shipped loadMovie does.]
+		// remove every child - the first thing the shipped loadMovie does.
 		void	remove_all_display_objects()
 		{
-			array<int>	depths;
-			for (int i = 0, n = m_display_list.get_character_count(); i < n; i++)
+			// SwiffPlayer.dll 0x1007BC07 walks the live referenced entries.
+			for (int i = 0; i < m_display_list.get_character_count(); i++)
 			{
 				character*	ch = m_display_list.get_character(i);
 				if (ch)
 				{
-					depths.push_back(ch->get_depth());
+					m_display_list.remove_display_object((Uint16) ch->get_depth());
 				}
 			}
-			for (int i = 0; i < depths.size(); i++)
-			{
-				m_display_list.remove_display_object((Uint16) depths[i], -1);
-			}
+			// [CHOSEN, not recovered] S3 bridge: the native canvas owner
+			// drops its handle after removal; each child still owns its definition.
 			m_canvas = NULL;
 		}
 
 
 		/*sprite_instance*/
+		// SwiffPlayer.dll 0x1007FCC0.
 		void	move_display_object(
 			Uint16 depth,
 			bool use_cxform,
@@ -4526,6 +4356,7 @@ namespace gameswf
 
 
 		/*sprite_instance*/
+		// SwiffPlayer.dll 0x10080490.
 		void	replace_display_object(
 			Uint16 character_id,
 			const char* name,
@@ -4568,6 +4399,7 @@ namespace gameswf
 
 
 		/*sprite_instance*/
+		// SwiffPlayer.dll 0x10080540.
 		void	replace_display_object(
 			character* ch,
 			const char* name,
@@ -4600,15 +4432,16 @@ namespace gameswf
 
 
 		/*sprite_instance*/
-		void	remove_display_object(Uint16 depth, int id)
+		// SwiffPlayer.dll 0x1007FCD0.
+		void	remove_display_object(Uint16 depth)
 		// Remove the object at the specified depth.
 		// If id != -1, then only remove the object at depth with matching id.
 		{
-			m_display_list.remove_display_object(depth, id);
+			m_display_list.remove_display_object(depth);
 		}
 
 
-		/*sprite_instance*/
+		// SwiffPlayer.dll 0x10081340.
 		void	add_action_buffer(action_buffer* a)
 		// Add the given action buffer to the list of action
 		// buffers to be processed at the end of the next
@@ -4641,21 +4474,11 @@ namespace gameswf
 
 
 		/* sprite_instance */
+		// SwiffPlayer.dll 0x10081F50 has no null-argument refusal path.
 		virtual void	set_variable(const char* path_to_var, const char* new_value)
 		{
 			assert(m_parent == NULL);	// should only be called on the root movie.
 
-			if (path_to_var == NULL)
-			{
-				log_error("error: NULL path_to_var passed to set_variable()\n");
-				return;
-			}
-			if (new_value == NULL)
-			{
-				log_error("error: NULL passed to set_variable('%s', NULL)\n", path_to_var);
-				return;
-			}
-
 			array<with_stack_entry>	empty_with_stack;
 			tu_string	path(path_to_var);
 			as_value	val(new_value);
@@ -4664,13 +4487,9 @@ namespace gameswf
 		}
 
 		/* sprite_instance */
+		// SwiffPlayer.dll 0x100820C0 refuses only a null wide value.
 		virtual void	set_variable(const char* path_to_var, const wchar_t* new_value)
 		{
-			if (path_to_var == NULL)
-			{
-				log_error("error: NULL path_to_var passed to set_variable()\n");
-				return;
-			}
 			if (new_value == NULL)
 			{
 				log_error("error: NULL passed to set_variable('%s', NULL)\n", path_to_var);
@@ -4687,6 +4506,7 @@ namespace gameswf
 		}
 
 		/* sprite_instance */
+		// SwiffPlayer.dll 0x100821D0 returns the shared static value's string storage.
 		virtual const char*	get_variable(const char* path_to_var) const
 		{
 			assert(m_parent == NULL);	// should only be called on the root movie.
@@ -4708,34 +4528,48 @@ namespace gameswf
 		
 		/* sprite_instance */
 		virtual void	set_member(const tu_stringi& name, const as_value& val)
-		// Set the named member to the value.  Return true if we have
-		// that member; false otherwise.
+		// Assign an accessor, display property, matching text field or script member.
 		{
-			if (m_dead) return;	// [DICE-MOD SwiffPlayer #42]
-			// [DICE-MOD SwiffPlayer #51] sub_10083A20's first act: an "on<Capital>" member whose name is
-			// one of the eleven mouse handlers marks the sprite mouse-enabled (its name table, built once:
-			// onDragOut, onDragOver, onMouseDown, onMouseMove, onMouseUp, onPress, onDoublePress,
-			// onRelease, onReleaseOutside, onRollOut, onRollOver). The value is not inspected.
+			// SwiffPlayer.dll 0x10083A20, secondary interface 0x100E0C3C +0x20.
+			// SwiffPlayer.dll 0x10083A49 tries the script object's setter
+			// before handler detection or built-ins. [CHOSEN, not recovered]
+			// S3 bridge: adjust the native accessor receiver to the sprite.
+			if (m_script_object != NULL)
+			{
+				if (m_script_object->set_property(name, val, this))
+				{
+					return;
+				}
+			}
+			// The handler-name table is initialized only after the prefix test;
+			// assigning even an undefined value makes mouse participation sticky.
 			if (!m_mouse_enabled)
 			{
 				const char*	s = name.c_str();
 				if (s[0] == 'o' && s[1] == 'n' && s[2] >= 'A' && s[2] <= 'Z')
 				{
-					static const char*	MOUSE_HANDLER_NAMES[] = {
-						"onDragOut", "onDragOver", "onMouseDown", "onMouseMove", "onMouseUp", "onPress",
-						"onDoublePress", "onRelease", "onReleaseOutside", "onRollOut", "onRollOver",
-					};
-					for (int i = 0; i < ARRAYSIZE(MOUSE_HANDLER_NAMES); i++)
+					static string_hash<bool> mouse_handlers;
+					static bool initialized = false;
+					if (!initialized)
 					{
-						if (strcmp(s, MOUSE_HANDLER_NAMES[i]) == 0)
-						{
-							m_mouse_enabled = true;
-							break;
-						}
+						static const char* const names[] = {
+							"onDragOut", "onDragOver", "onMouseDown", "onMouseMove", "onMouseUp", "onPress",
+							"onDoublePress", "onRelease", "onReleaseOutside", "onRollOut", "onRollOver",
+						};
+						for (int i = 0; i < ARRAYSIZE(names); ++i)
+							mouse_handlers.set(names[i], true);
+						initialized = true;
 					}
+					if (mouse_handlers.get(name.c_str(), NULL)) m_mouse_enabled = true;
 				}
 			}
-			as_standard_member	std_member = get_standard_member(name);
+			// SwiffPlayer.dll 0x10083F19 controls forced per-pass playback.
+			if (strcmp(name.c_str(), "maxFPS") == 0)
+			{
+				m_force_frame_update = val.to_bool();
+				return;
+			}
+			as_standard_member	std_member = sprite_standard_member(name);
 			switch (std_member)
 			{
 			default:
@@ -4745,7 +4579,8 @@ namespace gameswf
 				//if (name == "_x")
 			{
 				matrix	m = get_matrix();
-				m.m_[0][2] = (float) PIXELS_TO_TWIPS(val.to_number());
+				// SwiffPlayer.dll 0x10083FA5: convert before the float store.
+				m.m_[0][2] = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(20.0f)));
 				set_matrix(m);
 
 				m_accept_anim_moves = false;
@@ -4756,7 +4591,8 @@ namespace gameswf
 				//else if (name == "_y")
 			{
 				matrix	m = get_matrix();
-				m.m_[1][2] = (float) PIXELS_TO_TWIPS(val.to_number());
+				// SwiffPlayer.dll 0x1008401C.
+				m.m_[1][2] = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(20.0f)));
 				set_matrix(m);
 
 				m_accept_anim_moves = false;
@@ -4769,7 +4605,8 @@ namespace gameswf
 				matrix	m = get_matrix();
 
 				// Decompose matrix and insert the desired value.
-				float	x_scale = (float) val.to_number() / 100.f;	// input is in percent
+				// SwiffPlayer.dll 0x10084094 multiplies by the stored float reciprocal.
+				float	x_scale = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(0.01f)));
 				float	y_scale = m.get_y_scale();
 				float	rotation = m.get_rotation();
 				m.set_scale_rotation(x_scale, y_scale, rotation);
@@ -4785,7 +4622,8 @@ namespace gameswf
 
 				// Decompose matrix and insert the desired value.
 				float	x_scale = m.get_x_scale();
-				float	y_scale = (float) val.to_number() / 100.f;	// input is in percent
+				// SwiffPlayer.dll 0x1008410E.
+				float	y_scale = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(0.01f)));
 				float	rotation = m.get_rotation();
 				m.set_scale_rotation(x_scale, y_scale, rotation);
 
@@ -4798,7 +4636,8 @@ namespace gameswf
 			{
 				// Set alpha modulate, in percent.
 				cxform	cx = get_cxform();
-				cx.m_[3][0] = float(val.to_number()) / 100.f;
+				// SwiffPlayer.dll 0x100841D4.
+				cx.m_[3][0] = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(0.01f)));
 				set_cxform(cx);
 				m_accept_anim_moves = false;
 				return;
@@ -4806,42 +4645,40 @@ namespace gameswf
 			case M_VISIBLE:
 				//else if (name == "_visible")
 			{
-				log_error("[_visible] '%s' = %d\n", swf_trace_path(this), val.to_bool() ? 1 : 0);  // [TEMP] RW-88
-				set_visible(val.to_bool());
+				const bool visible = val.to_bool();
+				log_error("[_visible] '%s' = %d\n", swf_trace_path(this), visible ? 1 : 0);  // [TEMP] RW-88
+				set_visible(visible);
 				m_accept_anim_moves = false;
 				return;
 			}
 			case M_WIDTH:
 				//else if (name == "_width")
 			{
-				// [DICE-MOD SwiffPlayer #39] Flash: own x-scale = value / the clip's unscaled local extent
-				// (absolute). Stock divided PIXELS_TO_TWIPS(value) by the WORLD-scaled get_width(), which
-				// compounded every set by the scale in play: the DICE components read `_width` back and
-				// hand it to their label fields, so the text layout widths came out up to 3.3x too wide
-				// (retail run Z vs the golden: version field 208 vs 156, LOGIN 1286 vs 388). A clip
-				// without extent keeps its scale (stock left it PIXELS_TO_TWIPS(value) - the 1200x
-				// image clip). See GAMESWF_DIVERGENCES.md #39.
-				const float	local = get_local_width();
-				if (fabsf(local) > 1e-6f)
+				// SwiffPlayer.dll 0x10084261-0x100842F2 repeats conversion and
+				// extent dispatch; only the division's numerator narrows to float.
+				matrix m = get_matrix();
+				if (val.to_number() == 0.0 || get_width() == 0.0f) m.m_[0][0] = 0.0f;
+				else
 				{
-					matrix	m = get_matrix();
-					m.m_[0][0] = float(PIXELS_TO_TWIPS(val.to_number())) / local;
-					set_matrix(m);
+					const float numerator = (float)val.to_number();
+					m.m_[0][0] = bf2x87::store(bf2x87::div(bf2x87::Real(numerator), bf2x87::Real(get_width())));
 				}
+				set_matrix(m);
 				m_accept_anim_moves = false;
 				return;
 			}
 			case M_HEIGHT:
 				//else if (name == "_height")
 			{
-				// [DICE-MOD SwiffPlayer #39] as M_WIDTH (stock also divided by get_WIDTH here).
-				const float	local = get_local_height();
-				if (fabsf(local) > 1e-6f)
+				// SwiffPlayer.dll 0x10084320-0x100843A8.
+				matrix m = get_matrix();
+				if (val.to_number() == 0.0 || get_height() == 0.0f) m.m_[1][1] = 0.0f;
+				else
 				{
-					matrix	m = get_matrix();
-					m.m_[1][1] = float(PIXELS_TO_TWIPS(val.to_number())) / local;
-					set_matrix(m);
+					const float numerator = (float)val.to_number();
+					m.m_[1][1] = bf2x87::store(bf2x87::div(bf2x87::Real(numerator), bf2x87::Real(get_height())));
 				}
+				set_matrix(m);
 				m_accept_anim_moves = false;
 				return;
 			}
@@ -4853,7 +4690,8 @@ namespace gameswf
 				// Decompose matrix and insert the desired value.
 				float	x_scale = m.get_x_scale();
 				float	y_scale = m.get_y_scale();
-				float	rotation = (float) val.to_number() * float(M_PI) / 180.f;	// input is in degrees
+				// SwiffPlayer.dll 0x10084185 uses the float radians-per-degree constant.
+				float	rotation = bf2x87::store(bf2x87::mul(bf2x87::Real(val.to_number()), bf2x87::Real(0.017453292f)));
 				m.set_scale_rotation(x_scale, y_scale, rotation);
 
 				set_matrix(m);
@@ -4885,6 +4723,15 @@ namespace gameswf
 			}
 			}	// end switch
 
+			// SwiffPlayer.dll 0x10084421: qword truncation, low dword store, then
+			// the recursive tab-order dispatch. It does not disable animation moves.
+			if (strcmp(name.c_str(), "tabIndex") == 0)
+			{
+				m_tab_index = bf2x87::lowWord(bf2x87::toInt64Truncate(bf2x87::Real(val.to_number())));
+				set_tab_index(m_tab_index);
+				return;
+			}
+
 			// Not a built-in property.  See if we have a
 			// matching edit_text character in our display
 			// list.
@@ -4892,15 +4739,15 @@ namespace gameswf
 				|| val.get_type() == as_value::NUMBER;
 			if (text_val)
 			{
+				// SwiffPlayer.dll 0x1008447D converts once before reading the list count.
+				const char* text = val.to_string();
 				bool	success = false;
 				for (int i = 0, n = m_display_list.get_character_count(); i < n; i++)
 				{
 					character*	ch = m_display_list.get_character(i);
-					// CASE INSENSITIVE compare.  In ActionScript 2.0, this
-					// changes to CASE SENSITIVE!!!
-					if (ch && name == ch->get_text_name())
+					// SwiffPlayer.dll 0x100844B0 compares text names exactly.
+					if (ch && strcmp(name.c_str(), ch->get_text_name()) == 0)
 					{
-						const char* text = val.to_string();
 						ch->set_text_value(text);
 						success = true;
 					}
@@ -4908,21 +4755,10 @@ namespace gameswf
 				if (success) return;
 			}
 
-			// [DICE-MOD SwiffPlayer #28: a setter on the registered class's prototype chain runs with
-			// this sprite as `this` - the construct handlers' `__authorMode = false` lands in
-			// UIObject's __set____authorMode, which stores m_inAuthorMode on the instance.]
-			if (m_class_proto != NULL)
-			{
-				as_object*	proto = m_class_proto->cast_to_as_object();
-				as_value	setter;
-				if (proto && proto->find_setter(name, &setter))
-				{
-					as_object::invoke_setter(setter, this, val);
-					return;
-				}
-			}
-			// If that didn't work, set a variable within this environment.
-			m_as_environment.set_member(name, val);
+			// SwiffPlayer.dll 0x100844FD writes into the private script object
+			// when present; only an unbound sprite writes into its environment.
+			if (m_script_object != NULL) m_script_object->set_member(name, val);
+			else m_as_environment.set_member(name, val);
 		}
 
 
@@ -4932,8 +4768,25 @@ namespace gameswf
 		// return true, if we have the named member.
 		// Otherwise leave *val alone and return false.
 		{
-			if (m_dead) return false;	// [DICE-MOD SwiffPlayer #42] a removed clip answers undefined
-			as_standard_member	std_member = get_standard_member(name);
+			// SwiffPlayer.dll 0x10080590, secondary interface 0x100E0C3C +0x24.
+			// SwiffPlayer.dll 0x10080590 tests these names before object dispatch.
+			if (strcmp(name.c_str(), "prototype") == 0)
+			{
+				// SwiffPlayer.dll 0x100805C8 retains a temporary before output cleanup.
+				*val = as_value(m_script_object.get_ptr());
+				return true;
+			}
+			if (strcmp(name.c_str(), "super") == 0)
+			{
+				// SwiffPlayer.dll 0x10080625 uses the same temporary-value assignment.
+				*val = as_value(m_as_environment.m_super_ctor);
+				return true;
+			}
+			// 0x10080676 calls the private object's member virtual once.
+			// Its accessor receiver is the private object, unlike the setter's
+			// explicit sprite receiver. The ordinary lookup also publishes super.
+			if (m_script_object != NULL && m_script_object->get_member(name, val)) return true;
+			as_standard_member	std_member = sprite_standard_member(name);
 			switch (std_member)
 			{
 			default:
@@ -4943,14 +4796,16 @@ namespace gameswf
 				//if (name == "_x")
 			{
 				matrix	m = get_matrix();
-				val->set_double(TWIPS_TO_PIXELS(m.m_[0][2]));
+				// SwiffPlayer.dll 0x100806D5 publishes directly as double.
+				val->set_double(double(m.m_[0][2]) * double(0.05f));
 				return true;
 			}
 			case M_Y:
 				//else if (name == "_y")
 			{
 				matrix	m = get_matrix();
-				val->set_double(TWIPS_TO_PIXELS(m.m_[1][2]));
+				// SwiffPlayer.dll 0x10080737 has no intermediate float store for Y.
+				val->set_double(double(m.m_[1][2]) * double(0.05f));
 				return true;
 			}
 			case M_XSCALE:
@@ -4958,7 +4813,7 @@ namespace gameswf
 			{
 				matrix m = get_matrix();	// @@ or get_world_matrix()?  Test this.
 				float xscale = m.get_x_scale();
-				val->set_double(xscale * 100);		// result in percent
+				val->set_double(double(xscale) * 100.0);
 				return true;
 			}
 			case M_YSCALE:
@@ -4966,7 +4821,7 @@ namespace gameswf
 			{
 				matrix m = get_matrix();	// @@ or get_world_matrix()?  Test this.
 				float yscale = m.get_y_scale();
-				val->set_double(yscale * 100);		// result in percent
+				val->set_double(double(yscale) * 100.0);
 				return true;
 			}
 			case M_CURRENTFRAME:
@@ -4986,7 +4841,7 @@ namespace gameswf
 				//else if (name == "_alpha")
 			{
 				// Alpha units are in percent.
-				val->set_double(get_cxform().m_[3][0] * 100.f);
+				val->set_double(double(get_cxform().m_[3][0]) * 100.0);
 				return true;
 			}
 			case M_VISIBLE:
@@ -4998,16 +4853,18 @@ namespace gameswf
 			case M_WIDTH:
 				//else if (name == "_width")
 			{
-				// [DICE-MOD SwiffPlayer #39] Flash: the clip's unscaled local extent times its own
-				// x-scale, in pixels - independent of ancestors. Stock measured through the world
-				// matrix twice (get_width() carries it, enclose_transformed_rect applied it again).
-				val->set_double(TWIPS_TO_PIXELS(get_local_width() * get_matrix().m_[0][0]));
+				// SwiffPlayer.dll 0x100808DD snapshots the local matrix before
+				// the rectangle-based pixel extent and publishes the product as double.
+				const matrix m = get_matrix();
+				val->set_double(bf2x87::storeDouble(bf2x87::mul(bf2x87::Real(get_width()), bf2x87::Real(m.m_[0][0]))));
 				return true;
 			}
 			case M_HEIGHT:
 				//else if (name == "_height")
 			{
-				val->set_double(TWIPS_TO_PIXELS(get_local_height() * get_matrix().m_[1][1]));
+				// SwiffPlayer.dll 0x10080936, same ordering for height.
+				const matrix m = get_matrix();
+				val->set_double(bf2x87::storeDouble(bf2x87::mul(bf2x87::Real(get_height()), bf2x87::Real(m.m_[1][1]))));
 				return true;
 			}
 			case M_ROTATION:
@@ -5017,9 +4874,8 @@ namespace gameswf
 				float	angle = get_matrix().get_rotation();
 
 				// Result is CLOCKWISE DEGREES, [-180,180]
-				angle *= 180.0f / float(M_PI);
-
-				val->set_double(angle);
+				// SwiffPlayer.dll 0x1008099D publishes the product directly as double.
+				val->set_double(double(angle) * double(57.29578f));
 				return true;
 			}
 			case M_TARGET:
@@ -5087,12 +4943,18 @@ namespace gameswf
 
 				matrix	m = get_world_matrix();
 
-				point	a(PIXELS_TO_TWIPS(x), PIXELS_TO_TWIPS(y));
+				// SwiffPlayer.dll 0x10080B9F..0x10080BCD converts the integer
+				// coordinates before multiplying, then stores each result as float.
+				point	a(
+					bf2x87::store(bf2x87::mul(bf2x87::Real(x), bf2x87::Real(20.0f))),
+					bf2x87::store(bf2x87::mul(bf2x87::Real(y), bf2x87::Real(20.0f))));
 				point	b;
 				
 				m.transform_by_inverse(&b, a);
 
-				val->set_double(TWIPS_TO_PIXELS(b.m_x));
+				// 0x10080BD5 -> 0x10080737 multiplies by the float reciprocal
+				// and publishes directly as double, without a float result store.
+				val->set_double(double(b.m_x) * double(0.05f));
 				return true;
 			}
 			case M_YMOUSE:
@@ -5105,71 +4967,56 @@ namespace gameswf
 
 				matrix	m = get_world_matrix();
 
-				point	a(PIXELS_TO_TWIPS(x), PIXELS_TO_TWIPS(y));
+				// SwiffPlayer.dll 0x10080C21..0x10080C4F, as for _xmouse.
+				point	a(
+					bf2x87::store(bf2x87::mul(bf2x87::Real(x), bf2x87::Real(20.0f))),
+					bf2x87::store(bf2x87::mul(bf2x87::Real(y), bf2x87::Real(20.0f))));
 				point	b;
 				
 				m.transform_by_inverse(&b, a);
 
-				val->set_double(TWIPS_TO_PIXELS(b.m_y));
+				// 0x10080C57 -> 0x10080737 has the same double publication.
+				val->set_double(double(b.m_y) * double(0.05f));
 				return true;
 			}
 			case M_PARENT:
 			{
+				// SwiffPlayer.dll 0x10080CB7 jumps to the null-OBJECT result at 0x10080D75.
 				val->set_as_object_interface(static_cast<as_object_interface*>(m_parent));
 				return true;
 			}
-			case M_ONLOAD:
-			{
-				if (m_as_environment.get_member(name, val))
-				{
-					return true;
-				}
-				// Optimization: if no hit, don't bother looking in the display list, etc.
-				return false;
-			}
 			}	// end switch
 
-			// Try variables.
-			if (m_as_environment.get_member(name, val))
+			// SwiffPlayer.dll 0x10080C79: absent tab order leaves the output alone.
+			if (strcmp(name.c_str(), "tabIndex") == 0)
 			{
+				if (m_tab_index < 0) return false;
+				val->set_int(m_tab_index);
 				return true;
 			}
 
-			// [DICE-MOD SwiffPlayer: the registered class's prototype chain, after the instance's
-			// own members and before children/builtins - the shipped sprite object resolves its own
-			// members, then `prototype`, then `__proto__` (sub_10099FE0).]
-			if (m_class_proto != NULL)
+			// SwiffPlayer.dll 0x10080CEE returns the character's persistent Array.
+			if (strcmp(name.c_str(), "arguments") == 0)
 			{
-				if (name == "__proto__")
-				{
-					val->set_as_object_interface(m_class_proto.get_ptr());
-					return true;
-				}
-				// [DICE-MOD SwiffPlayer #28: a getter on the class prototype chain, with this sprite
-				// as `this` (a plain prototype lookup would run it with the prototype as `this`).]
-				{
-					as_object*	proto = m_class_proto->cast_to_as_object();
-					as_value	getter;
-					if (proto && proto->find_getter(name, &getter))
-					{
-						*val = as_object::invoke_getter(getter, this);
-						return true;
-					}
-				}
-				if (m_class_proto->get_member(name, val))
-				{
-					return true;
-				}
+				val->set_as_object_interface(m_arguments.get_ptr());
+				return true;
+			}
+
+			if (strcmp(name.c_str(), "_global") == 0)
+			{
+				val->set_as_object_interface(get_global_object());
+				return true;
+			}
+			if (strcmp(name.c_str(), "_root") == 0)
+			{
+				// [CHOSEN, not recovered] S3 bridge for retail's global root.
+				val->set_as_object_interface(get_root_movie());
+				return true;
 			}
 
 			// Not a built-in property.  Check items on our
 			// display list.
-			// [DICE-MOD SwiffPlayer: CASE-SENSITIVE child lookup. Stock 2006 used the _i (case-
-			// insensitive) variant; the shipped sprite get_member (sub_10080590) walks the display
-			// list with strcmp, which is the SWF 7 rule BF2's menus (version 7) are written to. With
-			// the insensitive lookup a child instance named "color" shadowed the Color class, so
-			// `new Color(mc)` got a movie clip back (retail 2026-09-02, probe: "lookup type=OBJECT (a
-			// movie clip); _global.Color present"). See GAMESWF_DIVERGENCES.md.]
+			// SwiffPlayer.dll 0x10080590 compares child names case-sensitively.
 			character*	ch = m_display_list.get_character_by_name(tu_string(name.c_str()));
 			if (ch)
 			{
@@ -5178,6 +5025,8 @@ namespace gameswf
 				return true;
 			}
 
+			// SwiffPlayer.dll 0x10080E1B: environment lookup follows child lookup.
+			if (m_as_environment.get_member(name, val)) return true;
 			// Try static builtin functions.
 			assert(s_sprite_builtins);
 			if (s_sprite_builtins->get_member(name, val))
@@ -5190,6 +5039,8 @@ namespace gameswf
 
 
 		/* sprite_instance */
+		// SwiffPlayer.dll 0x10080EA0. The per-tree root is the existing
+		// [CHOSEN, not recovered] S3 bridge for retail's global root.
 		virtual movie*	get_relative_target(const tu_string& name)
 		// Find the movie which is one degree removed from us,
 		// given the relative pathname.
@@ -5230,6 +5081,8 @@ namespace gameswf
 
 
 		/* sprite_instance */
+		// SwiffPlayer.dll 0x10081370 drains all pending actions after each tag,
+		// including a non-action tag, before inspecting the next playlist entry.
 		virtual void	call_frame_actions(const as_value& frame_spec)
 		// Execute the actions for the specified frame.  The
 		// frame_spec could be an integer or a string.
@@ -5242,13 +5095,14 @@ namespace gameswf
 				if (m_def->get_labeled_frame(frame_spec.to_string(), &frame_number) == false)
 				{
 					// Try converting to integer.
-					frame_number = (int) frame_spec.to_number();
+					frame_number = bf2x87::toIntTruncate(frame_spec.to_number());
 				}
 			}
 			else
 			{
 				// convert from 1-based to 0-based
-				frame_number = (int) frame_spec.to_number() - 1;
+				const Sint32 converted = bf2x87::toIntTruncate(frame_spec.to_number());
+				frame_number = bf2x87::lowWord(static_cast<std::int64_t>(converted) - 1);
 			}
 
 			if (frame_number < 0 || frame_number >= m_def->get_frame_count())
@@ -5257,8 +5111,6 @@ namespace gameswf
 				log_error("error: call_frame('%s') -- unknown frame\n", frame_spec.to_string());
 				return;
 			}
-
-			int	top_action = m_action_list.size();
 
 			// Execute the actions.
 			const array<execute_tag*>&	playlist = m_def->get_playlist(frame_number);
@@ -5269,22 +5121,16 @@ namespace gameswf
 				{
 					e->execute(this);
 				}
+				do_actions();
 			}
-
-			// Execute any new actions triggered by the tag,
-			// leaving existing actions to be executed.
-			while (m_action_list.size() > top_action)
-			{
-				m_action_list[top_action]->execute(&m_as_environment);
-				m_action_list.remove(top_action);
-			}
-			assert(m_action_list.size() == top_action);
 		}
 
 
 		/* sprite_instance */
 		virtual void	set_drag_state(const drag_state& st)
 		{
+			// SwiffPlayer.dll 0x1007FCE0 copies the completed record.
+			// [CHOSEN, not recovered] S3 bridge: use the native per-tree root.
 			m_root->m_drag_state = st;
 		}
 
@@ -5304,6 +5150,8 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x100815A0; dictionary placement copies transform,
+		// ratio and clip depth, with no cloned script state or event handlers.
 		void	clone_display_object(const tu_string& name, const tu_string& newname, Uint16 depth)
 		// Duplicate the object with the specified name and add it with a new name 
 		// at a new depth.
@@ -5329,6 +5177,7 @@ namespace gameswf
 		}
 
 
+		// SwiffPlayer.dll 0x1007FD30 performs an exact-name lookup then depth removal.
 		void	remove_display_object(const tu_string& name)
 		// Remove the object with the specified name.
 		{
@@ -5337,7 +5186,7 @@ namespace gameswf
 			{
 				// @@ TODO: should only remove movies that were created via clone_display_object --
 				// apparently original movies, placed by anim events, are immune to this.
-				remove_display_object(ch->get_depth(), ch->get_id());
+				remove_display_object(ch->get_depth());
 			}
 		}
 
@@ -5350,6 +5199,13 @@ namespace gameswf
 			smart_ptr<as_object_interface>	this_ptr(this);
 
 			bool called = false;
+			// SwiffPlayer.dll 0x10081620's
+			// temporary action verbosity for mouse down/up, double press, press/release.
+			// Event IDs follow the retail event-name table.
+			const bool enable_verbose = s_verbose_mouse_events && !s_verbose_action
+				&& (id == event_id::MOUSE_DOWN || id == event_id::MOUSE_UP
+					|| id == event_id::DOUBLE_PRESS || id == event_id::PRESS || id == event_id::RELEASE);
+			if (enable_verbose) s_verbose_action = true;
 #if !defined(_MSC_VER)
 			// [TEMP] c-swf-disconnect: the events a mouse pass fires (press, release, roll over/out).
 			if (g_swf_mouse_pass_depth > 0 && swf_list_trace_on())
@@ -5359,7 +5215,7 @@ namespace gameswf
 			}
 #endif
 
-			// [DICE-MOD SwiffPlayer #51] sub_10081620: the clip-event handler when there is one, ELSE
+			//  sub_10081620: the clip-event handler when there is one, ELSE
 			// the member of that name, and only a defined one. Stock 2006 called both when both existed.
 			{
 				as_value	method;
@@ -5391,147 +5247,110 @@ namespace gameswf
 					swf_trace_path(this), m_display_list.get_character_count());
 			}
 #endif
+			// SwiffPlayer.dll 0x10081808 restores verbosity before releasing this_ptr.
+			if (enable_verbose) s_verbose_action = false;
 			return called;
 		}
 
 
 		/*sprite_instance*/
 		virtual void	on_event_load()
-		// Do the events that (appear to) happen as the movie
-		// loads.  frame1 tags and actions are executed (even
-		// before advance() is called).  Then the onLoad event
-		// is triggered.
+		// Run definition initialization and frame-zero placement, then bind a class.
 		{
+			// SwiffPlayer.dll 0x10081870 executes pending definition-wide
+			// init actions before frame zero and clears each bit after execution.
+			const array<execute_tag*>* init_actions = m_def->get_init_actions(0);
+			for (int i = 0; i < init_actions->size(); ++i)
+			{
+				if (m_root->m_def->m_init_action_pending[i])
+				{
+					execute_init_action((*init_actions)[i], &m_as_environment);
+					m_root->m_def->m_init_action_pending[i] = false;
+				}
+			}
 			execute_frame_tags(0);
-			// [DICE-MOD SwiffPlayer #53] The shipped on_event_load (sub_10081870, sprite vtable
-			// slot 51, called by display_list::add_display_object right after the insert) runs
-			// the pending init actions, executes frame 0's tags (sub_10081B10 - the placements
-			// happen now) and then FREES the action list at +224: the frame-0 DoAction buffers
-			// that execute_frame_tags just queued are dropped. The script runs when the sprite's
-			// first advance (0x10081CF0: next_frame 0, `first_frame_initialized` false) executes
-			// frame 0 again and drains the queue - and that advance comes AFTER the placing
-			// parent's own frame script, because the shipped pass advances its display list
-			// (sub_100A82A0) after its execute_frame_tags / do_actions. Stock 2006 drained the
-			// queue right here, so a child's frame-0 script ran BEFORE the parent's frame script
-			// of the same frame. mainMenu.swf's JOIN INTERNET page depends on the shipped order:
-			// the page's frame script defines getIsBrowsed / setIsBrowsed and the refresh modal
-			// placed on that frame calls them from its own frame-0 script; on the stock order
-			// they were "can't find method", the modal's setIsBrowsed was lost, and the modal
-			// started a SECOND browse when its script ran again (the owner's "server list loads
-			// twice", 2026-09-14). [CHOSEN, not recovered]: the shipped re-executes frame 0's
-			// PLACEMENTS too on that first advance (replacing the instances made here); this port
-			// keeps the instances and re-runs only the DoAction tags - see advance_pass.
+			// SwiffPlayer.dll 0x10081870 discards frame-zero actions here;
+			// advance replays the complete playlist after the parent's actions.
 			m_action_list.clear();
-			m_first_frame_actions_pending = true;
-			// [DICE-MOD SwiffPlayer #27: after the frame-0 tags, before onLoad - prototype, the
-			// construct handlers (component parameters), the class constructor, initialize, load.]
-			bind_class_prototype();
-			on_event(event_id::CONSTRUCT);
-			run_class_constructor();
-			on_event(event_id::INITIALIZE);
-			on_event(event_id::LOAD);
-		}
-
-		// [DICE-MOD SwiffPlayer: Object.registerClass support. The shipped load path
-		// (sub_10081870) does, for an instance whose definition carries a registered class:
-		//   instance.__proto__       = Class.prototype   (the function's +40 prototype object)
-		//   instance.__constructor__ = Class
-		//   Class.call(instance)                        (the constructor runs with the sprite as
-		//                                                 `this`, in the sprite's own environment)
-		// once, right after the frame-0 tags. Stock 2006 sprites have no prototype chain at all, so
-		// every attached UI component stayed a bare MovieClip (retail 2026-09-02: "can't find
-		// method loadImg/setValue/registerCallback" on every menu component, timeline parked).]
-		// [DICE-MOD SwiffPlayer #27] The binding comes in two halves. The prototype is attached
-		// first, so the `construct` clip handlers (component-inspector parameters such as
-		// `__authorMode = false`) reach the class's addProperty setters; the constructor runs after
-		// them, as Flash 7 orders it (construct -> constructor -> initialize -> load).
-		void	bind_class_prototype()
-		{
-			if (m_class_bound || m_def == NULL || m_def->m_registered_class == NULL)
+			// SwiffPlayer.dll 0x10081870 sends CONSTRUCT only when a sprite other
+			// than the published global root has a class prototype. It sends
+			// neither INITIALIZE nor LOAD.
+			// 0x1008191D captures the registered function once. CONSTRUCT can
+			// replace the definition binding; the subsequent call still uses this one.
+			// [CHOSEN, not recovered] S3 bridge: hold the native function alive
+			// across callbacks, since native definitions own their class bindings.
+			smart_ptr<as_as_function> cls;
+			// 0x10081911 compares directly with the global publication, even
+			// when another movie has replaced this sprite's own tree root.
+			if (this != get_global_root_movie())
+				cls = static_cast<as_as_function*>(m_def->m_registered_class);
+			if (cls != NULL && cls->m_properties->m_instance_prototype != NULL)
 			{
-				return;
+				bind_class_prototype(cls.get_ptr());
+				on_event(event_id::CONSTRUCT);
+				const as_value constructor(cls.get_ptr());
+				call_method0(constructor, &m_as_environment, this);
 			}
-			m_class_bound = true;
+		}
 
-			as_as_function*	cls = static_cast<as_as_function*>(m_def->m_registered_class);
-			cls->lazy_create_properties();
-			as_value	proto;
-			if (cls->m_properties)
+		// Read the current prototype's constructor without script-visible lookup.
+		as_as_function* class_prototype_constructor(as_as_function* cls)
+		{
+			// SwiffPlayer.dll 0x10081A12 / 0x10081A7E read concrete fields,
+			// without a script-visible "prototype" or "__constructor__" lookup.
+			as_object* class_proto = cls->m_properties->m_instance_prototype->cast_to_as_object();
+			if (class_proto == NULL)
 			{
-				cls->m_properties->get_member("prototype", &proto);
+				// [TEMP] [CHOSEN, not recovered] S3 bridge: a native movie
+				// cannot supply the retail object's constructor field.
+				// [RETIRE-WHEN: swf-native-script-object] Recover the common
+				// constructor provider and validate a movie-valued class prototype.
+				std::fprintf(stderr, "[FRONTIER] gameswf::sprite_instance::bind_class_prototype non-object prototype reached\n");
+				std::fflush(stderr);
+				std::abort();
 			}
-			m_class_proto = proto.to_object();
-			m_as_environment.set_member("__constructor__", as_value(cls));
+			return class_proto->m_constructor.get_ptr();
 		}
 
-		void	run_class_constructor()
+		void	bind_class_prototype(as_as_function* cls)
 		{
-			if (m_class_ctor_run || !m_class_bound || m_def == NULL || m_def->m_registered_class == NULL)
-			{
-				return;
-			}
-			m_class_ctor_run = true;
-			as_value	ctor(static_cast<as_as_function*>(m_def->m_registered_class));
-			call_method0(ctor, &m_as_environment, this);
+			// SwiffPlayer.dll 0x10081870 owns an instance bag, links its prototype
+			// and records its movie owner before running construct/constructor.
+			m_script_object = new as_object;
+			m_script_object->set_member("_____owner", as_value(this));
+			m_script_object->set_member("__proto__", as_value(cls->m_properties->m_instance_prototype));
+			m_script_object->set_member("__constructor__",
+				as_value(class_prototype_constructor(cls)));
+			// SwiffPlayer.dll 0x10081A84 reads the prototype again after the
+			// member write, then publishes its borrowed constructor before CONSTRUCT.
+			set_call_super(class_prototype_constructor(cls));
 		}
 
-		void	bind_registered_class()
+		// SwiffPlayer.dll 0x10080390 / 0x10080330 retain the receiver through
+		// the parser and drop that reference before returning its shared text.
+		const char* call_method(const Uint16* expression) override
 		{
-			bind_class_prototype();
-			run_class_constructor();
+			smart_ptr<as_object_interface> receiver(this);
+			return call_method_expression(&m_as_environment, this, expression);
 		}
-
-		// Do the events that happen when there is XML data waiting
-		// on the XML socket connection.
-		virtual void	on_event_xmlsocket_onxml()
+		const char* call_method(const char* expression) override
 		{
-			log_msg("FIXME: %s: unimplemented\n", __FUNCTION__);
-			on_event(event_id::SOCK_XML);
-		}
-		
-		// Do the events that (appear to) happen on a specified interval.
-		virtual void	on_event_interval_timer()
-		{
-			log_msg("FIXME: %s: unimplemented\n", __FUNCTION__);
-			on_event(event_id::TIMER);
-		}
-
-		// Do the events that happen as a MovieClip (swf 7 only) loads.
-		virtual void	on_event_load_progress()
-		{
-			log_msg("FIXME: %s: unimplemented\n", __FUNCTION__);
-			on_event(event_id::LOAD_PROGRESS);
-		}
-
-	/*sprite_instance*/
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args)
-		{
-			// Keep m_as_environment alive during any method calls!
-			smart_ptr<as_object_interface>	this_ptr(this);
-
-			return call_method_parsed(&m_as_environment, this, method_name, method_arg_fmt, args);
+			smart_ptr<as_object_interface> receiver(this);
+			return call_method_expression(&m_as_environment, this, expression);
 		}
 
 		/* sprite_instance */
-		virtual void	attach_display_callback(const char* path_to_object, void (*callback)(void*), void* user_ptr)
-		{
-			assert(m_parent == NULL);	// should only be called on the root movie.
-
-			array<with_stack_entry>	dummy;
-			as_value	obj = m_as_environment.get_variable(tu_string(path_to_object), dummy);
-			as_object_interface*	as_obj = obj.to_object();
-			if (as_obj)
-			{
-				movie*	m = as_obj->to_movie();
-				if (m)
-				{
-					m->set_display_callback(callback, user_ptr);
-				}
-			}
-		}
 	};
 
 
+	// SwiffPlayer.dll 0x100737A0; the native root always owns a sprite instance.
+	void movie_root::goto_frame(int target_frame_number)
+	{
+		static_cast<sprite_instance*>(m_movie.get_ptr())->apply_goto_frame(target_frame_number);
+	}
+
+	// SwiffPlayer.dll 0x100849A0; the native factory returns a borrowed raw
+	// pointer instead of retail's smart_ptr result [CHOSEN, not recovered] S3 bridge.
 	character*	sprite_definition::create_character_instance(movie* parent, int id)
 	// Create a (mutable) instance of our definition.  The
 	// instance is created to live (temporarily) on some level on
@@ -5543,6 +5362,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x10084A30.
 	movie_interface*	movie_def_impl::create_instance()
 	// Create a playable movie instance from a def.
 	{
@@ -5553,6 +5373,10 @@ namespace gameswf
 		assert(root_movie);
 
 		root_movie->set_name("_root");
+		// 0x10084A85..0x10084AC3 publishes after naming and before retaining
+		// the returned wrapper. Its inline assignment matches 0x100738A0.
+		set_global_root_movie(root_movie);
+		// [CHOSEN, not recovered] S3 bridge: the native wrapper also owns its sprite.
 		m->set_root_movie(root_movie);
 
 		m->add_ref();
@@ -5560,17 +5384,18 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1007BB50.
 	void	sprite_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Create and initialize a sprite, and add it to the movie.
 	{
 		assert(tag_type == 39);
                 
+		IF_VERBOSE_PARSE(log_msg("sprite\n"));
 		int	character_id = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  sprite\n  char id = %d\n", character_id));
-
-		sprite_definition*	ch = new sprite_definition(m);	// @@ combine sprite_definition with movie_def_impl
+		sprite_definition*	ch = new sprite_definition(m, character_id);
 		ch->read(in);
+		IF_VERBOSE_PARSE(log_msg("sprite: char id = %d\n", character_id));
 
 		m->add_character(character_id, ch);
 	}
@@ -5581,7 +5406,7 @@ namespace gameswf
 	//
 
 	// =============================================================================================
-	// [DICE-MOD SwiffPlayer: the MovieClip methods the shipped sprite builtins object
+	// the MovieClip methods the shipped sprite builtins object
 	// (gameswf_standard_method_map_init, dword_100F8C98) carries and stock 2006 lacks. BF2's menu
 	// class framework builds every component with them. Each is reconstructed from the named
 	// shipped body:
@@ -5591,15 +5416,16 @@ namespace gameswf
 	//   attachMovie(symbol, name, depth)   gameswf_sprite_attach_movie - the root definition's
 	//                                      exported symbol, instanced at `depth`; three or more args.
 	//   getNextHighestDepth()              gameswf_sprite_getNextHighestDepth - a per-sprite counter
-	//                                      returned then incremented (+220); ours also skips depths
-	//                                      the timeline already occupies.
+	//                                      returned then incremented (+220).
 	//   removeMovieClip()                  gameswf_sprite_remove_movieclip - parent->remove(depth).
 	//   setMask(mc)                        gameswf_sprite_set_mask - mask stored on the character,
 	//                                      mask flagged mask-only (+192/+196); one argument.
-	// See GAMESWF_DIVERGENCES.md.]
+	// See GAMESWF_DIVERGENCES.md.
 	// =============================================================================================
 	static sprite_instance*	sprite_this(const fn_call& fn)
 	{
+		// [CHOSEN, not recovered] S3 bridge: the 2006 native-call API can
+		// omit this_ptr; its environment target supplies the retail receiver.
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
 		if (sprite == NULL)
 		{
@@ -5610,6 +5436,7 @@ namespace gameswf
 		return sprite;
 	}
 
+	// SwiffPlayer.dll 0x1007BFD0; sprite_this supplies the native receiver bridge.
 	void	sprite_create_empty_movieclip(const fn_call& fn)
 	{
 		if (fn.nargs != 2)
@@ -5617,22 +5444,16 @@ namespace gameswf
 			log_error("error: create_empty_movieclip needs two args\n");
 			return;
 		}
+		const tu_string	name = fn.arg(0).to_tu_string();
+		const int	depth = bf2x87::toIntTruncate(fn.arg(1).to_number());
 		sprite_instance*	sprite = sprite_this(fn);
 		if (sprite == NULL)
 		{
 			return;
 		}
-		const tu_string	name = fn.arg(0).to_tu_string();
-		const int	depth = (int) fn.arg(1).to_number();
-
-		movie*	root = sprite->get_root_movie();
-		movie_definition_sub*	root_def = root
-			? static_cast<movie_definition_sub*>(root->get_movie_definition()) : NULL;
-		if (root_def == NULL)
-		{
-			fn.result->set_as_object_interface(NULL);
-			return;
-		}
+		// [CHOSEN, not recovered] S3 bridge: per-tree root replaces the
+		// retail global movie root, through the native typed interface.
+		movie_definition_sub* root_def = static_cast<movie_definition_sub*>(sprite->get_root()->get_movie_definition());
 		// A one-frame, empty sprite definition owned by the instance (its m_def smart_ptr).
 		sprite_definition*	def = new sprite_definition(root_def);
 		def->m_frame_count = 1;
@@ -5644,6 +5465,7 @@ namespace gameswf
 		fn.result->set_as_object_interface(ch);
 	}
 
+	// SwiffPlayer.dll 0x10075A40 uses the exported definition's dictionary ID.
 	void	sprite_attach_movie(const fn_call& fn)
 	{
 		if (fn.nargs < 3)
@@ -5651,32 +5473,32 @@ namespace gameswf
 			log_error("error: attach_movie needs atleast three args\n");
 			return;
 		}
+		const tu_string	symbol = fn.arg(0).to_tu_string();
+		const tu_string	name = fn.arg(1).to_tu_string();
+		const int	depth = bf2x87::toIntTruncate(fn.arg(2).to_number());
 		sprite_instance*	sprite = sprite_this(fn);
 		if (sprite == NULL)
 		{
 			return;
 		}
-		const tu_string	symbol = fn.arg(0).to_tu_string();
-		const tu_string	name = fn.arg(1).to_tu_string();
-		const int	depth = (int) fn.arg(2).to_number();
-
-		movie*	root = sprite->get_root_movie();
-		movie_definition_sub*	root_def = root
-			? static_cast<movie_definition_sub*>(root->get_movie_definition()) : NULL;
-		smart_ptr<resource>	res = root_def ? root_def->get_exported_resource(symbol) : smart_ptr<resource>();
-		character_def*	cdef = res.get_ptr() ? res->cast_to_character_def() : NULL;
-		if (cdef == NULL)
+		// [CHOSEN, not recovered] S3 bridge: native per-tree root accessor.
+		movie_definition_sub* root_def = static_cast<movie_definition_sub*>(sprite->get_root()->get_movie_definition());
+		smart_ptr<resource> res = root_def->get_exported_resource(symbol);
+		if (res == NULL)
 		{
-			log_error("error: attachMovie: no exported symbol '%s'\n", symbol.c_str());
 			*fn.result = as_value();
 			return;
 		}
-		character*	ch = sprite->add_display_object_def(cdef, name.c_str(), (Uint16) depth);
+		character_def* cdef = res->cast_to_character_def();
+		array<swf_event*> handlers;
+		character* ch = sprite->add_display_object(cdef->get_character_id(), name.c_str(), handlers,
+			static_cast<Uint16>(depth), true, cxform::identity, matrix::identity, 1.0f, 0);
 		// [TEMP] RW-89 target trace. Remove with the tracers.
 		log_error("[attachMovie] on '%s' symbol='%s' -> '%s' depth=%d ch=%p\n", swf_trace_path(sprite), symbol.c_str(), name.c_str(), depth, ch);
 		fn.result->set_as_object_interface(ch);
 	}
 
+	// SwiffPlayer.dll 0x1006F9F0; sprite_this is the existing native receiver bridge.
 	void	sprite_get_next_highest_depth(const fn_call& fn)
 	{
 		sprite_instance*	sprite = sprite_this(fn);
@@ -5684,16 +5506,31 @@ namespace gameswf
 		{
 			return;
 		}
-		int	d = sprite->m_next_highest_depth;
-		const int	in_use = sprite->get_highest_depth_in_use() + 1;
-		if (d < in_use)
-		{
-			d = in_use;
-		}
-		sprite->m_next_highest_depth = d + 1;
-		fn.result->set_int(d);
+		fn.result->set_int(sprite->take_next_highest_depth());
 	}
 
+	// SwiffPlayer.dll 0x10075950 copies only the definition, transform and ratio,
+	// placing in the root at the supplied depth plus 100. It ignores extra arguments.
+	void sprite_duplicate_movieclip(const fn_call& fn)
+	{
+		if (fn.nargs < 2)
+		{
+			log_error("error: duplicate_movie_clip needs atleast two args\n");
+			return;
+		}
+		const tu_string name = fn.arg(0).to_tu_string();
+		const Uint32 depth = static_cast<Uint32>(bf2x87::toIntTruncate(fn.arg(1).to_number())) + 100u;
+		// [CHOSEN, not recovered] S3 bridge: typed receiver and per-tree root
+		// replace the secondary-interface receiver and retail global root.
+		sprite_instance* sprite = sprite_this(fn);
+		sprite_instance* root = static_cast<sprite_instance*>(sprite->get_root_movie());
+		array<swf_event*> handlers;
+		character* ch = root->add_display_object(sprite->m_def->get_character_id(), name.c_str(), handlers,
+			static_cast<Uint16>(depth), true, sprite->get_cxform(), sprite->get_matrix(), sprite->get_ratio(), 0);
+		fn.result->set_as_object_interface(ch);
+	}
+
+	// SwiffPlayer.dll 0x1006F9C0 only requests deferred removal from the parent.
 	void	sprite_remove_movieclip(const fn_call& fn)
 	{
 		sprite_instance*	sprite = sprite_this(fn);
@@ -5707,16 +5544,60 @@ namespace gameswf
 		SWF_LIST_TRACE("removeMovieClip '%s' depth=%d", swf_trace_path(sprite), sprite->get_depth());
 		if (parent)
 		{
-			// Keep the instance alive across its own removal - the caller may still be running
-			// one of its methods.
-			smart_ptr<as_object_interface>	keep(sprite);
-			parent->remove_display_object((Uint16) sprite->get_depth(), -1);
+			parent->remove_display_object((Uint16) sprite->get_depth());
 		}
 	}
 
+	// SwiffPlayer.dll 0x10071A30. sprite_this and the per-tree root adapt
+	// retail's secondary receiver and global root [CHOSEN, not recovered] S3 bridge.
+	void	sprite_start_drag(const fn_call& fn)
+	{
+		sprite_instance* sprite = sprite_this(fn);
+		movie::drag_state st;
+		st.m_character = sprite;
+		if (fn.nargs > 0) st.m_lock_center = fn.arg(0).to_bool();
+		if (!st.m_lock_center)
+		{
+			int x, y, buttons;
+			sprite->get_root_movie()->get_mouse_state(&x, &y, &buttons);
+			matrix world = sprite->get_world_matrix();
+			point local;
+			const float world_x = bf2x87::store(bf2x87::mul(bf2x87::Real(x), bf2x87::Real(20.0f)));
+			const float world_y = bf2x87::store(bf2x87::mul(bf2x87::Real(y), bf2x87::Real(20.0f)));
+			world.transform_by_inverse(&local, point(world_x, world_y));
+			st.m_offset_x = local.m_x;
+			st.m_offset_y = local.m_y;
+		}
+		if (fn.nargs == 5)
+		{
+			st.m_bound = true;
+			st.m_bound_x0 = bf2x87::store(bf2x87::mul(bf2x87::Real(fn.arg(1).to_number()), bf2x87::Real(20.0f)));
+			st.m_bound_y0 = bf2x87::store(bf2x87::mul(bf2x87::Real(fn.arg(2).to_number()), bf2x87::Real(20.0f)));
+			st.m_bound_x1 = bf2x87::store(bf2x87::mul(bf2x87::Real(fn.arg(3).to_number()), bf2x87::Real(20.0f)));
+			st.m_bound_y1 = bf2x87::store(bf2x87::mul(bf2x87::Real(fn.arg(4).to_number()), bf2x87::Real(20.0f)));
+		}
+		if (sprite != NULL)
+		{
+			sprite->set_drag_state(st);
+		}
+	}
+
+	// SwiffPlayer.dll 0x10071B90: a clip stops only its own drag.
+	void	sprite_stop_drag(const fn_call& fn)
+	{
+		// [CHOSEN, not recovered] S3 bridge: native receiver/per-tree root.
+		sprite_instance* sprite = sprite_this(fn);
+		movie_root* root = sprite->get_root();
+		movie::drag_state st;
+		root->get_root_movie()->get_drag_state(&st);
+		if (st.m_character == sprite) root->stop_drag();
+	}
+
+	// SwiffPlayer.dll 0x10071C00. [CHOSEN, not recovered] S3 bridge:
+	// the native mask remains owning for issue #7 teardown; retail writes a raw pointer.
 	void	sprite_set_mask(const fn_call& fn)
 	{
-		if (fn.nargs < 1)
+		if (fn.nargs == 0)
 		{
 			log_error("error: set_mask needs one arg\n");
 			return;
@@ -5729,15 +5610,11 @@ namespace gameswf
 		as_object_interface*	o = fn.arg(0).to_object();
 		movie*	mv = o ? o->to_movie() : NULL;
 		character*	mask = mv ? mv->cast_to_character() : NULL;
-		sprite->m_mask = mask;
-		if (mask)
-		{
-			mask->m_is_mask_only = true;
-		}
+		sprite->set_mask(mask);
 	}
 
 	// =============================================================================================
-	// [DICE-MOD SwiffPlayer: the DRAWING API and the IMAGE LOADER of the shipped sprite builtins,
+	// the DRAWING API and the IMAGE LOADER of the shipped sprite builtins,
 	// reconstructed from the named bodies (coordinates in script pixels, x20 to twips):
 	//   lineStyle(thickness, rgb, alpha)   gameswf_sprite_line_style - width = thickness*20, never 0
 	//                                      (20 when unset), colour from rgb + alpha*2.55 (255 when
@@ -5753,9 +5630,8 @@ namespace gameswf
 	//                                      fill0 = that style.
 	//   endFill()                          gameswf_sprite_end_fill - closes the current path back to
 	//                                      its start when the pen is elsewhere; bound recomputed.
-	//   beginGradientFill(...)             gameswf_sprite_begin_gradient_fill - NOT transcribed
-	//                                      (a 1.4 KB gradient-matrix builder); logged, falls back to
-	//                                      a solid fill of the first colour.
+	//   beginGradientFill(...)             gameswf_sprite_begin_gradient_fill - five arguments,
+	//                                      box matrix, linear/radial bitmap and two new paths.
 	//   loadMovie(url)                     gameswf_sprite_loadmovie - removes every child, resolves
 	//                                      the image by name (render::create_bitmap_info_file), and
 	//                                      places a `_____image` sprite at the next depth holding a
@@ -5764,12 +5640,15 @@ namespace gameswf
 	//                                      the golden run's 320x240 background strip
 	//                                      (setTexture id=24 320x240 clamp=0 m=[0.05 0 0|0 0.05 0]).
 	// A path's pen position and style inheritance follow the shipped "new path" helper
-	// (sub_10076A80): the new path copies fill0/fill1/line and starts at the last anchor.]
+	// (sub_10076A80): the new path copies fill0/fill1/line and starts at the last anchor.
 	// =============================================================================================
 	static rgba	rgba_from_script(double rgb, double alpha_pct, bool has_alpha)
 	{
-		const int	c = (int) rgb;
-		const Uint8	a = has_alpha ? (Uint8) (int) (alpha_pct * 2.55) : 255;
+		// SwiffPlayer.dll 0x1007C318/0x1007C9B1 uses a dword for RGB;
+		// alpha uses a qword conversion and keeps its low byte.
+		const int	c = bf2x87::toIntTruncate(rgb);
+		const Uint8	a = has_alpha ? static_cast<Uint8>(bf2x87::toInt64Truncate(
+			bf2x87::mul(bf2x87::Real(alpha_pct), bf2x87::Real(2.55)))) : 255;
 		return rgba((Uint8) ((c >> 16) & 0xFF), (Uint8) ((c >> 8) & 0xFF), (Uint8) (c & 0xFF), a);
 	}
 
@@ -5791,87 +5670,107 @@ namespace gameswf
 		}
 	}
 
-	// The shipped "new path" (sub_10076A80): inherit the current styles, start at the pen.
+	// SwiffPlayer.dll 0x10076A80: copy the current path, clear its edges,
+	// and start at its final anchor. An empty canvas receives a marker first.
 	static path*	canvas_new_path(shape_character_def* def)
 	{
 		path	np;
 		const path*	cur = def->current_path();
 		if (cur)
 		{
-			np.m_fill0 = cur->m_fill0;
-			np.m_fill1 = cur->m_fill1;
-			np.m_line = cur->m_line;
+			np = *cur;
+			np.m_edges.clear();
 			canvas_pen(cur, &np.m_ax, &np.m_ay);
 		}
-		return def->add_path(np);
+		else
+		{
+			path marker;
+			marker.m_new_shape = true;
+			def->append_path(marker);
+		}
+		def->append_path(np);
+		return def->current_path();
 	}
 
+	// SwiffPlayer.dll 0x1007C930. With no arguments the shipped body still
+	// assigns line slot one, even when no style has been appended.
 	void	sprite_line_style(const fn_call& fn)
 	{
 		sprite_instance*	sprite = sprite_this(fn);
 		if (sprite == NULL) return;
 		shape_character_def*	def = sprite->get_canvas_def();
-		int	idx = 0;
+		int	idx = 1;
 		if (fn.nargs > 0)
 		{
-			int	width = (int) (fn.arg(0).to_number() * 20.0);
+			Uint16 width = static_cast<Uint16>(bf2x87::toInt64Truncate(
+				bf2x87::mul(bf2x87::Real(fn.arg(0).to_number()), bf2x87::Real(20.0))));
 			if (width == 0) width = 20;
 			rgba	color(0, 0, 0, 255);
 			if (fn.nargs > 1)
 			{
-				color = rgba_from_script(fn.arg(1).to_number(), fn.nargs > 2 ? fn.arg(2).to_number() : 100.0, fn.nargs > 2);
+				const double rgb = fn.arg(1).to_number();
+				const double alpha = fn.nargs > 2 ? fn.arg(2).to_number() : 100.0;
+				color = rgba_from_script(rgb, alpha, fn.nargs > 2);
 			}
-			line_style	ls;
-			ls.set((Uint16) width, color);
-			idx = def->add_line_style(ls);
+			idx = def->add_line_style(color, width) + 1;
 		}
 		canvas_new_path(def)->m_line = idx;
 	}
 
+	// SwiffPlayer.dll 0x1007CB60 creates/resolves the canvas even on bad arity.
 	void	sprite_move_to(const fn_call& fn)
 	{
+		sprite_instance* sprite = sprite_this(fn);
+		if (sprite == NULL) return;
+		shape_character_def* def = sprite->get_canvas_def();
 		if (fn.nargs != 2)
 		{
 			log_error("error: move_to needs two args\n");
 			return;
 		}
-		sprite_instance*	sprite = sprite_this(fn);
-		if (sprite == NULL) return;
-		shape_character_def*	def = sprite->get_canvas_def();
 		const float	x = (float) (fn.arg(0).to_number() * 20.0);
 		const float	y = (float) (fn.arg(1).to_number() * 20.0);
 		path*	cur = def->current_path();
-		if (cur == NULL || cur->m_edges.size() > 0)
+		if (cur != NULL && cur->m_edges.size() == 0)
 		{
-			cur = canvas_new_path(def);
+			cur->m_ay = y;
+			cur->m_ax = x;
+			return;
 		}
-		cur->m_ax = x;
-		cur->m_ay = y;
+		// 0x1007CBED stores only Y into the new path's X start. Preserve
+		// this shipped defect; the inherited Y start is left alone.
+		canvas_new_path(def)->m_ax = y;
 	}
 
+	// SwiffPlayer.dll 0x1007CA20 stores the X delta as float before computing Y.
 	void	sprite_line_to(const fn_call& fn)
 	{
+		sprite_instance* sprite = sprite_this(fn);
+		if (sprite == NULL) return;
+		shape_character_def* def = sprite->get_canvas_def();
 		if (fn.nargs != 2)
 		{
 			log_error("error: line_to needs two args\n");
 			return;
 		}
-		sprite_instance*	sprite = sprite_this(fn);
-		if (sprite == NULL) return;
-		shape_character_def*	def = sprite->get_canvas_def();
 		path*	cur = def->current_path();
-		if (cur == NULL)
-		{
-			cur = canvas_new_path(def);
-		}
 		float	px, py;
 		canvas_pen(cur, &px, &py);
-		const float	x = (float) (fn.arg(0).to_number() * 20.0);
-		const float	y = (float) (fn.arg(1).to_number() * 20.0);
-		cur->m_edges.push_back(edge(px + (x - px) * 0.5f, py + (y - py) * 0.5f, x, y));
-		def->refresh_bound();
+		const float dx = bf2x87::store(bf2x87::sub(
+			bf2x87::mul(bf2x87::Real(fn.arg(0).to_number()), bf2x87::Real(20.0)), bf2x87::Real(px)));
+		const bf2x87::Real dy = bf2x87::sub(
+			bf2x87::mul(bf2x87::Real(fn.arg(1).to_number()), bf2x87::Real(20.0)), bf2x87::Real(py));
+		cur->m_edges.push_back(edge(
+			bf2x87::store(bf2x87::add(bf2x87::mul(bf2x87::Real(dx), bf2x87::Real(0.5f)), bf2x87::Real(px))),
+			bf2x87::store(bf2x87::add(bf2x87::mul(dy, bf2x87::Real(0.5f)), bf2x87::Real(py))),
+			bf2x87::store(bf2x87::add(bf2x87::Real(dx), bf2x87::Real(px))),
+			bf2x87::store(bf2x87::add(bf2x87::Real(py), dy))));
+		rect bound;
+		def->compute_bound(&bound);
+		def->set_bound(bound);
 	}
 
+	// SwiffPlayer.dll 0x1007C1D0.
 	void	sprite_end_fill(const fn_call& fn)
 	{
 		sprite_instance*	sprite = sprite_this(fn);
@@ -5882,15 +5781,23 @@ namespace gameswf
 		{
 			float	px, py;
 			canvas_pen(cur, &px, &py);
-			if (px != cur->m_ax || py != cur->m_ay)
+			const bf2x87::Real dx = bf2x87::sub(bf2x87::Real(cur->m_ax), bf2x87::Real(px));
+			const bf2x87::Real dy = bf2x87::sub(bf2x87::Real(cur->m_ay), bf2x87::Real(py));
+			if (dx != bf2x87::Real(0) || dy != bf2x87::Real(0))
 			{
-				cur->m_edges.push_back(edge(px + (cur->m_ax - px) * 0.5f, py + (cur->m_ay - py) * 0.5f,
-							    cur->m_ax, cur->m_ay));
+				cur->m_edges.push_back(edge(
+					bf2x87::store(bf2x87::add(bf2x87::mul(dx, bf2x87::Real(0.5f)), bf2x87::Real(px))),
+					bf2x87::store(bf2x87::add(bf2x87::mul(dy, bf2x87::Real(0.5f)), bf2x87::Real(py))),
+					bf2x87::store(bf2x87::add(dx, bf2x87::Real(px))),
+					bf2x87::store(bf2x87::add(dy, bf2x87::Real(py)))));
 			}
 		}
-		def->refresh_bound();
+		rect bound;
+		def->compute_bound(&bound);
+		def->set_bound(bound);
 	}
 
+	// SwiffPlayer.dll 0x1007C2C0 appends a marker and a fresh fill-only path.
 	void	sprite_begin_fill(const fn_call& fn)
 	{
 		sprite_end_fill(fn);
@@ -5900,55 +5807,120 @@ namespace gameswf
 		int	idx = 0;
 		if (fn.nargs > 0)
 		{
-			fill_style	fs;
-			fs.set_solid(rgba_from_script(fn.arg(0).to_number(), fn.nargs > 1 ? fn.arg(1).to_number() : 100.0, fn.nargs > 1));
-			idx = def->add_fill_style(fs);
+			const double rgb = fn.arg(0).to_number();
+			const double alpha = fn.nargs > 1 ? fn.arg(1).to_number() : 100.0;
+			idx = def->add_fill_style(rgba_from_script(rgb, alpha, fn.nargs > 1)) + 1;
 		}
 		// the shipped pair: a "new shape" marker path, then the path that carries the fill
 		path	marker;
 		marker.m_new_shape = true;
-		def->add_path(marker);
+		def->append_path(marker);
 		path	p;
 		p.m_fill0 = idx;
-		def->add_path(p);
+		def->append_path(p);
 	}
 
+	// SwiffPlayer.dll 0x1007C3B0.
 	void	sprite_begin_gradient_fill(const fn_call& fn)
 	{
-		log_error("beginGradientFill: gradients are not transcribed yet - filling with the first colour\n");
-		sprite_end_fill(fn);
-		sprite_instance*	sprite = sprite_this(fn);
-		if (sprite == NULL) return;
-		shape_character_def*	def = sprite->get_canvas_def();
-		int	idx = 0;
-		if (fn.nargs >= 2)
+		if (fn.nargs != 5)
 		{
-			// arg1 is the colours array; take its first element
-			as_object_interface*	colors = fn.arg(1).to_object();
-			as_value	first;
-			if (colors) colors->get_member("0", &first);
-			fill_style	fs;
-			fs.set_solid(rgba_from_script(first.to_number(), 100.0, false));
-			idx = def->add_fill_style(fs);
+			log_error("error: line_to needs five args\n");
+			return;
 		}
-		path	marker;
-		marker.m_new_shape = true;
-		def->add_path(marker);
-		path	p;
-		p.m_fill0 = idx;
-		def->add_path(p);
+		as_object_interface* box = fn.arg(4).get_type() == as_value::OBJECT
+			? fn.arg(4).m_object_value : NULL;
+		as_value value;
+		matrix input;
+		if (!box->get_member("matrixType", &value)
+			|| std::strcmp(value.to_string(), "box") != 0) return;
+		box->get_member("x", &value);
+		const float x = (float)value.to_number();
+		box->get_member("y", &value);
+		const float y = (float)value.to_number();
+		box->get_member("w", &value);
+		const float width = (float)value.to_number();
+		box->get_member("h", &value);
+		const float height = (float)value.to_number();
+		box->get_member("r", &value);
+		const float rotation = (float)value.to_number();
+		input.m_[0][2] = (float)(((long double)width * 0.5f + x) * 20.0f);
+		input.m_[1][2] = (float)(((long double)height * 0.5f + y) * 20.0f);
+		input.m_[0][0] = (float)(1.0L / (32768.0f / ((long double)width * 20.0f)));
+		input.m_[1][1] = (float)(1.0L / (32768.0f / ((long double)height * 20.0f)));
+
+		fill_style style;
+		matrix gradient;
+		const tu_string kind(fn.arg(0).to_string());
+		int type = style.get_type();
+		if (kind == "linear")
+		{
+			gradient.set_identity();
+			gradient.m_[0][2] = 128.0f;
+			gradient.m_[1][2] = 0.0f;
+			gradient.set_scale_rotation(1.0f / 128.0f, 1.0f / 128.0f, -rotation);
+			type = 0x10;
+		}
+		else if (kind == "radial")
+		{
+			gradient.set_identity();
+			gradient.concatenate_translation(32.0f, 32.0f);
+			gradient.concatenate_scale(1.0f / 512.0f);
+			type = 0x12;
+		}
+		matrix inverse;
+		inverse.set_inverse(input);
+		gradient.concatenate(inverse);
+		style.set_gradient(type, gradient);
+
+		// [CHOSEN, not recovered] S3 bridge to typed native Array storage.
+		const auto object_arg = [&fn](int index) -> as_object_interface*
+		{
+			const as_value& argument = fn.arg(index);
+			return argument.get_type() == as_value::OBJECT ? argument.m_object_value : NULL;
+		};
+		const array<as_value>& colors = array_object_values(object_arg(1));
+		const array<as_value>& alphas = array_object_values(object_arg(2));
+		const array<as_value>& ratios = array_object_values(object_arg(3));
+		for (int i = 0; i < colors.size(); ++i)
+		{
+			const int rgb = bf2x87::toIntTruncate(colors[i].to_number());
+			const float alpha = (float)alphas[i].to_number();
+			const Uint8 ratio = (Uint8)bf2x87::toInt64Truncate(ratios[i].to_number());
+			// The PE multiplies by 2.56f and retains the low byte, without clamping.
+			const Uint8 opacity = (Uint8)bf2x87::toInt64Truncate((long double)alpha * 2.56f);
+			gradient_record record;
+			record.m_ratio = ratio;
+			record.m_color = rgba((Uint8)(rgb >> 16), (Uint8)(rgb >> 8), (Uint8)rgb, opacity);
+			style.append_gradient(record);
+		}
+		sprite_instance* sprite = sprite_this(fn);
+		// [CHOSEN, not recovered] S3 bridge: the native bitmap owner is per-tree.
+		style.generate_gradient_bitmap(sprite->get_root()->m_def.get_ptr());
+		shape_character_def* def = sprite->get_canvas_def();
+		const int fill = def->append_fill_style(style) + 1;
+		path p;
+		p.m_new_shape = true;
+		def->append_path(p);
+		p.m_new_shape = false;
+		p.m_fill0 = fill;
+		p.m_fill1 = 0;
+		p.m_line = 0;
+		def->append_path(p);
 	}
 
+	// SwiffPlayer.dll 0x1007BBF0. Runtime-definition ownership and the native
+	// receiver/root accessors retain the S3 bridges described below.
 	void	sprite_load_movie(const fn_call& fn)
 	{
+		sprite_instance* sprite = sprite_this(fn);
+		if (sprite == NULL) return;
+		sprite->remove_all_display_objects();
 		if (fn.nargs < 1)
 		{
 			log_error("error: sprite_load_movie needs atleast one arg\n");
 			return;
 		}
-		sprite_instance*	sprite = sprite_this(fn);
-		if (sprite == NULL) return;
-
 		// [TEMP] RW-89 target trace: which clip loads which image, where it sits. Remove with the tracers.
 		{
 			const matrix	wm = sprite->get_world_matrix();
@@ -5959,8 +5931,6 @@ namespace gameswf
 				  sprite->get_depth(), par ? par->get_name().c_str() : "<none>");
 		}
 
-		sprite->remove_all_display_objects();
-
 		const tu_string	url = fn.arg(0).to_tu_string();
 		smart_ptr<bitmap_info>	bi = render::create_bitmap_info_file(url.c_str());
 		if (bi == NULL)
@@ -5969,6 +5939,8 @@ namespace gameswf
 		}
 		const int	w = bi->m_original_width;
 		const int	h = bi->m_original_height;
+		smart_ptr<bitmap_character> bc = new bitmap_character(bi.get_ptr());
+		bc->set_character_id(0);
 
 		movie*	root = sprite->get_root_movie();
 		movie_definition_sub*	root_def = root
@@ -5990,41 +5962,42 @@ namespace gameswf
 		}
 
 		// Its `_____image_shape`: one tiled bitmap fill over the texture-sized quad.
-		smart_ptr<bitmap_character>	bc = new bitmap_character(bi.get_ptr());
 		smart_ptr<shape_character_def>	sh = new shape_character_def;
+		sh->set_character_id(0);
 		fill_style	fs;
 		matrix	bm;
 		bm.set_identity();
 		bm.m_[0][0] = 0.05f;
 		bm.m_[1][1] = 0.05f;
 		fs.set_bitmap(bc.get_ptr(), bm, false);
-		const int	idx = sh->add_fill_style(fs);
+		const int	idx = sh->append_fill_style(fs) + 1;
 
 		path	marker;
 		marker.m_new_shape = true;
-		sh->add_path(marker);
+		sh->append_path(marker);
 		path	p(0.0f, 0.0f, idx, 0, 0);
 		const float	w20 = (float) w * 20.0f;
 		const float	h20 = (float) h * 20.0f;
-		p.m_edges.push_back(edge(w20 * 0.5f, 0.0f,        w20, 0.0f));
-		p.m_edges.push_back(edge(w20,        h20 * 0.5f,  w20, h20));
-		p.m_edges.push_back(edge(w20 * 0.5f, h20,         0.0f, h20));
-		p.m_edges.push_back(edge(0.0f,       h20 * 0.5f,  0.0f, 0.0f));
-		sh->add_path(p);
-		sh->refresh_bound();
+		p.m_edges.push_back(edge(0.0f, 0.0f, w20, 0.0f));
+		p.m_edges.push_back(edge(w20, h20, w20, h20));
+		p.m_edges.push_back(edge(0.0f, h20, 0.0f, h20));
+		p.m_edges.push_back(edge(0.0f, 0.0f, 0.0f, 0.0f));
+		sh->append_path(p);
+		rect bound;
+		sh->compute_bound(&bound);
+		sh->set_bound(bound);
 
-		// OWNERSHIP: generic_character::m_def is a RAW pointer in this gameswf (instances never own
-		// their definitions; the movie's character table does). A runtime-built definition therefore
-		// needs an owner that outlives the child, or the child dangles the moment this local dies -
-		// retail run I/J died exactly so, in the next frame's mouse hit test, calling slot 5 of a
-		// destroyed def (the bare ref_counted vtable + 5 = fontlib's accept_trapezoid). The image
-		// sprite's canvas slot is that owner, the same one the drawing API's `_____defaultShape` uses;
-		// remove_all_display_objects() releases both together. [CHOSEN, not recovered: DICE's owner
-		// for the image shape is not attested; only that the child is named `_____image_shape`.]
+		// [CHOSEN, not recovered] S3 bridge: retain the image sprite's canvas
+		// alias while the native image/canvas integration awaits its runtime gates.
+		// The placed generic character also retains its definition (0x1007F130).
+		// [RETIRE-WHEN: swf-runtime-image-owner] Retire when native character/definition
+		// ownership follows the recovered lifetime and repeated image/remove/reload gates pass.
 		img_sprite->m_canvas = sh.get_ptr();
 		img_sprite->add_display_object_def(sh.get_ptr(), "_____image_shape", 0);
 	}
 
+	// SwiffPlayer.dll 0x1006F980.
+	// [CHOSEN, not recovered] S3 bridge: borrow the native VM target without this_ptr.
 	void	sprite_play(const fn_call& fn)
 	{
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
@@ -6036,6 +6009,8 @@ namespace gameswf
 		sprite->set_play_state(movie_interface::PLAY);
 	}
 
+	// SwiffPlayer.dll 0x1006F9A0.
+	// [CHOSEN, not recovered] S3 bridge: borrow the native VM target without this_ptr.
 	void	sprite_stop(const fn_call& fn)
 	{
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
@@ -6047,8 +6022,12 @@ namespace gameswf
 		sprite->set_play_state(movie_interface::STOP);
 	}
 
+	// SwiffPlayer.dll 0x10075780: the numeric arm subtracts one before a
+	// truncating qword conversion and passes its low dword (0x10075808).
 	void	sprite_goto_and_play(const fn_call& fn)
 	{
+		// [CHOSEN, not recovered] S2 bridge: the 2006 VM can omit this_ptr;
+		// borrow its target. Retail's native-call ABI supplies the receiver directly.
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
 		if (sprite == NULL)
 		{
@@ -6062,21 +6041,24 @@ namespace gameswf
 			return;
 		}
 
-		// [DICE-MOD SwiffPlayer: label or number, as gameswf_sprite_goto_and_play - see gotoAndStop.]
+		// SwiffPlayer.dll 0x10075827 calls the queued-label slot, not +0x1C.
 		if (fn.arg(0).get_type() == as_value::STRING)
 		{
-			sprite->goto_labeled_frame(fn.arg(0).to_string());
+			sprite->queue_goto_labeled_frame(fn.arg(0).to_string());
 		}
-		else
+		else if (fn.arg(0).get_type() == as_value::NUMBER)
 		{
-			int	target_frame = int(fn.arg(0).to_number() - 1);	// Convert to 0-based
+			const int target_frame = bf2x87::lowWord(bf2x87::toInt64Truncate(
+				bf2x87::sub(bf2x87::Real(fn.arg(0).to_number()), bf2x87::Real(1))));
 			sprite->goto_frame(target_frame);
 		}
 		sprite->set_play_state(movie_interface::PLAY);
 	}
 
+	// SwiffPlayer.dll 0x10075860; qword conversion at 0x100758E5.
 	void	sprite_goto_and_stop(const fn_call& fn)
 	{
+		// [CHOSEN, not recovered] S2 bridge: see sprite_goto_and_play's receiver.
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
 		if (sprite == NULL)
 		{
@@ -6090,22 +6072,23 @@ namespace gameswf
 			return;
 		}
 
-		// [DICE-MOD SwiffPlayer: a frame LABEL is accepted, as the shipped gameswf_sprite_goto_and_stop
-		// does (STRING -> goto_labeled_frame, NUMBER -> goto_frame(n-1), then the play state either
-		// way). Stock 2006 converted the argument to a number, so the menu's gotoAndStop(label) from
-		// getFrameLabel() went to frame -1 and the root never left frame 0 (retail 2026-09-02).]
+		// SwiffPlayer.dll 0x10075904 calls queued-label slot +0xAC. The queue
+		// drains in advance, after the mouse pass has finished walking the children.
 		if (fn.arg(0).get_type() == as_value::STRING)
 		{
-			sprite->goto_labeled_frame(fn.arg(0).to_string());
+			sprite->queue_goto_labeled_frame(fn.arg(0).to_string());
 		}
-		else
+		else if (fn.arg(0).get_type() == as_value::NUMBER)
 		{
-			int	target_frame = int(fn.arg(0).to_number() - 1);	// Convert to 0-based
+			const int target_frame = bf2x87::lowWord(bf2x87::toInt64Truncate(
+				bf2x87::sub(bf2x87::Real(fn.arg(0).to_number()), bf2x87::Real(1))));
 			sprite->goto_frame(target_frame);
 		}
 		sprite->set_play_state(movie_interface::STOP);
 	}
 
+	// SwiffPlayer.dll 0x100719F0 applies nextFrame immediately, then stops.
+	// [CHOSEN, not recovered] S3 bridge: borrow the native VM target without this_ptr.
 	void	sprite_next_frame(const fn_call& fn)
 	{
 		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
@@ -6119,53 +6102,12 @@ namespace gameswf
 		int current_frame = sprite->get_current_frame();
 		if (current_frame < frame_count)
 		{
-			sprite->goto_frame(current_frame + 1);
+			sprite->apply_goto_frame(current_frame + 1);
 		}
 		sprite->set_play_state(movie_interface::STOP);
 	}
 
-	void	sprite_prev_frame(const fn_call& fn)
-	{
-		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
-		if (sprite == NULL)
-		{
-			sprite = (sprite_instance*) fn.env->get_target();
-		}
-		assert(sprite);
-
-		int current_frame = sprite->get_current_frame();
-		if (current_frame > 0)
-		{
-			sprite->goto_frame(current_frame - 1);
-		}
-		sprite->set_play_state(movie_interface::STOP);
-	}
-
-	void	sprite_get_bytes_loaded(const fn_call& fn)
-	{
-		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
-		if (sprite == NULL)
-		{
-			sprite = (sprite_instance*) fn.env->get_target();
-		}
-		assert(sprite);
-
-		fn.result->set_int(sprite->get_root()->get_file_bytes());
-	}
-
-	void	sprite_get_bytes_total(const fn_call& fn)
-	{
-		sprite_instance* sprite = (sprite_instance*) fn.this_ptr;
-		if (sprite == NULL)
-		{
-			sprite = (sprite_instance*) fn.env->get_target();
-		}
-		assert(sprite);
-
-		fn.result->set_int(sprite->get_root()->get_file_bytes());
-	}
-
-
+	// SwiffPlayer.dll 0x1007E2D0: lazy registration, in the shipped order.
 	static void	sprite_builtins_init()
 	{
 		if (s_sprite_builtins)
@@ -6179,30 +6121,29 @@ namespace gameswf
 		s_sprite_builtins->set_member("gotoAndStop", &sprite_goto_and_stop);
 		s_sprite_builtins->set_member("gotoAndPlay", &sprite_goto_and_play);
 		s_sprite_builtins->set_member("nextFrame", &sprite_next_frame);
-		s_sprite_builtins->set_member("prevFrame", &sprite_prev_frame);
-		s_sprite_builtins->set_member("getBytesLoaded", &sprite_get_bytes_loaded);
-		s_sprite_builtins->set_member("getBytesTotal", &sprite_get_bytes_loaded);
-		// [DICE-MOD SwiffPlayer: the shipped builtins the menu framework needs - see the bodies above.]
-		s_sprite_builtins->set_member("createEmptyMovieClip", &sprite_create_empty_movieclip);
-		s_sprite_builtins->set_member("attachMovie", &sprite_attach_movie);
-		s_sprite_builtins->set_member("getNextHighestDepth", &sprite_get_next_highest_depth);
-		s_sprite_builtins->set_member("removeMovieClip", &sprite_remove_movieclip);
-		s_sprite_builtins->set_member("setMask", &sprite_set_mask);
-		s_sprite_builtins->set_member("lineStyle", &sprite_line_style);
-		s_sprite_builtins->set_member("moveTo", &sprite_move_to);
-		s_sprite_builtins->set_member("lineTo", &sprite_line_to);
-		s_sprite_builtins->set_member("beginFill", &sprite_begin_fill);
-		s_sprite_builtins->set_member("endFill", &sprite_end_fill);
-		s_sprite_builtins->set_member("beginGradientFill", &sprite_begin_gradient_fill);
 		s_sprite_builtins->set_member("loadMovie", &sprite_load_movie);
+		s_sprite_builtins->set_member("startDrag", &sprite_start_drag);
+		s_sprite_builtins->set_member("stopDrag", &sprite_stop_drag);
+		s_sprite_builtins->set_member("duplicateMovieClip", &sprite_duplicate_movieclip);
+		s_sprite_builtins->set_member("removeMovieClip", &sprite_remove_movieclip);
+		s_sprite_builtins->set_member("attachMovie", &sprite_attach_movie);
+		s_sprite_builtins->set_member("setMask", &sprite_set_mask);
+		s_sprite_builtins->set_member("getNextHighestDepth", &sprite_get_next_highest_depth);
+		// [CHOSEN, not recovered] S3 bridge: retain the native timer owner.
+		// The timer subsystem owns recovery of 0x1007E030 / 0x1007E210.
+		s_sprite_builtins->set_member("setInterval", &timer_setinterval);
+		s_sprite_builtins->set_member("clearInterval", &timer_clearinterval);
+		s_sprite_builtins->set_member("createEmptyMovieClip", &sprite_create_empty_movieclip);
+		s_sprite_builtins->set_member("lineTo", &sprite_line_to);
+		s_sprite_builtins->set_member("moveTo", &sprite_move_to);
+		s_sprite_builtins->set_member("beginFill", &sprite_begin_fill);
+		s_sprite_builtins->set_member("beginGradientFill", &sprite_begin_gradient_fill);
+		s_sprite_builtins->set_member("endFill", &sprite_end_fill);
+		s_sprite_builtins->set_member("lineStyle", &sprite_line_style);
 
-		// @TODO
-//		s_sprite_builtins->set_member("startDrag", &sprite_start_drag);
-//		s_sprite_builtins->set_member("stopDrag", &sprite_stop_drag);
-//		s_sprite_builtins->set_member("getURL", &sprite_get_url);
-//		s_sprite_builtins->set_member("swapDepths", &sprite_swap_depths);
 	}
 
+	// SwiffPlayer.dll 0x1006FA40 deletes the shared object directly.
 	static void	sprite_builtins_clear()
 	{
 		if (s_sprite_builtins)
@@ -6222,6 +6163,7 @@ namespace gameswf
 
 	// end_tag doesn't actually need to exist.
 
+	// SwiffPlayer.dll 0x1006FA70 is empty in the release image.
 	void	end_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 0);
@@ -6236,29 +6178,26 @@ namespace gameswf
 	
 	struct remove_object_2 : public execute_tag
 	{
-		int	m_depth, m_id;
+		// SwiffPlayer.dll 0x100719B0: implicit destruction has no owned members.
+		int	m_depth;
 
-		remove_object_2() : m_depth(-1), m_id(-1) {}
+		// SwiffPlayer.dll 0x1006F860.
+		remove_object_2() : m_depth(-1) {}
 
-		void	read(stream* in, int tag_type)
+		// SwiffPlayer.dll 0x1006F870.
+		void	read(stream* in)
 		{
-			assert(tag_type == 5 || tag_type == 28);
-
-			if (tag_type == 5)
-			{
-				// Older SWF's allow multiple objects at the same depth;
-				// this m_id disambiguates.  Later SWF's just use one
-				// object per depth.
-				m_id = in->read_u16();
-			}
 			m_depth = in->read_u16();
 		}
 
+		// SwiffPlayer.dll 0x1006F890.
 		virtual void	execute(movie* m)
 		{
-			m->remove_display_object(m_depth, m_id);
+			m->remove_display_object(m_depth);
+			IF_VERBOSE_DEBUG(log_msg(">>>>>>>>> character removed at %d\n", m_depth));
 		}
 
+		// SwiffPlayer.dll 0x1006F8D0.
 		virtual void	execute_state(movie* m)
 		{
 			execute(m);
@@ -6267,7 +6206,7 @@ namespace gameswf
 		virtual void	execute_state_reverse(movie* m, int frame)
 		{
 			// reverse of remove is to re-add the previous object.
-			execute_tag*	last_add = m->find_previous_replace_or_add_tag(frame, m_depth, m_id);
+			execute_tag*	last_add = m->find_previous_replace_or_add_tag(frame, m_depth, -1);
 			if (last_add)
 			{
 				last_add->execute_state(m);
@@ -6280,28 +6219,32 @@ namespace gameswf
 			}
 		}
 
+		// SwiffPlayer.dll 0x1006F8F0.
 		virtual bool	is_remove_tag() const { return true; }
 
-		// [DICE-MOD SwiffPlayer #45] the goto pass does nothing with a remove (0x1006F8E0 is a
+		//  the goto pass does nothing with a remove (0x1006F8E0 is a
 		// nullsub); the state builder reads its depth.
+		// SwiffPlayer.dll 0x1006F8E0.
 		virtual void	execute_goto(movie* /*m*/) {}
 		virtual int	get_tag_depth() const { return m_depth; }
 	};
 
 
+	// SwiffPlayer.dll 0x1006F900.
 	void	remove_object_2_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
-		assert(tag_type == 5 || tag_type == 28);
+		assert(tag_type == 28);
 
 		remove_object_2*	t = new remove_object_2;
-		t->read(in, tag_type);
+		t->read(in);
 
-		IF_VERBOSE_PARSE(log_msg("  remove_object_2(%d)\n", t->m_depth));
+		IF_VERBOSE_PARSE(log_msg("remove_object_2(%d)\n", t->m_depth));
 
 		m->add_execute_tag(t);
 	}
 
 
+	// SwiffPlayer.dll 0x1006FA80.
 	void	button_sound_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 17);
@@ -6314,15 +6257,16 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1006FAB0.
 	void	button_character_loader(stream* in, int tag_type, movie_definition_sub* m)
 	{
 		assert(tag_type == 7 || tag_type == 34);
 
 		int	character_id = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  button character loader: char_id = %d\n", character_id));
-
 		button_character_definition*	ch = new button_character_definition;
+		// [CHOSEN, not recovered] S3 bridge: the S2 native constructor has no ID argument.
+		ch->set_character_id(character_id);
 		ch->read(in, tag_type, m);
 
 		m->add_character(character_id, ch);
@@ -6334,6 +6278,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x10074030: font, character, sound, then bitmap lookup.
 	void	export_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load an export tag (for exposing internal resources of m)
 	{
@@ -6341,30 +6286,30 @@ namespace gameswf
 
 		int	count = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  export: count = %d\n", count));
+		IF_VERBOSE_PARSE(log_msg("export: count = %d\n", count));
 
 		// Read the exports.
 		for (int i = 0; i < count; i++)
 		{
 			Uint16	id = in->read_u16();
 			char*	symbol_name = in->read_string();
-			IF_VERBOSE_PARSE(log_msg("  export: id = %d, name = %s\n", id, symbol_name));
+			IF_VERBOSE_PARSE(log_msg("export: id = %d, name = %s\n", id, symbol_name));
 
 			if (font* f = m->get_font(id))
 			{
 				// Expose this font for export.
-				m->export_resource(tu_string(symbol_name), f);
+				m->export_resource(id, tu_string(symbol_name), f);
 			}
 			else if (character_def* ch = m->get_character_def(id))
 			{
 				// Expose this movie/button/whatever for export.
-				m->export_resource(tu_string(symbol_name), ch);
+				m->export_resource(id, tu_string(symbol_name), ch);
 			}
 			else if (sound_sample* ch = m->get_sound_sample(id))
 			{
-				m->export_resource(tu_string(symbol_name), ch);
+				m->export_resource(id, tu_string(symbol_name), ch);
 			}
-			// [DICE-MOD SwiffPlayer: export BITMAP characters too.
+			// export BITMAP characters too.
 			//
 			// Bitmap characters live in a SEPARATE map (m_bitmap_characters, filled by
 			// add_bitmap_character) and are NOT in m_characters, so the get_character_def branch
@@ -6376,10 +6321,12 @@ namespace gameswf
 			// ("images/UIcomponents/button-bkg-7.png"), which the host resolves through
 			// ISwiffRender::loadTexture. Measured on mainMenu.swf: 12 image-named exports, all 12
 			// DefineBits characters, 0 reachable before this branch existed.
-			// See GAMESWF_DIVERGENCES.md.]
+			// See GAMESWF_DIVERGENCES.md.
 			else if (bitmap_character_def* bch = m->get_bitmap_character(id))
 			{
-				m->export_resource(tu_string(symbol_name), bch);
+				// SwiffPlayer.dll 0x1007417E: the descriptor owns the name.
+				static_cast<named_bitmap_info*>(bch->get_bitmap_info())->m_name = symbol_name;
+				m->export_resource(id, tu_string(symbol_name), bch);
 			}
 			else
 			{
@@ -6397,6 +6344,8 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1007D830; font/character import dispatch and the
+	// no-recurse recording path retain their shipped ordering and ownership.
 	void	import_loader(stream* in, int tag_type, movie_definition_sub* m)
 	// Load an import tag (for pulling in external resources)
 	{
@@ -6405,7 +6354,7 @@ namespace gameswf
 		char*	source_url = in->read_string();
 		int	count = in->read_u16();
 
-		IF_VERBOSE_PARSE(log_msg("  import: source_url = %s, count = %d\n", source_url, count));
+		IF_VERBOSE_PARSE(log_msg("import: source_url = %s, count = %d\n", source_url, count));
 
 		// Try to load the source movie into the movie library.
 		movie_definition_sub*	source_movie = NULL;
@@ -6426,7 +6375,7 @@ namespace gameswf
 		{
 			Uint16	id = in->read_u16();
 			char*	symbol_name = in->read_string();
-			IF_VERBOSE_PARSE(log_msg("  import: id = %d, name = %s\n", id, symbol_name));
+			IF_VERBOSE_PARSE(log_msg("import: id = %d, name = %s\n", id, symbol_name));
 
 			if (s_no_recurse_while_loading)
 			{

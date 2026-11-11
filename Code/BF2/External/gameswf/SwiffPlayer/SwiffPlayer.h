@@ -6,6 +6,10 @@
 
 #ifdef BF2_IMAGE_SWIFFPLAYER
 
+#include <memory>
+#include <vector>
+#include <stdint.h>
+
 // gameswf_types.h defines gameswf::rgba (passed BY value in several render_handler methods, so the
 // overrides' definitions need the complete type) and transitively includes gameswf.h, which brings
 // gameswf::render_handler - the +4 subobject's base. matrix/cxform/rect/bitmap_info/image::* are used
@@ -17,9 +21,6 @@
 // [CHOSEN, not recovered] One native declaration for host and plugin dispatch.
 #include "../../../Menu/ISwiffPlayer.h"
 #endif
-
-#include <vector>
-#include <stdint.h>
 
 namespace dice {
 namespace hfe {
@@ -44,6 +45,7 @@ enum { CID_Swiff = 870002u, IID_ISwiffPlayer = 870001u };
 // layout declaration; SwiffPlayer.cpp provides dispatch and the remaining named frontiers.
 struct ISwiffRender;
 struct ISwiffHost;
+class SwiffBitmapRegistry;
 
 
 // Embedded renderer adapter forwarding gameswf callbacks through SwiffRender's interface.
@@ -53,10 +55,11 @@ struct SwiffRenderHandler : public gameswf::render_handler
 {
     SwiffRenderHandler() {}
 
-    // NO data members - the subobject is only its vtable ptr, as in the shipped layout. The handler
-    // is always SwiffPlayer::render_handler (retail: this subobject at object+4, render_context at
-    // object+12), so a forwarder reaches render_context through its owner, recovered from this
-    // member's offset by renderContext(). No back-pointer member is stored.
+    // [CHOSEN, not recovered] Generated textures belong to this player's lease;
+    // cached definitions retain CPU pixels after the lease is destroyed.
+    std::shared_ptr<SwiffBitmapRegistry> bitmap_registry;
+    const std::shared_ptr<SwiffBitmapRegistry>& bitmapRegistry();
+    void bindBitmap(const gameswf::bitmap_info* bitmap);
 
     // The owning SwiffPlayer's render_context.
     ISwiffRender* renderContext();
@@ -65,7 +68,7 @@ struct SwiffRenderHandler : public gameswf::render_handler
     virtual gameswf::bitmap_info* create_bitmap_info_alpha(int w, int h, unsigned char* data);
     virtual gameswf::bitmap_info* create_bitmap_info_rgb(image::rgb* im);
     virtual gameswf::bitmap_info* create_bitmap_info_rgba(image::rgba* im);
-    // [DICE-MOD] the 2004 slot-5 by-name loader, restored on the 2006 base: -> ISwiffRender::loadTexture
+    //  the 2004 slot-5 by-name loader, restored on the 2006 base: -> ISwiffRender::loadTexture
     virtual gameswf::bitmap_info* create_bitmap_info_file(const char* path);
     virtual void delete_bitmap_info(gameswf::bitmap_info* bi);
     virtual void begin_display(gameswf::rgba background_color,
@@ -75,6 +78,7 @@ struct SwiffRenderHandler : public gameswf::render_handler
     virtual void end_display();
     virtual void set_matrix(const gameswf::matrix& m);
     virtual void set_cxform(const gameswf::cxform& cx);
+    virtual void set_depth(int depth);
     virtual void draw_mesh_strip(const void* coords, int vertex_count);
     virtual void draw_line_strip(const void* coords, int vertex_count);
     virtual void fill_style_disable(int fill_side);
@@ -269,6 +273,8 @@ private:
     // [CHOSEN, not recovered] issue #7; see the definition.
     void releaseMovie();
 
+    // Offsets below describe retail x86 fields. Native layout is compiler-owned;
+    // the cached-image lease adds state to the embedded handler.
     // +4 - the embedded render handler. gameswf holds a pointer to it via set_render_handler.
     SwiffRenderHandler render_handler;
     // +8

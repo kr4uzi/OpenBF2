@@ -1,6 +1,6 @@
 // Per-level radio and voice registry owned by GameLogic. Console scripts populate
 // message names, samples and per-team voices before finalize creates the sounds.
-// Speaker handles are weak. Help entry points remain named frontiers.
+// Speaker handles are weak. The help-playing query remains a named frontier.
 // STL-containing layouts differ across platforms; use typed fields.
 #ifndef GAME_GAMELOGIC_VOICEMESSAGES_H     // [INFERRED] guard style
 #define GAME_GAMELOGIC_VOICEMESSAGES_H
@@ -64,7 +64,7 @@ public:
     int  playRadioMessage(int, const std::string&, const std::string&,
                           const std::string&);
     int  playSoldierVO(int, int, int, const Vec3&, world::Soldier*);
-    int  playHelpMessage(const std::string&);                                   //  [FRONTIER]
+    int  playHelpMessage(const std::string&); // BF2.exe 0x4F8110; client body beside PlayerVOHelp.
     bool isHelpVOPlaying() const;                                               //  [FRONTIER]
     int  getFreeVOSoundIndex(const Vec3&, world::Soldier*);
 

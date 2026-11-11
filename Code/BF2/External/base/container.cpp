@@ -34,10 +34,9 @@ void tu_string::append_wide_char(uint32 c)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E3B0; forwarding veneer 0x1006EBC0.
 void	tu_string::resize(int new_size)
 {
-	assert(new_size >= 0);
-
 	if (using_heap() == false)
 	{
 		if (new_size < 15)
@@ -53,7 +52,6 @@ void	tu_string::resize(int new_size)
 			// round up.
 			capacity = (capacity + 15) & ~15;
 			char*	buf = (char*) tu_malloc(capacity);
-                        memset(buf, 0, capacity);
 
 			// Copy existing data.
 			strcpy(buf, m_local.m_buffer);
@@ -162,12 +160,15 @@ void tu_string::encode_utf8_from_wchar(tu_string* result, const uint32* wstr)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E5A0: two passes over individual 16-bit units.
+// Surrogate pairs are encoded as two units, without combining them.
 void tu_string::encode_utf8_from_wchar(tu_string* result, const uint16* wstr)
 {
 	encode_utf8_from_wchar_generic<uint16>(result, wstr);
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E480; POSIX CRT spelling follows the port seam below.
 /*static*/ int	tu_string::stricmp(const char* a, const char* b)
 {
 #ifdef _WIN32
@@ -184,6 +185,7 @@ void tu_string::encode_utf8_from_wchar(tu_string* result, const uint16* wstr)
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E4D0: decode once, then repeat while --index > 0.
 uint32	tu_string::utf8_char_at(int index) const
 {
 	const char*	buf = get_buffer();
@@ -197,11 +199,10 @@ uint32	tu_string::utf8_char_at(int index) const
 		if (c == 0)
 		{
 			// We've hit the end of the string; don't go further.
-			assert(index == 0);
 			return c;
 		}
 	}
-	while (index >= 0);
+	while (index > 0);
 
 	return c;
 }
@@ -246,6 +247,7 @@ tu_string	tu_string::utf8_to_lower() const
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E490.
 /*static*/ int	tu_string::utf8_char_count(const char* buf, int buflen)
 {
 	const char*	p = buf;
@@ -266,10 +268,9 @@ tu_string	tu_string::utf8_to_lower() const
 }
 
 
+// Retail SwiffPlayer.dll 0x1006E620.
 tu_string	tu_string::utf8_substring(int start, int end) const
 {
-	assert(start <= end);
-
 	if (start == end)
 	{
 		// Special case, always return empty string.
@@ -301,7 +302,6 @@ tu_string	tu_string::utf8_substring(int start, int end) const
 		{
 			if (index < end)
 			{
-				assert(0);
 				end_pointer = p;
 			}
 			break;

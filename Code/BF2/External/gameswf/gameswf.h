@@ -11,8 +11,11 @@
 #define GAMESWF_H
 
 
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <ctype.h>	// for poxy wchar_t
-#include <stdarg.h>	// for va_list arg to movie_interface::call_method_args()
+#include <stdarg.h>
 
 class tu_file;
 class render_handler;
@@ -32,6 +35,7 @@ namespace gameswf
 {
 	// Forward declarations.
 	struct action_buffer;
+	struct as_environment;
 	struct as_value;
 	struct bitmap_info;
 	struct character;
@@ -55,6 +59,10 @@ namespace gameswf
 	// Control verbosity of specific categories.
 	void	set_verbose_action(bool verbose);
 	void	set_verbose_parse(bool verbose);
+	void	set_verbose_debug(bool verbose);
+	// [INFERRED] names of the separate retail loader and live-count log switches.
+	void	set_verbose_loader(bool verbose);
+	void	set_verbose_gc(bool verbose);
 	
 	// Get and set the render handler.  This is one of the first
 	// things you should do to initialise the player (assuming you
@@ -85,10 +93,6 @@ namespace gameswf
 	typedef tu_file* (*file_opener_callback)(const char* url_or_path);
 	void	register_file_opener_callback(file_opener_callback opener);
 
-	// Register a callback for displaying SWF load progress.
-	typedef void (*progress_callback)(unsigned int loaded_bytes, unsigned int total_bytes);
-	void	register_progress_callback(progress_callback progress_handle);
-
 	// ActionScripts embedded in a movie can use the built-in
 	// fscommand() function to send data back to the host
 	// application.  If you are interested in this data, register
@@ -107,18 +111,20 @@ namespace gameswf
 	void	set_curve_max_pixel_error(float pixel_error);
 	float	get_curve_max_pixel_error();
 	
-	// Some helpers that may or may not be compiled into your
-	// version of the library, depending on platform etc.
-	render_handler*	create_render_handler_xbox();
-	render_handler*	create_render_handler_ogl();
-	sound_handler*	create_sound_handler_sdl();
-
-
 	// For stuff that's tricky to keep track of w/r/t ownership & cleanup.
 	struct ref_counted
 	{
 		ref_counted();
+		// SwiffPlayer.dll 0x100A4850 / 0x100A0180: implicit copy construction
+		// and assignment copy count and proxy without retaining the proxy.
+		ref_counted(const ref_counted&) = default;
+		ref_counted& operator=(const ref_counted&) = default;
 		virtual ~ref_counted();
+		// [CHOSEN, not recovered] issue #7: retail script interfaces carry a
+		// "reference counted" query in slot 0 and add_ref in slot +4 (characters:
+		// 0x1007EDA0 true / 0x1007EFE0; intermediate stage 0x1007DF50 false; plain
+		// objects 0x10008EE0 false), tested before each value-construction add_ref
+		// (e.g. 0x10091048-0x10091055). Native objects are always reference counted.
 		void	add_ref() const;
 		void	drop_ref() const;
 		int	get_ref_count() const { return m_ref_count; }
@@ -139,9 +145,14 @@ namespace gameswf
 	// resources.
 	struct resource : public ref_counted
 	{
-		virtual ~resource() {}
+		// SwiffPlayer.dll 0x10071460 / 0x10073020: only the reference-counted
+		// base has state; 0x10072FF0 is the compiler's deleting wrapper.
+		resource() = default;
+		virtual ~resource() = default;
 
 		// Override in derived classes that implement corresponding interfaces.
+		// SwiffPlayer.dll 0x1006EC20 / 0x1006EC30 / 0x1006EC40
+		// (resource table 0x100DF258); [INFERRED] source-level names.
 		virtual font*	cast_to_font() { return 0; }
 		virtual character_def*	cast_to_character_def() { return 0; }
 		virtual sound_sample*	cast_to_sound_sample() { return 0; }
@@ -157,11 +168,22 @@ namespace gameswf
 	// (https://github.com/B2BF/OpenBF2/issues/7).
 	void	register_script_object(as_object_interface* obj);
 	void	unregister_script_object(as_object_interface* obj);
+	// Shared generation read by the retail script graph's mark visitors.
+	std::uint32_t get_gc_mark_generation();
+	std::uint32_t get_gc_release_generation();
 
 	// This is the base class for all ActionScript-able objects
 	// ("as_" stands for ActionScript).
 	struct as_object_interface : public resource
 	{
+		// SwiffPlayer.dll 0x1007ECC2 / 0x1009A1C7 initializes the common
+		// list links to null. Collection owns insertion; construction does not.
+		as_object_interface* m_gc_previous = NULL;
+		as_object_interface* m_gc_next = NULL;
+		// [CHOSEN, not recovered] S3 bridge: native state for retail's secondary
+		// interface generation field; this does not reproduce its x86 base layout.
+		std::uint32_t m_gc_generation = 0;
+
 		// [CHOSEN, not recovered] issue #7: registration, see register_script_object.
 		as_object_interface() { register_script_object(this); }
 		as_object_interface(const as_object_interface& other) : resource(other) { register_script_object(this); }
@@ -171,16 +193,17 @@ namespace gameswf
 		// answers itself. movie declares the same slot (gameswf_impl.h).
 		virtual character*	cast_to_character() { return 0; }
 
-		// [DICE-MOD SwiffPlayer: a SAFE downcast to as_object, following the cast_to_font /
+		// [CHOSEN, not recovered] Native type adjustment (issue #7), following the cast_to_font /
 		// cast_to_character_def pattern above. Needed by the AS2 `addProperty` builtin, whose
 		// fn.this_ptr is an as_object_interface* that may in fact be a sprite_instance - a
-		// static_cast would silently misinterpret those. See GAMESWF_DIVERGENCES.md.]
+		// static_cast would silently misinterpret those. See GAMESWF_DIVERGENCES.md.
 		virtual as_object*	cast_to_as_object() { return 0; }
 
 		// So that text_character's can return something reasonable.
+		// SwiffPlayer.dll 0x1007DF10, movie secondary tables +0x18.
 		virtual const char*	get_text_value() const { return 0; }
 
-		// [DICE-MOD SwiffPlayer #38] the wide payload of DICE's String object (the shipped
+		// [CHOSEN, not recovered] Native accessor for the recovered wide payload (the shipped
 		// tu_string_as_object carries a std::wstring at +60 beside the narrow tu_string at +44). The
 		// text field's `text` setter (sub_10089440) routes a value carrying one to its wide store;
 		// every other object answers NULL. See GAMESWF_DIVERGENCES.md.
@@ -189,6 +212,23 @@ namespace gameswf
 		virtual void	set_member(const tu_stringi& name, const as_value& val) = 0;
 		virtual bool	get_member(const tu_stringi& name, as_value* val) = 0;
 		virtual movie*	to_movie() = 0;
+
+		// SwiffPlayer.dll 0x1007DB80 / 0x1007DB70: leaf visitors only update
+		// the shared generation, and do nothing when it already matches.
+		virtual void gc_mark()
+		{
+			const std::uint32_t generation = get_gc_mark_generation();
+			if (m_gc_generation != generation) m_gc_generation = generation;
+		}
+		virtual void gc_release()
+		{
+			const std::uint32_t generation = get_gc_release_generation();
+			if (m_gc_generation != generation) m_gc_generation = generation;
+		}
+
+		// SwiffPlayer.dll 0x10008F50, movie tables 0x100E08B4/0x100E0C3C
+		// +0x28: movies contribute no enumeration names.
+		virtual void enumerate(as_environment* env) {}
 	};
 
 
@@ -221,17 +261,30 @@ namespace gameswf
 		character_def()
 			:
 			m_id(-1),
-			m_registered_class(0)	// [DICE-MOD SwiffPlayer]
+			m_registered_class(0)	//
 		{
 		}
 
+		// SwiffPlayer.dll 0x1006EDB0 reads the definition ID, as does 0x100759C9.
+		// [CHOSEN, not recovered] S3 bridge: the native loader assigns it separately
+		// from an instance's placement ID. Root and runtime definitions use zero.
+		int get_character_id() const { return m_id; }
+		void set_character_id(int id) { m_id = id; }
+
+		// Compiler deleting wrapper: SwiffPlayer.dll 0x100730C0. This forwards
+		// to the destructor before conditional deletion; its base lifetime is separate.
 		virtual ~character_def()
 		{
-			if (m_registered_class) m_registered_class->drop_ref();	// [DICE-MOD SwiffPlayer]
+			// [CHOSEN, not recovered] S3 bridge: native definitions own registered
+			// classes. Retail 0x1006ED80/0x1006EF50 only change base vtables here.
+			if (m_registered_class) m_registered_class->drop_ref();
 		}
 
+		// SwiffPlayer.dll 0x1006EDD0; definition tables +0x10.
 		virtual void	display(character* instance_info) {}
+		// SwiffPlayer.dll 0x1006EDE0 (release default).
 		virtual bool	point_test_local(float x, float y) { return false; }
+		// SwiffPlayer.dll 0x1006EDF0 / 0x1006EE00 return positive zero.
 		virtual float	get_height_local() { return 0.0f; }
 		virtual float	get_width_local() { return 0.0f; }
 
@@ -239,26 +292,28 @@ namespace gameswf
 		virtual character*	create_character_instance(movie* parent, int id);	// default is to make a generic_character
 
 		// From resource interface.
+		// SwiffPlayer.dll 0x1006EE10 returns its receiver.
 		virtual character_def*	cast_to_character_def() { return this; }
 
-		// [DICE-MOD SwiffPlayer: safe downcast to a bitmap character, same pattern as the casts
+		// [CHOSEN, not recovered] Native bitmap type adjustment, same pattern as the casts
 		// above. Used by movie_definition::get_exported_bitmaps to tell an exported bitmap from any
-		// other exported character. Overridden in bitmap_character_def. See GAMESWF_DIVERGENCES.md.]
+		// other exported character. Overridden in bitmap_character_def. See GAMESWF_DIVERGENCES.md.
 		virtual bitmap_character_def*	cast_to_bitmap_character_def() { return 0; }
 
-		// [DICE-MOD SwiffPlayer: the AS2 class bound to this definition by Object.registerClass
+		// the AS2 class bound to this definition by Object.registerClass
 		// (symbol, Class). The shipped character_def carries it at +12 (sub_100997B0 stores the
 		// function there after get_exported_resource(symbol)); a sprite instanced from such a
 		// definition gets __proto__ = Class.prototype and its constructor run at load
 		// (sub_10081870). A raw ref_counted pointer, as shipped, because as_as_function is opaque
-		// to this header; it is always an as_as_function, add_ref'd by registerClass and released
-		// by the destructor. Stock 2006 has no registerClass. See GAMESWF_DIVERGENCES.md.]
+		// to this header. Native registerClass and teardown retain/release it through
+		// the existing S3 ownership bridge. Stock 2006 has no registerClass.
 		ref_counted*	m_registered_class;
 
 		//
 		// Caching.
 		//
 
+		// SwiffPlayer.dll 0x1006EE20 / 0x1006EE30: release-image defaults.
 		virtual void	output_cached_data(tu_file* out, const cache_options& options) {}
 		virtual void	input_cached_data(tu_file* in) {}
 	};
@@ -270,6 +325,9 @@ namespace gameswf
 	//
 	struct movie_definition : public character_def
 	{
+		// Compiler deleting wrapper: SwiffPlayer.dll 0x10071680. Native bases
+		// retain their ownership adapters; this certifies the wrapper only.
+		~movie_definition() override = default;
 		virtual int	get_version() const = 0;
 		virtual float	get_width_pixels() const = 0;
 		virtual float	get_height_pixels() const = 0;
@@ -345,7 +403,7 @@ namespace gameswf
 		//	my_bitmap_info_subclass*	bi = (my_bitmap_info_subclass*) my_def->get_bitmap_info(i);
 		//	bi->set_internal_texture_reference(my_precomputed_textures[i]);
 		// }
-		// [DICE-MOD SwiffPlayer: enumerate the bitmaps that ExportAssets gave a NAME.
+		// enumerate the bitmaps that ExportAssets gave a NAME.
 		//
 		// This is the missing half of the documented host-driven texture API above. BF2's menu SWFs
 		// carry each menu bitmap as an undecoded DefineBitsLossless character whose ExportAssets
@@ -358,7 +416,7 @@ namespace gameswf
 		// tu_string array: the export hash's iterator hands its key back BY VALUE (container.h
 		// get_key()), so a `const char*` taken from it dangled and read back as "" or garbage once
 		// the heap block was reused - which is exactly what retail showed (2026-09-02: 1 of 12
-		// exports resolved, names empty). See GAMESWF_DIVERGENCES.md.]
+		// exports resolved, names empty). See GAMESWF_DIVERGENCES.md.
 		virtual int	get_exported_bitmaps(int max, tu_string* names,
 						     bitmap_info** infos) const { return 0; }
 
@@ -373,6 +431,8 @@ namespace gameswf
 	//
 	struct movie_interface : public as_object_interface
 	{
+		// Compiler deleting wrapper: SwiffPlayer.dll 0x10073100; base lifetime is separate.
+		~movie_interface() override = default;
 		virtual movie_definition*	get_movie_definition() = 0;
 
 		// Frame counts in this API are 0-based (unlike ActionScript)
@@ -395,12 +455,12 @@ namespace gameswf
 		virtual play_state	get_play_state() const = 0;
 		
 		virtual void	set_background_color(const rgba& bg_color) = 0;
-		// [DICE-MOD SwiffPlayer: the getter the shipped SwiffPlayer::update reads every frame -
+		// the getter the shipped SwiffPlayer::update reads every frame -
 		// movie_interface vslot +48 in SwiffPlayer.dll (2).i64 is sub_100736C0, `return this+32`, the
 		// address of movie_root::m_background_color - and pushes to ISwiffRender::setBackgroundColor
 		// (verified on retail 2026-09-02: 0xFF666666 after every updateTime). Stock 2006 has only the
 		// setter. movie_root answers with its m_background_color; movie (gameswf_impl.h) carries the
-		// no-background default, next to its set_background_color stub. See GAMESWF_DIVERGENCES.md.]
+		// no-background default, next to its set_background_color stub. See GAMESWF_DIVERGENCES.md.
 		virtual rgba	get_background_color() const = 0;
 
 		// Set to 0 if you don't want the movie to render its
@@ -434,41 +494,11 @@ namespace gameswf
 		virtual const char*	get_variable(const char* path_to_var) const = 0;
 		// @@ do we want a version that returns a number?
 
-		// ActionScript method call.  Return value points to a
-		// static string buffer with the result; caller should
-		// use the value immediately before making more calls
-		// to gameswf.  NOT THREAD SAFE!!!
-		// 
-		// method_name is the name of the method (possibly namespaced).
-		//
-		// method_arg_fmt is a printf-style declaration of
-		// the method call, where the arguments are
-		// represented by { %d, %s, %f, %ls }, followed by the
-		// vararg list of actual arguments.
-		// 
-		// E.g.
-		//
-		// m->call_method("path.to.method_name", "%d, %s, %f", i, "hello", 2.7f);
-		//
-		// The format args are a small subset of printf, namely:
-		//
-		// %d -- integer arg
-		// %s -- 0-terminated char* string arg
-		// %ls -- 0-terminated wchar_t* string arg
-		// %f -- float/double arg
-		//
-		// Whitespace and commas in the format string are ignored.
-		//
-		// This is not an ActionScript language parser, it
-		// doesn't recognize expressions or anything tricky.
-#ifdef __GNUC__
-		// use the following to catch errors: (only with gcc)
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...)
-			__attribute__((format (printf, 3, 4))) = 0;	// "this" is an implied param, so fmt is 3 and ... is 4!
-#else	// not __GNUC__
-		virtual const char*	call_method(const char* method_name, const char* method_arg_fmt, ...) = 0;
-#endif	// not __GNUC__
-		virtual const char*	call_method_args(const char* method_name, const char* method_arg_fmt, va_list args) = 0;
+		// Executes a command containing a method name and quoted or numeric arguments.
+		// The wide form takes UTF-16 units. The result is shared, ephemeral text.
+		virtual const char* call_method(const unsigned short* expression) = 0;
+		virtual const char* call_method(const char* expression) = 0;
+
 
 
 		// Make the movie visible/invisible.  An invisible
@@ -481,16 +511,6 @@ namespace gameswf
 		// Set and get userdata, that's useful for the fs_command handler.
 		virtual void   *get_userdata() = 0;
 		virtual void   set_userdata(void *) = 0;
-
-		// Display callbacks, for client rendering.  Callback
-		// is called after rendering the object it's attached
-		// to.
-		//
-		// Attach NULL to disable the callback.
-		virtual void	attach_display_callback(const char* path_to_object, void (*callback)(void* user_ptr), void* user_ptr) = 0;
-
-		virtual int add_interval_timer(void *timer) = 0;
-		virtual void clear_interval_timer(int x) = 0;
 
 		// for external movies
 		virtual movie*	get_root_movie() = 0;
@@ -567,20 +587,10 @@ namespace gameswf
 		create_bitmaps_flag	cbf,
 		create_font_shapes_flag cfs);
 
-	// [DICE-MOD SwiffPlayer: choose the bitmap policy for movies made by create_movie /
-	// create_library_movie, which hardcode DO_LOAD_BITMAPS and expose no way to change it.
-	//
-	// BF2's menu is exactly the case the DO_NOT_LOAD_BITMAPS comment above describes - "you have
-	// pre-processed bitmaps stored externally somewhere, and you plan to install them via
-	// get_bitmap_info()". Every menu bitmap is an undecoded DefineBitsLossless character whose
-	// ExportAssets symbol is its external file path, resolved through ISwiffRender::loadTexture.
-	//
-	// Under DO_LOAD_BITMAPS the lossless loader with TU_CONFIG_LINK_TO_ZLIB 0 logs an error and
-	// RETURNS BEFORE add_bitmap_character, so the character never exists and can never be exported
-	// or named; under DO_NOT_LOAD_BITMAPS it takes the documented else-arm - an empty bitmap_info,
-	// character registered - and no decoder is needed. That is why the shipped SwiffPlayer.dll links
-	// neither zlib nor jpeglib. Default is unchanged (DO_LOAD_BITMAPS).
-	// See GAMESWF_DIVERGENCES.md.]
+	// [CHOSEN, not recovered] Legacy native factory-policy adapter. The
+	// SwiffPlayer keeps generation disabled until cached generated textures can
+	// rebind to a new renderer (swf-cached-bitmap-renderer-ownership). Retail's
+	// factory enables generation; image tags still construct named descriptors.
 	void	set_default_create_bitmaps(create_bitmaps_flag cbf);
 
 	// Create a gameswf::movie_definition from the given file name.
@@ -781,6 +791,7 @@ namespace gameswf
 	{
 		float	m_x, m_y;
 
+		// SwiffPlayer.dll 0x1006EB70.
 		point() : m_x(0), m_y(0) {}
 		point(float x, float y) : m_x(x), m_y(y) {}
 
@@ -810,12 +821,19 @@ namespace gameswf
 		void	print() const;
 		bool	point_test(float x, float y) const;
 		void	expand_to_point(float x, float y);
+		// SwiffPlayer.dll 0x1006EBA0 / 0x1006EBB0.
 		float	width() const { return m_x_max-m_x_min; }
 		float	height() const { return m_y_max-m_y_min; }
 
 		point	get_corner(int i) const;
 
 		void	enclose_transformed_rect(const matrix& m, const rect& r);
+		// Transforms only the minimum and maximum corners, without sorting them.
+		// [INFERRED] Source-level name; SwiffPlayer.dll 0x1009E410.
+		void transform(const matrix& m);
+		// Includes the other rectangle's minimum corner, then its maximum corner.
+		// [INFERRED] Source-level name; SwiffPlayer.dll 0x1009E780.
+		void expand_to_rect(const rect& r);
 
 		void	set_lerp(const rect& a, const rect& b, float t);
 	};
@@ -850,6 +868,15 @@ namespace gameswf
 	// using textures.
 	struct bitmap_info : public ref_counted
 	{
+		// [CHOSEN, not recovered] Native cached images may outlive their GPU
+		// registry (issue #7). Such images own their release/rebinding state.
+		struct render_resource { virtual ~render_resource() {} };
+		std::unique_ptr<render_resource> m_render_resource;
+
+		// [INFERRED] name: primary slot 0 distinguishes named descriptors.
+		// SwiffPlayer.dll 0x10004EB0, consumed at 0x10006311.
+		virtual bool is_named() const { return false; }
+		virtual ~bitmap_info();
 		unsigned int	m_texture_id;		// nuke?
 		int		m_original_width;	// nuke?
 		int		m_original_height;	// nuke?
@@ -863,14 +890,28 @@ namespace gameswf
 		}
 	};
 	
+	// A movie bitmap whose ExportAssets symbol names its external texture.
+	// SwiffPlayer.dll 0x10071930; destruction 0x10073B40/0x10073B10 destroys
+	// the string before the bitmap_info base notifies the renderer.
+	struct named_bitmap_info : public bitmap_info
+	{
+		// SwiffPlayer.dll 0x100719A0.
+		bool is_named() const override { return true; }
+		// [RETIRE-WHEN: swf-native-bitmap-name] Storage is now descriptor-owned;
+		// maintainer exported-menu-image/reload acceptance remains required.
+		std::string m_name;
+	};
+
 	// You must define a subclass of render_handler, and pass an
 	// instance to set_render_handler().
-	// [DICE-MOD SwiffPlayer #37: the focused text field's keyboard/clipboard surface - the shipped
+	// the focused text field's keyboard/clipboard surface - the shipped
 	// +200 interface of DICE's edit_text_character, the object dword_100F8EE0 points at. SwiffPlayer's
-	// key latch, notifyChar, setTextInput and getTextInput0/1 dispatch into it (slots 0..4).]
+	// key latch, notifyChar, setTextInput and getTextInput0/1 dispatch into it (slots 0..4).
 	struct text_input
 	{
-		virtual ~text_input() {}
+		// Implicit vptr construction: SwiffPlayer.dll 0x10084D80.
+		// Destruction clears focus after the field's members: 0x10084D90.
+		virtual ~text_input();
 		virtual void	on_key(int vkey) = 0;
 		virtual void	on_char(int character) = 0;
 		virtual void	paste() = 0;
@@ -890,24 +931,24 @@ namespace gameswf
 		virtual bitmap_info*	create_bitmap_info_alpha(int w, int h, unsigned char* data) = 0;
 		virtual bitmap_info*	create_bitmap_info_rgb(image::rgb* im) = 0;
 		virtual bitmap_info*	create_bitmap_info_rgba(image::rgba* im) = 0;
-		// [DICE-MOD SwiffPlayer: the 2004 base's fifth slot, dropped by 2006 - a bitmap resolved BY
+		// the 2004 base's fifth slot, dropped by 2006 - a bitmap resolved BY
 		// FILE NAME through the host (BF2: ISwiffRender::loadTexture). The sprite `loadMovie`
 		// image loader (gameswf_sprite_loadmovie -> render::create_bitmap_info_file, sub_1009A620)
-		// hangs every `loadImg` on it. Returns NULL when the host cannot resolve the name.]
+		// hangs every `loadImg` on it. The native handler keeps failed texture handles.
 		virtual bitmap_info*	create_bitmap_info_file(const char* path) { return NULL; }
 
-		// [DICE-MOD SwiffPlayer #36: the twelve text slots DICE's edit_text_character drives - a
+		// the twelve text slots DICE's edit_text_character drives - a
 		// renderer-side text LINE object per laid-out line. Defaults do nothing (no renderer, no text),
-		// the SwiffPlayer handler forwards them to ISwiffRender. See GAMESWF_DIVERGENCES.md.]
+		// the SwiffPlayer handler forwards them to ISwiffRender. See GAMESWF_DIVERGENCES.md.
 		virtual void*	text_create(const char* /*font_name*/, int /*height_px*/) { return NULL; }
 		virtual void	text_release(void* /*line*/) {}
 		virtual void	text_set(void* /*line*/, const wchar_t* /*text*/) {}
 		virtual void	text_detach(void* /*line*/) {}
 		virtual void	text_draw(void* /*line*/, const matrix* /*m*/, unsigned /*color*/, int /*flags*/) {}
 		virtual bool	text_extent(void* /*line*/, int /*count*/, float* /*w*/, float* /*h*/) { return false; }
-		// [DICE-MOD SwiffPlayer] float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
+		//  float coordinates: SwiffPlayer.dll 0x100887A5..0x100887D7 / 0x10088823..0x1008883B
 		virtual bool	text_hit(void* /*line*/, int* /*out_pos*/, float /*x*/, float /*y*/) { return false; }
-		virtual bool	text_selection(void* /*line*/, int* a, int* b) { if (a) *a = 0; if (b) *b = 0; return false; }	// [DICE-MOD SwiffPlayer #46] true = a selection exists
+		virtual bool	text_selection(void* /*line*/, int* a, int* b) { if (a) *a = 0; if (b) *b = 0; return false; }	//  true = a selection exists
 		virtual bool	text_set_selection(void* /*line*/, float, float, float, float) { return false; }
 		virtual void	text_blur(void* /*line*/) {}
 		virtual void	text_set_size(void* /*line*/, float /*size*/, int /*flag*/) {}
@@ -928,6 +969,8 @@ namespace gameswf
 		// Geometric and color transforms for mesh and line_strip rendering.
 		virtual void	set_matrix(const matrix& m) = 0;
 		virtual void	set_cxform(const cxform& cx) = 0;
+		// Submit the display-list depth before mesh and line callbacks.
+		virtual void	set_depth(int depth);
 		
 		// Draw triangles using the current fill-style 0.
 		// Clears the style list after rendering.
@@ -977,6 +1020,12 @@ namespace gameswf
 	};
 	
 	// Keyboard handling
+	// [CHOSEN, not recovered] Native input adapter. Query consumes the low press
+	// bit and returns the Win32 asynchronous high/low bit representation.
+	typedef unsigned short (*async_key_state_callback)(int key_code);
+	void set_async_key_state_callback(async_key_state_callback callback);
+	bool is_key_down(int key_code);
+
 	namespace key {
 		enum code
 		{
@@ -1088,33 +1137,6 @@ namespace gameswf
 	// @@ Maybe someday make these local to the movie_interface?
 	void	notify_key_event(key::code k, bool down);
 
-
-	// Some optional helpers.
-	namespace tools
-	{
-		struct process_options
-		{
-			bool	m_zip_whole_file;	// @@ not implemented yet (low priority?)
-			bool	m_remove_image_data;	// removes existing image data; leaves minimal placeholder tags
-			bool	m_remove_font_glyph_shapes;
-
-			process_options()
-				:
-				m_zip_whole_file(false),
-				m_remove_image_data(false),
-				m_remove_font_glyph_shapes(false)
-			{
-			}
-		};
-
-		// Copy tags from *in to *out, applying the given
-		// options.  *in should be a SWF-format stream.  The
-		// output will be a SWF-format stream.
-		//
-		// Returns 0 on success, or a non-zero error-code on
-		// failure.
-		int	process_swf(tu_file* swf_out, tu_file* swf_in, const process_options& options);
-	}
 
 }	// namespace gameswf
 

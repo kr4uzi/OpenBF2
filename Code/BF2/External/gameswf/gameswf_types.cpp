@@ -5,6 +5,7 @@
 
 // Some basic types for gameswf.
 
+#include "../../Platform/X87Compat.h"
 #include "gameswf_types.h"
 
 #include "gameswf_log.h"
@@ -22,6 +23,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1009D800.
 	bool	point::bitwise_equal(const point& p) const
 	// Bitwise comparison; return true if *this is bitwise
 	// identical to p.
@@ -36,6 +38,7 @@ namespace gameswf
 
 	matrix	matrix::identity;
 
+	// SwiffPlayer.dll 0x1009E5F0.
 	matrix::matrix()
 	{
 		// Default to identity.
@@ -54,6 +57,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D820.
 	void	matrix::set_identity()
 	// Set the matrix to identity.
 	{
@@ -63,23 +67,29 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009E620: six float temporaries before copying the result.
 	void	matrix::concatenate(const matrix& m)
 	// Concatenate m's transform onto ours.  When
 	// transforming points, m happens first, then our
 	// original xform.
 	{
+		using bf2x87::Real;
+		using bf2x87::mul;
+		using bf2x87::add;
+		using bf2x87::store;
 		matrix	t;
-		t.m_[0][0] = m_[0][0] * m.m_[0][0] + m_[0][1] * m.m_[1][0];
-		t.m_[1][0] = m_[1][0] * m.m_[0][0] + m_[1][1] * m.m_[1][0];
-		t.m_[0][1] = m_[0][0] * m.m_[0][1] + m_[0][1] * m.m_[1][1];
-		t.m_[1][1] = m_[1][0] * m.m_[0][1] + m_[1][1] * m.m_[1][1];
-		t.m_[0][2] = m_[0][0] * m.m_[0][2] + m_[0][1] * m.m_[1][2] + m_[0][2];
-		t.m_[1][2] = m_[1][0] * m.m_[0][2] + m_[1][1] * m.m_[1][2] + m_[1][2];
+		t.m_[0][0] = store(add(mul(Real(m.m_[0][0]), Real(m_[0][0])), mul(Real(m_[0][1]), Real(m.m_[1][0]))));
+		t.m_[1][0] = store(add(mul(Real(m_[1][0]), Real(m.m_[0][0])), mul(Real(m_[1][1]), Real(m.m_[1][0]))));
+		t.m_[0][1] = store(add(mul(Real(m.m_[0][1]), Real(m_[0][0])), mul(Real(m.m_[1][1]), Real(m_[0][1]))));
+		t.m_[1][1] = store(add(mul(Real(m.m_[1][1]), Real(m_[1][1])), mul(Real(m.m_[0][1]), Real(m_[1][0]))));
+		t.m_[0][2] = store(add(add(mul(Real(m.m_[0][2]), Real(m_[0][0])), mul(Real(m.m_[1][2]), Real(m_[0][1]))), Real(m_[0][2])));
+		t.m_[1][2] = store(add(add(mul(Real(m.m_[1][2]), Real(m_[1][1])), mul(Real(m.m_[0][2]), Real(m_[1][0]))), Real(m_[1][2])));
 
 		*this = t;
 	}
 
 
+	// SwiffPlayer.dll 0x1009D850.
 	void	matrix::concatenate_translation(float tx, float ty)
 	// Concatenate a translation onto the front of our
 	// matrix.  When transforming points, the translation
@@ -90,6 +100,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D880.
 	void	matrix::concatenate_scale(float scale)
 	// Concatenate a uniform scale onto the front of our
 	// matrix.  When transforming points, the scale
@@ -102,6 +113,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D8B0.
 	void	matrix::set_lerp(const matrix& m1, const matrix& m2, float t)
 	// Set this matrix to a blend of m1 and m2, parameterized by t.
 	{
@@ -114,6 +126,7 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x1009D930.
 	void	matrix::set_scale_rotation(float x_scale, float y_scale, float angle)
 	// Set the scale & rotation part of the matrix.
 	// angle in radians.
@@ -127,6 +140,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009D960.
 	void	matrix::read(stream* in)
 	// Initialize from the stream.
 	{
@@ -156,10 +170,11 @@ namespace gameswf
 			m_[1][2] = (float) in->read_sint(translate_nbits);
 		}
 
-		//IF_VERBOSE_PARSE(log_msg("  mat: has_scale = %d, has_rotate = %d\n", has_scale, has_rotate));
+		IF_VERBOSE_PARSE(log_msg("has_scale = %d, has_rotate = %d\n", has_scale, has_rotate));
 	}
 
 
+	// SwiffPlayer.dll 0x1009DA80.
 	void	matrix::print() const
 	// Debug log.
 	{
@@ -167,6 +182,7 @@ namespace gameswf
 		log_msg("| %4.4f %4.4f %4.4f |\n", m_[1][0], m_[1][1], TWIPS_TO_PIXELS(m_[1][2]));
 	}
 
+	// SwiffPlayer.dll 0x1009DAE0.
 	void	matrix::transform(point* result, const point& p) const
 	// Transform point 'p' by our matrix.  Put the result in
 	// *result.
@@ -177,6 +193,7 @@ namespace gameswf
 		result->m_y = m_[1][0] * p.m_x + m_[1][1] * p.m_y + m_[1][2];
 	}
 	
+	// SwiffPlayer.dll 0x1009DB20.
 	void	matrix::transform_vector(point* result, const point& v) const
 	// Transform vector 'v' by our matrix. Doesn't apply translation.
 	// Put the result in *result.
@@ -187,16 +204,25 @@ namespace gameswf
 		result->m_y = m_[1][0] * v.m_x + m_[1][1] * v.m_y;
 	}
 
+	// SwiffPlayer.dll 0x1009E6D0: build the inverse before reading the point;
+	// each coordinate narrows once, and aliased input sees the first output store.
 	void	matrix::transform_by_inverse(point* result, const point& p) const
 	// Transform point 'p' by the inverse of our matrix.  Put result in *result.
 	{
 		// @@ TODO optimize this!
 		matrix	m;
 		m.set_inverse(*this);
-		m.transform(result, p);
+		using bf2x87::Real;
+		using bf2x87::mul;
+		using bf2x87::add;
+		result->m_x = bf2x87::store(add(add(mul(Real(m.m_[0][0]), Real(p.m_x)),
+			mul(Real(m.m_[0][1]), Real(p.m_y))), Real(m.m_[0][2])));
+		result->m_y = bf2x87::store(add(add(mul(Real(m.m_[1][0]), Real(p.m_x)),
+			mul(Real(m.m_[1][1]), Real(p.m_y))), Real(m.m_[1][2])));
 	}
 
 
+	// SwiffPlayer.dll 0x1009DB50.
 	void	matrix::set_inverse(const matrix& m)
 	// Set this matrix to the inverse of the given matrix.
 	{
@@ -228,6 +254,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009DC00.
 	bool	matrix::does_flip() const
 	// Return true if this matrix reverses handedness.
 	{
@@ -237,6 +264,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009DC30.
 	float	matrix::get_determinant() const
 	// Return the determinant of the 2x2 rotation/scale part only.
 	{
@@ -244,6 +272,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009DC40.
 	float	matrix::get_max_scale() const
 	// Return the maximum scale factor that this transform
 	// applies.  For assessing scale, when determining acceptable
@@ -258,6 +287,7 @@ namespace gameswf
 		return sqrtf(max_length2);
 	}
 
+	// SwiffPlayer.dll 0x1009DC90.
 	float	matrix::get_x_scale() const
 	{
 		float	scale = sqrtf(m_[0][0] * m_[0][0] + m_[0][1] * m_[0][1]);
@@ -271,11 +301,13 @@ namespace gameswf
 		return scale;
 	}
 
+	// SwiffPlayer.dll 0x1009DCD0.
 	float	matrix::get_y_scale() const
 	{
 		return sqrtf(m_[1][1] * m_[1][1] + m_[1][0] * m_[1][0]);
 	}
 
+	// SwiffPlayer.dll 0x1009DCF0.
 	float	matrix::get_rotation() const
 	{
 		if (get_determinant() < 0.f)
@@ -303,6 +335,7 @@ namespace gameswf
 	cxform	cxform::identity;
 
 
+	// SwiffPlayer.dll 0x1009DD20.
 	cxform::cxform()
 	// Initialize to identity transform.
 	{
@@ -316,6 +349,7 @@ namespace gameswf
 		m_[3][1] = 0;
 	}
 
+	// SwiffPlayer.dll 0x1009DD50.
 	void	cxform::concatenate(const cxform& c)
 	// Concatenate c's transform onto ours.  When
 	// transforming colors, c's transform is applied
@@ -333,6 +367,7 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x1009DDB0.
 	rgba	cxform::transform(const rgba in) const
 	// Apply our transform to the given color; return the result.
 	{
@@ -347,6 +382,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009DF10; the additive alpha term is one when present.
 	void	cxform::read_rgb(stream* in)
 	{
 		in->align();
@@ -375,6 +411,7 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x1009E010.
 	void	cxform::read_rgba(stream* in)
 	{
 		in->align();
@@ -433,6 +470,7 @@ namespace gameswf
 	// rgba
 	//
 
+	// SwiffPlayer.dll 0x1009E7B0.
 	void	rgba::read(stream* in, int tag_type)
 	{
 		if (tag_type <= 22)
@@ -445,12 +483,14 @@ namespace gameswf
 		}
 	}
 
+	// SwiffPlayer.dll 0x1009E740: RGB (including opaque alpha), then the alpha byte.
 	void	rgba::read_rgba(stream* in)
 	{
 		read_rgb(in);
 		m_a = in->read_u8();
 	}
 
+	// SwiffPlayer.dll 0x1009E130.
 	void	rgba::read_rgb(stream* in)
 	{
 		m_r = in->read_u8();
@@ -459,6 +499,7 @@ namespace gameswf
 		m_a = 0x0FF;
 	}
 
+	// SwiffPlayer.dll 0x1009E170.
 	void	rgba::print()
 	// For debugging.
 	{
@@ -466,12 +507,13 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x1009E1A0: interpolate, add 0.5, truncate and keep the low byte.
 	void	rgba::set_lerp(const rgba& a, const rgba& b, float f)
 	{
-		m_r = (Uint8) frnd(flerp(a.m_r, b.m_r, f));
-		m_g = (Uint8) frnd(flerp(a.m_g, b.m_g, f));
-		m_b = (Uint8) frnd(flerp(a.m_b, b.m_b, f));
-		m_a = (Uint8) frnd(flerp(a.m_a, b.m_a, f));
+		m_r = (Uint8) bf2x87::toInt64Truncate(a.m_r + ((long double) b.m_r - a.m_r) * f + 0.5L);
+		m_g = (Uint8) bf2x87::toInt64Truncate(a.m_g + ((long double) b.m_g - a.m_g) * f + 0.5L);
+		m_b = (Uint8) bf2x87::toInt64Truncate(a.m_b + ((long double) b.m_b - a.m_b) * f + 0.5L);
+		m_a = (Uint8) bf2x87::toInt64Truncate(a.m_a + ((long double) b.m_a - a.m_a) * f + 0.5L);
 	}
 
 
@@ -480,6 +522,7 @@ namespace gameswf
 	//
 
 
+	// SwiffPlayer.dll 0x1009E260.
 	void	rect::read(stream* in)
 	{
 		in->align();
@@ -492,6 +535,7 @@ namespace gameswf
 //		IF_DEBUG(log_msg("rect::read() nbits = %d\n", nbits));
 	}
 
+	// SwiffPlayer.dll 0x1009E2D0.
 	void	rect::print() const
 	// Debug spew.
 	{
@@ -503,6 +547,7 @@ namespace gameswf
 	}
 
 	
+	// SwiffPlayer.dll 0x1009E320: inclusive edges; unordered comparisons pass.
 	bool	rect::point_test(float x, float y) const
 	// Return true if the specified point is inside this rect.
 	{
@@ -520,16 +565,43 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009E370: minima select the input on equality/unordered;
+	// maxima keep their existing value on equality/unordered.
 	void	rect::expand_to_point(float x, float y)
 	// Expand this rectangle to enclose the given point.
 	{
 		m_x_min = tu_util::fmin(m_x_min, x);
 		m_y_min = tu_util::fmin(m_y_min, y);
-		m_x_max = tu_util::fmax(m_x_max, x);
-		m_y_max = tu_util::fmax(m_y_max, y);
+		m_x_max = m_x_max < x ? x : m_x_max;
+		m_y_max = m_y_max < y ? y : m_y_max;
+	}
+
+	// SwiffPlayer.dll 0x1009E780.
+	void rect::expand_to_rect(const rect& r)
+	{
+		expand_to_point(r.m_x_min, r.m_y_min);
+		expand_to_point(r.m_x_max, r.m_y_max);
+	}
+
+	// SwiffPlayer.dll 0x1009E410; the maximum corner is stored first.
+	void rect::transform(const matrix& m)
+	{
+		const long double x0 = (long double)m.m_[0][0] * m_x_min
+			+ (long double)m.m_[0][1] * m_y_min + m.m_[0][2];
+		const long double y0 = (long double)m.m_[1][0] * m_x_min
+			+ (long double)m.m_[1][1] * m_y_min + m.m_[1][2];
+		const long double x1 = (long double)m.m_[0][0] * m_x_max
+			+ (long double)m.m_[0][1] * m_y_max + m.m_[0][2];
+		const long double y1 = (long double)m.m_[1][0] * m_x_max
+			+ (long double)m.m_[1][1] * m_y_max + m.m_[1][2];
+		m_x_max = (float)x1;
+		m_y_max = (float)y1;
+		m_x_min = (float)x0;
+		m_y_min = (float)y0;
 	}
 
 
+	// SwiffPlayer.dll 0x1009E3D0.
 	point	rect::get_corner(int i) const
 	// Get one of the rect verts.
 	{
@@ -540,6 +612,7 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009E490: transform all four corners before writing the result.
 	void	rect::enclose_transformed_rect(const matrix& m, const rect& r)
 	// Set ourself to bound a rectangle that has been transformed
 	// by m.  This is an axial bound of an oriented (and/or
@@ -560,13 +633,14 @@ namespace gameswf
 	}
 
 
+	// SwiffPlayer.dll 0x1009E580; coordinate write order is xmin, ymin, xmax, ymax.
 	void	rect::set_lerp(const rect& a, const rect& b, float t)
 	// Set this to the lerp of a and b.
 	{
-		m_x_min = flerp(a.m_x_min, b.m_x_min, t);
-		m_y_min = flerp(a.m_y_min, b.m_y_min, t);
-		m_x_max = flerp(a.m_x_max, b.m_x_max, t);
-		m_y_max = flerp(a.m_y_max, b.m_y_max, t);
+		m_x_min = (float)(a.m_x_min + ((long double)b.m_x_min - a.m_x_min) * t);
+		m_y_min = (float)(a.m_y_min + ((long double)b.m_y_min - a.m_y_min) * t);
+		m_x_max = (float)(a.m_x_max + ((long double)b.m_x_max - a.m_x_max) * t);
+		m_y_max = (float)(a.m_y_max + ((long double)b.m_y_max - a.m_y_max) * t);
 	}
 
 

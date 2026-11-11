@@ -1,5 +1,12 @@
 // [INFERRED] path. Client-only class: the dedicated ELF merely looks the "GeneralSettings"
 // singleton up and tolerates its absence, so every body below was read from BF2.exe.
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <new>
+#include <sstream>
+
 #include "GeneralSettings.h"
 #include "LocalProfileManager.h"          // cancel: ILocalProfileManager +0x44 / +0x54
 #include "../Core/SmartItf.h"
@@ -18,12 +25,6 @@
 #include "../Menu/BF2HudManager.h"
 #include "../Menu/HudInformationAdapter.h"
 #include "../Menu/HudMessages.h"
-#include <algorithm>                      // sortServerHistory
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
-#include <new>
-#include <sstream>
 
 namespace dice { namespace hfe {
 // Demo launches force auto-ready; ordinary launches use the saved setting.
@@ -404,6 +405,9 @@ std::string GeneralSettings::getSettingsScript()
     stream << "GeneralSettings.setAutoReady " << m_autoReady << std::endl;
     stream << "GeneralSettings.setConnectionType " << m_connectionType << std::endl;
     stream << "GeneralSettings.setLCDDisplayModes " << m_lcdDisplayModes << std::endl;
+    // [CHOSEN, not recovered] Profile extension requested by the owner.
+    // Retail ignores the unknown method and continues loading the remaining rows.
+    stream << "GeneralSettings.setShowTutorialMessages " << m_showTutorialMessages << std::endl;
     return stream.str();
 }
 
@@ -487,6 +491,8 @@ void GeneralSettings::setDefaultValues()
     m_itemSelectionReverseItems = true;
     m_autoReload = true;
     m_toggleFilters = 63616;
+    // [CHOSEN, not recovered] Missing setting and Reset both keep retail behavior.
+    m_showTutorialMessages = true;
 }
 
 // Reloads General.con to discard unsaved options while retaining server-browser and
@@ -518,6 +524,8 @@ void GeneralSettings::cancel()
 
     std::string path = std::string(lpm->getCurrentProfile()->name) + "/";   // +0x44 again
     path += getFileName();                                              // +0x10
+    // [CHOSEN, not recovered] Cancel also handles older profiles without this row.
+    m_showTutorialMessages = true;
     (void) lpm->loadProfileFile(path);                                  // +0x54
 
     m_allowPunkBuster = allowPunkBuster;
