@@ -10,8 +10,11 @@ using Words = std::vector<uint32_t>;
 using Bytes = std::vector<uint8_t>;
 // Version 2: entry kinds (refusal and reflection-only records), MojoShader patch 0005.
 // Version 3: MojoShader patches 0006 (log2|x|) and 0007 (vs_1_x expp): MSL changes.
+// Version 4: the native identity hashes the linked vkd3d/MojoShader archives, and a failed
+// background build of a D3DX-accepted request is no longer published as a refusal. Version-3
+// caches may hold such refusals from stale deps builds; they are not read.
 // Request envelopes keep their version-1 layout and are still read for --retarget.
-constexpr uint32_t CacheVersion = 3;
+constexpr uint32_t CacheVersion = 4;
 // Numeric enum values in this file are MojoShader's pinned FX2 enums, not D3D states.
 enum : uint32_t { Bool = 1, Int = 2, Float = 3, String = 4, Texture = 5,
     Sampler = 10, PixelShader = 15, VertexShader = 16 };
