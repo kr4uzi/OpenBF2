@@ -20,6 +20,9 @@
 #include <unistd.h>
 #endif
 #endif
+#if defined(__APPLE__) && !DEDICATED
+#include "../BF2/Platform/macOS/ClientPaths.h"
+#endif
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -191,6 +194,18 @@ void logOpen()
 #if defined(_WIN32)
         if (::fopen_s(&s_log, RD9ABI_LOG_FILENAME, "w") != 0)
             s_log = 0;
+#elif defined(__APPLE__) && !DEDICATED
+        // [CHOSEN, not recovered] The macOS client keeps the log in its data directory
+        // (~/Library/Application Support/OpenBF2, HOME first; ClientPaths.h), not in the working
+        // directory. The installer starts the client in the installed game-data tree, which it has
+        // verified and treats as read-only content, so a relative name would leave a new file
+        // there. The host has taken its instance lock in that directory before any image calls
+        // initDll, so the call below only reads the cached path; the name is built on the stack
+        // because operator new here is the engine heap. Windows keeps the retail-like cwd name.
+        char path[1024];
+        const int n = ::snprintf(path, sizeof(path), "%s/%s",
+                                 dice::hfe::macos::clientDataDirectory().c_str(), RD9ABI_LOG_FILENAME);
+        s_log = (n > 0 && static_cast<size_t>(n) < sizeof(path)) ? ::fopen(path, "w") : 0;
 #else
         s_log = ::fopen(RD9ABI_LOG_FILENAME, "w");
 #endif

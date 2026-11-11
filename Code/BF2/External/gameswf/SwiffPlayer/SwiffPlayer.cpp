@@ -884,6 +884,32 @@ static void hostLocalise(ISwiffHost* h, const char* key, HostWide& out)
     h->getLocalizedString(out, renddx9abi::HostString(key));
 }
 
+// sub_10013740 - whether the mod holds a map whose path or display name equals `map`, compared with
+// _stricmp after every '_' became a space. The shipped helper rewrites the caller's string in place
+// first (both callers pass a temporary), then compares copies of each map's display name, then its
+// path; the first equal map answers true. Neither the mod nor the map list is null-tested.
+static void underscoresToSpaces(std::string& s)
+{
+    for (std::string::size_type i = 0; i < s.size(); ++i)
+        if (s[i] == '_')
+            s[i] = ' ';
+}
+
+static bool modHasMap(const IModInfo::Mod* mod, std::string& map)
+{
+    underscoresToSpaces(map);
+    for (unsigned int i = 0; i < mod->maps.size(); ++i)
+    {
+        std::string name = mod->maps[i].name;      // PE +0x1C, copied first
+        std::string path = mod->maps[i].path;      // PE +0x00
+        underscoresToSpaces(name);
+        underscoresToSpaces(path);
+        if (::_stricmp(name.c_str(), map.c_str()) == 0 || ::_stricmp(path.c_str(), map.c_str()) == 0)
+            return true;
+    }
+    return false;
+}
+
 
 // dice.bf2.EndOfRound - the current-map surface read by endOfRound.swf's loading and briefing
 // frames. These eight bodies are the complete PE rows at 100102D0 / 100107E0..10010B9D /
@@ -3242,6 +3268,78 @@ void as_general_getListEntries(const gameswf::fn_call& fn)
     // The HapticSettings selectors (10030F66 "weaponselect", 10031374 "thresholdselect"); they read no window.
     if (tok[0] == "weaponselect")     { listHapticWeaponSelect(fn, r, h); return; }
     if (tok[0] == "thresholdselect")  { listHapticThresholdSelect(fn, r, h); return; }
+    // The demo-bookmark list (1002B517..1002B6B4): the LocalProfileManager by name, NOT null-tested,
+    // its +0xA8 count and +0xAC record per index. Per row inside the window the current mod
+    // (+0x120 getModInfo, +0x1C getCurrentMod) must hold the bookmark's map, compared by its
+    // display name (PE +0x3C getMapNameFromMap of field1c); a row that fails is neither listed nor
+    // counted, while rows outside the window are counted unfiltered, as shipped. Columns:
+    // field54, field00, the map display name asked a second time.
+    if (tok[0] == "demobm")
+    {
+        ILocalProfileManager* lpm = static_cast<ILocalProfileManager*>(
+            classManager->getSingleton(renddx9abi::HostString("LocalProfileManager")));
+        r.begin();
+        int total = 0;
+        const unsigned int n = lpm->getNumDemoBookmarks();                                       // +0xA8
+        for (unsigned int i = 0; i < n; ++i)
+        {
+            if (i < static_cast<unsigned int>(start) || i >= static_cast<unsigned int>(end))
+            {
+                ++total;
+                continue;
+            }
+            const LocalDemoBookmark* bm = lpm->getDemoBookmark(i);                              // +0xAC
+            const IModInfo::Mod* mod = static_cast<IModInfo*>(h->getModInfo())->getCurrentMod(); // +0x120, +0x1C
+            std::string mapName = static_cast<IModInfo*>(h->getModInfo())->getMapNameFromMap(bm->field1c); // PE +0x3C
+            if (!modHasMap(mod, mapName))
+                continue;
+            r.beginRow(static_cast<int>(i));
+            r.pushNarrow(bm->field54.c_str());
+            r.pushNarrow(bm->field00.c_str());
+            const std::string shown = static_cast<IModInfo*>(h->getModInfo())->getMapNameFromMap(bm->field1c); // PE +0x3C
+            r.pushNarrow(shown.c_str());
+            ++total;
+        }
+        r.setTotalCount(total);
+        fn.result->set_as_object_interface(r.arr.get_ptr());
+        return;
+    }
+    // The recorded-demo list (1002B71B..1002B8B4): host +0x44 getDemoLibrary, its +0x18 count read
+    // once, then per index inside the window host +0x44 again and +0x1C getEntry. The current mod
+    // must hold the entry's map, compared on a copy of the raw mapName; failing rows are neither
+    // listed nor counted, rows outside the window are counted. Columns: dateTime, name, the map
+    // display name (PE +0x3C getMapNameFromMap); a demo whose version is not 3153 (0xC51, this
+    // build) gets "disabled" 1.
+    if (tok[0] == "demos")
+    {
+        r.begin();
+        int total = 0;
+        const unsigned int n = static_cast<IDemoLibrary*>(h->getDemoLibrary())->getNumEntries(); // +0x44, +0x18
+        for (unsigned int i = 0; i < n; ++i)
+        {
+            if (i < static_cast<unsigned int>(start) || i >= static_cast<unsigned int>(end))
+            {
+                ++total;
+                continue;
+            }
+            const DemoLibraryEntry* e = static_cast<IDemoLibrary*>(h->getDemoLibrary())->getEntry(i); // +0x44, +0x1C
+            const IModInfo::Mod* mod = static_cast<IModInfo*>(h->getModInfo())->getCurrentMod(); // +0x120, +0x1C
+            std::string mapName = e->mapName;
+            if (!modHasMap(mod, mapName))
+                continue;
+            r.beginRow(static_cast<int>(i));
+            r.pushNarrow(e->dateTime.c_str());
+            r.pushNarrow(e->name.c_str());
+            const std::string shown = static_cast<IModInfo*>(h->getModInfo())->getMapNameFromMap(e->mapName); // PE +0x3C
+            r.pushNarrow(shown.c_str());
+            if (e->version != 0xC51)
+                r.setInt("disabled", 1);
+            ++total;
+        }
+        r.setTotalCount(total);
+        fn.result->set_as_object_interface(r.arr.get_ptr());
+        return;
+    }
     if (tok[0] == "cmapbg" || tok[0] == "cmapgm" || tok[0] == "buddiesOnline" || tok[0] == "buddies"
         || tok[0] == "buddyRequests" || tok[0] == "buddyMessages" || tok[0] == "gamespyNicknameSuggestions")
     {

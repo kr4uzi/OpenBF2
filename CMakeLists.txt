@@ -2246,7 +2246,9 @@ if(BF2_BUILD_MACOS AND TARGET bf2_swiffplayer_static)
     # [TEMP] [CHOSEN, not recovered] Content-free offline popup VM regression.
     add_executable(bf2_swiff_offline_connect_popup_check EXCLUDE_FROM_ALL
         Code/Tests/swiff_offline_connect_popup.cpp
-        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp)
+        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp
+        # The kit's frontier log opens in the client data directory (Frontier.cpp, logOpen).
+        Code/BF2/Platform/macOS/ClientPaths.cpp)
     bf2_configure_static_plugin(bf2_swiff_offline_connect_popup_check BF2_IMAGE_SWIFFPLAYER)
     target_include_directories(bf2_swiff_offline_connect_popup_check PRIVATE
         "${BF2_EXTERNAL_ROOT}" "${BF2_EXTERNAL_ROOT}/gameswf")
@@ -2256,7 +2258,9 @@ if(BF2_BUILD_MACOS AND TARGET bf2_swiffplayer_static)
     # [TEMP] [CHOSEN, not recovered] Production gameswf XML/string/file fixture.
     add_executable(bf2_gameswf_xml_check EXCLUDE_FROM_ALL
         Code/Tests/gameswf_xml/xml_check.cpp
-        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp)
+        Code/Tests/gameswf_xml/cocoa_host_unavailable.cpp
+        # The kit's frontier log opens in the client data directory (Frontier.cpp, logOpen).
+        Code/BF2/Platform/macOS/ClientPaths.cpp)
     bf2_configure_static_plugin(bf2_gameswf_xml_check BF2_IMAGE_SWIFFPLAYER)
     target_include_directories(bf2_gameswf_xml_check PRIVATE "${BF2_EXTERNAL_ROOT}")
     target_link_libraries(bf2_gameswf_xml_check PRIVATE bf2_swiffplayer_static bf2_plugin_kit_static)
