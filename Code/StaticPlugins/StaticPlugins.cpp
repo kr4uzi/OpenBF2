@@ -3,7 +3,6 @@
 
 #include "StaticPlugins.h"
 
-#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -132,22 +131,7 @@ void* find(const char* stem)
 bool unloadsWithDeinit(const void* handle)
 {
     const int i = indexOf(handle);
-    if (i < 0 || !kImages[i].deinitOnFree)
-        return false;
-#if defined(__APPLE__)
-    // [TEMP] [CHOSEN, not recovered] The renderer's exit-time deinitDll stays off unless
-    // BF2_RENDDX9_DEINIT_AT_EXIT=1: until the host deletes its HUD manager before shutdownEngine
-    // (BF2.exe BF2Engine::shutdown client arm 0x408E32..0x408ECF, game track), 25 HUD textures still
-    // hold device references and the retail release check (RendDX9Init.cpp) ends every menu quit
-    // with a fatal. [RETIRE-WHEN: game-hud-shutdown-arm] the HUD delete is recovered and a menu quit
-    // with the deinit reaches a zero device reference count; then drop this switch.
-    if (strcmp(kImages[i].stem, "RendDX9") == 0)
-    {
-        const char* on = getenv("BF2_RENDDX9_DEINIT_AT_EXIT");
-        return on != 0 && on[0] == '1';
-    }
-#endif
-    return true;
+    return i >= 0 && kImages[i].deinitOnFree;
 }
 
 void release(const void* handle)
