@@ -61,7 +61,9 @@ jobs:
               echo "::notice title=Package not attached::$package was not built (no usable D3DX source on the build runner)."
             fi
           done
-          assets=()
+          test -s openbf2-macos-app.dmg
+          sha256sum --check openbf2-macos-app.dmg.sha256
+          assets=(openbf2-macos-app.dmg openbf2-macos-app.dmg.sha256)
           for package in "${packages[@]}"; do
             test -s "$package.zip"
             test -s "$package.zip.sha256"

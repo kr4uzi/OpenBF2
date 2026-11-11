@@ -282,3 +282,70 @@ jobs:
             out/build/nativefx*/logs/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # [CHOSEN, not recovered] The macOS app: the separate MIT setup app (kr4uzi/openbf2-setup, pinned
+  # below) with the universal client embedded, as a drag-and-drop disk image. The two macOS legs are
+  # merged with lipo; the setup app's own release script builds, tests and verifies the image. Its
+  # contract for the client directory is docs/client-artifact.md in that repository.
+  macos-app:
+    name: macOS app (universal)
+    needs: macos
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      SETUP_REPOSITORY: kr4uzi/openbf2-setup
+      SETUP_REVISION: 5cf108aaae0ef3ad2c9d2dd791239cf9c87fd136 # v0.1.0
+    steps:
+      - name: Download the macOS client packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: packages-macos-*
+          path: out/packages
+          merge-multiple: true
+
+      - name: Merge the client legs into a universal client
+        working-directory: out
+        run: |
+          for arch in arm64 x86_64; do
+            (cd packages && shasum -a 256 -c "openbf2-macos-$arch-client.zip.sha256")
+            ditto -x -k "packages/openbf2-macos-$arch-client.zip" "legs/$arch"
+          done
+          mkdir client-universal
+          for item in bf2_client libdice_py.dylib libaidll.dylib; do
+            lipo -create "legs/arm64/openbf2-macos-arm64-client/$item" \
+                         "legs/x86_64/openbf2-macos-x86_64-client/$item" \
+                 -output "client-universal/$item"
+            lipo "client-universal/$item" -verify_arch arm64 x86_64
+          done
+          chmod +x client-universal/bf2_client
+
+      - name: Check out the setup app
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SETUP_REPOSITORY }}
+          ref: ${{ env.SETUP_REVISION }}
+          path: out/openbf2-setup
+          persist-credentials: false
+
+      - name: Prepare the Rust toolchain
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo fetch --locked --manifest-path out/openbf2-setup/core/rtp-bridge/Cargo.toml
+
+      - name: Build, test and package the app
+        run: |
+          bash out/openbf2-setup/macos/build-release.sh "$GITHUB_WORKSPACE/out/client-universal" "$GITHUB_WORKSPACE/out/packages-app/openbf2-macos-app.dmg" "$GITHUB_WORKSPACE/out/setup-build"
+          cd out/packages-app
+          rm -f openbf2-macos-app.dmg.sha256
+          shasum -a 256 openbf2-macos-app.dmg > openbf2-macos-app.dmg.sha256
+
+      - name: Upload the macOS app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-macos-app
+          path: |
+            out/packages-app/openbf2-macos-app.dmg
+            out/packages-app/openbf2-macos-app.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
