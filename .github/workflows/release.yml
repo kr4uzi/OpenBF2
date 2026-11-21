@@ -48,7 +48,7 @@ jobs:
           sources=(openal-soft-*.tar.bz2)
           shopt -u nullglob
           test "${#sources[@]}" -eq 1
-          files=(openbf2-macos.dmg openbf2-windows.zip openbf2-linux.zip openbf2-linux-x86_64-client.tar.gz "${sources[0]}")
+          files=(openbf2-macos.dmg openbf2-windows.zip openbf2-windows-setup.exe openbf2-linux.zip openbf2-linux-x86_64-client.tar.gz "${sources[0]}")
           assets=()
           for file in "${files[@]}"; do
             test -s "$file"

@@ -304,7 +304,8 @@ def main():
     # A successful configure can silently omit a platform plugin. Fail at SDK
     # construction, before an unusable runtime reaches the release workflow.
     for pattern in ("lib/libSDL3.so.*", "lib/libopenal.so.*", "lib/libdxvk_d3d9.so*",
-                    "lib/libQt6Widgets.so.*", "lib/libQt6DBus.so.*",
+                    "lib/libQt6Widgets.so.*", "lib/libQt6DBus.so.*", "lib/libQt6Network.so.*",
+                    "lib/qt6/plugins/tls/libqopensslbackend.so",
                     "lib/qt6/plugins/platforms/libqxcb.so",
                     "lib/qt6/plugins/platforms/libqwayland*.so"):
         if not list(PREFIX.glob(pattern)):

@@ -9,8 +9,8 @@ compiler into x86 mode. In an IDE, select the matching Visual Studio architectur
 ## Targets and outputs
 
 GitHub Actions builds the supported Windows, Linux and macOS images on pushes and pull requests,
-and attaches one package per platform when a release is published (`openbf2-windows.zip`,
-`openbf2-linux.zip`, `openbf2-macos.dmg`). See [CI and release packages](ci-releases.md)
+and attaches its packages when a release is published (`openbf2-windows-setup.exe`, `openbf2-windows.zip`,
+`openbf2-linux.zip`, `openbf2-linux-x86_64-client.tar.gz`, `openbf2-macos.dmg`). See [CI and release packages](ci-releases.md)
 for the matrix, archive contents, checks and current runtime limitations.
 
 Paths below are relative to the selected CMake build directory.

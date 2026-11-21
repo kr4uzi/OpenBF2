@@ -95,6 +95,7 @@ from them.
 | Asset | Contents |
 | --- | --- |
 | `openbf2-macos.dmg` | `OpenBF2.app`: the setup assistant and launcher with the universal (arm64 + x86_64) client; the app carries its own instructions |
+| `openbf2-windows-setup.exe` | the Windows installer: the setup assistant and launcher (kr4uzi/openbf2-setup) with both clients, installed for the current user without administrator rights; it installs the game from the user's disc. Not code-signed yet |
 | `openbf2-windows.zip` | `x64\` the x64 client, `x86\` the x86 client, `server\` the x86 dedicated server, `editor\` the x86 editor, `licenses\`, `LICENSE`, `README.txt`, `build-info.json` |
 | `openbf2-linux.zip` | the x64 dedicated server: `bf2`, `libdice_py.so`, `licenses/`, `LICENSE`, `README.txt`, `build-info.json` |
 | `openbf2-linux-x86_64-client.tar.gz` | `OpenBF2/`: the Qt installer/launcher, native Vulkan client, bundled runtime, setup manifests, licenses and checked provenance; no game media or user profiles |
@@ -136,6 +137,12 @@ runtime folder) and the
 SHA-256 of every runtime file under its folder path. Every input is verified before anything is
 written. The `Windows package` job runs it on Ubuntu after both Windows jobs and uploads the
 `release-windows` artifact.
+
+The `Windows installer` job builds `openbf2-windows-setup.exe` from both legs' client packages with the setup
+app's own release script (`windows/build-release.ps1` in kr4uzi/openbf2-setup, at the pinned revision) and uploads
+the `release-windows-setup` artifact. Its toolchain comes from the setup's `ci/fetch-dependencies.sh` (pinned
+versions and hashes, including DXSETUP's files from Microsoft's DirectX June 2010 redist and Inno Setup). Release
+runs need both clients; other runs without one skip the installer with a notice.
 
 `--release linux` does the same for the server in the downstream `Linux package` job (`release-linux`). The
 Linux application's separate `release-linux-client` artifact comes from the pinned setup

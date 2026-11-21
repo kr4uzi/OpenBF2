@@ -8,7 +8,7 @@
 #                                          -> key file; BF2_NOTARY_KEY to GITHUB_ENV
 #   release-signing.sh sign-standalone DIR  sign bin_macos (dylibs, bf2, bf2_client) for the ZIPs
 #   release-signing.sh sign-dmg DMG       sign the disk image itself
-#   release-signing.sh verify-dmg DMG     check the app inside: Developer ID, runtime, timestamp,
+#   release-signing.sh verify-dmg DMG     check the app, client and Qt inside: Developer ID, runtime, timestamp,
 #                                          client entitlements
 #   release-signing.sh notarize FILE      notarytool submit --wait; fails unless Accepted
 #   release-signing.sh staple DMG         staple, validate, Gatekeeper assessment
@@ -106,7 +106,17 @@ verify-dmg)
   [[ -d "$app" ]] || fail 'no OpenBF2.app in the disk image'
   /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
   team=
-  for item in "$app" "$app/Contents/MacOS/bf2_client" "$app/Contents/MacOS/libdice_py.dylib" "$app/Contents/MacOS/libaidll.dylib"; do
+  # The setup app's Qt (Contents/Frameworks, Contents/PlugIns) is notarized with the app, so every
+  # framework and plugin carries the same signature as the app and the client.
+  items=("$app" "$app/Contents/MacOS/bf2_client" "$app/Contents/MacOS/libdice_py.dylib" "$app/Contents/MacOS/libaidll.dylib")
+  for framework in QtCore QtGui QtWidgets QtNetwork; do
+    [[ -d "$app/Contents/Frameworks/$framework.framework" ]] || fail "Qt framework missing: $framework"
+  done
+  [[ -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib" ]] || fail 'Qt platform plugin missing: libqcocoa.dylib'
+  while IFS= read -r -d '' item; do
+    items+=("$item")
+  done < <(/usr/bin/find "$app/Contents/Frameworks" -maxdepth 1 -type d -name '*.framework' -print0; /usr/bin/find "$app/Contents/PlugIns" -type f -name '*.dylib' -print0)
+  for item in "${items[@]}"; do
     info=$(/usr/bin/codesign -dvvv "$item" 2>&1)
     printf '%s\n' "$info" | /usr/bin/grep -q '^Authority=Developer ID Application: ' || fail "not Developer ID signed: $item"
     printf '%s\n' "$info" | /usr/bin/grep -Eq '^CodeDirectory .*flags=.*runtime' || fail "no hardened runtime: $item"
@@ -120,7 +130,7 @@ verify-dmg)
     /usr/bin/codesign -d --entitlements - --xml "$item" 2>/dev/null |
       /usr/bin/grep -q 'com.apple.security.device.audio-input' || fail "audio-input entitlement missing: $item"
   done
-  echo "App and client signed by Team ID $team with hardened runtime and timestamp"
+  echo "App, client and Qt (${#items[@]} signatures) signed by Team ID $team with hardened runtime and timestamp"
   ;;
 notarize)
   file=${2:?usage: notarize FILE}

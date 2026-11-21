@@ -57,7 +57,7 @@ class Artifacts(unittest.TestCase):
                "int leaf(void); int root(void) { return leaf(); }",
                ("-L" + str(libraries), "-Wl,--no-as-needed", "-l:libfixture-leaf.so.1"))
         names = ("libdxvk_d3d9.so.0", "libSDL3.so.0", "libopenal.so.1", "libpulse.so.0", "libasound.so.2", "libudev.so.1", "libdbus-1.so.3",
-                 "libQt6Widgets.so.6", "libQt6Gui.so.6", "libQt6Core.so.6", "libQt6DBus.so.6")
+                 "libQt6Widgets.so.6", "libQt6Gui.so.6", "libQt6Core.so.6", "libQt6DBus.so.6", "libQt6Network.so.6")
         for name in names:
             shared(libraries / name, name)
         # This library is absent from every link-time dependency list; it must

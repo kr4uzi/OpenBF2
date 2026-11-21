@@ -337,12 +337,15 @@ def stage(args):
     write_json(engine.root / "share/openbf2/engine-build.json", build_record)
     for name, _ in setup_static_inputs:
         runtime.add_record(catalog.dependencies[name])
-    for name in ("libQt6Widgets.so.6", "libQt6Gui.so.6", "libQt6Core.so.6", "libQt6DBus.so.6", "libSDL3.so.0"):
+    # QtNetwork downloads a provider file the user names by URL; its TLS backend (tls/) loads the
+    # system's libssl at run time, so libssl is not part of the artifact.
+    for name in ("libQt6Widgets.so.6", "libQt6Gui.so.6", "libQt6Core.so.6", "libQt6DBus.so.6", "libQt6Network.so.6",
+                 "libSDL3.so.0"):
         runtime.add_library(name)
     plugin_root = prefix / "lib/qt6/plugins"
     plugin_directories = ("platforms", "platformthemes", "platforminputcontexts", "wayland-shell-integration",
                           "wayland-graphics-integration-client", "wayland-decoration-client", "xcbglintegrations",
-                          "imageformats", "iconengines", "styles")
+                          "imageformats", "iconengines", "styles", "tls")
     for directory in plugin_directories:
         for plugin in sorted((plugin_root / directory).glob("*.so")):
             runtime.add_elf(plugin, plugin.relative_to(prefix).as_posix())

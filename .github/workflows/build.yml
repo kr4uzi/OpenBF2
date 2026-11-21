@@ -13,7 +13,7 @@ permissions:
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: c580f96ffacf2740e972875c2b9d4e7ce3d70802 # v0.4.0 plus setup stamp test fix
+  LINUX_SETUP_REVISION: 5ba6a4c5c394e856e0105955c3b26c67b80acadd # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer
 
 jobs:
   windows:
@@ -261,6 +261,126 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  # [CHOSEN, not recovered] The Windows installer, openbf2-windows-setup.exe: the separate MIT setup app
+  # (kr4uzi/openbf2-setup, pinned below) with both client packages embedded, installed for the current user without
+  # administrator rights. The setup's release script builds, tests and packs it with Inno Setup
+  # (windows/build-release.ps1; contract in its docs/windows-distribution.md); its toolchain (Boost, zlib, SDL3, the
+  # official Qt for MSVC, DXSETUP's files from Microsoft's DirectX June 2010 redist, Inno Setup) comes from the
+  # setup's ci/fetch-dependencies.sh at pinned versions and hashes. Release runs need both clients; other runs
+  # without a client (no D3DX source on the runner) skip the installer. Not code-signed yet.
+  windows-app:
+    if: ${{ !inputs.linux_only }}
+    name: Windows installer
+    needs: windows
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      SETUP_REPOSITORY: kr4uzi/openbf2-setup
+      SETUP_REVISION: 5ba6a4c5c394e856e0105955c3b26c67b80acadd # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer
+      BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      # vsdevcmd.cmd: the MSVC x64 developer environment for the setup's build
+      - name: Check out the build helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: out/openbf2
+          persist-credentials: false
+          sparse-checkout: |
+            Code/Build
+          sparse-checkout-cone-mode: true
+
+      - name: Download the Windows client packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: packages-windows-*
+          path: out/packages
+          merge-multiple: true
+
+      - name: Unpack the client packages
+        id: clients
+        shell: pwsh
+        run: |
+          $missing = @()
+          foreach ($arch in 'x64', 'x86') {
+            $name = "openbf2-windows-$arch-client"
+            $zip = "out/packages/$name.zip"
+            if (-not (Test-Path $zip)) { $missing += $name; continue }
+            $expected = ((Get-Content "$zip.sha256") -split ' ')[0]
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw "checksum mismatch: $zip" }
+            Expand-Archive $zip -DestinationPath out/clients
+          }
+          if ($missing.Count -gt 0) {
+            if ($env:BF2_RELEASE_RUN -eq 'true') { throw "the installer needs both clients; missing: $($missing -join ', ')" }
+            Write-Output "::notice title=No Windows installer::missing client packages: $($missing -join ', ')"
+            "complete=false" >> $env:GITHUB_OUTPUT
+          } else { "complete=true" >> $env:GITHUB_OUTPUT }
+
+      - name: Check out the setup app
+        if: steps.clients.outputs.complete == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SETUP_REPOSITORY }}
+          ref: ${{ env.SETUP_REVISION }}
+          path: out/openbf2-setup
+          persist-credentials: false
+
+      - name: Prepare the Rust toolchain
+        if: steps.clients.outputs.complete == 'true'
+        run: cargo fetch --locked --manifest-path out/openbf2-setup/core/rtp-bridge/Cargo.toml
+
+      # Git Bash inside the developer environment, so CMake builds zlib and SDL3 with MSVC; the printed options
+      # become the environment of build-release.ps1
+      - name: Fetch the setup toolchain
+        if: steps.clients.outputs.complete == 'true'
+        run: |
+          call out\openbf2\Code\Build\vsdevcmd.cmd x64
+          if errorlevel 1 exit /b 1
+          set "DEPS=%RUNNER_TEMP:\=/%/setup-deps"
+          "C:\Program Files\Git\bin\bash.exe" out/openbf2-setup/ci/fetch-dependencies.sh "%DEPS%" > "%RUNNER_TEMP%\setup-options.txt"
+
+      - name: Pass the toolchain to the build
+        if: steps.clients.outputs.complete == 'true'
+        shell: pwsh
+        run: |
+          foreach ($option in (Get-Content "$env:RUNNER_TEMP\setup-options.txt" -Raw).Trim() -split ' ') {
+            if ($option -notmatch '^-D[A-Z0-9_]+=\S+$') { throw "unexpected toolchain option: $option" }
+            $option.Substring(2) >> $env:GITHUB_ENV
+          }
+
+      - name: Build, test and package the installer
+        if: steps.clients.outputs.complete == 'true'
+        run: |
+          call out\openbf2\Code\Build\vsdevcmd.cmd x64
+          if errorlevel 1 exit /b 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File out\openbf2-setup\windows\build-release.ps1 out\clients\openbf2-windows-x64-client out\clients\openbf2-windows-x86-client "%GITHUB_WORKSPACE%\out\packages-app\openbf2-windows-setup.exe" "%GITHUB_WORKSPACE%\out\setup-build"
+
+      - name: Upload the Windows installer
+        if: steps.clients.outputs.complete == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows-setup
+          path: |
+            out/packages-app/openbf2-windows-setup.exe
+            out/packages-app/openbf2-windows-setup.exe.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload Windows installer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-windows-setup
+          path: |
+            out/setup-build/CMakeFiles/CMakeConfigureLog.yaml
+            out/setup-build/Testing/Temporary/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   linux:
     name: Linux x64 ${{ matrix.role }}
@@ -635,7 +755,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: c580f96ffacf2740e972875c2b9d4e7ce3d70802 # v0.4.0 plus setup stamp test fix
+      SETUP_REVISION: 5ba6a4c5c394e856e0105955c3b26c67b80acadd # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app
@@ -682,12 +802,17 @@ jobs:
           path: out/openbf2-setup
           persist-credentials: false
 
-      # The setup app uses header-only Boost.Asio (1.86 or newer); find_package(Boost CONFIG) finds
-      # Homebrew's copy, nothing is compiled from Boost.
-      - name: Install the Boost headers
+      # The setup app's toolchain, pinned in its ci/versions.env and checked against those hashes: the
+      # Boost headers (header-only Asio), a universal static SDL3 (audio only) and the official universal
+      # Qt (Widgets, Network). build-release.sh takes SETUP_BOOST_ROOT, SETUP_SDL3_ROOT and SETUP_QT_ROOT
+      # from the environment; macdeployqt puts the Qt frameworks and plugins into the bundle, and the
+      # setup's sign-bundle.sh signs them with the app.
+      - name: Fetch the setup toolchain
         run: |
-          brew install boost
-          brew list --versions boost
+          options=$(bash out/openbf2-setup/ci/fetch-dependencies.sh "$RUNNER_TEMP/setup-deps")
+          for option in $options; do
+            echo "${option#-D}" >> "$GITHUB_ENV"
+          done
 
       - name: Prepare the Rust toolchain
         run: |
