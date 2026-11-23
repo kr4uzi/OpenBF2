@@ -277,7 +277,7 @@ public:
     virtual bool  getIsUnderwater() const;   // +0x2D4 (Player: false)
     virtual float getNormalizedNightVisionPower();   // +0x2D8 (Player: 1.0f)
     virtual void  setNightVision(bool, bool);   // +0x2DC 138 B
-    virtual void  rechargeNightVision();   // +0x2E0 (Player: empty)
+    virtual void  rechargeNightVision();   // +0x2E0 (dedicated: empty; client BF2.exe 0x4FB080)
     virtual void  setVisualNightVision(bool);   // +0x2E4 1,000 B
     virtual bool  getNightVision() const;   // +0x2E8 (byte +0x320)
     virtual void  disableFlashBangEffect();   // +0x2EC 59 B
@@ -380,8 +380,10 @@ private:
     void handleGasClouds(float deltaTime);
     void handleBlurryVision(float deltaTime);
     void handleNightVision(float deltaTime);
-    void setNightVisionHudItem(bool enabled);                  // exact empty body
-    void setNightVisionMaskOverlay(bool enabled);              // exact empty body
+    void setNightVisionHudItem(bool enabled);                  // dedicated: empty; client: HUD mask
+    void setNightVisionMaskOverlay(bool enabled);              // dedicated: empty; client: mask overlay
+    // ELF 0x80F7660 / BF2.exe 0x4FAAA0: the occupied vehicle's pco 0 drives a c_ETHelicopter engine.
+    bool playerInHelicopter();
     // Non-virtual statistics reset used by round reset.
     void resetStats();
     // Non-virtual flag combinator; returns the updated word without accessing player state.
