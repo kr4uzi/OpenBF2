@@ -33,6 +33,21 @@ namespace hfe {
 namespace world { extern IBase* materialManager; }
 
 
+// BF2.exe 0x7E2AD0 / ELF 0x083F2EC0: preserve creation order and the two impl() calls.
+void SoldierSound::initTemplates(world::SimpleObjectTemplate* objectTemplate)
+{
+    const char* const names[] = { "Death", "Revive", "Swim", "Swim_Still", "Swim_Sprint" };
+    for (const char* name : names)
+    {
+        world::ObjectTemplate* const child = objectTemplate->addSoundTemplate(std::string(name));
+        child->updateFlags(0x400, 0);
+        SoundObjectTemplate* const soundTemplate = static_cast<SoundObjectTemplate*>(child);
+        soundTemplate->impl()->setIs3dSound(true);
+        soundTemplate->impl()->setLoopCount(1);
+    }
+}
+
+
 // Initializes per-soldier sound slots and requests their configured voices.
 
 SoldierSound::SoldierSound(world::Soldier* soldier)
@@ -123,7 +138,7 @@ void SoldierSound::trigger1PLanding()
 }
 
 // . two slots, first-wins, and only one plays: sound[3] if it exists, otherwise sound[0].
-// Both come from initTemplates, which is unrecovered - so on this build neither exists.
+// Both come from updateContactMaterial.
 void SoldierSound::playJumpSample()
 {
     if (!allowMovementSounds())
@@ -154,14 +169,13 @@ bool SoldierSound::allowMovementSounds() const
 // the death / revive pair
 
 
-// . the bool inverts the gate: pass false and the death sound plays unconditionally; pass
-// true and it plays only for a player in first person. So the caller decides whether this is "my
-// death" or "a death".
+// BF2.exe 0x7E2CB0 / ELF 0x083F35E0: always query the occupant; damage type 1 requires
+// first-person view, while other damage types play without that gate.
 void SoldierSound::die(bool firstPersonOnly)
 {
+    world::IPlayer* player = m_soldier->getOccupingPlayer();
     if (firstPersonOnly)
     {
-        world::IPlayer* player = m_soldier->getOccupingPlayer();
         if (!player || !player->hasFirstPersonView())
             return;
     }

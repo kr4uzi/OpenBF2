@@ -5,6 +5,7 @@
 #include "SoldierTemplate.h"
 
 #include "../../../Animation/BoneAnimation/Skeleton.h"
+#include "../../../Sound/SoldierSound.h"
 
 namespace dice {
 namespace hfe {
@@ -40,6 +41,12 @@ int SoldierTemplate::release()
     if (remaining == 0)
         delete this;
     return remaining;
+}
+
+// BF2.exe 0x5F4830 / ELF 0x081B8C20: the manager calls this after assigning the template name.
+void SoldierTemplate::templateInitialize()
+{
+    SoldierSound::initTemplates(this);
 }
 
 // , 23 B. The null guard and the exclusive use of the third-person

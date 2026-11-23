@@ -288,6 +288,18 @@ they do not establish audible output from a live joined client. Device playback,
 first/third-person mixing, and repeated gameplay still need runtime validation.
 Existing `bfsound-debug-draw` frontiers are outside this factory and remain unchanged.
 
+Soldier templates create their `Death`, `Revive`, `Swim`, `Swim_Still`, and
+`Swim_Sprint` sound children through `SoldierTemplate::templateInitialize`
+(BF2.exe `0x5F4830`, ELF `0x081B8C20`) and the static
+`SoldierSound::initTemplates` helper (BF2.exe `0x7E2AD0`, ELF `0x083F2EC0`).
+This runs after the manager assigns the soldier template's name and before its
+`.tweak` file activates and configures those children. Without this hook, stock
+`ObjectTemplate.active S_<soldier>_Death` selects a missing template and the live
+soldier's Death sound lookup returns null. Both images create the children;
+dedicated sound creation still returns null. The death dispatch and first-person
+damage gate remain those of retail (`Soldier::handleMessage`, BF2.exe `0x5A7570`,
+ELF `0x081ACD90`; `SoldierSound::die`, BF2.exe `0x7E2CB0`, ELF `0x083F35E0`).
+
 ## Content and the console
 
 `.con` files are executable engine configuration. The console binds command names such as

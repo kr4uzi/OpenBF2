@@ -100,6 +100,9 @@ public:
     virtual int getRef() override;
     virtual int release() override;
 
+    // Creates the named sound children consumed by soldier tweaks and live soldiers.
+    virtual void templateInitialize() override;
+
     // Initializes soldier inventory, movement, camera and animation defaults.
     SoldierTemplate()
         : m_refCount3(1)
