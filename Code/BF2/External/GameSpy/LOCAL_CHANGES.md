@@ -6,6 +6,7 @@ keep integration changes identifiable in the source.
 
 | File and function | Local change | Reason |
 | --- | --- | --- |
+| `Voice2/gvOSXAudio.c`: `gviHardwareListDevices` | `[CHOSEN, not recovered]` Bound the device-ID index by the HAL array length and the output count by caller capacity. | The upstream loop interchanged the bounds: skipped/unusable devices could cause reads beyond the HAL array, and enumeration could stop before reaching the default input. |
 | `serverbrowsing/sb_serverbrowsing.c`: `ServerBrowserAuxUpdateIP` | Check for an existing server address before starting and appending a new server. | Avoid rejecting the newly appended server as its own duplicate before the synchronous wait. |
 | `qr2/qr2.c`: `qr2_init_socketA` | Initialize `denyresp2_ip_callback` to `NULL` with the other callbacks. | The enabled query-parser hook must not call an uninitialized function pointer. |
 | `common/gsPlatformSocket.h`: `_MACOSX` socket-call macros | Apply the `socklen_t` casting macros to C translation units only. | Macro definitions such as `connect(s,a,al)` rewrite C++ member functions of the same name in engine sources that include the SDK; the engine already passes `socklen_t`. Affects only the macOS port. |
