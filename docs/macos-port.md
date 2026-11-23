@@ -58,16 +58,51 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   display with a camera housing the view ends below the menu-bar strip, as AppKit lays out
   full-screen windows by default.
 - **Asynchronous.** `setFullscreen` sets what `isFullscreen()` reports at once (the engine's
-  window code reads it back) and the window follows: the toggle runs on the next pass of the run
-  loop, the animation takes about half a second, and AppKit reports its end to the window
-  delegate. One transition at a time; a switch made during one is applied when it ends.
-- **After activation.** A full-screen request made while the application is inactive waits for
-  its activation (`becameActive`). Going into a new Space switches the user there, so a client
-  started in the background would take the screen from the application the user works in, which
-  the launch activation deliberately never does. A start from the launcher or from Terminal is
-  activated by the host's launch activation and enters its Space with it, without a click; a
-  client started while an unrelated application is in front stays a window until it is clicked
-  or switched to. The same holds for a game that restarted itself (mod switch).
+  window code reads it back) and the window follows: the toggle is queued for the run loop, the
+  animation takes about half a second, and AppKit reports its end to the window delegate. One
+  transition at a time; a switch made during one is applied when it ends. Alt+Enter does not
+  wait for the transition, the frame loop keeps pumping. `createWindow` does wait for a
+  full-screen start's transition, three seconds at most (next item).
+- **The start.** The engine owns the main loop and does not read AppKit's event queue while it
+  initialises, for seconds before and after the window is created. The host therefore does
+  three things itself, each with a limit:
+  1. *Launch.* `initApplication` creates the application, the delegate and the menu and
+     completes AppKit's launch in a real run-loop pass: `[NSApp run]`, which
+     `applicationDidFinishLaunching:` stops (five seconds at most). Only then does the process
+     become a regular application (Dock icon, `setActivationPolicy:`): set before the launch has
+     finished, an unbundled program's menu bar stays dead until the next application switch.
+  2. *One activation request, at launch.* `[NSApp activate]` on macOS 14 and later, where the
+     application in front has to allow it (the launcher yields to the game it started) and the
+     system refuses a start nobody in front asked for; `activateIgnoringOtherApps:YES` on
+     macOS 11 to 13. The host runs the event loop until AppKit reports the application active,
+     one second at most. Once, 0.3 s into that wait: if the system names the process frontmost
+     while AppKit still reports it inactive (seen with this unbundled client on Apple silicon),
+     one `activateIgnoringOtherApps:YES`. That takes nothing from anybody, because the system
+     has put the process in front already. Scripted runs with forced focus never ask.
+  3. *Window.* `createWindow` first reads the queue once, so an activation that arrived while
+     the engine started, or its loss, counts (and repeats the conditional request of step 2 once
+     if that state is found). It orders the window in, and a full-screen start of an active
+     application goes into its Space at once while the host runs the event loop until the
+     transition has ended and that Space is the active one. On screen that is one standard
+     full-screen animation at window creation instead of a window that sits on the desktop
+     until the first frame.
+  A full-screen request made while the application is inactive still waits for its activation:
+  going into a new Space switches the user there, so a client started behind another
+  application stays a window until it is clicked or switched to. A queued entry is not made
+  either when the application has become inactive meanwhile.
+- **A refused entry.** AppKit refuses a transition during another animation or a gesture. An
+  entry is then tried again while the application is active, three attempts in all, 0.3 s
+  apart; with an inactive application it waits for the activation. AppKit reports a refused
+  entry as `windowDidFailToEnterFullScreen`, as `windowDidExitFullScreen` while the entry
+  runs, or as both in that order; the host counts that as one refusal. `-toggleFullScreen:` has
+  no direction, so the queued toggle is made only while the window is not yet where the
+  transition leads. A transition that AppKit has not announced by the end of `createWindow`'s
+  wait is given up; the game stays windowed until the next switch or activation.
+- **A game that restarts itself** (mod switch, `BF2Engine::restartBF2`). After its last frame
+  the old instance, when it is the active application, waits until the new process is a regular
+  running application (two seconds at most) and hands the front over as the launcher does:
+  `yieldActivationToApplication:` and `activateFromApplication:options:` (macOS 11 to 13:
+  `activateWithOptions:`). A restart made in the background hands nothing over.
 - **Windowed stays windowed.** A windowed game window is `NSWindowCollectionBehaviorFullScreenNone`
   and not resizable, as before; it becomes a full-screen primary, resizable window only for its
   Space and is restored when it is back. A resolution change made in full screen applies to the
@@ -76,18 +111,42 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   can take the window out of its Space. The host then stays windowed and reports it until the
   engine switches again (one Alt+Enter brings the engine's own flag in line, the next one returns
   to full screen); it never pulls the user back into the Space.
-- **Focus and mouse.** Leaving the Space for another application deactivates the game as any
-  application switch does: the focus gate closes, the cursor is shown and re-associated, and
-  returning restores capture. Leaving it for an empty desktop Space can leave the application
-  active with its window key; the host watches the window's occlusion and treats a hidden Space as
-  unfocused (`spaceHidden`), so the mouse is released there too.
-- **What it did not make obsolete.** The launch activation (the repeated requests, the Dock reset,
-  the system-state fallback, the restart marker) and the focus repair concern getting key status
-  and activation at all; they run before the window enters its Space and stay. What went is the
-  presentation-option and borderless-frame code and the key-window overrides a borderless window
-  needed.
-- **Log.** `[host] full screen: ...` lines mark each step (entering, in the Space, windowed, left
-  through the system, waiting for activation, a refused transition, the Space off or on screen).
+- **Focus and mouse.** The engine's focus is what AppKit reports: the game window is the key
+  window, the application is active, and the window's full-screen Space is the active one
+  (`syncFocus`, called from the delegate's callbacks, the active-Space notification and once per
+  pump, so a change no callback reported lasts one frame). Leaving the Space for another
+  application deactivates the game as any application switch does: the focus gate closes, the
+  cursor is shown and re-associated, and returning restores capture. Leaving it for an empty
+  desktop Space can leave the application active with its window key; the host asks
+  `window.isOnActiveSpace` and treats a Space that is not the active one as unfocused
+  (`spaceHidden`), so the mouse is released there too. Nothing in the host asks for key status
+  or repairs focus; input that the gate drops while the application is in front is reported
+  (`[host] input dropped: ...`, once a second at most).
+- **What this replaced.** Until this sequence the host asked for activation when the window was
+  shown and noticed the answer with the first frame, seconds later; the window sat on the
+  desktop as a window until then. Around that it had a ten-second activation period with
+  repeated requests, an accounting of when the host first looked at it, a launcher-or-bystander
+  rule by process ancestry, a list of clicked-away applications, a restart marker in the
+  environment, a reset through the Dock, a fallback to the system's state and a focus
+  self-repair. All of it is gone. What remains is listed above: one request at launch with one
+  conditional second one, the wait of an inactive application's full-screen request, the
+  dropped-input report, and three bounded waits in which the host runs the event loop itself
+  (activation 1 s, Space entry 3 s, restart hand-over 2 s). In those waits events go to AppKit
+  only; input made then does not reach the engine.
+- **Log.** `[host] launch: finished after N ms (activation policy at the start: ...)`,
+  `[host] activation requested at launch (frontmost: ...)`, then
+  `[host] application active after N ms` or `[host] application not activated within N ms ...`
+  (a later activation: `[host] application active N ms after the launch request`).
+  `[host] full screen: ...` lines mark each step: entering, in the Space after N ms, windowed,
+  left through the system, waiting for the activation, a refused transition and its retries,
+  the Space off or on screen. `[host] restart: ...` says what a restart handed over.
+
+Not verified on screen: the start sequence, the hand-over of a restart and the active-Space test
+were compiled and their rules checked headless (`Code/Tests/macos_input`: focus following
+AppKit, the dropped-input report, the full-screen state including refusals); nothing that opens
+a window was run for them, and `Code/Tests/macos_host` with its new launch checks and
+`--fullscreen-start` was compiled only. The macOS 11 to 13 branches follow AppKit's
+documentation; no such system was at hand. Apple silicon has not run this sequence.
 
 ## PR #55 integration
 
@@ -1431,7 +1490,7 @@ Win32 call sites, all `[CHOSEN, not recovered]`:
 | --- | --- | --- |
 | `BF2Engine.cpp` mainLoop | `ShowCursor` | `CocoaHost::showCursor` (same counter) |
 | `BF2Engine::browseModHomepage` | `ShowWindow(SW_MINIMIZE)`, `ShellExecuteA(url)` | `CocoaHost::minimize`, `openURL` |
-| `BF2Engine::restartBF2` (and `activateMod`) | `GetModuleFileNameA` + `ShellExecuteA(exe, args)` | `macos::relaunchExecutable`: `_NSGetExecutablePath`, the command line split as `CommandLineToArgvW` splits it, `posix_spawn` in the current directory and environment (`Platform/macOS/MacSystem`). [CHOSEN] On macOS the new instance's environment gets `BF2_RESTARTED_IN_FRONT=1` when the game is the active application, and loses that variable otherwise ([macos-s2-4.md](macos-s2-4.md), Activation) |
+| `BF2Engine::restartBF2` (and `activateMod`) | `GetModuleFileNameA` + `ShellExecuteA(exe, args)` | `macos::relaunchExecutable`: `_NSGetExecutablePath`, the command line split as `CommandLineToArgvW` splits it, `posix_spawn` in the current directory and environment (`Platform/macOS/MacSystem`). [CHOSEN, not recovered] After its last frame the foreground instance waits up to 2 s for the new regular application, then yields and activates it; a background or forced-focus instance hands nothing over ([macos-s2-4.md](macos-s2-4.md), Start and activation) |
 | `HudAmmo.cpp`, `HudInformationAdapter.cpp`, `HudVehicleInformation.cpp` | `MessageBoxA` | `macos::showMessageBox`: a blocking `CFUserNotificationDisplayAlert` with one OK button, Windows-1252 text |
 | `BF2HudManagerSpotted.cpp` | `RegOpenKeyExA` (the Battlefield 2142 install probe) | key presence in `Registry.con`; see [macOS write paths](macos-write-paths.md#registrycon-syntax) |
 | `SwiffHost.cpp` | Winsock 1.1 (`WSAStartup`/`WSACleanup`, `gethostbyname`, `inet_addr`, `inet_ntoa`) | BSD sockets, no startup call. The address word is `uint32_t` (Winsock's 32-bit `u_long`): an LP64 `unsigned long` would read eight bytes from the four-byte `h_addr_list` entry. |
