@@ -52,6 +52,7 @@
 #include "../../HapticSettings.h"
 #include "../../Main/BF2ClientSeams.h"           // g_hapticSettings ds:0x987394, hudManager ds:0xA10890
 #include "../../../Menu/BF2HudManager.h"         // onManDown, BF2HudManager +0x350
+#include "../../../Menu/HudVehicleInformation.h" // the revive's updateHudMode (0x78B870)
 #endif
 #include "../../../AI/AIInterface/BFKnowledge/IAIObject.h"   // init()'s lock bracket, the revive's init()
 #include "../../GameServer/ServerSettings.h"     // serverSettings - the man-down time
@@ -2961,7 +2962,20 @@ void Soldier::handleManDownActions(TemplateMessage message, IPlayer* player)
 
     switch (player->getCurrentFiringButton())     // IPlayer vslot ELF +0x208 / PE +0x204
     {
-    case io::PIFire:                              // 8 - explicit and empty; see the note above
+    case io::PIFire:                              // 8
+#if !DEDICATED
+        // BF2.exe 0x5A5BF7..0x5A5C3B: on the client, the local player's first primary-fire press
+        // while down calls for a medic (IGame +0xD0, HudNodeTypes 49), at most three times per
+        // man-down (m_medicCalled, PE +0x2F8, already 1 after the automatic call in "die"). The
+        // dedicated ELF keeps this case empty.
+        if (!isDedicated() && player == playerManager->getLocalHumanPlayer()
+            && m_fireButtonState[0].translateMessage(message) == 7     // PE this+0x32C
+            && m_medicCalled < 3)
+        {
+            gameCallForSpecialist(player, static_cast<HudNodeTypes>(49));
+            ++m_medicCalled;
+        }
+#endif
         break;
 
     case io::PIAltFire:                           // 31
@@ -3240,6 +3254,15 @@ void Soldier::handleMessage(TemplateMessage message, IPlayer* player, bool remot
                 eventManager->postEvent(static_cast<EventCategory>(3), 7, &payload, 0.0f);
             }
         }
+#if !DEDICATED
+        // BF2.exe 0x5A790D..0x5A796A: on the client, the local player's revive brings the soldier
+        // panels back through HudVehicleInformation::updateHudMode (0x78B870, reached through
+        // BF2HudManager +0x24C), which clears KilledState and so also hides the man-down text that
+        // onManDown set. The dedicated ELF has no such tail.
+        if (!isDedicated() && playerManager->getLocalHumanPlayer() == getOccupingPlayer()
+            && hudManager && hudManager->getVehicleInformation())
+            hudManager->getVehicleInformation()->updateHudMode();
+#endif
         break;
 
     case 28:
