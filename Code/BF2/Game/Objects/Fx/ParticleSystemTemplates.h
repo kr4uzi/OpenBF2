@@ -7,6 +7,7 @@
 #ifndef GAME_OBJECTS_PARTICLESYSTEMTEMPLATES_H // [INFERRED] Guard style.
 #define GAME_OBJECTS_PARTICLESYSTEMTEMPLATES_H
 
+#include <iosfwd>
 #include <string>
 
 #include "../ObjectTemplate.h"
@@ -15,7 +16,7 @@
 namespace dice {
 namespace hfe {
 
-namespace geom { class IParticleSystemTemplate; }
+namespace geom { class IParticleSystemTemplate; enum GasCloudType : int; }
 
 namespace world {
 
@@ -25,6 +26,11 @@ extern const char* const ParticleBlendModeNames[2];
 extern const char* const ParticleDrawOrderNames[3];
 extern const char* const ParticleEmitPrioNames[3];
 extern const char* const SpriteParticleSystemTypeNames[3];
+
+// The console spelling of geom::GasCloudType: ELF 0x8211340 / 0x8211380 (world scope, as the
+// symbols). 0 = "None", 1 = "TearGas".
+std::ostream& operator<<(std::ostream& stream, geom::GasCloudType type);
+std::istream& operator>>(std::istream& stream, geom::GasCloudType& type);
 
 // ParticleSystemTemplateBase - the family root. +15 virtuals over ObjectTemplate (slot order
 // below); no CID of its own (queryImplementation in every leaf answers only the leaf CID and
@@ -115,6 +121,24 @@ public:
     float getPreWarmTime() const;
     void setTransparencyGraph(const Vec4& value);
     const Vec4& getTransparencyGraph() const;
+
+    // Gas-cloud authoring forwarders (xpack tear gas): ELF 0x8210270..0x8210560 /
+    // client PE 0x64F300..0x64F4E0, read in full. Setters keep the repeated impl test before the
+    // refresh; getters dereference the impl unguarded, as shipped.
+    void setGasCloudType(geom::GasCloudType value);
+    geom::GasCloudType getGasCloudType() const;
+    void setBlurryVisionTime(float value);
+    float getBlurryVisionTime() const;
+    void setBlurryVisionHoldTime(float value);
+    float getBlurryVisionHoldTime() const;
+    void setMinGasCloudRadius(float value);
+    float getMinGasCloudRadius() const;
+    void setMaxGasCloudRadius(float value);
+    float getMaxGasCloudRadius() const;
+    void setGasCloudRadiusTime(float value);
+    float getGasCloudRadiusTime() const;
+    void setGasCloudDamage(float value);
+    float getGasCloudDamage() const;
 
 protected:
     // layout, +0x30..+0x43. ObjectTemplate occupies 0x00..0x2F.
