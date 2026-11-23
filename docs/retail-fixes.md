@@ -375,6 +375,22 @@ Each entry is a heading that names the fix, followed by these fields:
   has no mixer, so the allocation is not reached there.
 - **Source:** `Code/BF2/Game/VoipClient/VoipMixer.cpp`
 
+### GroundEffectBundle plays the effect of the ground material it hits
+
+- **Retail:** A GroundEffectBundle (stock: `geb_tank`, material 66, on the tank and artillery
+  barrels) casts a ray of `maxTriggerDistance` metres below itself when it starts and finds the hit
+  object face's material or the terrain's (`BF2.exe` `0x646B60`, ELF `0x8202AB0`), but then asks the material
+  manager for the effect of the cell (own material, 0) (`BF2.exe` `0x646D05` to `0x646D1D`, ELF
+  `0x8202CF6` to `0x8202D1F`). So it always plays that cell's effect (stock: `e_geb_tank_generic`),
+  although `materialManagerSettings.con` gives cells (66, n) separate effects for water, sand,
+  gravel, dirt, mud and leaves. Reported for retail by a Project Reality modder in
+  [B2BF#93](https://github.com/B2BF/OpenBF2/issues/93).
+- **OpenBF2:** Asks the cell (own material, hit material). A Soldier hit leaves the hit material
+  at -1, and like any material without its own cell it falls back to (own material, 0), so those
+  hits play the effect retail plays.
+- **Applies to:** Client; all platforms. The dedicated server never creates the object.
+- **Source:** `Code/BF2/Game/Objects/Fx/GroundEffectBundle.cpp`
+
 ## Server
 
 ### The dedicated server rejects ghost updates sent by a client

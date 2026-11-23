@@ -42,7 +42,7 @@ void GroundEffectBundle::handleMessage(TemplateMessage message, IPlayer*, bool r
 // the visual transformation's negated up row, scaled by maxTriggerDistance. Objects are tested
 // first (no dynamic objects, no terrain in that query); only when no object is hit is the terrain
 // asked, two-sided, and a terrain miss ends the call. Within maxTriggerDistance the effect of the
-// material cell (template material, material 0), index 0, plays at the hit point with the hit
+// material cell (template material, hit material), index 0, plays at the hit point with the hit
 // normal and the visual transformation's forward row.
 void GroundEffectBundle::calculateCurrentDistanceAndEffectPosition()
 {
@@ -76,6 +76,7 @@ void GroundEffectBundle::calculateCurrentDistanceAndEffectPosition()
                 getAbsolutePosition(), to, hitPoint, hitFraction, hitNormal, terrainMaterial,
                 true))
             return;
+        hitMaterial = terrainMaterial;      // [CHOSEN, not recovered] see the material lookup below
     }
 
     const Vec3& position = getAbsolutePosition();
@@ -86,11 +87,16 @@ void GroundEffectBundle::calculateCurrentDistanceAndEffectPosition()
     if (!(std::sqrt(dx * dx + dy * dy + dz * dz) <= objectTemplate->m_maxTriggerDistance))
         return;
 
-    // Retail asks the (template material, 0) cell - the hit material found above is not used
-    // (ELF 0x8202CF6..0x8202D1F / PE 0x646D05..0x646D1D pass material, 0, 0).
+    // [CHOSEN, not recovered] Retail fix "GroundEffectBundle plays the effect of the ground
+    // material it hits" (docs/retail-fixes.md). Retail asks the (template material, 0) cell and
+    // drops the hit material (ELF 0x8202CF6..0x8202D1F / PE 0x646D05..0x646D1D pass material,
+    // 0, 0), so only the cell's default effect ever plays. The hit material is the object face's
+    // material, or the terrain's; a Soldier hit leaves it at -1, whose missing cell falls back to
+    // (template material, 0) inside getEffectTemplate, as does every other missing cell.
     IObjectTemplate* const effectTemplate = static_cast<IObjectTemplate*>(
         static_cast<MaterialManager*>(materialManager)->getEffectTemplate(
-            static_cast<unsigned int>(L::objectTemplate(this)->getMaterial()), 0u, 0));
+            static_cast<unsigned int>(L::objectTemplate(this)->getMaterial()),
+            static_cast<unsigned int>(hitMaterial), 0));
     if (!effectTemplate)
         return;
 
