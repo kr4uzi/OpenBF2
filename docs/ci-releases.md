@@ -97,7 +97,7 @@ from them.
 | `openbf2-macos.dmg` | `OpenBF2.app`: the setup assistant and launcher with the universal (arm64 + x86_64) client; the app carries its own instructions |
 | `openbf2-windows-setup.exe` | the Windows installer: the setup assistant and launcher (kr4uzi/openbf2-setup) with both clients, installed for the current user without administrator rights; it installs the game from the user's disc. Release runs sign it when signing is configured ([Windows signing](#windows-signing)) |
 | `openbf2-windows.zip` | `x64\` the x64 client, `x86\` the x86 client, `server\` the x86 dedicated server, `editor\` the x86 editor, `licenses\`, `LICENSE`, `README.txt`, `build-info.json`; release runs sign its programs and DLLs when signing is configured ([Windows signing](#windows-signing)) |
-| `openbf2-linux.zip` | the x64 dedicated server: `bf2`, `libdice_py.so`, `licenses/`, `LICENSE`, `README.txt`, `build-info.json` |
+| `openbf2-linux.zip` | the x64 dedicated server: `bf2`, `libdice_py.so`, `libaidll.so`, `licenses/`, `LICENSE`, `README.txt`, `build-info.json` |
 | `openbf2-linux-x86_64-client.tar.gz` | `OpenBF2/`: the Qt installer/launcher, native Vulkan client, bundled runtime, setup manifests, licenses and checked provenance; no game media or user profiles |
 | `openal-soft-1.25.2.tar.bz2` | the LGPL source of both Windows clients' `BF2OpenAL.dll` ([OpenAL Soft](#openal-soft-in-the-windows-clients)) |
 
@@ -191,7 +191,7 @@ Every Windows package also carries the app-local Visual C++ runtime beside its e
 | `openbf2-windows-x86-editor.zip` | `BF2Editor.exe`, `dice_py.dll`, editor `RendDX9.dll`, `TextureAtlasBuilder.dll`, `BF2VoipServer.dll` | `openbf2-windows.zip`, `editor\` |
 | `openbf2-windows-x64-server.zip` | `bf2_w64ded.exe`, `dice_py.dll`, `aidll.dll` | none |
 | `openbf2-windows-x64-client.zip` | `BF2.exe`, `dice_py.dll`, `RendDX9.dll`, `SwiffPlayer.dll`, `BF2Audio.dll`, `TextureAtlasBuilder.dll`, `aidll.dll`, `BF2OpenAL.dll` (OpenAL Soft); no PunkBuster, so it cannot join servers that require it | `openbf2-windows.zip`, `x64\` |
-| `openbf2-linux-x64-server.zip` | `bf2`, `libdice_py.so` | `openbf2-linux.zip` |
+| `openbf2-linux-x64-server.zip` | `bf2`, `libdice_py.so`, `libaidll.so` | `openbf2-linux.zip` |
 | `openbf2-macos-arm64-client.zip`, `openbf2-macos-x86_64-client.zip` | `bf2_client`, `libdice_py.dylib`, `libaidll.dylib` | merged into the app in `openbf2-macos.dmg` |
 | `openbf2-macos-arm64-server.zip`, `openbf2-macos-x86_64-server.zip` | `bf2`, `libdice_py.dylib`, `libaidll.dylib` | none |
 
@@ -442,7 +442,7 @@ The macOS client and server ZIPs are development artifacts, not release assets.
    (the CI artifact `openbf2-linux-x64-server.zip` installs the same way under its own name).
    Copy your 1.50 server's `mods/`, `python/`, `pylib-2.3.4.zip`, and any `Settings/`,
    `Profiles/` and used `admin/` into it. Use Linux server content with lowercase game paths.
-   Keep `libdice_py.so` beside `bf2` and run:
+   Keep `libdice_py.so` and `libaidll.so` beside `bf2` and run:
 
    ```sh
    cd "$HOME/Games/openbf2-linux"
