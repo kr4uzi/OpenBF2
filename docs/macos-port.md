@@ -58,6 +58,23 @@ S2.10 rules 5, 6 and 8 (POSIX publication, UTF-16 file boundaries and packed dat
 were documented in the S2.10 threads notes, including the
 complete volatile/Interlocked inventory, Intel checks and owner-run M2 TSan bundle.
 
+## Loading without the spinning wait cursor
+
+`[CHOSEN, not recovered]` A level load runs on the main thread for tens of seconds without a
+pump. Windows queues a busy application's messages and animates its cursor (the menu's
+`cursor_busy.ani`) by itself; macOS shows the spinning wait cursor over an application that leaves
+the window server's events unread for a few seconds, and only the host animates the game's `.ani`
+cursor. Retail repaints its loading screen at every throttled load step (`GameLogic`'s load
+callback, 1/30 s) and at every effect load (`shaderLoadingEvent`), both through
+`ECMenuMenuEvent_UpdateLoadingScreen`. There `ModuleGame::handleEvent` now also calls
+`ClientHost::serviceWhileBusy()` (at most every 50 ms, whether or not the screen is repainted):
+the Cocoa host takes the queued events from the window server and holds them, and moves the cursor
+on. The next pump delivers the held events first, in order, so focus changes, key equivalents and
+game input reach the engine when they did before; a press outside the game view made during the
+load (title bar, menu bar) is not handed to AppKit late, consecutive pointer moves are kept as the
+last one, and a quit request (the Dock's Quit) is made by the next pump. Stretches of a load that
+neither step the load counter nor load an effect are not covered. The SDL host does nothing.
+
 ## G2 graphics subset
 
 The owner-requested G2 package compiles all 122

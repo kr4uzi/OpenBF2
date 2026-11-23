@@ -108,6 +108,12 @@ public:
     // Routes injected NSEvents without creating a window or touching the hardware cursor.
     static void enableHeadlessForTest(host::ClientHost& host);
     static void injectEventForTest(host::ClientHost& host, void* nsEvent);
+    // The busy service (ClientHost::serviceWhileBusy): holds an event as the service holds what it
+    // takes from the window server, reports how many are held, and delivers them as the next pump
+    // does first.
+    static void holdEventForTest(host::ClientHost& host, void* nsEvent);
+    static unsigned heldEventsForTest(const host::ClientHost& host);
+    static void deliverHeldEventsForTest(host::ClientHost& host);
     static void cursorStateForTest(const host::ClientHost& host, bool& hidden, bool& disassociated);
     static void pumpRawMouseForTest(host::ClientHost& host);
 };

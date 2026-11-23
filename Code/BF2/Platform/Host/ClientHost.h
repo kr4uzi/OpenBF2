@@ -87,6 +87,14 @@ public:
     bool pumpEvents();
     // Blocks for up to timeoutSeconds for an event, then drains. Returns as pumpEvents.
     bool waitEvents(double timeoutSeconds);
+    // [CHOSEN, not recovered] Long main-thread work (a level load) calls this at the points where
+    // retail repaints its loading screen. It keeps the application responsive for the platform
+    // without delivering anything: Cocoa takes the queued events from the window server and keeps
+    // them, in order, for the next pumpEvents(), which delivers them first; the animated cursor
+    // moves on. No callback runs and no input reaches the engine earlier than without the call.
+    // Throttled internally (a call within 50 ms of the last pump does nothing), so it may be called
+    // often. SDL hosts: nothing.
+    void serviceWhileBusy();
     // A user-initiated close: notifies onCloseRequested, then sets the quit flag.
     void requestQuit();
     // PostQuitMessage: sets the quit flag only.

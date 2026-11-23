@@ -9,6 +9,9 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
+#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+#include "../Platform/Host/ClientHost.h"           // [CHOSEN] the loading screen's busy service
+#endif
 
 namespace dice { namespace hfe {
 class ConsoleObject;                                        // Core/ConsoleObject.h
@@ -1063,6 +1066,16 @@ void ModuleGame::handleEvent(EventCategory category, unsigned int id, EventNode*
             return;
 
         case 4:                                             // ECMenuMenuEvent_UpdateLoadingScreen
+#if defined(__APPLE__) && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+            // [CHOSEN, not recovered] A level load posts this event at every throttled load step
+            // (GameLogic loadCallback, 1/30 s) and at every effect load (shaderLoadingEvent), and
+            // never pumps the window. Here, where retail repaints its loading screen, the Cocoa
+            // host takes the window server's queued events and holds them for the next pump, and
+            // moves the animated busy cursor on: without that macOS replaces it with the spinning
+            // wait cursor after a few seconds. Nothing is delivered to the engine here, and it is
+            // done whether or not the screen is repainted (ClientHost::serviceWhileBusy).
+            host::ClientHost::instance().serviceWhileBusy();
+#endif
             if (menuLogic && m_appActive)
             {
                 menuLogic->update(1.0);                     // +0x28, the literal 1.0

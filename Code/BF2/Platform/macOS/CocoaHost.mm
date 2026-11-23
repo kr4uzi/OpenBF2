@@ -319,6 +319,25 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     float scriptX = 0.0f, scriptY = 0.0f;
     bool scriptPointerSet = false;
 
+    // [CHOSEN, not recovered] The busy service (ClientHost::serviceWhileBusy). macOS shows the
+    // spinning wait cursor over an application that leaves the window server's events unread for
+    // a few seconds, and only the host animates the game's own .ani cursor (updateCursorImage) -
+    // Windows animates a cursor by itself and queues a busy application's messages without
+    // comment. A level load runs for tens of seconds without a pump. During it the service takes
+    // the queued events from the window server and holds them here, in order, and moves the
+    // cursor on; the next pump delivers them before any newer event, exactly as it would have
+    // found them in the queue. Nothing reaches AppKit's dispatch, the delegates or the listeners
+    // in between, so focus changes, key equivalents and game input arrive when they did before.
+    NSMutableArray<NSEvent*>* heldEvents = nil;
+    double lastPumpAt = 0.0;          // uptime() of the last pump or busy service
+    unsigned int heldDropped = 0;     // moves dropped for the cap since the last delivery
+    // The run loop that the service runs can still deliver an Apple Event (the Dock's Quit) to the
+    // delegate. A quit request made while the service runs is held, as its events are, and the
+    // next pump makes it (requestQuit).
+    bool servicing = false;
+    bool quitHeld = false;
+    static const NSUInteger kHeldEventCap = 4096;
+
     // [TEMP] setSystemFocusForTest: the answers AppKit and the system would give, so the focus
     // repair and the launch activation can be checked without an application or a window.
     struct TestSystem
@@ -1752,13 +1771,103 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         reconcileFocus();
     }
 
+    // The busy service: hold what the window server queued, animate the cursor. Throttled to one
+    // run per 50 ms of busy time, counted from the last pump or service.
+    void serviceWhileBusy()
+    {
+        if (!appInitialized || testHeadless || scripted)
+            return;
+        const double now = uptime();
+        if (lastPumpAt != 0.0 && now - lastPumpAt < 0.05)
+            return;
+        lastPumpAt = now;
+        servicing = true;
+        @autoreleasepool
+        {
+            for (;;)
+            {
+                NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                                    untilDate:[NSDate distantPast]
+                                                       inMode:NSDefaultRunLoopMode
+                                                      dequeue:YES];
+                if (!event)
+                    break;
+                holdEvent(event);
+            }
+            updateCursorImage();
+        }
+        servicing = false;
+    }
+
+    // Keeps one event for the next pump. A pointer move that follows another one replaces it (the
+    // engine reads positions, and relative motion during a load is stale): a long load with the
+    // mouse in motion would otherwise hold thousands. Past the cap only moves are dropped.
+    void holdEvent(NSEvent* event)
+    {
+        if (!heldEvents)
+            heldEvents = [NSMutableArray array];
+        const bool isMove = event.type == NSEventTypeMouseMoved;
+        if (isMove && heldEvents.count && heldEvents.lastObject.type == NSEventTypeMouseMoved)
+            [heldEvents removeLastObject];
+        else if (isMove && heldEvents.count >= kHeldEventCap)
+        {
+            ++heldDropped;
+            return;
+        }
+        [heldEvents addObject:event];
+    }
+
+    // The pump's first step: the held events, in order, as the queue would have delivered them.
+    // A press outside the game view (the title bar, the menu bar, another window of this process)
+    // is not handed to AppKit late: its tracking would wait for a release that has already come.
+    // Such a press is window management, which the engine never sees either (route).
+    void deliverHeldEvents()
+    {
+        if (!heldEvents.count)
+            return;
+        NSArray<NSEvent*>* held = heldEvents;
+        heldEvents = nil;
+        if (heldDropped)
+        {
+            std::fprintf(stderr, "[host] %u pointer move(s) dropped while the application was busy\n", heldDropped);
+            heldDropped = 0;
+        }
+        for (NSEvent* event in held)
+        {
+            route(event);
+            switch (event.type)
+            {
+            case NSEventTypeLeftMouseDown:
+            case NSEventTypeRightMouseDown:
+            case NSEventTypeOtherMouseDown:
+            case NSEventTypeLeftMouseDragged:
+            case NSEventTypeRightMouseDragged:
+            case NSEventTypeOtherMouseDragged:
+                if (!insideGameView(event))
+                    continue;
+                break;
+            default:
+                break;
+            }
+            [NSApp sendEvent:event];
+        }
+    }
+
     bool pump(double timeout)
     {
         if (!appInitialized)
             return quit;
         flushCapsRelease();
+        lastPumpAt = uptime();
         @autoreleasepool
         {
+            deliverHeldEvents();
+            if (quitHeld)
+            {
+                quitHeld = false;
+                if (!quit)
+                    requestClose();
+            }
             NSDate* until = timeout > 0.0 ? [NSDate dateWithTimeIntervalSinceNow:timeout]
                                           : [NSDate distantPast];
             for (;;)
@@ -2276,11 +2385,17 @@ unsigned int ClientHost::deactivationCount() const { return m_impl->deactivation
 
 bool ClientHost::pumpEvents()                     { return m_impl->pump(0.0); }
 bool ClientHost::waitEvents(double timeoutSeconds){ return m_impl->pump(timeoutSeconds); }
+void ClientHost::serviceWhileBusy()               { m_impl->serviceWhileBusy(); }
 bool ClientHost::quitRequested() const            { return m_impl->quit; }
 void ClientHost::postQuitMessage()                { m_impl->quit = true; }
 
 void ClientHost::requestQuit()
 {
+    if (m_impl->servicing)
+    {
+        m_impl->quitHeld = true;                 // made by the next pump (Impl::serviceWhileBusy)
+        return;
+    }
     if (!m_impl->quit)
         m_impl->requestClose();
 }
@@ -2715,6 +2830,24 @@ CocoaHostTestHooks::ActivationStats CocoaHostTestHooks::activationStatsForTest(c
 void CocoaHostTestHooks::enableHeadlessForTest(host::ClientHost& host)
 {
     host.m_impl->testHeadless = true;
+}
+
+void CocoaHostTestHooks::holdEventForTest(host::ClientHost& host, void* nsEvent)
+{
+    host.m_impl->holdEvent((__bridge NSEvent*)nsEvent);
+}
+
+unsigned CocoaHostTestHooks::heldEventsForTest(const host::ClientHost& host)
+{
+    return static_cast<unsigned>(host.m_impl->heldEvents.count);
+}
+
+void CocoaHostTestHooks::deliverHeldEventsForTest(host::ClientHost& host)
+{
+    @autoreleasepool
+    {
+        host.m_impl->deliverHeldEvents();
+    }
 }
 
 void CocoaHostTestHooks::injectEventForTest(host::ClientHost& host, void* nsEvent)
