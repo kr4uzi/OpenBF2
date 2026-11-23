@@ -9,6 +9,7 @@
 #include "../../AI/AIInterface/AIInstance.h"     // aiInstance()->isBotsGame()  (ds:0x8AC37F8)
 #include "../../Core/EventManager.h"             // eventManager->postEvent
 #include "../../IO/BitStream.h"                  // readBits / writeBits
+#include "../Main/Game.h"                        // isDedicated() - the client-only HUD post (BF2.exe 0x440510)
 
 namespace dice {
 namespace hfe {
@@ -88,6 +89,17 @@ bool SpottedEvent::executeServer(int connectionId)
         24,                                      // +0x0C..+0x23 - the whole payload
         0.0f);
     game->sendGameEventToAllPlaying(broadcast);                                  // +0x84
+
+#if !DEDICATED
+    // BF2.exe 0x540034..0x540051: a non-dedicated server also posts the event to its own HUD,
+    // directly, with the same id and payload. The hosting player has no client connection, so
+    // the broadcast above never reaches it - without this, a local game's player never sees its
+    // spotted-enemy markers (HUD 43) or its medic/ammo/repair calls (46..50). The dedicated ELF
+    // has no such tail.
+    if (!isDedicated())
+        eventManager->postEvent(ECHud, static_cast<unsigned int>(m_hudEventId),
+                                &m_spotterVehicleNetId, 0.0f);                    // PE +0x10
+#endif
 
     return true;
 }
