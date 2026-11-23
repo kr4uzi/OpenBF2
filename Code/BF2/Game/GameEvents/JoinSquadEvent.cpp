@@ -4,6 +4,8 @@
 #include "../GameLogic/SquadManager/ISquadManager.h" // typed SquadManager +0x30 dispatch
 #include "../../Core/Ids.h"                      // IID_IGameServer
 #include "../../IO/BitStream.h"                  // readBits / writeBits
+#include "../Objects/IPlayer.h"                  // getTeam - the team check
+#include "../../Scene/Object/PlayerManager.h"    // getPlayerFromId - the team check
 
 namespace dice {
 namespace hfe {
@@ -43,6 +45,13 @@ bool JoinSquadEvent::executeServer(int connectionId)
 {
     if (!game->queryInterface(IID_IGameServer))
         return false;
+
+    // [CHOSEN, not recovered] Retail fix "The server refuses a squad request for another team"
+    // (docs/retail-fixes.md). Retail passes the packet's team to addToSquad unchecked (ELF
+    // 0x8075270), and addToSquad (ELF 0x811CC20) never compares it with the player's team.
+    world::IPlayer* const sender = world::playerManager->getPlayerFromId(connectionId);
+    if (sender && sender->getTeam() != m_team)
+        return true;
 
     if (squadManager)
         static_cast<ISquadManager*>(squadManager)->addToSquad(

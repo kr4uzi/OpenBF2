@@ -5,6 +5,8 @@
 #include "../../Core/IBase.h"
 #include "../../IO/BitStream.h"                  // readBits / writeBits / skipBits
 #include "../GameLogic/SquadManager/ISquadManager.h" // typed SquadManager dispatch
+#include "../Objects/IPlayer.h"                  // getTeam - the team check
+#include "../../Scene/Object/PlayerManager.h"    // getPlayerFromId - the team check
 
 namespace dice {
 namespace hfe {
@@ -58,6 +60,13 @@ void ChangeSquadNameEvent::executeClient()
 bool ChangeSquadNameEvent::executeServer(int connectionId)
 {
     if (!squadManager)
+        return true;
+
+    // [CHOSEN, not recovered] Retail fix "The server refuses a squad request for another team"
+    // (docs/retail-fixes.md). Retail (ELF 0x806B7A0) renames the packet's team's squad and lets
+    // setSquadName add the named player to it, whatever team that player is on.
+    world::IPlayer* const target = world::playerManager->getPlayerFromId(m_playerId);
+    if (target && target->getTeam() != m_team)
         return true;
 
     const int leader = static_cast<ISquadManager*>(squadManager)->getSquadLeader(

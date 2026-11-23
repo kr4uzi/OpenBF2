@@ -565,6 +565,36 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/Game/GameLogic/ServerGameLogic.cpp`,
   `Code/Tests/gamelogic_registries_runtime.cpp`
 
+### The server refuses a squad request for another team
+
+- **Retail:** `JoinSquadEvent::executeServer` passes the team byte from the packet to
+  `SquadManager::addToSquad` (Linux ia-32 server `0x8075270`), and `addToSquad` (`0x811CC20`)
+  looks the squad up in that team without comparing it with the player's team.
+  `ChangeSquadNameEvent::executeServer` (`0x806B7A0`) likewise renames the packet's team's squad
+  and has `setSquadName` add the named player to it. A request for the other team's squad thus
+  puts the player into that squad's member set, while `Squad::addToSquad` (`0x81198F0`) sets only
+  the player's squad number, so the clients show the player in the same-numbered squad of their own
+  team, and makes them its leader when that squad has no players.
+  The player is later removed from their own team's squad, where `removeFromSquad` (`0x811CF50`)
+  does not find them and returns, so the other team's squad keeps a member who is not in it, even
+  after that player leaves the server.
+  `setSquadName` refuses a squad with members, and the round reset keeps members, so that squad can
+  no longer be created until the server restarts, and the client offers the same squad, the lowest
+  one without players, every time. This is a candidate cause of "cannot create squads after (some)
+  round changes" ([B2BF/OpenBF2 #37](https://github.com/B2BF/OpenBF2/issues/37)): a client sends
+  its own team as it knows it, which is stale while a team change, such as an autobalance move, has
+  not reached it yet. Not reproduced on retail.
+- **OpenBF2:** Both handlers ignore the request when the player it would add exists and is on a
+  different team than the packet names. Requests for the player's own team are handled as in
+  retail.
+- **Applies to:** Client and server, wherever a game is hosted; all platforms.
+- **Retail clients:** Nothing on the wire changes. An unmodified client names its own team
+  (`HudSquad::joinSquad`, `BF2HudManager::createSquad`), so its requests are handled as before.
+  Only a request made with a stale or foreign team is dropped; the client then stays outside the
+  squad, as after any refused join, and can ask again.
+- **Source:** `Code/BF2/Game/GameEvents/JoinSquadEvent.cpp`,
+  `Code/BF2/Game/GameEvents/ChangeSquadNameEvent.cpp`
+
 ### Wrong-length voice challenge datagram is dropped instead of ending the server
 
 - **Retail:** `VoipServerConnection::HandlePacketChallengeString` (Linux ia-32 server `0x8127600`,
