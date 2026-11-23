@@ -14,6 +14,7 @@
 #include "../../Common/GameEvent.h"
 #include "../../IGame.h"
 #include "../../IGameLogic.h"
+#include "../../Main/Game.h"
 #include "../GameLogicComp/IArmorGLComp.h"
 #include "../IObject.h"
 #include "../IObjectTemplate.h"
@@ -427,6 +428,8 @@ void CommanderToolsManager::handleUAVEvent(const Vec3& position, int team)
     if (!m_teamStates[team - 1].launchUAV(position))
         return;
 
+    // BF2.exe 0x5C6CC9..0x5C6CDE copies the position before notifying players.
+    Vec3 payload = position;
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
@@ -435,10 +438,19 @@ void CommanderToolsManager::handleUAVEvent(const Vec3& position, int team)
         {
             PostRemoteEvent* const event =
                 new PostRemoteEvent(ECHud, 40u, false,
-                                    const_cast<Vec3*>(&position), 12u, 0.0f);
+                                    &payload, 12u, 0.0f);
             game->sendGameEventIfPlaying(player->getId(), event);
         }
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5C6D50..0x5C6D94: the listen host has no playing connection.
+    if (!isDedicated() && playerManager->getLocalHumanPlayer()
+        && playerManager->getLocalHumanPlayer()->getTeam() == team)
+    {
+        eventManager->postEvent(ECHud, 40u, &payload, 0.0f);
+    }
+#endif
 }
 
 void CommanderToolsManager::handleSatelliteEvent(int playerId)
@@ -460,6 +472,11 @@ void CommanderToolsManager::handleSatelliteEvent(int playerId)
             new PostRemoteEvent(ECHud, 41u, false, 0, 0u, 0.0f);
         game->sendGameEventIfPlaying(playerId, event);
     }
+#if !DEDICATED
+    // BF2.exe 0x5C6E44..0x5C6E5D: -1 identifies the local scan request.
+    else if (!isDedicated())
+        eventManager->postEvent(ECHud, 41u, 0, 0.0f);
+#endif
 }
 
 void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int team)

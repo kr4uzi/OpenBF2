@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../../../Core/Ids.h"
+#include "../../../Core/EventManager.h"
 #include "../../../Core/System.h"
 #include "../../../Math/Vec3.h"
 #include "../../../Physics/HeightmapCluster.h"
@@ -18,6 +19,7 @@
 #include "../../GameEvents/SupplyDropEvent.h"
 #include "../../IGame.h"
 #include "../../IGameLogic.h"
+#include "../../Main/Game.h"
 #include "../IObject.h"
 #include "../IObjectTemplate.h"
 #include "../IPlayer.h"
@@ -131,12 +133,22 @@ bool SupplyDropManager::spawnSupplyDrop(unsigned char team, const Vec3& where)
 
 void SupplyDropManager::reportSupplyDrop(unsigned char team, const Vec3& where)
 {
-    playerManager->getLocalHumanPlayer();                    // result discarded, as shipped
+    IPlayer* const localHuman = playerManager->getLocalHumanPlayer();
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
     Vec3 payload = where;
 
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
+#if !DEDICATED
+        // BF2.exe 0x4524C0..0x452506: deliver HUD 83 directly for the host's
+        // player (also for a null local player), retaining the runtime dedicated gate.
+        if (!isDedicated() && (!localHuman || localHuman->getId() == (*it)->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 83u, &payload, 0.0f);
+            continue;
+        }
+#endif
         PostRemoteEvent* const event =
             new PostRemoteEvent(ECHud, 83, false, &payload, 12, 0.0f);
         game->sendGameEventIfConnected((*it)->getId(), event);
