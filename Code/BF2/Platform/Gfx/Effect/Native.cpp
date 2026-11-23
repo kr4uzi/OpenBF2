@@ -9,6 +9,7 @@
 #include "Wire.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +19,12 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <system_error>
 #include <thread>
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
 
 #ifndef BF2_FX_NATIVE_IDENTITY
 #define BF2_FX_NATIVE_IDENTITY "native-unpinned"
@@ -278,6 +284,48 @@ void quiet() {
 
 const char kTag[] = "BF2FX-native-request\0";
 
+// [CHOSEN, not recovered] Serviced builds start immediately, independently of the queue. On
+// macOS keep an 8 MiB stack (the main thread's budget) and the caller's QoS class. The detached
+// thread owns its work; setup failures throw instead of blocking the caller with an inline build.
+void startThread(std::function<void()> body) {
+#if defined(__APPLE__)
+    auto owned = std::make_unique<std::function<void()>>(std::move(body));
+    pthread_attr_t attr;
+    int error = pthread_attr_init(&attr);
+    if (error) throw std::system_error(error, std::generic_category(), "native effect thread attributes");
+    error = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (!error) error = pthread_attr_setstacksize(&attr, size_t(8) << 20);
+    const auto qos = qos_class_self();
+    if (!error && qos != QOS_CLASS_UNSPECIFIED) error = pthread_attr_set_qos_class_np(&attr, qos, 0);
+    pthread_t thread;
+    if (!error) error = pthread_create(&thread, &attr, [](void* p) -> void* {
+        const std::unique_ptr<std::function<void()>> run(static_cast<std::function<void()>*>(p));
+        (*run)();
+        return nullptr;
+    }, owned.get());
+    pthread_attr_destroy(&attr);
+    if (error) throw std::system_error(error, std::generic_category(), "native effect thread start");
+    (void)owned.release(); // The thread owns the body now.
+#else
+    std::thread(std::move(body)).detach();
+#endif
+}
+// Waits for a future in timed waits and runs the service between them.
+constexpr std::chrono::milliseconds kServicePeriod(50);
+template<class Future> void attend(const Future& future, const Service& service) {
+    while (future.wait_for(kServicePeriod) != std::future_status::ready) service();
+}
+// Runs work on a thread of its own while the caller attends its end, and returns what work
+// returns or throws what it throws, as a call on the calling thread does. The thread shares the
+// task: when the service throws, the work outlives this call, so it must own what it uses.
+template<class Work> auto serviced(Work work, const Service& service) -> decltype(work()) {
+    const auto task = std::make_shared<std::packaged_task<decltype(work())()>>(std::move(work));
+    auto done = task->get_future();
+    startThread([task] { (*task)(); });
+    attend(done, service);
+    return done.get();
+}
+
 // ---- Queue -----------------------------------------------------------------------------------
 struct Job {
     std::string key, text;
@@ -302,14 +350,29 @@ public:
         cv_.notify_one();
         return job->future;
     }
-    Entry wait(const std::string& key, const std::shared_future<Entry>& future) {
+    Entry wait(const std::string& key, const std::shared_future<Entry>& future, const Service& service) {
         std::shared_ptr<Job> job;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = jobs_.find(key);
             if (it != jobs_.end() && !it->second->started) { job = it->second; job->started = true; }
         }
-        if (job) run(job);
+        if (!service) { if (job) run(job); } // Keep the original inline/plain-wait path.
+        else {
+            if (job) {
+                try {
+                    startThread([this, job] {
+                        try { run(job); }
+                        catch (...) { reject(job, std::current_exception()); }
+                    });
+                } catch (...) {
+                    // Claiming the job prevents queue workers from taking it. Complete its
+                    // promise even if allocating/starting its thread failed, so no waiter hangs.
+                    reject(job, std::current_exception());
+                }
+            }
+            attend(future, service); // Also services builds already claimed by a worker/waiter.
+        }
         return future.get();
     }
     size_t pending() { std::lock_guard<std::mutex> lock(mutex_); return jobs_.size(); }
@@ -344,6 +407,11 @@ private:
         Entry e = native::compile(job->request, job->text.empty() ? nullptr : &job->text);
         if (job->done) job->done(e);
         job->promise.set_value(e);
+        std::lock_guard<std::mutex> lock(mutex_);
+        jobs_.erase(job->key);
+    }
+    void reject(const std::shared_ptr<Job>& job, std::exception_ptr error) {
+        job->promise.set_exception(error);
         std::lock_guard<std::mutex> lock(mutex_);
         jobs_.erase(job->key);
     }
@@ -433,6 +501,11 @@ Entry compile(const Request& r, const std::string* pre) {
     e.log = "BF2FX native: " + error + "\n";
     return e;
 }
+Entry compile(const Request& r, const std::string* pre, const Service& service) {
+    if (!service) return compile(r, pre);
+    const bool given = pre != nullptr;
+    return serviced([r, given, text = given ? *pre : std::string()] { return compile(r, given ? &text : nullptr); }, service);
+}
 
 Bytes tag(const Request& r) {
     Bytes out(kTag, kTag + sizeof kTag - 1);
@@ -451,7 +524,9 @@ bool untag(const void* data, size_t size, Request& r) {
 std::shared_future<Entry> submit(const std::string& key, const Request& r, std::string text, Done done) {
     return Queue::get().submit(key, r, std::move(text), std::move(done));
 }
-Entry wait(const std::string& key, const std::shared_future<Entry>& f) { return Queue::get().wait(key, f); }
+Entry wait(const std::string& key, const std::shared_future<Entry>& f, const Service& service) {
+    return Queue::get().wait(key, f, service);
+}
 size_t pending() { return Queue::get().pending(); }
 void memoCounts(unsigned& hits, unsigned& misses) { hits = gMemoHits; misses = gMemoMisses; }
 bool compileJob(const ShaderJob& job, const std::string& source, Bytes& bytecode, std::string& error) {

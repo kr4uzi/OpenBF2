@@ -124,7 +124,30 @@ on. The next pump delivers the held events first, in order, so focus changes, ke
 game input reach the engine when they did before; a press outside the game view made during the
 load (title bar, menu bar) is not handed to AppKit late, consecutive pointer moves are kept as the
 last one, and a quit request (the Dock's Quit) is made by the next pump. Stretches of a load that
-neither step the load counter nor load an effect are not covered. The SDL host does nothing.
+neither step the load counter, load an effect nor wait for an effect build (next paragraph) are
+not covered. The SDL host does nothing.
+
+The longest stretches of a first load (no cached effects yet) are waits for native effect builds:
+`RaShader::build` begins a pass of every effect it loads, the pass needs the effect's shaders
+(`Effect::ensureShaders`), and one build takes up to seconds. On the macOS main thread the effect
+facade therefore waits with a service (`bf2fx::native::wait`, `Service`) that calls
+`ClientHost::serviceWhileBusy()` about every 50 ms. The main thread then never runs the build
+itself: a job that no queue worker has started gets a thread of its own at once, with the main
+thread's stack size and QoS class (what the build had on the main thread), and a job that a worker
+is running is waited for in the same timed waits. The synchronous build of a source that the
+refusal table does not know (`bf2fx::native::compile`) runs the same way. Entries, cache writes
+and compiler diagnostics are unchanged; other threads and the Linux client wait as before.
+The service is supplied by the facade, so the effect library has no host dependency. The
+completion callback stays on the build thread before its future becomes ready: its captured
+cache inputs, locked pending map/trace and synchronized warm-up counters are worker-safe.
+If starting a serviced build thread fails, its future carries the exception instead of
+compiling inline. A build/completion exception on that thread also settles the shared future
+and retires the job; a throwing service leaves the owned build running for another waiter.
+Headless check: `bf2_fx_wait_check` (built on request) covers queue bypass, repeated servicing,
+duplicate submissions/concurrent waiters, completion/service exceptions, refusals and identical
+compiled entries. It uses real compilation; a held completion callback makes the long wait
+deterministic. On-screen loading, cursor animation and the absence of the spinning wait cursor
+still need a client run.
 
 ## G2 graphics subset
 
