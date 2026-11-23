@@ -61,6 +61,12 @@ struct VehicleTemplateConsoleAccess
     static void setNewCarWheelLatMinDynamicFriction(float v) { static_cast<EngineTemplate*>(getActiveTemplate(CID_EngineTemplate))->m_newCar2WheelLatMinDynamicFriction = v; }
     static float getNewCarWheelLatScale(EngineTemplate* value) { return value->m_newCar2WheelLatScale; }
     static void setNewCarWheelLatScale(float v) { static_cast<EngineTemplate*>(getActiveTemplate(CID_EngineTemplate))->m_newCar2WheelLatScale = v; }
+    // The engine-audio block: EngineSoundTemplate at +0x670 (PE +0x720), see its bindings below.
+    static bool getNewStyleAudio(EngineTemplate* value) { return value->m_engineSound.m_byte00 != 0; }
+    static void setNewStyleAudio(EngineTemplate* value, bool v) { value->m_engineSound.m_byte00 = v; }
+    static bool getTransformationRelativeRoot(EngineTemplate* value) { return value->m_engineSound.m_byte01 != 0; }
+    static void setTransformationRelativeRoot(EngineTemplate* value, bool v) { value->m_engineSound.m_byte01 = v; }
+    static void resetAudio(EngineTemplate* value) { value->m_engineSound.reset(); }
     // Stock supply_parachute authors these ForceObject settings. The generated executors are
     // direct float/byte reads and writes (ELF ConsoleClass205/207/208/209; PE 0x528150..0x528820).
     static ForceObjectTemplate* activeForce()
@@ -423,6 +429,44 @@ BF2_CONSOLE_PROPERTY_FN(trackTurnAcceleration, float, activeEngine() != 0,
 BF2_CONSOLE_PROPERTY_FN(trackTurnSpeed, float, activeEngine() != 0,
                         objTemplGetTrackTurnSpeed(), objTemplSetTrackTurnSpeed,
                         kObjTemplVehicleConsoleTag)
+// The engine-audio block follows trackTurnSpeed in the retail table: two Boolean properties and
+// a command on the EngineSoundTemplate at EngineTemplate +0x670 (PE +0x720). Their executors
+// (PE 0x579EFB, 0x57A00D) read or store the byte directly, and the command's (PE 0x57A0B7) calls
+// EngineSoundTemplate::reset (PE 0x7E2010). The ELF carries the same three names. Stock jeeps,
+// APCs and trucks author `ObjectTemplate.audio.newStyleAudio 1`; without it EngineSound never
+// leaves its old-style RPM path, so gear-shift ("Load") sounds and the sway effect never play.
+namespace {
+bool objTemplGetNewStyleAudio()
+{
+    return VehicleTemplateConsoleAccess::getNewStyleAudio(activeEngine());
+}
+void objTemplSetNewStyleAudio(bool v)
+{
+    VehicleTemplateConsoleAccess::setNewStyleAudio(activeEngine(), v);
+}
+bool objTemplGetTransformationRelativeRoot()
+{
+    return VehicleTemplateConsoleAccess::getTransformationRelativeRoot(activeEngine());
+}
+void objTemplSetTransformationRelativeRoot(bool v)
+{
+    VehicleTemplateConsoleAccess::setTransformationRelativeRoot(activeEngine(), v);
+}
+void objTemplAudioReset()
+{
+    VehicleTemplateConsoleAccess::resetAudio(activeEngine());
+}
+} // namespace
+
+BF2_CONSOLE_PROPERTY_FN_NAMED("audio.newStyleAudio", bool, activeEngine() != 0,
+                              objTemplGetNewStyleAudio(), objTemplSetNewStyleAudio,
+                              kObjTemplVehicleConsoleTag)
+BF2_CONSOLE_PROPERTY_FN_NAMED("audio.transformationRelativeRoot", bool, activeEngine() != 0,
+                              objTemplGetTransformationRelativeRoot(),
+                              objTemplSetTransformationRelativeRoot, kObjTemplVehicleConsoleTag)
+BF2_CONSOLE_METHOD_0_ACTIVE(audioReset, objTemplAudioReset, activeEngine() != 0,
+                            kObjTemplVehicleConsoleTag)
+
 // [CHOSEN, not recovered] Retail registers remoteEngineInput as int; the accessor is the
 // io::PlayerInputMap enum, so the enum is kept (see the binding note above).
 BF2_CONSOLE_PROPERTY_FN(remoteEngineInput, io::PlayerInputMap, activeEngine() != 0,

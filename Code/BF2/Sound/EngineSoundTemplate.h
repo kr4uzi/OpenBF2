@@ -13,8 +13,8 @@ public:
                                                     // then calls reset()
     void reset();                                   // the seven Vars lookups
 
-    unsigned char m_byte00;                         // +0x00 [UNRESOLVED]
-    unsigned char m_byte01;                         // +0x01 [UNRESOLVED]
+    unsigned char m_byte00;                         // +0x00 audio.newStyleAudio
+    unsigned char m_byte01;                         // +0x01 audio.transformationRelativeRoot
     float m_swayFrequencyFirst;                     // +0x04
     float m_swayFrequencyLast;                      // +0x08
     float m_swayAmplitudeFirst;                     // +0x0C
