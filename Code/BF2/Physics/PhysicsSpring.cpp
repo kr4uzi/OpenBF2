@@ -76,7 +76,8 @@ void PhysicsSpring::setRelationToParentPosition(const Vec3& position)
     m_relationToParentPosition = position;
 }
 
-void PhysicsSpring::reset(bool)
+// ELF 0x082AA770 / PE 0x00683970. The inherited reset(bool) does not clear this state.
+void PhysicsSpring::reset()
 {
     PhysicsNode::reset(true);
     m_deflection.x = m_deflection.y = m_deflection.z = 0.0f;
