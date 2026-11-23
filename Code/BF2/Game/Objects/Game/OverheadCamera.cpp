@@ -259,6 +259,9 @@ void OverheadCamera::pan(float dx, float dz, float dt)
 
     Mat4 m = Mat4::getIdentity();
     float* f = reinterpret_cast<float*>(&m);
+    // BF2.exe 0x6264A3..0x6264D4; ELF 0x081E8631..0x081E86DB:
+    // right=(1,0,0), up=(0,0,1), forward=(0,-1,0).
+    f[5] = 0.0f; f[6] = 1.0f;
     f[8] = 0.0f; f[9] = -1.0f; f[10] = 0.0f;                        // straight down
     f[12] = x; f[13] = y; f[14] = z; f[15] = 1.0f;
     root->setAbsoluteTransformation(m);

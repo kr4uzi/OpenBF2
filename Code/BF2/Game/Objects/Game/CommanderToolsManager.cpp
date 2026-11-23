@@ -541,9 +541,9 @@ void CommanderToolsManager::updateCommanderToys()
     m_teamStates[0].resetToysStats();
     m_teamStates[1].resetToysStats();
 
-    float currentArtillery[2] = {0.0f, 0.0f};
-    float currentSatellite[2] = {0.0f, 0.0f};
-    float currentUAV[2] = {0.0f, 0.0f};
+    float maximumArtillery[2] = {0.0f, 0.0f};
+    float maximumSatellite[2] = {0.0f, 0.0f};
+    float maximumUAV[2] = {0.0f, 0.0f};
 
     for (RemoteObjectMap::iterator it = objects->begin(); it != objects->end(); ++it)
     {
@@ -564,7 +564,7 @@ void CommanderToolsManager::updateCommanderToys()
         if (armor)
         {
             currentHitPoints = armor->getHitPoints();
-            if (currentHitPoints <= 0.0f)
+            if (!(currentHitPoints > 0.0f))
                 currentHitPoints = 0.0f;
             maximumHitPoints = armor->getMaxHitPoints();
         }
@@ -572,43 +572,44 @@ void CommanderToolsManager::updateCommanderToys()
         CommanderToolState& state = m_teamStates[team - 1];
         if (type == 1)
         {
-            state.m_artilleryArmor += maximumHitPoints;
+            state.m_artilleryArmor += currentHitPoints;
             ++state.m_artilleryCount;
-            currentArtillery[team - 1] += currentHitPoints;
+            maximumArtillery[team - 1] += maximumHitPoints;
         }
         else if (type == 2)
         {
-            state.m_satelliteArmor += maximumHitPoints;
+            state.m_satelliteArmor += currentHitPoints;
             ++state.m_satelliteCount;
-            currentSatellite[team - 1] += currentHitPoints;
+            maximumSatellite[team - 1] += maximumHitPoints;
         }
         else
         {
-            state.m_uavArmor += maximumHitPoints;
+            state.m_uavArmor += currentHitPoints;
             ++state.m_uavCount;
-            currentUAV[team - 1] += currentHitPoints;
+            maximumUAV[team - 1] += maximumHitPoints;
         }
     }
 
-    // This is intentionally maximum/current, not the conventional current/maximum. The `fdivr`
-    // sequence is the same in both shipped ports and Player replicates these exact float bits.
+    // BF2.exe 0x5C734B..0x5C73F0 / 0x5C7443..0x5C7500; ELF 0x080C76B6..0x080C76D4
+    // / 0x080C75CA..0x080C75EB: fields accumulate current HP, locals maximum HP.
+    // No maximum HP yields 1, but readiness still requires a nonzero asset count.
     for (int teamIndex = 0; teamIndex < 2; ++teamIndex)
     {
         CommanderToolState& state = m_teamStates[teamIndex];
-        if (currentArtillery[teamIndex] <= 0.0f)
+        if (!(maximumArtillery[teamIndex] > 0.0f))
             state.m_artilleryArmor = 1.0f;
         else
-            state.m_artilleryArmor /= currentArtillery[teamIndex];
+            state.m_artilleryArmor /= maximumArtillery[teamIndex];
 
-        if (currentSatellite[teamIndex] <= 0.0f)
+        if (!(maximumSatellite[teamIndex] > 0.0f))
             state.m_satelliteArmor = 1.0f;
         else
-            state.m_satelliteArmor /= currentSatellite[teamIndex];
+            state.m_satelliteArmor /= maximumSatellite[teamIndex];
 
-        if (currentUAV[teamIndex] <= 0.0f)
+        if (!(maximumUAV[teamIndex] > 0.0f))
             state.m_uavArmor = 1.0f;
         else
-            state.m_uavArmor /= currentUAV[teamIndex];
+            state.m_uavArmor /= maximumUAV[teamIndex];
     }
 }
 

@@ -423,11 +423,14 @@ protected:
     /* +0x71  */ bool   m_overheadCameraEnabled;     // 0
     /* +0x72  */ bool   m_overheadCameraTopDownView; // 0
     /* +0x73  */ bool   m_commanderCamOverhead;      // 0
-    /* +0x74  */ void*  m_field74;                   // 0 was m_freeCameraObject - that is the
-                                                     //   +0x6C block's target, not this
-    /* +0x78  */ int    m_field78;                   // 0
-    /* +0x7C  */ int    m_field7C;                   // 0
-    /* +0x80  */ int    m_field80;                   // 0
+    // Saved by the client top-down transition (BF2.exe 0x4FC630), restored on exit; names inferred.
+    /* +0x74  */ Vec4   m_savedCommanderFog;         // PE +0x90, initially zero
+    /* +0x84  */ float  m_savedCommanderRendererDistance; // PE +0xA0
+    /* +0x88  */ float  m_savedCommanderRoadDistance; // PE +0xA4
+    /* +0x8C  */ float  m_savedCommanderRoadBias;     // PE +0xA8
+    /* +0x90  */ bool   m_savedCommanderDynamicShadows; // PE +0xAC
+    /* +0x91  */ bool   m_savedCommanderTerrainFlag;  // PE +0xAD
+    /* +0x94  */ int    m_savedCommanderViewDistance; // PE +0xB0
     /* +0x98  */ int    m_inputId;                   // 1 sentinel, not 0
     /* +0x9C  */ int    m_playerId;                  // the ctor argument. IPlayer.h: getId +0x9C
     /* +0xA0  */ int    m_updateFrequencyType;       // 0    IPlayer.h: getUpdateFrequencyType +0xA0
