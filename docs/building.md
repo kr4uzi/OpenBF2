@@ -125,6 +125,20 @@ integration are described in [Linux client distribution](linux-client-distributi
 The recorded x86-64 local-bot playtest does not establish full Linux ARM64 graphics
 or broader platform acceptance under issue #36.
 
+Local client builds must use native effect libraries built from the current repository
+patches. A missing `vkd3d-src/.bf2-patches` record or a mismatched patch set blocks
+`bf2_client`; dedicated targets (`bf2`, `bf2_aidll`, `dice_py`) remain available.
+Build a matching set from local pristine sources into a new directory, keeping the
+existing set:
+
+```bash
+python3 tools/linux/build-nativefx.py --vkd3d-source /path/to/vkd3d-2.1 --mojo-source /path/to/mojoshader --output out/build/nativefx-linux-current
+cmake --preset linux-client -DBF2_FX_NATIVE_DEPS="$PWD/out/build/nativefx-linux-current"
+```
+
+The builder applies the shared patches and writes the patch record. See the Linux
+client guide for its other dependencies.
+
 Use Linux x86-64 with CMake 3.21 or newer, Ninja, GCC or Clang, and ncurses development
 headers (`libncurses-dev` on Debian). From the repository root:
 
@@ -170,13 +184,16 @@ cmake --preset macos-x64 -B out/build/local-macos -DBF2_FX_NATIVE_DEPS="$NATIVEF
 `BF2_FX_NATIVE_DEPS` names a directory with `vkd3d/.libs/libvkd3d-shader.a`,
 `vkd3d/.libs/libvkd3d-common.a`, `vkd3d-src/include/vkd3d_shader.h`,
 `mojo/libmojoshader.a` and `mojo-src/mojoshader.h`. The libraries must contain every
-requested architecture and use the repository's vkd3d/MojoShader patches. CMake
-checks all three archives with `lipo -verify_arch`. The default directory is
+requested architecture and be built from the repository's current vkd3d/MojoShader patches.
+Local builds must rebuild their library set when those patches change; a missing
+`vkd3d-src/.bf2-patches` record or a mismatched patch set blocks `bf2_client`.
+CMake checks all three archives with `lipo -verify_arch`. The default directory is
 `out/build/nativefx` for x86_64, `out/build/nativefx-arm64` for arm64, or
-`out/build/nativefx-universal` for both; if dependencies are absent or incompatible,
-renderer-enabled configuration fails with instructions instead
-of building a cache-only client. Local dependency sources are not vendored in this
-checkout. If already supplied under `out/third_party/vkd3d` (vkd3d 2.1) and
+`out/build/nativefx-universal` for both. If dependencies are absent, incompatible or
+stale, configuration prints instructions and building `bf2_client` fails before
+client compilation. Dedicated targets (`bf2`, `bf2_aidll`, `dice_py`) remain available.
+Local dependency sources are not vendored in this checkout. If already supplied
+under `out/third_party/vkd3d` (vkd3d 2.1) and
 `out/third_party/mojoshader`, `sh tools/macos/nativefx/build.sh` builds the dependencies
 offline there. That optional source build also needs the native autotools/libtool,
 flex, bison and MinGW widl tools expected by `build-vkd3d.sh`; nothing is downloaded
@@ -186,6 +203,10 @@ does not invoke Wine, D3DX or an oracle tool. Pass `arm64` or `universal` to
 the historical x86_64 output. All use the same patched sources and default to
 `MACOSX_DEPLOYMENT_TARGET=11.0`. Cross builds use host-native generators and never
 execute the arm64 harness.
+
+Keep an existing dependency set when rebuilding: use a fresh worktree's `out/` with
+the local sources above, then point `BF2_FX_NATIVE_DEPS` at its rebuilt directory.
+Do not copy or invent a patch record for old archives.
 
 The client compiles effects with vkd3d-shader, the D3D9 asm assembler, the effect
 parser and MojoShader to MSL, caching under `@HOME@/FxNative`. No Wine, Windows DLL,
