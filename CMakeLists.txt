@@ -2605,6 +2605,21 @@ if(APPLE)
     endif()
 endif()
 
+# [TEMP] [CHOSEN, not recovered] Logo-cache URL check of ServerLogoManager
+# (Code/Tests/server_logo_url_runtime.cpp, docs/retail-fixes.md): the actual translation unit with
+# HTTPRequest and the file manager stood in.
+if(APPLE)
+    add_executable(bf2_server_logo_url_check EXCLUDE_FROM_ALL
+        Code/Tests/server_logo_url_runtime.cpp
+        "${BF2_ROOT}/Menu/ServerLogoManager.cpp")
+    bf2_configure_cpp_target(bf2_server_logo_url_check)
+    bf2_set_platform_compat(bf2_server_logo_url_check)
+    bf2_set_image(bf2_server_logo_url_check 0)
+    if(BUILD_TESTING)
+        add_test(NAME bf2_server_logo_url_check COMMAND bf2_server_logo_url_check)
+    endif()
+endif()
+
 # [TEMP] Cumulative fixture for game frontier-closure sites no normal session reaches
 # (Code/Tests/game_frontier_check.cpp; docs/tracks/game/frontier-closure.md). Built on request; the
 # families it never calls stay unresolved, as /FORCE:UNRESOLVED leaves them in the Windows fixtures.
