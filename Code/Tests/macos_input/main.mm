@@ -19,6 +19,7 @@
 #include "../../BF2/Platform/macOS/CursorScale.h"
 #include "../../BF2/Platform/macOS/MacKeyMap.h"
 #include "../../BF2/Platform/macOS/MacRawMouse.h"
+#include "../../BF2/Platform/macOS/NativeFullscreen.h"
 #include "../../BF2/Platform/macOS/ProcessAncestry.h"
 #include "../../BF2/Platform/macOS/RestartInFront.h"
 #include "../native_host/WindowMessageRecorder.h"
@@ -1939,6 +1940,87 @@ void testRestartInFront()
     settle();
 }
 
+// NativeFullscreen.h: the game window's own full-screen Space. The engine's request is what the
+// host reports at once; the window follows with one AppKit transition at a time, waits for the
+// application's activation, and stays windowed after the user left the Space.
+void testNativeFullscreen()
+{
+    begin("native full screen: one transition at a time, after the activation, the user's exit kept");
+    typedef macos::NativeFullscreen F;
+    {
+        F f;
+        check(!f.wanted() && f.windowed() && !f.inSpace() && !f.transitioning(), "a new window is windowed");
+        check(f.request(true, true) == F::Enter, "active: a full-screen request enters the Space at once");
+        check(f.wanted() && !f.windowed() && f.transitioning() && f.ownTransition(),
+              "reported full screen at once, the window on its way");
+        f.willEnter();
+        check(f.ownTransition(), "AppKit's will-enter for the host's own toggle stays the host's");
+        check(f.didEnter() == F::None && f.inSpace() && !f.transitioning(), "in the Space, nothing more to do");
+        check(f.request(false, true) == F::Exit && !f.wanted(), "windowed request: leave the Space");
+        f.willExit();
+        check(f.didExit() == F::None && f.windowed() && !f.userLeft(), "windowed again, by the host's own exit");
+    }
+    {
+        F f;
+        check(f.request(true, false) == F::None && f.waiting() && f.wanted() && f.windowed(),
+              "inactive: the request waits, the window stays windowed, full screen is reported");
+        check(f.activated() == F::Enter && !f.waiting(), "the activation enters the Space");
+        check(f.activated() == F::None, "a second activation during the transition starts nothing");
+        check(f.didEnter() == F::None && f.inSpace(), "in the Space");
+        check(f.activated() == F::None, "activations in the Space start nothing");
+    }
+    {
+        F f;
+        f.request(true, false);
+        check(f.request(false, false) == F::None && !f.waiting() && f.windowed(),
+              "a windowed request cancels a waiting one without a transition");
+        check(f.activated() == F::None, "and the activation then starts nothing");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.request(false, true) == F::None && !f.wanted(), "windowed during the enter: nothing starts now");
+        check(f.didEnter() == F::Exit, "the enter's end leaves the Space again");
+        check(f.request(true, true) == F::None && f.wanted(), "full screen during that exit: nothing starts now");
+        check(f.didExit() == F::Enter && !f.userLeft(), "the exit's end enters again; the host's own exit, not the user's");
+        check(f.didEnter() == F::None && f.inSpace() && f.wanted(), "in the Space as last requested");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didEnter();
+        f.willExit();                           // the title bar's button or the system shortcut
+        check(!f.ownTransition() && f.transitioning(), "an exit the host did not start is the user's");
+        check(f.didExit() == F::None && f.userLeft() && !f.wanted() && f.windowed(),
+              "after the user's exit the host stays windowed and reports it");
+        check(f.activated() == F::None, "an activation does not take the user back into the Space");
+        check(f.request(true, true) == F::Enter && !f.userLeft(), "the engine's next request enters again");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didEnter();
+        f.willExit();
+        check(f.request(true, true) == F::None, "a full-screen request during the user's exit waits for its end");
+        check(f.didExit() == F::Enter && !f.userLeft() && f.wanted(), "and then overrides it: back into the Space");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didFail();
+        check(f.windowed() && f.wanted(), "a refused enter leaves the window windowed");
+        F g;
+        g.request(true, true);
+        g.didFail();
+        check(g.activated() == F::Enter, "the next activation tries again");
+        F h;
+        h.request(true, true);
+        h.didFail();
+        check(h.request(false, true) == F::None && h.request(true, true) == F::Enter,
+              "a new request tries again");
+    }
+}
+
 // CursorScale.h: points on screen per cursor pixel. The host hands over the game view's height in
 // points and the back buffer's size in pixels (cursorPointsPerPixel). The function works out the
 // points one back-buffer pixel covers (the view's height over the back buffer's height) and
@@ -2048,6 +2130,7 @@ int main(int argc, char** argv)
         testLaunchActivation();
         testRestartInFront();
         testCursorScale();
+        testNativeFullscreen();
 
         host.removeListener(&log);
         g_manager->release();

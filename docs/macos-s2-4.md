@@ -87,16 +87,17 @@ IInputDeviceManager::update(-1) polls, update(dt > 0) consumes  (InputManager::u
   next pump reports as `WM_QUIT` would.
 - **Window.** Windowed: titled, closable, miniaturizable, not resizable and without native
   full-screen (Win32 swallowed `SC_SIZE`/`SC_MAXIMIZE`, so the retail window could not be
-  resized by the user either). The frame's top left is placed at (x, y) from the screen's top
+  resized by the user either; native full screen is enabled only while the game is full screen).
+  The frame's top left is placed at (x, y) from the screen's top
   left, as Win32 positions do. The content view is layer-backed with a `CAMetalLayer`
   (`BGRA8Unorm`, `framebufferOnly`, opaque, black, no device). The layer stays empty until the
   renderer attaches through the view borrowed from `ClientHost::rendererWindowHandle()`.
 - **Back-buffer size.** `contentsScale` is pinned to 1, so the drawable is one pixel per point
   and mouse coordinates in points equal back-buffer pixels. [CHOSEN] Rendering at 1x keeps the
   engine's "client size == back-buffer size" assumption; Retina output is an open item.
-- **Fullscreen.** A borderless window covering the main screen, with the Dock and menu bar
-  hidden through presentation options. [CHOSEN] The display mode is never changed: the
-  drawable stays at the game resolution and the compositor scales it to the screen
+- **Fullscreen.** [CHOSEN] AppKit's native full screen: the game window moves into its own
+  Space (see [macos-port.md](macos-port.md#native-full-screen)). The display mode is never
+  changed: the drawable stays at the game resolution and the compositor scales it to the screen
   (stretched; no letterboxing). On Win32 the renderer switches the display mode instead.
 - **Focus.** `hasFocus()` is "game window is key and the application is active". Changes
   arrive through the window and application delegates and are reported to listeners as

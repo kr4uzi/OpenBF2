@@ -38,6 +38,57 @@ These rules apply to every native (non-MSVC-x86) arm; source comments cite them.
   audited adapter; see [c-raw-slots](macos-c-raw-slots.md) and the gate
   `tools/macos/raw_slot_scan.py`.
 
+## Native full screen
+
+`[CHOSEN, not recovered]` Retail is Windows-only: a full-screen start creates a `WS_POPUP`
+window and the renderer switches the display mode. The Cocoa host instead uses AppKit's native
+full screen (`-[NSWindow toggleFullScreen:]`): with `+fullscreen 1` (retail's default,
+`GSFullScreen`) or after Alt+Enter the game window moves into its own Space. It covers the
+display, the menu bar and the Dock hide and reappear at the screen edges as for any full-screen
+Mac application, the Space can be left and re-entered with a swipe, Mission Control or Cmd-Tab,
+and the title bar shows when the pointer reaches the top of the screen. It replaces a borderless
+screen-size window with hidden Dock and menu bar (`NSApplicationPresentationHideDock |
+HideMenuBar`), which stayed on the desktop's Space. The rules are in
+`Code/BF2/Platform/macOS/NativeFullscreen.h`; `CocoaHost.mm` starts the transitions it answers.
+
+- **Display mode and drawable.** Unchanged: the display mode is never switched, the drawable
+  keeps the back-buffer size the engine set (`resizeClient` -> `updateDrawable`) and Core
+  Animation scales it to the Space's view, nearest-neighbour at whole-number factors and linear
+  otherwise (`updateMagnification`, re-run when the window's size or backing scale changes). On a
+  display with a camera housing the view ends below the menu-bar strip, as AppKit lays out
+  full-screen windows by default.
+- **Asynchronous.** `setFullscreen` sets what `isFullscreen()` reports at once (the engine's
+  window code reads it back) and the window follows: the toggle runs on the next pass of the run
+  loop, the animation takes about half a second, and AppKit reports its end to the window
+  delegate. One transition at a time; a switch made during one is applied when it ends.
+- **After activation.** A full-screen request made while the application is inactive waits for
+  its activation (`becameActive`). Going into a new Space switches the user there, so a client
+  started in the background would take the screen from the application the user works in, which
+  the launch activation deliberately never does. A start from the launcher or from Terminal is
+  activated by the host's launch activation and enters its Space with it, without a click; a
+  client started while an unrelated application is in front stays a window until it is clicked
+  or switched to. The same holds for a game that restarted itself (mod switch).
+- **Windowed stays windowed.** A windowed game window is `NSWindowCollectionBehaviorFullScreenNone`
+  and not resizable, as before; it becomes a full-screen primary, resizable window only for its
+  Space and is restored when it is back. A resolution change made in full screen applies to the
+  restored window.
+- **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
+  can take the window out of its Space. The host then stays windowed and reports it until the
+  engine switches again (one Alt+Enter brings the engine's own flag in line, the next one returns
+  to full screen); it never pulls the user back into the Space.
+- **Focus and mouse.** Leaving the Space for another application deactivates the game as any
+  application switch does: the focus gate closes, the cursor is shown and re-associated, and
+  returning restores capture. Leaving it for an empty desktop Space can leave the application
+  active with its window key; the host watches the window's occlusion and treats a hidden Space as
+  unfocused (`spaceHidden`), so the mouse is released there too.
+- **What it did not make obsolete.** The launch activation (the repeated requests, the Dock reset,
+  the system-state fallback, the restart marker) and the focus repair concern getting key status
+  and activation at all; they run before the window enters its Space and stay. What went is the
+  presentation-option and borderless-frame code and the key-window overrides a borderless window
+  needed.
+- **Log.** `[host] full screen: ...` lines mark each step (entering, in the Space, windowed, left
+  through the system, waiting for activation, a refused transition, the Space off or on screen).
+
 ## PR #55 integration
 
 The owner-requested PR #55 integration replaces S2.7's
