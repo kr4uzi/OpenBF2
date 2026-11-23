@@ -321,7 +321,14 @@ bool GameServer::init()
 // Client admission starts with a mod-specific challenge; the connection map uses byte keys.
 extern IBase* spawnManager;
 
-// Creates a player using a name truncated to 23 characters, retrying with ID/numeric suffixes.
+// [CHOSEN, not recovered] Retail fix "Player names keep up to 27 characters" (docs/retail-fixes.md).
+// Retail keeps 23 (0x17; ELF 0x80AFCA0, 0x80B3460), which cuts "<tag> <nick>" with a six-character
+// tag and a 20-character GameSpy nick (27). 27 leaves room for a "_255" retry suffix inside the
+// 31 characters CreatePlayerEvent and ChangePlayerNameEvent carry.
+static const std::string::size_type kMaxPlayerNameLength = 27;
+
+// Creates a player using a name truncated to kMaxPlayerNameLength characters, retrying with
+// ID/numeric suffixes.
 // Retries have no failure limit, so persistent failures other than name collisions can loop forever.
 // The player's network ID is player ID plus one.
 world::IPlayer* GameServer::createPlayerWithValidName(const std::string& name, int id)
@@ -330,8 +337,8 @@ world::IPlayer* GameServer::createPlayerWithValidName(const std::string& name, i
     if (m_numPlayers >= settings->intGet("GSMaxNrOfPlayers", 64))
         return 0;
 
-    std::string::size_type keep = 23;
-    if (name.size() < 23)
+    std::string::size_type keep = kMaxPlayerNameLength;
+    if (name.size() < kMaxPlayerNameLength)
         keep = name.size();
     const std::string base(name, 0, keep);
 
@@ -4523,7 +4530,8 @@ bool GameServer::say(const std::string& text, TargetChannel channel, ChannelMess
     return true;
 }
 
-//  / PE 0x444D20. Compare the untruncated request first, then try its first 23 bytes.
+//  / PE 0x444D20. Compare the untruncated request first, then try its first
+// kMaxPlayerNameLength bytes (retail: 23; see createPlayerWithValidName).
 // setName may refuse the name. Retry with _0, _1, ... only while the player's name remains equal
 // to its original name; no retry limit or alternate uniqueness check exists in either binary.
 bool GameServer::changePlayerName(int playerId, const std::string& name)
@@ -4532,7 +4540,7 @@ bool GameServer::changePlayerName(int playerId, const std::string& name)
     if (!player || name == player->getName())
         return false;
 
-    const std::string baseName(name, 0, 23);
+    const std::string baseName(name, 0, kMaxPlayerNameLength);
     const std::string oldName(player->getName());
     player->setName(baseName);
     int suffix = 0;
