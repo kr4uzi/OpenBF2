@@ -327,6 +327,11 @@ void BF2HudManager::setDone(bool done)
         setMode(0, true);
         world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
         if (player && m_field228 && gameLogic) {
+            // [CHOSEN, not recovered] Retail fix "The kit shown on the spawn screen is requested
+            // with the spawn" (docs/retail-fixes.md). Retail (0x74F180) sends only the spawn
+            // group; the remembered kit reaches the server only after a death (onSpawn, 0x751560)
+            // or a click. selectKit sends nothing when the player already has that kit.
+            m_field11c->selectKit(m_field11c->m_selectedKit[m_field11c->m_selectedTeam]);
             gameLogic->selectSpawnGroup(player, m_field11c->m_selectedSpawnGroup[m_field11c->m_selectedTeam]);
             m_field2a8 = m_field2ac;
             hudManager->disableVOHelpMessage(60);
