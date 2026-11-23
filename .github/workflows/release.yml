@@ -86,6 +86,9 @@ jobs:
           if info.get("windows_signing") != "certum":
               assert os.environ["PRERELEASE"] == "true", "openbf2-windows.zip is not signed"
               print("::warning title=Unsigned Windows release::openbf2-windows.zip and the installer are not signed")
+          with zipfile.ZipFile("openbf2-linux.zip") as archive:
+              for entry in ("bf2", "libdice_py.so", "libaidll.so"):
+                  assert "openbf2-linux/" + entry in archive.namelist(), "Linux server archive lacks " + entry
           with tarfile.open("openbf2-linux-x86_64-client.tar.gz", "r:gz") as archive:
               names = set(archive.getnames())
               for entry in ("bin/OpenBF2", "bin/bf2_client", "lib/libdice_py.so", "lib/libaidll.so", "lib/libdxvk_d3d9.so.0"):

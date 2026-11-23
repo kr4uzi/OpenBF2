@@ -488,9 +488,9 @@ jobs:
         if: matrix.role == 'server'
         run: cmake --preset linux-x64 -B out/build/ci-linux-x64 -DBF2_GAME_DIR:PATH="$GITHUB_WORKSPACE/out/no-game-content"
 
-      - name: Build the dedicated server and check the Python runtime
+      - name: Build the dedicated server and AI library and check the Python runtime
         if: matrix.role == 'server'
-        run: cmake --build out/build/ci-linux-x64 --target bf2 dice_py_check_run
+        run: cmake --build out/build/ci-linux-x64 --target bf2 bf2_aidll dice_py_check_run
 
       - name: Package Linux binaries
         if: matrix.role == 'server'
