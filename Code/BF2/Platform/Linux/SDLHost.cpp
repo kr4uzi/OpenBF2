@@ -501,6 +501,8 @@ bool ClientHost::pumpEvents()
     m_impl->updateCursor();
     return m_impl->quit;
 }
+// [CHOSEN, not recovered] ClientHost.h: the macOS loading service has no Linux counterpart yet.
+void ClientHost::serviceWhileBusy() {}
 bool ClientHost::waitEvents(double seconds)
 {
     SDL_Event event;

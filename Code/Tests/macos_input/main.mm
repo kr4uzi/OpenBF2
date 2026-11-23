@@ -70,11 +70,16 @@ CGEventTimestamp nowNs(int offsetMs = 0)
 const SInt16 kKeyboardANSI = 40;    // KBGetLayoutType(40) == 'ANSI' (Apple Extended/MacBook ANSI)
 const SInt16 kKeyboardISO  = 41;    // KBGetLayoutType(41) == 'ISO '
 
+bool g_holdInjected = false;    // testBusyService: injected events are held as the busy service holds them
+
 void inject(CGEventRef cg)
 {
     NSEvent* e = [NSEvent eventWithCGEvent:cg];
     CFRelease(cg);
-    CocoaHostTestHooks::injectEventForTest(ClientHost::instance(), (__bridge void*)e);
+    if (g_holdInjected)
+        CocoaHostTestHooks::holdEventForTest(ClientHost::instance(), (__bridge void*)e);
+    else
+        CocoaHostTestHooks::injectEventForTest(ClientHost::instance(), (__bridge void*)e);
 }
 
 void key(unsigned short keyCode, bool down, bool repeat = false, SInt16 kbType = kKeyboardANSI,
@@ -658,6 +663,40 @@ void testHostBoundary()
     }
     check(messages.values(hostmsg::WM_CHAR) == std::vector<unsigned int>({3,13,8,22}),
           "real Cocoa event routing preserves Ctrl-C, keypad Enter, Backspace and Command-V");
+    host.removeListener(&messages);
+    settle();
+}
+
+// ClientHost::serviceWhileBusy: what the busy service takes from the window server during a load
+// reaches nobody until the next pump, which delivers it first and in order; pointer moves in a row
+// are kept as the last one.
+void testBusyService()
+{
+    begin("busy service: held events reach the engine only at the next pump, in order");
+    ClientHost& host = ClientHost::instance();
+    WindowMessageRecorder messages;
+    MouseLog mice;
+    host.addListener(&messages);
+    host.addListener(&mice);
+    g_holdInjected = true;
+    key(kVK_ANSI_A, true);
+    move(3, 0);
+    move(4, 0);
+    move(5, 0);
+    button(0, true);
+    button(0, false);
+    move(1, 1);
+    key(kVK_ANSI_A, false);
+    g_holdInjected = false;
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 6, "moves in a row are held as one: 6 events held");
+    check(messages.values(hostmsg::WM_KEYDOWN).empty() && mice.moves == 0 && mice.buttons == 0,
+          "nothing reaches the listeners while held");
+    CocoaHostTestHooks::deliverHeldEventsForTest(host);
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 0, "the next pump empties the hold");
+    check(messages.values(hostmsg::WM_KEYDOWN).size() == 1 && messages.values(hostmsg::WM_KEYUP).size() == 1,
+          "the held key press and release are delivered");
+    check(mice.moves == 2 && mice.buttons == 2, "two moves (one per run) and both button events are delivered");
+    host.removeListener(&mice);
     host.removeListener(&messages);
     settle();
 }
@@ -2125,6 +2164,7 @@ int main(int argc, char** argv)
         testAsyncEnter();
 
         testHostBoundary();
+        testBusyService();
         testFocusRepair();
         testProcessAncestry();
         testLaunchActivation();
