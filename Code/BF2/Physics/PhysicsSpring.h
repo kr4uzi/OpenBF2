@@ -33,7 +33,10 @@ public:
     virtual void  setSleepiness(int sleepiness);
     virtual void  setIsSleepier();
     virtual void  setIsAwake();
-    virtual void  reset(bool full);                                              // (the bool is not read; PhysicsNode::reset(true))
+
+    // Generic node resets preserve suspension deflection and wheel spin.
+    using PhysicsNode::reset;
+    virtual void  reset();                                                       // ELF +0x1C0 / PE +0x1BC
 
     void  setRelationToParentPosition(const Vec3& position);
     void  rotateWheel(float angularStep, float dt);                              // written
