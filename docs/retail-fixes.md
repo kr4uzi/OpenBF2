@@ -375,6 +375,22 @@ Each entry is a heading that names the fix, followed by these fields:
   has no mixer, so the allocation is not reached there.
 - **Source:** `Code/BF2/Game/VoipClient/VoipMixer.cpp`
 
+### Server logo URLs cannot leave the logo cache
+
+- **Retail:** `ServerLogoManager::parseUrl` (`BF2.exe` `0x4C3550`) splits a logo URL at `/` and
+  takes every part as a cache path component; it does not test for `..` or backslashes.
+  `ServerLogoManager::download` (`0x4C3120`) ignores parseUrl's answer (the call at `0x4C3164`),
+  deletes `<home>\LogoCache\<directory><file>`, creates the directory chain and downloads the URL
+  into it. A server's sponsor or community logo URL can therefore delete and write files outside
+  the cache folder, the sponsor logo already when the server is selected in the browser (Luigi
+  Auriemma, "Refractor 2 Client URL Directory Traversal", bf2urlz, 2010; reported for 1.50).
+- **OpenBF2:** parseUrl refuses a URL with a part that is only dots and spaces, or that contains a
+  backslash or a control character. download returns false for a refused URL before it touches a
+  file, and getCachedPath refuses it as before, so the logo is not shown. Other URLs are split and
+  cached as before; a colon (`host:port`) stays allowed.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Menu/ServerLogoManager.cpp`, `Code/Tests/server_logo_url_runtime.cpp`
+
 ## Server
 
 ### The dedicated server rejects ghost updates sent by a client

@@ -64,10 +64,36 @@ static std::string afterScheme(const std::string& url)
     return out;
 }
 
+// [CHOSEN, not recovered] Retail fix "Server logo URLs cannot leave the logo cache"
+// (docs/retail-fixes.md). A path component that the file system could read as anything but a
+// plain name inside the cache: empty, only dots and spaces (".." and the forms Windows trims to
+// it), or containing a backslash (Windows' separator, which the '/' split leaves in place; the
+// POSIX file systems map it to '/') or a control character. A colon stays allowed: it is not a
+// drive inside the cache path, and a "host:port" component works on the POSIX ports.
+static bool isUnsafeCacheComponent(const std::string& component)
+{
+    if (component.empty())
+        return true;
+    if (component.find_first_not_of(". ") == std::string::npos)
+        return true;
+    for (std::string::size_type i = 0; i < component.size(); ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(component[i]);
+        if (c == '\\' || c < 0x20 || c == 0x7F)
+            return true;
+    }
+    return false;
+}
+
 //4C3550 (293 B): the url after its scheme, split at '/' by the persistence tokenizer (59E190 /
 // SimpleTokenizer); nothing to split is a refusal. The last token is the file;
 // the ones before it, each followed by a backslash, are the directory. Both outputs are assigned
 // only on success, directory first.
+// Retail takes every token as it comes (the loop at 0x4C35C4 only appends), so a server's sponsor
+// or community logo URL with ".." or backslash components names a file outside "<home>\LogoCache\"
+// that download() then writes (Luigi Auriemma, "bf2urlz", 2010; B2BF #38).
+// [CHOSEN, not recovered] Retail fix "Server logo URLs cannot leave the logo cache"
+// (docs/retail-fixes.md): such a URL is refused like one with nothing to split.
 bool ServerLogoManager::parseUrl(const std::string& url, std::string& directory, std::string& file)
 {
     const std::string stripped = afterScheme(url);
@@ -81,6 +107,9 @@ bool ServerLogoManager::parseUrl(const std::string& url, std::string& directory,
     while (tokenizer.next(token));
     if (tokens.empty())                     // unreachable after the loop above; the shipped test
         return false;
+    for (std::size_t i = 0; i < tokens.size(); ++i)
+        if (isUnsafeCacheComponent(tokens[i]))
+            return false;                   // [CHOSEN, not recovered] see isUnsafeCacheComponent
     const std::string last(tokens.back());
     tokens.pop_back();
     std::string joined;
@@ -116,13 +145,17 @@ bool ServerLogoManager::getCachedPath(const std::string& url, std::string& out)
 // against the clock now - is kept as it is. Otherwise the cached file is deleted, the directory
 // chain is created by writing and deleting an empty "/dummy.txt" beside it, and the ghttp transfer
 // runs blocking into the cache path; only a refused transfer is a failure.
+// [CHOSEN, not recovered] Retail fix "Server logo URLs cannot leave the logo cache"
+// (docs/retail-fixes.md): retail ignores parseUrl's answer; a refused URL is now a failed download,
+// so nothing is deleted, created or written. SwiffRender's logo arm then has no texture (-1).
 bool ServerLogoManager::download(const std::string& url)
 {
     if (isUpdating())                                              // a get or a post pending
         return false;
     std::string directory;
     std::string file;
-    (void) parseUrl(url, directory, file);
+    if (!parseUrl(url, directory, file))
+        return false;
     std::string cacheDirectory(io::fileManager->getHomeSubstitution());
     cacheDirectory += "\\LogoCache\\";
     cacheDirectory += directory;
