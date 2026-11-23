@@ -398,7 +398,8 @@ int gviHardwareListDevices(GVDeviceInfo devices[], int maxDevices, GVDeviceType 
 
 	// fill the array of devices with info
 	deviceCount = 0;
-	for(i = 0 ; (i < maxDevices) && (deviceCount < numDevices) ; i++)
+	// [CHOSEN, not recovered] Bound reads by the HAL array and writes by caller capacity.
+	for(i = 0 ; (i < numDevices) && (deviceCount < maxDevices) ; i++)
 	{
 		// try to add the device to the list
 		GVBool addedDevice = gviFillDeviceInfo(deviceIDs[i], &devices[deviceCount], types);

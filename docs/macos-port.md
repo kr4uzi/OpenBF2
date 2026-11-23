@@ -1397,6 +1397,29 @@ so its Bink stops were not exercised then. P2 supersedes those macOS stops; its
 report recorded the caller checks and focused tests.
 No client movie, menu or loading-screen runtime result is claimed for P2.
 
+The macOS voice client's capture device is the **system default input only**
+(`[CHOSEN, not recovered]`, owner-requested port policy). `VoipClient::initVoice`
+uses the SDK's `m_defaultDevice & GV_CAPTURE` flag, populated from CoreAudio's
+`kAudioHardwarePropertyDefaultInputDevice`, without the retail fallback to the
+first capture-capable device. An absent or failed default input makes voice
+initialization fail; another enumerated microphone is never selected as a fallback.
+An iPhone explicitly selected as the system default remains eligible. The SDK's
+macOS enumeration bounds also use the HAL array length for reads and the caller's
+capacity for writes. Enumeration reads properties; `gvStartDevice` starts input
+I/O through `AudioDeviceStart`. Voice capture does not use OpenAL capture.
+
+Session timing stays retail: BF2.exe 1.50 x86 `GameServer::startServer`
+0x4CB152..0x4CB1CC starts the listen server's voice client after loading and local
+player creation when server voice is enabled, including single player. The local
+settings default voice to enabled (0x4B4986). `GameLogic::startupVoipClient`
+0x4EC300 checks dedicated mode, running state and server voice; `BF2VoipClient::startSession`
+0x451B60 also checks the profile's voice-enabled flag before base `startSession`
+0x7374F0 calls `initVoice` 0x7376F0. That opens and starts devices immediately
+(0x7377CF / 0x73783E); push-to-talk 0x451360 changes the capture threshold,
+not the device lifecycle. A remote client starts from the voice-enabled ServerInfo
+block (0x4D5B45..0x4D5B58). Disabled server/profile voice prevents session capture;
+the explicit menu microphone test remains a separate capture path.
+
 ### Audio (S2.5)
 
 BF2Audio's engine already speaks OpenAL through 39 entry points resolved by name

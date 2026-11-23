@@ -208,8 +208,8 @@ bool VoipClient::openSocket()
     return true;
 }
 
-// Starts GameSpy Voice, selects the codec and opens the first capture-capable and the first
-// playback-capable device (one device may serve both). Success needs both.
+// Starts GameSpy Voice, selects the codec and opens the first eligible capture and playback
+// devices (one device may serve both). Success needs both; macOS requires the default input.
 bool VoipClient::initVoice()
 {
 #if defined(_WIN32)
@@ -247,6 +247,12 @@ bool VoipClient::initVoice()
         int playback = info.m_defaultDevice & GV_PLAYBACK;
         if (!m_captureDevice && (info.m_deviceType & GV_CAPTURE))
             capture = info.m_deviceType & GV_CAPTURE;
+#if defined(__APPLE__)
+        // [CHOSEN, not recovered] macOS port policy: only CoreAudio's system default input.
+        // The first enumerated input may be a Continuity iPhone microphone. Never fall back to
+        // another input if the default is absent or cannot open (docs/macos-port.md).
+        capture &= info.m_defaultDevice;
+#endif
         if (!m_playbackDevice && (info.m_deviceType & GV_PLAYBACK))
             playback = info.m_deviceType & GV_PLAYBACK;
         if (!playback && !capture)
