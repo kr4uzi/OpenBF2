@@ -86,7 +86,7 @@
 #include "../../Menu/BF2HudManager.h"         // isCommanderShown (+0x1EC), getInformationAdapter (+0x244)
 #include "../../Menu/HudInformationAdapter.h" // setBool (+0x0C)
 #include "../../RendMisc/IRenderer.h"         // +0xAC, the renderer's night-map byte (isExpansionPack)
-#if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
+#if !defined(_MSC_VER)
 // [CHOSEN, not recovered] This native provider is an explicit PE-order table.
 #include "../../RendMisc/NativePostProductionSlots.h"
 #endif
@@ -179,6 +179,40 @@ void setNightVisionGaugeShown(bool shown)
 float MAX_MASK_TIMEOUT_OFF_TIME = 0.95f;
 float MAX_MASK_TIMEOUT_ON_TIME  = 0.95f;
 
+#if !DEDICATED
+namespace {
+// BF2.exe 0x4FC6F3 / 0x4FC726 / 0x4FC870: the published framework is an explicit
+// function table, not IBase. Its fog getter returns the supplied Vec4's address.
+#if defined(_MSC_VER)
+#define COMMANDER_POST_CALL __thiscall
+#else
+#define COMMANDER_POST_CALL
+#endif
+template<class Function> Function commanderPostSlot(void* post, unsigned int ordinal)
+{
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] The native provider retains the explicit PE slot order.
+    ordinal = dx9rend::native_post::slot(ordinal);
+#endif
+    return reinterpret_cast<Function>((*static_cast<void***>(post))[ordinal]);
+}
+Vec4 getCommanderFog(void* post)
+{
+    Vec4 fog;
+    return *commanderPostSlot<Vec4* (COMMANDER_POST_CALL*)(void*, Vec4*)>(post, 10)(post, &fog);
+}
+void setCommanderFog(void* post, const Vec4& fog)
+{
+    commanderPostSlot<void (COMMANDER_POST_CALL*)(void*, const Vec4*)>(post, 9)(post, &fog);
+}
+dx9rend::IRenderer* commanderRenderer()
+{
+    return static_cast<dx9rend::IRenderer*>(g_renderer);
+}
+#undef COMMANDER_POST_CALL
+} // namespace
+#endif
+
 // Initialize player state, owned action/score helpers, and replication history. Preserve the
 // nonzero sentinels and initial flags. The retail networkable subobject uses PlayerNetworkable's
 // vtable; this C++ model provides the networkable overrides on Player instead.
@@ -196,10 +230,7 @@ Player::Player(int index, world::CPersistentExplosionEffectManager* explosionEff
     , m_overheadCameraEnabled(false)
     , m_overheadCameraTopDownView(false)
     , m_commanderCamOverhead(false)
-    , m_field74(0)
-    , m_field78(0)
-    , m_field7C(0)
-    , m_field80(0)
+    , m_savedCommanderFog{}
     , m_inputId(-1)
     , m_playerId(index)
     , m_updateFrequencyType(0)
@@ -1530,14 +1561,60 @@ bool Player::getOverheadCameraTopDownView() const
     return false;
 }
 
-// . IPlayer +0xC0. forwards first, through its OWN vtable: the top-down write
-// always mirrors into setCommanderCamOverhead (+0xC8, virtual - `call [edx+0C8h]`, preserved as a
-// virtual call), and only then guard-stores its own byte.
+// Mirrors the requested top-down mode through the virtual setter before checking for a change.
+// The local client saves or restores its live-view settings before storing the changed flag.
 void Player::setOverheadCameraTopDownView(bool topDown)
 {
     setCommanderCamOverhead(topDown);                                // virtual +0xC8
-    if (topDown != (m_overheadCameraTopDownView != 0))               // the +0x72 guard-store
-        m_overheadCameraTopDownView = topDown;
+    if (topDown == (m_overheadCameraTopDownView != 0))
+        return;
+#if !DEDICATED
+    // BF2.exe 0x4FC652..0x4FC907: local client entry saves fog, road/terrain/shadow
+    // settings and view distance; exit restores them. The dedicated ELF 0x080F52F0
+    // has only the flag stores. A missing commander camera still stores the flag.
+    if (!isDedicated() && world::playerManager->getLocalHumanPlayer() == this)
+    {
+        if (topDown)
+        {
+            world::IObject* object = static_cast<world::IObject*>(
+                static_cast<ISquadManager*>(squadManager)->getCommanderCam(getTeam()));
+            if (object)
+            {
+                world::ICameraObject* camera = static_cast<world::ICameraObject*>(
+                    object->queryInterface(world::IID_ICameraObject));
+                setFov(camera->getActiveFOV(), 0.0f);
+                void* post = classManager->getSingleton(std::string("PostProductionFrameWork"));
+                m_savedCommanderFog = getCommanderFog(post);
+                setCommanderFog(post, Vec4{0.0f, 10000.0f, 0.0f, 1.0f});
+                m_savedCommanderRendererDistance = commanderRenderer()->slot_0x7C();
+                commanderRenderer()->slot_0x78(500.0f);
+                m_savedCommanderRoadDistance = commanderRenderer()->slot_0x84();
+                commanderRenderer()->slot_0x80(10.0f);
+                m_savedCommanderRoadBias = commanderRenderer()->slot_0x8C();
+                commanderRenderer()->slot_0x88(-0.000001f);
+                m_savedCommanderDynamicShadows = commanderRenderer()->slot_0x94();
+                commanderRenderer()->slot_0x90(false);
+                m_savedCommanderTerrainFlag = commanderRenderer()->slot_0x9C();
+                commanderRenderer()->slot_0x98(true);
+                m_savedCommanderViewDistance = settings->intGet(std::string("GSViewDistance"), 500);
+                settings->intSet(std::string("GSViewDistance"), 500);
+            }
+        }
+        else
+        {
+            setFov(0.0f, 0.0f);
+            void* post = classManager->getSingleton(std::string("PostProductionFrameWork"));
+            setCommanderFog(post, m_savedCommanderFog);
+            commanderRenderer()->slot_0x78(m_savedCommanderRendererDistance);
+            commanderRenderer()->slot_0x80(m_savedCommanderRoadDistance);
+            commanderRenderer()->slot_0x88(m_savedCommanderRoadBias);
+            commanderRenderer()->slot_0x90(m_savedCommanderDynamicShadows);
+            commanderRenderer()->slot_0x98(m_savedCommanderTerrainFlag);
+            settings->intSet(std::string("GSViewDistance"), m_savedCommanderViewDistance);
+        }
+    }
+#endif
+    m_overheadCameraTopDownView = topDown;
 }
 
 //  / 0x80F9000, 12 B - the plain +0x73 pair the mirror above lands in.
@@ -1592,6 +1669,12 @@ void Player::setOverheadCameraEnabled(bool enabled)
     m_overheadCameraEnabled = enabled;                    // ELF +0x71 / PE +0x8D
     if (!enabled)
         setOverheadCameraTopDownView(false);               // virtual +0xC0
+#if !DEDICATED
+    // BF2.exe 0x4FA4CD..0x4FA4F8: refresh the local HUD after either request,
+    // including repeated values; the delay is one second.
+    if (!isDedicated() && world::playerManager->getLocalHumanPlayer() == this)
+        eventManager->postEvent(ECHud, 31, 0, 1.0f);
+#endif
 }
 
 // . IPlayer +0xBC. checkPlayerTriggers' second guard.
@@ -4565,6 +4648,24 @@ void Player::update(float deltaTime)
 
         updateCommanderStatus();
     }
+
+#if !DEDICATED
+    // BF2.exe 0x50540C..0x5054A0: publish the local player's replicated commander
+    // assets on both listen servers and clients, after the server-side refresh.
+    if (hudManager && this == world::playerManager->getLocalHumanPlayer())
+    {
+        hudManager->setSatelliteEnabled(m_fieldF8);
+        hudManager->setArtilleryEnabled(m_fieldF9);
+        hudManager->setUAVEnabled(m_fieldFA);
+        float satelliteArmor, artilleryArmor, uavArmor;
+        std::memcpy(&satelliteArmor, &m_fieldFC, sizeof(satelliteArmor));
+        std::memcpy(&artilleryArmor, &m_field100, sizeof(artilleryArmor));
+        std::memcpy(&uavArmor, &m_field104, sizeof(uavArmor));
+        hudManager->setSatelliteAvailability(satelliteArmor);
+        hudManager->setArtilleryAvailability(artilleryArmor);
+        hudManager->setUAVAvailability(uavArmor);
+    }
+#endif
 
     // 5: the one-shot VOIP re-check
     if (m_checkVoip && this == world::playerManager->getLocalHumanPlayer())

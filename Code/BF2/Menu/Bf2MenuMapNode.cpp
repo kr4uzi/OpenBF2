@@ -6077,8 +6077,9 @@ void Bf2MenuMapNode::update(float delta)
         hfe::eventManager->postEvent(hfe::ECHud, 0x4D, 0, 0.0f);   // PE +0x10 overload
     }
 
-    // Send size-change events on either transition while the commander screen is hidden.
-    if ((!m_field776 && sizeReached && !hfe::hudManager->isCommanderShown())
+    // BF2.exe 0x77C85D..0x77C8AE: arrival posts MapChangeComplete while commander
+    // is shown (the HUD enables its overhead camera); departure posts while hidden.
+    if ((!m_field776 && sizeReached && hfe::hudManager->isCommanderShown())
         || (m_field776 && !sizeReached && !hfe::hudManager->isCommanderShown()))
     {
         hfe::eventManager->postEvent(hfe::ECHud, 0x4C, 0, 0.0f);
