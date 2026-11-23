@@ -752,7 +752,7 @@ jobs:
           deps=nativefx
           if [ "${{ matrix.arch }}" = arm64 ]; then deps=nativefx-arm64; fi
           cmake --preset macos-x64 -B out/build/ci-macos-${{ matrix.arch }} \
-            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DBF2_MACOS_LINK_RENDDX9=ON \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
             -DBF2_FRONTIER_DEFAULT_CONTINUE=ON \
             -DBF2_FX_NATIVE_DEPS="$GITHUB_WORKSPACE/out/build/$deps" \
             -DBF2_GAME_DIR:PATH="$GITHUB_WORKSPACE/out/no-game-content"

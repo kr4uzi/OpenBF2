@@ -101,9 +101,10 @@ if(BF2_FX_NATIVE_AVAILABLE)
     endif()
 endif()
 set(BF2_FX_NATIVE_AVAILABLE ${BF2_FX_NATIVE_AVAILABLE} PARENT_SCOPE)
-# Only the renderer-linked client needs the compiler; server-only builds (bf2, bf2_aidll) do not.
-if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_MACOS_LINK_RENDDX9)
-    message(FATAL_ERROR
+# Only the client needs the compiler; server-only builds (bf2, bf2_aidll) configure and build
+# without it. Building bf2_client without it stops at once with this message.
+if(NOT BF2_FX_NATIVE_AVAILABLE AND TARGET bf2_client AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    string(CONCAT _fx_missing_message
         "The macOS client requires native effect compilation (BF2_FX_NATIVE).\n"
         "Missing or incompatible ${CMAKE_OSX_ARCHITECTURES} vkd3d-shader/MojoShader dependencies at: ${_nd}\n"
         "Build offline with: sh tools/macos/nativefx/build.sh [x86_64|arm64|universal]\n"
@@ -113,6 +114,13 @@ if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_MACOS_LINK_RENDDX9)
         "vkd3d/.libs/libvkd3d-{shader,common}.a, vkd3d-src/include/vkd3d_shader.h, "
         "mojo/libmojoshader.a and mojo-src/mojoshader.h.\n"
         "All libraries must contain every requested architecture. There is no Wine cache fallback.")
+    message(WARNING "${_fx_missing_message}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt" "${_fx_missing_message}\n")
+    add_custom_target(bf2_client_requires_fx_native
+        COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt"
+        COMMAND "${CMAKE_COMMAND}" -E false
+        VERBATIM)
+    add_dependencies(bf2_client bf2_client_requires_fx_native)
 endif()
 if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_LINUX_EFFECT_CHECKS)
     message(FATAL_ERROR "Linux effect checks require toolchain-compatible native dependencies at ${_nd}. "

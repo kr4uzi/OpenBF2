@@ -164,7 +164,7 @@ in one command from the repository root (`NATIVEFX_DIR` is the bundle's director
 with `sh tools/macos/nativefx/build.sh`):
 
 ```bash
-cmake --preset macos-x64 -B out/build/local-macos -DBF2_MACOS_LINK_RENDDX9=ON -DBF2_FX_NATIVE_DEPS="$NATIVEFX_DIR" && cmake --build out/build/local-macos --target bf2_client bf2 -j4
+cmake --preset macos-x64 -B out/build/local-macos -DBF2_FX_NATIVE_DEPS="$NATIVEFX_DIR" && cmake --build out/build/local-macos --target bf2_client bf2 -j4
 ```
 
 `BF2_FX_NATIVE_DEPS` names a directory with `vkd3d/.libs/libvkd3d-shader.a`,
@@ -216,7 +216,7 @@ With the local sources and generator tools above available, this single command
 builds the native dependencies, Metal client, dedicated server and AI library:
 
 ```bash
-sh tools/macos/nativefx/build.sh universal && cmake --preset macos-universal -B out/build/local-universal -DBF2_MACOS_LINK_RENDDX9=ON && cmake --build out/build/local-universal --target bf2_client bf2 bf2_aidll -j4
+sh tools/macos/nativefx/build.sh universal && cmake --preset macos-universal -B out/build/local-universal && cmake --build out/build/local-universal --target bf2_client bf2 bf2_aidll -j4
 lipo -archs out/build/local-universal/bin_macos/bf2
 ```
 
@@ -225,7 +225,7 @@ other configured widths are shared. No host Python or additional software is nee
 For an arm64-only compile measurement, use a separate directory:
 
 ```bash
-sh tools/macos/nativefx/build.sh arm64 && cmake --preset macos-x64 -B out/build/local-arm64 -DCMAKE_OSX_ARCHITECTURES=arm64 -DBF2_MACOS_LINK_RENDDX9=ON && cmake --build out/build/local-arm64 --target bf2_client bf2 bf2_aidll -j4
+sh tools/macos/nativefx/build.sh arm64 && cmake --preset macos-x64 -B out/build/local-arm64 -DCMAKE_OSX_ARCHITECTURES=arm64 && cmake --build out/build/local-arm64 --target bf2_client bf2 bf2_aidll -j4
 ```
 
 Cross-compiling and linking arm64 does not establish native runtime behavior. See
@@ -236,16 +236,10 @@ or server. On an Intel host the arm64 vtable probes compile but their executable
 checks are left for the M2; universal executable checks use the host slice.
 
 `bf2_client` is the macOS client target ([CHOSEN, not recovered], package S2.0). Its
-renderer, movie and audio plugins are static libraries linked into the executable. The
-Metal renderer is enabled with `BF2_MACOS_LINK_RENDDX9=ON`; OFF retains the earlier
-renderer-free diagnostic client. Native effect dependencies are required at configure time
-when the renderer is enabled. The
-renderer-excluded x86_64 client compiles and links strictly after the
-PR #55 integration (`--target bf2_client -j4`). Renderer-free
-startup reaches the main loop; see [S2.12](macos-port.md#renderer-free-startup-end-s212).
-Run it only through the sandboxed offline harness, with HOME and cloned content under
-`out/`. Build `bf2_renddx9_static` separately with `-- -k` to measure the remaining
-renderer compile blockers.
+renderer (Metal), movie and audio plugins are static libraries that are always linked into the
+executable; there is no build switch for them. Building `bf2_client` needs the native effect
+dependencies (`BF2_FX_NATIVE_DEPS`, above); without them the build of that target stops with
+instructions, while the server targets (`bf2`, `bf2_aidll`) still configure and build.
 
 Run the server from a content root as on Linux. Pass `+config` and `+mapList` paths
 **relative to the content root**: with an absolute `+config` path the macOS smoke run
