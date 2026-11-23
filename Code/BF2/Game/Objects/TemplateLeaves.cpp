@@ -26,6 +26,7 @@
 #include "Game/Spring.h"                         // SpringTemplate::createObject's product
 #include "Game/Rotor.h"                          // RotorTemplate::createObject's product
 #include "Fx/Emitter.h"                          // EmitterTemplate::createObject's product
+#include "Fx/GroundEffectBundle.h"               // GroundEffectBundleTemplate::createObject's product
 #include "../Main/Game.h"                        // isDedicated() - EmitterTemplate::createObject (BF2.exe 0x440510)
 #include "IPlayer.h"                             // Zipline placement owner/vehicle
 #include "IObject.h"                             // placement collision objects
@@ -355,8 +356,9 @@ void EnvMapTemplate::templateInitialize()
     }
 }
 
-// . Ctor 58 B: one float at +0x164 = 3.0f. createObject returns NULL (7 B).
-// templateInitialize is a 5-byte empty - THE body the deep drive faulted on.
+// . Ctor 58 B: one float at +0x164 = 3.0f. The ELF's createObject returns NULL (7 B); the
+// client's creates a GroundEffectBundle. templateInitialize is a 5-byte empty - THE body the
+// deep drive faulted on.
 BF2_LEAF_SIMPLE(GroundEffectBundleTemplate)
 // ELF 8202E10: the only derived field is the trigger-distance float, with no flag update.
 GroundEffectBundleTemplate::GroundEffectBundleTemplate() : m_maxTriggerDistance(3.0f) {}
@@ -370,7 +372,18 @@ bool GroundEffectBundleTemplate::makeScript(io::IStream* stream)
     const std::string text = out.str();
     return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
  }
-IObject* GroundEffectBundleTemplate::createObject() const { return 0; }
+// ELF 8202E60: `xor eax, eax; ret`. BF2.exe 0x646A10: null on a dedicated game, else a
+// 0x150-byte GroundEffectBundle.
+IObject* GroundEffectBundleTemplate::createObject() const
+{
+#if DEDICATED
+    return 0;
+#else
+    if (isDedicated())
+        return 0;
+    return new GroundEffectBundle(this);
+#endif
+}
 void GroundEffectBundleTemplate::templateInitialize() {}
 
 // Hook links create RopeLink objects using this template's compatible layout.
