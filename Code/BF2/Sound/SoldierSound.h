@@ -30,7 +30,8 @@ public:
     virtual const Math::Vec3* getVelocity();
 
     // Everything else is NON-virtual: the Soldier calls it directly
-    void initTemplates(world::SimpleObjectTemplate* objectTemplate);   // [FRONTIER]
+    // Creates the five named sound children before soldier tweaks configure them.
+    static void initTemplates(world::SimpleObjectTemplate* objectTemplate);
     void update(float dt, int* out);
     void updateContactMaterial(int material);
 
@@ -57,7 +58,7 @@ private:
     // Nine sound slots: four movement samples and five sounds initialized by the constructor.
 
     /* +0x04 */ world::Soldier* m_soldier;
-    /* +0x08 */ ISound* m_sounds[9];      // [0..3] initTemplates; [4] Death, [5] Revive,
+    /* +0x08 */ ISound* m_sounds[9];      // [0..3] updateContactMaterial; [4] Death, [5] Revive,
                                           // [6] Swim, [7] Swim_Sprint, [8] Swim_Still
     /* +0x2C */ int   m_lastMaterial;     // ctor -1 [CHOSEN] name - updateContactMaterial's field
     /* +0x30 */ float m_movementSpeedEvaluator; // movement speed; also the Death sound's shared
