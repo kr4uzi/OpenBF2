@@ -388,7 +388,8 @@ IObject* GameLogicCollision::playCollisionEffect(const IObjectTemplate* effectTe
         return 0;
 
     // Keep both class-ID queries. The GroundEffectBundle branch retains an invalid
-    // EffectBundle cast from the original; current template creation returns null.
+    // EffectBundle cast from the original. It is reached only when a material cell names a
+    // GroundEffectBundle as its effect; stock materialManagerSettings.con names none.
     if (effect->getTemplate()->getClassID() == CID_EffectBundleTemplate
         || effect->getTemplate()->getClassID() == CID_GroundEffectBundleTemplate)
     {

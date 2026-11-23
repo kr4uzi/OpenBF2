@@ -1,5 +1,5 @@
 ﻿// Template subclasses that override inherited virtuals without adding slots. [INFERRED] Source placement.
-// GroundEffectBundle cannot instantiate an object. Emitter creation returns null in dedicated mode.
+// GroundEffectBundle and Emitter creation return null in dedicated mode.
 // EnvMap refuses binary serialization; specialized precache and physics overrides remain class-specific.
 
 #ifndef GAME_OBJECTS_TEMPLATELEAVES_H     // [INFERRED] guard style
@@ -121,13 +121,13 @@ class EnvMapTemplate : public SimpleObjectTemplate
           virtual bool makeScript(io::IStream*);
           void* m_envMap; };                                        // ELF+168 / clientPE+214, borrowed renderer template
 
-// createObject returns null; this template cannot instantiate an object.
+// createObject returns null on dedicated builds and a GroundEffectBundle on the client.
 class GroundEffectBundleTemplate : public SimpleObjectTemplate
 { public: BF2_TEMPLATE_LEAF(GroundEffectBundleTemplate);
           GroundEffectBundleTemplate();
           virtual void templateInitialize();                         // +0x1C  -  empty
           virtual bool makeScript(io::IStream*);                     // ELF8202E70 / dedicated PE5FE6E0
-          float m_maxTriggerDistance; };                            // ELF+164; ctor3.0, writer-named
+          float m_maxTriggerDistance; };                            // ELF+164 / clientPE+210; ctor 3.0, writer-named
 
 class HookLinkTemplate : public SimpleObjectTemplate
 { public: HookLinkTemplate();                                        // refcount + flag 0x40

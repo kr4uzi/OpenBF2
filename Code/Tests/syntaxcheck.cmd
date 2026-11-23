@@ -147,6 +147,8 @@ cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundle.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundleTemplate.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\GroundEffectBundle.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Game\Spring.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\ExplosionEffectFlashBang.cpp"
@@ -1600,6 +1602,8 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundle.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundleTemplate.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\GroundEffectBundle.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Game\Spring.cpp"
 if errorlevel 1 set /a RC+=1
