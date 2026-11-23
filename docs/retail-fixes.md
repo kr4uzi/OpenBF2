@@ -565,6 +565,29 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/Game/GameLogic/ServerGameLogic.cpp`,
   `Code/Tests/gamelogic_registries_runtime.cpp`
 
+### Player names keep up to 27 characters
+
+- **Retail:** The server builds a joining player's name as clan tag, a space and the nick, and
+  `GameServer::createPlayerWithValidName` keeps only its first 23 characters (Linux ia-32 server
+  `0x80AFCA0`, constant `0x17`); `GameServer::changePlayerName` does the same (`0x80B3460`). The
+  client caps the tag at six characters (`GlobalSettings::getNamePrefix`, `BF2.exe` `0x4B0A00`) and
+  a GameSpy unique nick has up to 20 (`GP_UNIQUENICK_LEN` 21), so a full name has up to 27
+  characters and long names lose their end in the game, the scoreboard and server queries
+  ([B2BF/OpenBF2 #59](https://github.com/B2BF/OpenBF2/issues/59)).
+- **OpenBF2:** Both functions keep up to 27 characters. With a name collision the retry suffix
+  `_<id>` (at most `_255`) still fits in the 31 characters the player events carry.
+- **Applies to:** Client and server, wherever a game is hosted; all platforms.
+- **Retail clients:** The wire format is unchanged: `CreatePlayerEvent` carries the name in a
+  32-byte field (31 characters and a terminator, Linux ia-32 server `CreatePlayerEvent` serialize
+  and deSerialize) and `ChangePlayerNameEvent` up to 31, so names of 24 to 27 characters arrive
+  whole. On the receiving side the recovered client code keeps player names in `std::string`
+  (player, scoreboard, squad list, kill and chat messages, nametags, whose format buffer has 4096
+  bytes), the end-of-round reader uses a 256-byte buffer, and the PunkBuster client copies at most
+  32 bytes into a 33-byte field; no fixed buffer smaller than 28 bytes holds a player name. A
+  longer name can be drawn wider in the scoreboard and nametags; that was not checked in a retail
+  client.
+- **Source:** `Code/BF2/Game/GameServer/GameServer.cpp`
+
 ### Wrong-length voice challenge datagram is dropped instead of ending the server
 
 - **Retail:** `VoipServerConnection::HandlePacketChallengeString` (Linux ia-32 server `0x8127600`,
