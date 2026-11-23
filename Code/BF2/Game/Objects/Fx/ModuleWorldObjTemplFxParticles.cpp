@@ -76,6 +76,18 @@ BF2_CONSOLE_PROPERTY(qualityLevel, std::string, activeParticleBase(), setQuality
 BF2_CONSOLE_PROPERTY(isLocalSystem, bool, activeParticleBase(), setIsLocalSystem, getIsLocalSystem, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(radialDirection, float, activeParticleBase(), setRadialDirection, getRadialDirection, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomRadialDirection, float, activeParticleBase(), setRandomRadialDirection, getRandomRadialDirection, kParticleConsoleTag)
+// Tear-gas cloud properties: ELF ConsoleClass293..299 (ObjectTemplate order 123..129) / client PE
+// ctor 0x56963D.. (executor 0x569782 -> 0x64F300/0x64F340). gasCloudType advertises the inclusive
+// integer range 0..1 (PE 0x5697CA) and clamps through it.
+BF2_CONSOLE_PROPERTY_FN_RANGED(gasCloudType, geom::GasCloudType, activeParticleBase() != 0,
+                               activeParticleBase()->getGasCloudType(),
+                               activeParticleBase()->setGasCloudType, 0, 1, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(blurryVisionTime, float, activeParticleBase(), setBlurryVisionTime, getBlurryVisionTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(blurryVisionHoldTime, float, activeParticleBase(), setBlurryVisionHoldTime, getBlurryVisionHoldTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(minGasCloudRadius, float, activeParticleBase(), setMinGasCloudRadius, getMinGasCloudRadius, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(maxGasCloudRadius, float, activeParticleBase(), setMaxGasCloudRadius, getMaxGasCloudRadius, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(gasCloudRadiusTime, float, activeParticleBase(), setGasCloudRadiusTime, getGasCloudRadiusTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(gasCloudDamage, float, activeParticleBase(), setGasCloudDamage, getGasCloudDamage, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRadius, Vec3, activeParticleBase(), setEmitRadius, getEmitRadius, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRangeX, RandomDistribution, activeParticleBase(), setEmitRangeX, getEmitRangeX, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRangeY, RandomDistribution, activeParticleBase(), setEmitRangeY, getEmitRangeY, kParticleConsoleTag)

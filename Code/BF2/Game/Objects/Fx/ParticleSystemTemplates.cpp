@@ -8,6 +8,11 @@
 #include "../../../Geom/ParticleSystem/ParticleSystemManager.h"
 #include "../IObject.h"                            // createObject's (always null) product type
 
+#include <cstdio>                                  // sscanf - the GasCloudType reader
+#include <istream>
+#include <ostream>
+#include <sstream>
+
 namespace dice {
 namespace hfe {
 
@@ -28,6 +33,39 @@ const char* const ParticleBlendModeNames[2]         = { "AlphaBlend", "Additive"
 const char* const ParticleDrawOrderNames[3]         = { "Front", "Back", "Low" };
 const char* const ParticleEmitPrioNames[3]          = { "Low", "Medium", "High" };
 const char* const SpriteParticleSystemTypeNames[3]  = { "Sorted", "PointSprite", "Additive" };
+
+// operator<< (geom::GasCloudType) - ELF 0x8211340, 58 B. Every value other than 1 writes "None".
+// The literals are the tails of two merged .rodata strings ("ABNone"+2, "S_TearGas"+2).
+std::ostream& operator<<(std::ostream& stream, geom::GasCloudType type)
+{
+    if (static_cast<int>(type) == 0 || static_cast<int>(type) != 1)
+        stream << "None";
+    else
+        stream << "TearGas";
+    return stream;
+}
+
+// operator>> (geom::GasCloudType) - ELF 0x8211380, 883 B. A token of at most three characters that
+// scans as an integer is first spelled through operator<<; the raw token and that spelling are then
+// each compared (case-sensitive) with "None" before "TearGas". Anything else selects 0 ("None").
+std::istream& operator>>(std::istream& stream, geom::GasCloudType& type)
+{
+    std::string token;
+    stream >> token;
+    std::ostringstream spelled;
+    if (token.length() <= 3)
+    {
+        int numeric;
+        if (std::sscanf(token.c_str(), "%d", &numeric) == 1)
+            spelled << static_cast<geom::GasCloudType>(numeric);
+    }
+    if (token.compare("None") != 0 && spelled.str().compare("None") != 0
+        && (token.compare("TearGas") == 0 || spelled.str().compare("TearGas") == 0))
+        type = static_cast<geom::GasCloudType>(1);
+    else
+        type = static_cast<geom::GasCloudType>(0);
+    return stream;
+}
 
 // ParticleSystemTemplateBase - the root. Constructor 0x820DF10 (C2) / 0x820E000 (C1), 239 B, read
 // at the instruction level: ObjectTemplate(); both vptrs; the two strings default-constructed
