@@ -50,7 +50,8 @@
 #include "SoldierHapticProfile.h"                // ledger N2: the control-box profile switch (HapticSettings)
 #include "../PlayerControlObjectTemplate.h"       // onEnter's unchecked +0x22C template view
 #include "../../HapticSettings.h"
-#include "../../Main/BF2ClientSeams.h"           // g_hapticSettings, ds:0x987394
+#include "../../Main/BF2ClientSeams.h"           // g_hapticSettings ds:0x987394, hudManager ds:0xA10890
+#include "../../../Menu/BF2HudManager.h"         // onManDown, BF2HudManager +0x350
 #endif
 #include "../../../AI/AIInterface/BFKnowledge/IAIObject.h"   // init()'s lock bracket, the revive's init()
 #include "../../GameServer/ServerSettings.h"     // serverSettings - the man-down time
@@ -3199,7 +3200,16 @@ void Soldier::handleMessage(TemplateMessage message, IPlayer* player, bool remot
             {
                 gameCallForSpecialist(occupant, static_cast<HudNodeTypes>(50));
                 ++m_medicCalled;
-                playerManager->getLocalHumanPlayer();   // discarded - a leftover, reproduced
+#if !DEDICATED
+                // BF2.exe 0x5A779A..0x5A77B5: the local player's man-down also tells the HUD,
+                // through BF2HudManager +0x350 (onManDown, 0x751460), which slides the soldier
+                // panels away and shows the man-down text. The dedicated ELF keeps only the
+                // local-player query.
+                if (occupant == playerManager->getLocalHumanPlayer() && hudManager)
+                    hudManager->onManDown();
+#else
+                playerManager->getLocalHumanPlayer();   // discarded - the HUD call's remnant
+#endif
             }
         }
         m_isManDown = 1;
