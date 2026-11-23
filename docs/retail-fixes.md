@@ -644,6 +644,27 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/Game/GameEvents/JoinSquadEvent.cpp`,
   `Code/BF2/Game/GameEvents/ChangeSquadNameEvent.cpp`
 
+### Only the squad leader is told that a member left
+
+- **Retail:** When a player leaves a squad, `Squad::removeFromSquad` sends HUD event 21 to every
+  member, the leaver included (Linux ia-32 server `0x8119D00`). The client's handler shows
+  "#PLAYERNAME# has left your squad" to any receiver on the same team who is in a squad, except the
+  leaver (`BF2.exe` `0x75B0FE`..`0x75B176`), so every remaining member gets it although only the
+  squad leader needs it ([B2BF/OpenBF2 #80](https://github.com/B2BF/OpenBF2/issues/80)); BF2142
+  tells only the leader.
+- **OpenBF2:** The server sends event 21 only to the leaver and the squad leader. The client shows
+  the text only when the local player is a squad leader, so it also behaves this way on a retail
+  server. When the leader leaves, nobody else gets event 21; the members then get the new-leader
+  event (HUD 24) as before. The kick event (HUD 20) still goes to every member.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** Event 21 does nothing else on a member's client: `BF2HudManager` is its only
+  receiver, and for another player it only adds the chat line (squad lists are built from the
+  players' own squad fields). The leaver, whose client closes its squad view on its own id, and the
+  leader still receive it. A retail client on an OpenBF2 server therefore loses only the extra
+  message.
+- **Source:** `Code/BF2/Game/GameLogic/SquadManager/Squad.cpp`,
+  `Code/BF2/Menu/BF2HudManagerHudEvents.cpp`, `Code/Tests/hud_hud_event_runtime.cpp`
+
 ### Wrong-length voice challenge datagram is dropped instead of ending the server
 
 - **Retail:** `VoipServerConnection::HandlePacketChallengeString` (Linux ia-32 server `0x8127600`,
