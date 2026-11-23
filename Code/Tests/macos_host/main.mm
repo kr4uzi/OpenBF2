@@ -307,8 +307,13 @@ int main(int argc, char** argv)
             fullscreenAt = now();
             std::printf("[window] fullscreen=%d drawable=%dx%d\n", host.isFullscreen(), host.clientWidth(), host.clientHeight());
         }
-        if (fullscreenOn && now() - fullscreenAt > 0.7)
+        // [CHOSEN] Native full screen is asynchronous (NativeFullscreen.h): the window animates into
+        // its own Space after the request, so the cycle waits up to 3 s for it before switching back.
+        NSWindow* const nativeWindow = (__bridge NSWindow*)CocoaHostTestHooks::nativeWindow(host);
+        const bool inSpace = nativeWindow && (nativeWindow.styleMask & NSWindowStyleMaskFullScreen);
+        if (fullscreenOn && (inSpace || now() - fullscreenAt > 3.0))
         {
+            std::printf("[window] own Space=%d after %.1f s\n", inSpace ? 1 : 0, now() - fullscreenAt);
             host.setFullscreen(false);
             fullscreenOn = false;
             fullscreenDone = true;

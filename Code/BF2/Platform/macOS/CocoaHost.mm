@@ -17,6 +17,7 @@
 #include "MacRawMouse.h"
 #include "ProcessAncestry.h"                // [CHOSEN] the launcher of this process (activation)
 #include "RestartInFront.h"                 // [CHOSEN] a game that restarted itself (activation)
+#include "NativeFullscreen.h"               // [CHOSEN] the game window's own full-screen Space
 #include "../InputScript.h"         // [TEMP] BF2_INPUT_SCRIPT (docs/macos-c-input-script.md)
 #include "../Host/CursorFile.h"
 #include "CursorScale.h"                 // [CHOSEN] the cursor's size on screen
@@ -74,10 +75,10 @@ void refreshViewMagnification();
 @interface OpenBF2HostWindow : NSWindow
 @end
 
+// [CHOSEN, not recovered] The game window keeps its title bar in full screen too (native full
+// screen, NativeFullscreen.h), so it becomes key and main as any titled window does. The borderless
+// full-screen window it replaces needed overrides for that.
 @implementation OpenBF2HostWindow
-// Borderless windows refuse key status by default; the full-screen game window needs it.
-- (BOOL)canBecomeKeyWindow  { return YES; }
-- (BOOL)canBecomeMainWindow { return YES; }
 @end
 
 @interface OpenBF2HostView : NSView
@@ -152,7 +153,13 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
 
     bool appInitialized = false;
     bool quit           = false;
-    bool fullscreen     = false;
+    macos::NativeFullscreen fullscreen;  // [CHOSEN] what the engine asked for and where the window is
+    // [CHOSEN, not recovered] The game window is in its full-screen Space and that Space is not on
+    // screen (the user swiped or switched to another Space). The window keeps the key status and
+    // the application can stay active - nothing else may be in front on an empty desktop Space -
+    // yet the game is out of sight: the focus gate treats it as unfocused, so the mouse is released
+    // and input goes nowhere until the Space is back (occlusionChanged).
+    bool spaceHidden = false;
     bool visible        = false;
     bool minimized      = false;
     bool windowKey      = false;
@@ -213,13 +220,11 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // count from the host's first look at the period after window creation, not from the first
     // request (activationCountFrom).
     bool   activationPending = false;  // an activation period is running
-    bool   fullscreenPending = false;  // a fullscreen start waiting for activation (createWindow)
     // [CHOSEN, not recovered] The system reports this process active (another app activated it
     // during launch) while NSApp never received the activation; AppKit then keeps isActive NO
     // and its windows non-key, so the engine's focus gate drops every click. When that state
     // lasts, the host trusts the system's answer until NSApp catches up or the user leaves.
     bool   systemActive = false;
-    ClientHost* owner = nullptr;       // for becameActive's deferred setFullscreen
     double activationStarted = 0.0;  // focusNow() of the period's first request; the report counts from it
     double activationLastTry = 0.0;  // of its last request, Dock reset or look at a bystander
     // [CHOSEN, not recovered] From when the period's ten seconds count (focusNow()). A look is one
@@ -887,12 +892,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // ordered front while the application was inactive), so input reaches the engine at once.
     void becameActive()
     {
-        if (fullscreenPending)
-        {
-            fullscreenPending = false;
-            if (owner)
-                owner->setFullscreen(true);
-        }
+        startFullscreenTransition(fullscreen.activated());   // a full-screen request that waited
         if (window && visible && !minimized && !window.isKeyWindow)
         {
             [window makeKeyAndOrderFront:nil];
@@ -916,6 +916,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // system names: a moment without any frontmost application is not the user leaving.
     void syncFocus(bool fromPump = false)
     {
+        updateSpaceHidden();
         if (systemActive)
         {
             // Leave the fallback once AppKit has caught up, or once another application is in front.
@@ -924,7 +925,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
                 systemActive = false;
         }
         const bool active = nsAppActive() || systemActive;
-        const bool key = (window != nil || testHeadless) &&
+        const bool key = (window != nil || testHeadless) && !spaceHidden &&
                          (windowIsKey() || (systemActive && windowOnScreen()));
         setFocusState(key, active);
     }
@@ -1341,11 +1342,12 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     }
 
     // Applies the combined cursor-visibility rule. The cursor is only ever hidden while the
-    // application is active, so other applications never inherit a hidden cursor.
+    // application is active and its full-screen Space, if it has one, is on screen, so other
+    // applications and other Spaces never inherit a hidden cursor.
     void applyCursor()
     {
         const bool focus = hasFocus();
-        const bool wantHidden = appActive && (window != nil || testHeadless) &&
+        const bool wantHidden = appActive && !spaceHidden && (window != nil || testHeadless) &&
             (cursorCounter < 0 || (relativeMouse && focus) || (cursorHiddenInView && mouseInView));
         const bool realCursor = !testHeadless && !scripted;
         if (wantHidden != cursorHidden && realCursor)
@@ -1423,7 +1425,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         static const bool trace = [] { const char* e = std::getenv("BF2_HOST_TRACE"); return e && e[0] == '1'; }();
         if (trace)
             std::fprintf(stderr, "[host] focus key=%d active=%d fullscreen=%d\n",
-                         key ? 1 : 0, active ? 1 : 0, fullscreen ? 1 : 0);
+                         key ? 1 : 0, active ? 1 : 0, fullscreen.wanted() ? 1 : 0);
         if (activeChanged && !active)
             ++deactivations;
         if (!hasFocus())
@@ -1448,7 +1450,16 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
 
     void notifyResize()
     {
-        updateMagnification();                   // the view's frame may have changed with the size
+        geometryChanged("resize");
+        for (IHostEventListener* l : snapshot())
+            l->onResize(backWidth, backHeight, minimized);
+    }
+
+    // The view's frame may have changed (a resize, a full-screen transition): re-choose the
+    // magnification filter, and trace the geometry.
+    void geometryChanged(const char* why)
+    {
+        updateMagnification();
         // [TEMP] [CHOSEN, not recovered] BF2_HOST_TRACE=1: window geometry after each resize or
         // full-screen switch, for unattended option runs. [RETIRE-WHEN: macos-options-validated]
         static const bool trace = [] { const char* e = std::getenv("BF2_HOST_TRACE"); return e && e[0] == '1'; }();
@@ -1457,20 +1468,113 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
             NSScreen* s = window.screen ?: [NSScreen mainScreen];
             const NSRect c = [window contentRectForFrameRect:window.frame];
             const NSRect backing = [view convertRectToBacking:view.bounds];
-            std::fprintf(stderr, "[TEMP] [HOST] resize back=%dx%d fullscreen=%d content=%.0fx%.0f@(%.0f,%.0f) "
+            std::fprintf(stderr, "[TEMP] [HOST] %s back=%dx%d fullscreen=%d inSpace=%d content=%.0fx%.0f@(%.0f,%.0f) "
                          "screen=%.0fx%.0f scale=%.1f drawable=%.0fx%.0f backing=%.0fx%.0f "
-                         "magnification=%s window=%ld borderless=%d\n",
-                         backWidth, backHeight, fullscreen ? 1 : 0, NSWidth(c), NSHeight(c), NSMinX(c), NSMinY(c),
+                         "magnification=%s window=%ld\n",
+                         why, backWidth, backHeight, fullscreen.wanted() ? 1 : 0, fullscreen.inSpace() ? 1 : 0,
+                         NSWidth(c), NSHeight(c), NSMinX(c), NSMinY(c),
                          NSWidth(s.frame), NSHeight(s.frame), s.backingScaleFactor,
                          layer ? layer.drawableSize.width : 0.0, layer ? layer.drawableSize.height : 0.0,
                          NSWidth(backing), NSHeight(backing),
                          layer ? layer.magnificationFilter.UTF8String : "none",
-                         static_cast<long>(window.windowNumber),
-                         window.styleMask == NSWindowStyleMaskBorderless ? 1 : 0);
+                         static_cast<long>(window.windowNumber));
             std::fflush(stderr);
         }
-        for (IHostEventListener* l : snapshot())
-            l->onResize(backWidth, backHeight, minimized);
+    }
+
+    // [CHOSEN, not recovered] Native full screen (NativeFullscreen.h). Starts the transition the
+    // state answered. A windowed game window is NSWindowCollectionBehaviorFullScreenNone, so the
+    // green button and the system's full-screen shortcut do not take it into a Space behind the
+    // engine's back; entering makes it a full-screen primary window and resizable, as AppKit
+    // expects of a window it fills the screen with, and both are undone once it is windowed again
+    // (fullscreenExited). The toggle is made on the next pass of the run loop - the next pump -
+    // rather than inside the delegate callback or engine call that asked for it.
+    void startFullscreenTransition(macos::NativeFullscreen::Action action)
+    {
+        if (action == macos::NativeFullscreen::None || !window)
+            return;
+        if (action == macos::NativeFullscreen::Enter)
+        {
+            windowedFrame = window.frame;
+            window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+            window.styleMask |= NSWindowStyleMaskResizable;
+            std::fprintf(stderr, "[host] full screen: entering the game window's own Space\n");
+        }
+        else
+            std::fprintf(stderr, "[host] full screen: leaving the game window's Space\n");
+        [window performSelector:@selector(toggleFullScreen:) withObject:nil afterDelay:0.0];
+    }
+
+    // The window is windowed again: no full-screen behaviour, not resizable, and sized for the
+    // back buffer (a resolution change made in full screen applies to the restored window too).
+    void restoreWindowed()
+    {
+        if (!window)
+            return;
+        window.styleMask &= ~NSWindowStyleMaskResizable;
+        window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+        const NSPoint topLeft = NSMakePoint(NSMinX(window.frame), NSMaxY(window.frame));
+        [window setContentSize:windowedContentSize(backWidth, backHeight, window.screen ?: [NSScreen mainScreen],
+                                                   window.styleMask)];
+        [window setFrameTopLeftPoint:topLeft];
+        windowedFrame = window.frame;
+    }
+
+    // windowDidEnterFullScreen / windowDidExitFullScreen / windowDidFailTo{Enter,Exit}FullScreen.
+    void fullscreenEntered()
+    {
+        const macos::NativeFullscreen::Action next = fullscreen.didEnter();
+        std::fprintf(stderr, "[host] full screen: in the game window's own Space\n");
+        occlusionChanged();
+        afterFullscreenTransition();
+        startFullscreenTransition(next);
+    }
+    // windowDidChangeOcclusionState: the full-screen Space went off or came back on screen.
+    void occlusionChanged() { syncFocus(); }
+    // Re-read on every focus sync, so every pump (reconcileFocus) repairs a notification that
+    // never came. Not during a transition, whose animation can hide the window for a moment.
+    void updateSpaceHidden()
+    {
+        const bool hidden = window && !testHeadless && fullscreen.inSpace() && !fullscreen.transitioning() &&
+                            !(window.occlusionState & NSWindowOcclusionStateVisible);
+        if (hidden == spaceHidden)
+            return;
+        spaceHidden = hidden;
+        std::fprintf(stderr, "[host] full screen: the game's Space is %s\n", hidden ? "off screen" : "on screen again");
+        applyCursor();                           // the cursor rule reads it too
+    }
+    void fullscreenExited()
+    {
+        const macos::NativeFullscreen::Action next = fullscreen.didExit();
+        syncFocus();                             // out of its Space: no longer hidden with it
+        if (next != macos::NativeFullscreen::Enter)
+            restoreWindowed();
+        if (fullscreen.userLeft())
+            std::fprintf(stderr, "[host] full screen: left through the system; the game stays windowed until it is "
+                         "switched to full screen again\n");
+        else
+            std::fprintf(stderr, "[host] full screen: windowed\n");
+        afterFullscreenTransition();
+        startFullscreenTransition(next);
+    }
+    void fullscreenFailed(bool entering)
+    {
+        fullscreen.didFail();
+        if (fullscreen.windowed())
+            restoreWindowed();
+        std::fprintf(stderr, "[host] full screen: AppKit refused to %s the Space; not retried before the next switch "
+                     "or activation\n", entering ? "enter" : "leave");
+    }
+    void afterFullscreenTransition()
+    {
+        if (!window)
+            return;
+        if (visible && !minimized && appActive)
+            [window makeFirstResponder:view];
+        [window invalidateCursorRectsForView:view];
+        if (mouseDisassociated)
+            warpToCentre();
+        geometryChanged("full-screen transition");
     }
 
     // The keyboard type travels with each key event (kCGKeyboardEventKeyboardType); LMGetKbdType
@@ -1969,6 +2073,15 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     impl->keyLostWhileActive = false;            // the key status went with the miniaturized window
     impl->notifyResize();
 }
+// [CHOSEN, not recovered] Native full screen (NativeFullscreen.h).
+- (void)windowWillEnterFullScreen:(NSNotification*)note { (void)note; if (impl) impl->fullscreen.willEnter(); }
+- (void)windowDidEnterFullScreen:(NSNotification*)note  { (void)note; if (impl) impl->fullscreenEntered(); }
+- (void)windowWillExitFullScreen:(NSNotification*)note  { (void)note; if (impl) impl->fullscreen.willExit(); }
+- (void)windowDidExitFullScreen:(NSNotification*)note   { (void)note; if (impl) impl->fullscreenExited(); }
+- (void)windowDidFailToEnterFullScreen:(NSWindow*)window { (void)window; if (impl) impl->fullscreenFailed(true); }
+- (void)windowDidFailToExitFullScreen:(NSWindow*)window  { (void)window; if (impl) impl->fullscreenFailed(false); }
+- (void)windowDidResize:(NSNotification*)note           { (void)note; if (impl) impl->updateMagnification(); }
+- (void)windowDidChangeOcclusionState:(NSNotification*)note { (void)note; if (impl) impl->occlusionChanged(); }
 - (void)applicationDidBecomeActive:(NSNotification*)note { (void)note; if (impl) impl->applicationActiveChanged(true); }
 - (void)applicationDidResignActive:(NSNotification*)note { (void)note; if (impl) impl->applicationActiveChanged(false); }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
@@ -2015,7 +2128,7 @@ ClientHost& ClientHost::instance()
     return *host;
 }
 
-ClientHost::ClientHost() : m_impl(new Impl()) { s_hostImpl = m_impl; m_impl->owner = this; }
+ClientHost::ClientHost() : m_impl(new Impl()) { s_hostImpl = m_impl; }
 ClientHost::~ClientHost() { delete m_impl; }
 
 bool ClientHost::initApplication()
@@ -2121,28 +2234,21 @@ bool ClientHost::createWindow(const HostWindowDesc& desc)
         m_impl->windowedFrame = window.frame;
         m_impl->backWidth = width;
         m_impl->backHeight = height;
-        m_impl->fullscreen = false;
+        m_impl->fullscreen = macos::NativeFullscreen();
         m_impl->quit = false;
         m_impl->cursorHiddenInView = desc.hideCursor;
         m_impl->updateDrawable();
-
-        // [CHOSEN, not recovered] A fullscreen start goes fullscreen only once the application is
-        // active: presentation options and the screen-size borderless window applied while a
-        // freshly launched process is still inactive leave it frontmost without NSApp ever
-        // becoming active, and the menu ignores clicks until the user switches apps. Until then
-        // the window stays windowed; becameActive() completes the switch.
-        if (desc.fullscreen)
-        {
-            if ([NSApp isActive] || m_impl->scriptedFocus)
-                setFullscreen(true);
-            else
-                m_impl->fullscreenPending = true;
-        }
 
         m_impl->visible = true;
         m_impl->beginActivation();               // [TEMP] not in scripted runs (scriptedFocus)
         [window makeKeyAndOrderFront:nil];
         [window makeFirstResponder:view];
+
+        // [CHOSEN, not recovered] A full-screen start shows the window, then asks for its own
+        // Space (NativeFullscreen.h). An inactive application's request waits for the activation
+        // (becameActive), which the launch activation above asks for.
+        if (desc.fullscreen)
+            setFullscreen(true);
     }
     pumpEvents();                                // the look inside createWindow (insideCreateWindow
                                                  // above): deliver the activation before returning
@@ -2159,8 +2265,9 @@ void ClientHost::destroyWindow()
     m_impl->cursorHiddenInView = false;
     @autoreleasepool
     {
-        if (m_impl->fullscreen)
-            [NSApp setPresentationOptions:NSApplicationPresentationDefault];
+        // A window closed in full screen takes its Space with it; a toggle still queued for the
+        // next run-loop pass is dropped.
+        [NSObject cancelPreviousPerformRequestsWithTarget:m_impl->window];
         m_impl->window.delegate = nil;
         [m_impl->window orderOut:nil];
         [m_impl->window close];
@@ -2168,7 +2275,8 @@ void ClientHost::destroyWindow()
         m_impl->view = nil;
         m_impl->layer = nil;
     }
-    m_impl->fullscreen = false;
+    m_impl->fullscreen = macos::NativeFullscreen();
+    m_impl->spaceHidden = false;
     m_impl->visible = false;
     m_impl->windowKey = false;
     m_impl->keyLostWhileActive = false;
@@ -2218,7 +2326,7 @@ void ClientHost::resizeClient(int width, int height)
         return;
     m_impl->backWidth = width;
     m_impl->backHeight = height;
-    if (!m_impl->fullscreen)
+    if (m_impl->fullscreen.windowed())           // in or on the way to its Space it fills the screen
     {
         const NSRect frame = m_impl->window.frame;
         const NSPoint topLeft = NSMakePoint(NSMinX(frame), NSMaxY(frame));
@@ -2232,44 +2340,26 @@ void ClientHost::resizeClient(int width, int height)
     m_impl->notifyResize();
 }
 
+// [CHOSEN, not recovered] Native full screen (NativeFullscreen.h): the request is what
+// isFullscreen() reports from now on; the window follows asynchronously, at once when the
+// application is active and otherwise with its activation. The drawable keeps the back-buffer size
+// in both, and the engine hears of the switch as before (WM_SIZE with the unchanged size).
 void ClientHost::setFullscreen(bool fullscreen)
 {
-    if (!m_impl->window || fullscreen == m_impl->fullscreen)
+    if (!m_impl->window || fullscreen == m_impl->fullscreen.wanted())
         return;
     OpenBF2HostWindow* window = m_impl->window;
-    if (fullscreen)
-    {
-        m_impl->windowedFrame = window.frame;
-        NSScreen* screen = window.screen ?: [NSScreen mainScreen];
-        window.styleMask = NSWindowStyleMaskBorderless;
-        [window setFrame:screen.frame display:YES];
-        [NSApp setPresentationOptions:NSApplicationPresentationHideDock |
-                                      NSApplicationPresentationHideMenuBar];
-    }
-    else
-    {
-        [NSApp setPresentationOptions:NSApplicationPresentationDefault];
-        window.styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                           NSWindowStyleMaskMiniaturizable;
-        [window setFrame:m_impl->windowedFrame display:YES];
-        // A resolution change made while full screen applies to the restored window too.
-        const NSPoint topLeft = NSMakePoint(NSMinX(window.frame), NSMaxY(window.frame));
-        [window setContentSize:Impl::windowedContentSize(m_impl->backWidth, m_impl->backHeight,
-                                                         window.screen ?: [NSScreen mainScreen],
-                                                         window.styleMask)];
-        [window setFrameTopLeftPoint:topLeft];
-        m_impl->windowedFrame = window.frame;
-    }
-    m_impl->fullscreen = fullscreen;
+    const bool active = m_impl->scriptedFocus || [NSApp isActive];
+    m_impl->startFullscreenTransition(m_impl->fullscreen.request(fullscreen, active));
+    if (m_impl->fullscreen.waiting())
+        std::fprintf(stderr, "[host] full screen: requested while the application is inactive; it follows the activation\n");
     [window makeKeyAndOrderFront:nil];
     [window makeFirstResponder:m_impl->view];
     m_impl->updateDrawable();
-    if (m_impl->mouseDisassociated)
-        m_impl->warpToCentre();
     m_impl->notifyResize();
 }
 
-bool ClientHost::isFullscreen() const { return m_impl->fullscreen; }
+bool ClientHost::isFullscreen() const { return m_impl->fullscreen.wanted(); }
 bool ClientHost::hasFocus() const     { return m_impl->hasFocus(); }
 bool ClientHost::isAppActive() const  { return m_impl->appActive; }
 unsigned int ClientHost::deactivationCount() const { return m_impl->deactivations; }
