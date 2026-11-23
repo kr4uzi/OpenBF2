@@ -43,7 +43,7 @@ it up later; the AI subproject's matching-build plan (kept outside the repositor
 6. **Gates before you report a state green:**
    - Build in your worktree: `cmake --build out/build/<track> --target bf2_client bf2 bf2_aidll bf2_vtable_audit`
      (configure like the integration build, incl. `-DBF2_FX_NATIVE_DEPS=<nativefx build>` (see
-     `docs/building.md`) and `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). **Required:** `-DBF2_MACOS_LINK_RENDDX9=ON -DCMAKE_OSX_ARCHITECTURES=x86_64`;
+     `docs/building.md`) and `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). **Required:** `-DCMAKE_OSX_ARCHITECTURES=x86_64`;
      without the renderer the client crashes at login in `HudInformationAdapter::setMapStatic` (this=0), seen 2026-11-04. The vtable audit stays at 0 failures.
      Optional for new build dirs: ccache (`-DCMAKE_C_COMPILER_LAUNCHER=ccache
      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`). Adding it to an existing dir rebuilds it once. Cached

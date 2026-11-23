@@ -1826,8 +1826,7 @@ endif() # NOT BF2_BUILD_POSIX (client and editor)
 # plugin images are not shared libraries here: retail-DLL swapping is retired
 # (https://github.com/B2BF/OpenBF2/issues/7), so RendDX9, SwiffPlayer and BF2Audio are static
 # libraries, and Code/StaticPlugins/StaticPlugins.cpp answers the engine's LoadLibrary/GetProcAddress
-# lookups for the ones linked in (BF2_STATIC_PLUGINS). RendDX9 is not linked by default; see
-# BF2_MACOS_LINK_RENDDX9 below. Each library compiles its image's manifest
+# lookups for them (BF2_STATIC_PLUGINS). The client always links all three. Each library compiles its image's manifest
 # from Code/Build/<plugin>.cmd with that image's define; keep the lists in step with the scripts.
 # Left out of every library: the Windows loader entry (RendDX9Abi/DllMain.cpp) and the engine TUs the
 # host image already compiles (Math/*, Core/ConsoleObjectBase.cpp), because one image holds one copy.
@@ -2214,25 +2213,21 @@ if(BF2_BUILD_MACOS OR BF2_LINUX_CLIENT)
     if(TARGET dice_py)
         target_link_libraries(bf2_client PRIVATE dice_py)
     endif()
-    # [CHOSEN, not recovered] The renderer uses the G2 subset and G3 Metal device;
-    # unimplemented operations stop. OFF keeps the
-    # renderer-free client: StaticPlugins.cpp has no RendDX9 entry and BF2Render::init takes
-    # its shipped failure return. ON links the image for coordinator device-creation checks.
-    option(BF2_MACOS_LINK_RENDDX9 "Link the RendDX9 static library into the macOS client" OFF)
-    if(BF2_MACOS_LINK_RENDDX9 OR BF2_LINUX_CLIENT)
-        bf2_prelink_static_plugin(bf2_client bf2_renddx9_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
-        target_compile_definitions(bf2_client PRIVATE BF2_STATIC_RENDDX9=1)
-        # [CHOSEN, not recovered] The renderer's Bink port (BinkFFmpeg.cpp) and its audio output.
-        target_link_libraries(bf2_client PRIVATE bf2_ffmpeg_bink)
-        if(BF2_BUILD_MACOS)
+    # [CHOSEN, not recovered] The client always links the renderer image (Metal on macOS, DXVK on
+    # Linux). The former BF2_MACOS_LINK_RENDDX9 switch dated from the renderer-free stages of the
+    # macOS port and is gone: a client without RendDX9 cannot get past the first movie.
+    bf2_prelink_static_plugin(bf2_client bf2_renddx9_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
+    target_compile_definitions(bf2_client PRIVATE BF2_STATIC_RENDDX9=1)
+    # [CHOSEN, not recovered] The renderer's Bink port (BinkFFmpeg.cpp) and its audio output.
+    target_link_libraries(bf2_client PRIVATE bf2_ffmpeg_bink)
+    if(BF2_BUILD_MACOS)
         target_link_libraries(bf2_client PRIVATE "-framework AudioToolbox")
         # [CHOSEN, not recovered] The G4 effect facade (Metal/Effect.cpp) runs the s2 CPU runtime.
         target_link_libraries(bf2_client PRIVATE bf2_fx_runtime)
         # [CHOSEN, not recovered] System JPEG decoding in the prelinked renderer image.
         target_link_libraries(bf2_client PRIVATE "-framework ImageIO" "-framework CoreGraphics")
-        else()
-            target_link_libraries(bf2_client PRIVATE bf2_dxvk_forward bf2_dxvk_d3dx bf2_dxvk_effect bf2_fx_native_compiler)
-        endif()
+    else()
+        target_link_libraries(bf2_client PRIVATE bf2_dxvk_forward bf2_dxvk_d3dx bf2_dxvk_effect bf2_fx_native_compiler)
     endif()
     target_compile_definitions(bf2_client PRIVATE BF2_STATIC_SWIFFPLAYER=1 BF2_STATIC_BF2AUDIO=1)
     bf2_prelink_static_plugin(bf2_client bf2_swiffplayer_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
@@ -3112,7 +3107,7 @@ if(BF2_BUILD_MACOS)
     if(TARGET bf2_renddx9_static)
         target_compile_definitions(bf2_renddx9_static PRIVATE BF2_FX_NATIVE=1)
     endif()
-    if(BF2_MACOS_LINK_RENDDX9 AND TARGET bf2_client AND TARGET bf2_renddx9_static)
+    if(TARGET bf2_client AND TARGET bf2_renddx9_static AND TARGET bf2_fx_native_compiler)
         target_link_libraries(bf2_client PRIVATE bf2_fx_native_compiler)
         target_include_directories(bf2_renddx9_static PRIVATE "${BF2_ROOT}/Platform/Gfx/Effect")
     endif()
