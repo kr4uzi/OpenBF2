@@ -407,6 +407,23 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Applies to:** Client; all platforms. The dedicated server never creates the object.
 - **Source:** `Code/BF2/Game/Objects/Fx/GroundEffectBundle.cpp`
 
+### The kit shown on the spawn screen is requested with the spawn
+
+- **Retail:** The spawn screen keeps the last selected kit across rounds and servers
+  (`HudKitSelection`, whose reset at `BF2.exe` `0x7A1E10` keeps it) and shows it as selected after a
+  join, but the server gives a new player kit 2 (`ServerGameLogic::_createPlayer`, Linux ia-32
+  server `0x8101400`). The kit is sent only by a click on a kit (`HudKitSelection::selectKit`) or
+  after a death (`BF2HudManager::onSpawn`, `0x751560`); the Spawn button (`BF2HudManager::setDone`,
+  `0x74F180`) sends only the spawn group.
+  The first spawn after a join therefore uses kit 2 while the screen shows another kit.
+  Reproduced with a retail client on retail and OpenBF2 servers
+  ([B2BF/OpenBF2 #34](https://github.com/B2BF/OpenBF2/issues/34)).
+- **OpenBF2:** `setDone` calls `selectKit` with the shown kit before it sends the spawn group. As
+  on a click, the request is sent only when the player's kit differs, with the player's chosen
+  unlock level for that kit.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Menu/BF2HudManager.cpp`
+
 ## Server
 
 ### The dedicated server rejects ghost updates sent by a client
