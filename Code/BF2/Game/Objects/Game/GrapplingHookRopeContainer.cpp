@@ -194,8 +194,10 @@ void GrapplingHookRopeContainer::setState(AnimationState state)
     m_activeAnimationSystem->setTriggerOnceMessage(static_cast<unsigned int>(m_animationState));
     m_animationTime = 0.0f;
 
+    // ELF 0x817EB40 / dedicated PE 0x57437F / BF2.exe 0x5D3E3F all store 0x3FA55555
+    // (1.2916666f, i.e. 31/24), not 1.3f: the climb-speed ramp each pull starts from.
     if (state == AnimationState_1)
-        _float40C = 1.3f;
+        _float40C = 1.2916666f;
     else if (state == AnimationState_2 || state == AnimationState_4)
         _float40C = 0.0f;
 
