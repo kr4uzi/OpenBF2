@@ -16,6 +16,10 @@
 #include "../../../Scene/Object/ObjectManager.h"
 #include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 
+#if !DEDICATED
+#include "../../SingletonServer.h"
+#endif
+
 #include <string>
 
 namespace dice {
@@ -39,6 +43,11 @@ DropVehicle::DropVehicle(const DropVehicleTemplate* objectTemplate)
     m_previousPosition.z = 0.0f;
     Object::updateFlags(0x800u, 0u);
     m_dropVehicleTemplate = objectTemplate;
+#if !DEDICATED
+    // BF2.exe 0x005E9F26..0x005E9F33: register the controller, not its vehicle.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->addTouchItem(this);
+#endif
 }
 
 DropVehicle::~DropVehicle()
@@ -67,8 +76,18 @@ void DropVehicle::handleUpdate(float deltaTime, unsigned int)
 
     IArmorGLComp* const initialArmor =
         static_cast<IArmorGLComp*>(originalVehicle->getArmorComponent());
+#if !DEDICATED
+    // BF2.exe 0x005E9FAA..0x005E9FC8: retire the drop marker before following the vehicle.
+    if (initialArmor->isDestroyed()
+        || static_cast<PlayerControlObject*>(originalVehicle)->vehicleIsUsed())
+    {
+        if (SingletonServer::m_iNametagManager)
+            SingletonServer::m_iNametagManager->removeItem(2, this);
+    }
+#else
     if (!initialArmor->isDestroyed())
         static_cast<PlayerControlObject*>(originalVehicle)->vehicleIsUsed();
+#endif
 
     setAbsolutePosition(m_vehicle->getAbsolutePosition());
     if (!gameLogic->isServer())
