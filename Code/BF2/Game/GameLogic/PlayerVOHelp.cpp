@@ -404,23 +404,6 @@ void PlayerVOHelp::update(float dt)
         }
 }
 
-// BF2.exe 0x4F8110. Client definition of the existing VoiceMessages entry point;
-// [INFERRED] placement here keeps this recovery within the lent PlayerVOHelp boundary.
-int VoiceMessages::playHelpMessage(const std::string& key)
-{
-    const auto message = m_helpMessages.find(getLowerCase(key));
-    if (message == m_helpMessages.end())
-        return -1;
-    const int id = message->second;
-    ISoundTemplate* soundTemplate = m_helpSound->getTemplate();
-    if (g_bfSound->getVolumeForGroup(soundTemplate->getVolumeGroup()) > 0.05f)
-    {
-        m_helpSound->stop();
-        m_helpSound->playSample(id, 1);
-    }
-    return id;
-}
-
 // BF2.exe 0x5ED1E0, with GameLogic::getVoiceMessages at client 0x4BDBB0.
 void PlayerVOHelp::playVoice(std::string key)
 {

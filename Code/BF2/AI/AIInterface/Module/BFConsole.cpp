@@ -71,6 +71,29 @@ namespace ai {
 
 enum CombatStrengthType : int;
 
+// BF2.exe 0x80F8F0: thirteen named kit types; all other values print no token.
+std::ostream& operator<<(std::ostream& stream, KitType type)
+{
+    switch (static_cast<int>(type))
+    {
+    case 0: stream << "KTSpecops"; break;
+    case 1: stream << "KTSniper"; break;
+    case 2: stream << "KTAssault"; break;
+    case 3: stream << "KTSupport"; break;
+    case 4: stream << "KTEngineer"; break;
+    case 5: stream << "KTMedic"; break;
+    case 6: stream << "KTAT"; break;
+    case 7: stream << "KTExtended1"; break;
+    case 8: stream << "KTExtended2"; break;
+    case 9: stream << "KTExtended3"; break;
+    case 10: stream << "KTExtended4"; break;
+    case 11: stream << "KTExtended5"; break;
+    case 12: stream << "KTExtended6"; break;
+    default: break;
+    }
+    return stream;
+}
+
 // Reads a case-sensitive named enum token. Unknown tokens overwrite the result with
 // 13 for KitType or 6 for CombatStrengthType; numeric inputs are not accepted.
 // [INFERRED] Placement beside the console consumers.
@@ -660,6 +683,9 @@ BF2_AI_WEAPON_FIELD(firesThroughTransparent, bool, m_firesThroughTransparent)
 BF2_CONSOLE_OBJECT("kitTemplate", 2, 0)
 BF2_CONSOLE_METHOD_2_RET_ACTIVE(create, consoleKitTemplateCreate, std::string,
     KitTemplateManager::m_instance != 0, std::string, KitType, kKitTemplateConsoleTag)
+// BF2.exe 0x8085A5 / 0x808650: dynamic KitType result from the active kit's virtual getter.
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getType, getActiveKitTemplate()->getType, KitType,
+    getActiveKitTemplate() != 0, kKitTemplateConsoleTag)
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setStrategicStrength, consoleKitTemplateSetStrategicStrength,
     getActiveKitTemplate() != 0, int, int, kKitTemplateConsoleTag)
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setBattleStrength, consoleKitTemplateSetBattleStrength,

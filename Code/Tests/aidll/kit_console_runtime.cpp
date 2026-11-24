@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const std::string mode(argv[1]);
     mainConsoleObjects->registerConsoleObjects(kitTemplateConsoleObjects());
-    check(kitRows() == 3 && kitTemplateConsoleObjects().size() == 100, "exact recovered subset (3 kit rows of 100)");
+    check(kitRows() == 4 && kitTemplateConsoleObjects().size() == 101, "exact recovered subset (4 kit rows of 101)");
     if (mode == "metadata") {
         const char* names[] = {"create", "setStrategicStrength", "setBattleStrength"};
         const char* args0[] = {"std::string", "int", "CombatStrengthType"};
@@ -119,6 +119,12 @@ int main(int argc, char** argv) {
             check(std::strcmp(p->getReturnType(), i ? "void" : "std::string") == 0, "return metadata");
             check(!p->hasRange(), "unranged command");
         }
+        ConsoleObject* type = row("getType");
+        check(type->getType() == 0 && type->getAccess() == 2 && type->getCategory() == 0,
+              "getType access/type/category");
+        check(type->getMinNoArgs() == 0 && type->getMaxNoArgs() == 0 && type->isDynamic(),
+              "getType zero-argument dynamic method");
+        check(std::strcmp(type->getReturnType(), "KitType") == 0, "getType named return type");
     } else if (mode == "kit_parser") {
         const char* suffix[] = {"Specops", "Sniper", "Assault", "Support", "Engineer", "Medic", "AT", "Extended1", "Extended2", "Extended3", "Extended4", "Extended5", "Extended6"};
         for (int i = 0; i < 13; ++i) {
@@ -136,7 +142,8 @@ int main(int argc, char** argv) {
         parserCombat("CSTInfantery", 0); parserCombat("INFANTERY", 0); parserCombat(" Infantry tail", 0);
         for (const char* s : {"", "-1", "6", "7", "0.0", "cstInfantry", "CSTNumberOfTypes", "All", "garbage"}) parserCombat(s, 6);
     } else {
-        check(!row("create")->isActive() && !row("setBattleStrength")->isActive(), "null manager guards");
+        check(!row("create")->isActive() && !row("setBattleStrength")->isActive()
+              && !row("getType")->isActive(), "null manager guards");
         check(!mainConsoleObjects->getConsoleObject("kitTemplate", "create"), "inactive registry refusal");
         ClassManager classes; classManager = &classes;
         dice::hfe::io::OldConsole console; dice::hfe::io::mainConsole = &console;

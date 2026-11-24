@@ -64,7 +64,7 @@ public:
     int  playRadioMessage(int, const std::string&, const std::string&,
                           const std::string&);
     int  playSoldierVO(int, int, int, const Vec3&, world::Soldier*);
-    int  playHelpMessage(const std::string&); // BF2.exe 0x4F8110; client body beside PlayerVOHelp.
+    int  playHelpMessage(const std::string&); // BF2.exe 0x4F8110; shared with both dedicated images.
     bool isHelpVOPlaying() const;                                               //  [FRONTIER]
     int  getFreeVOSoundIndex(const Vec3&, world::Soldier*);
 

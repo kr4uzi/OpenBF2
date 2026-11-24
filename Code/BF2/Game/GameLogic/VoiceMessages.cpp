@@ -373,6 +373,23 @@ int VoiceMessages::playRadioMessage(int team, const std::string& message,
     return playRadioMessage(team, messageId, voiceId, filterId);
 }
 
+// BF2.exe 0x4F8110; dedicated PE 0x4701A0; ELF 0x81230B0. Shared help playback:
+// resolve the lower-case key, then stop/start only when the volume exceeds 0.05.
+int VoiceMessages::playHelpMessage(const std::string& key)
+{
+    const auto message = m_helpMessages.find(getLowerCase(key));
+    if (message == m_helpMessages.end())
+        return -1;
+    const int id = message->second;
+    ISoundTemplate* soundTemplate = m_helpSound->getTemplate();
+    if (g_bfSound->getVolumeForGroup(soundTemplate->getVolumeGroup()) > 0.05f)
+    {
+        m_helpSound->stop();
+        m_helpSound->playSample(id, 1);
+    }
+    return id;
+}
+
 // Returns speech text, or an empty string for an out-of-range ID.
 std::string VoiceMessages::getSpeech(int speechId)
 {

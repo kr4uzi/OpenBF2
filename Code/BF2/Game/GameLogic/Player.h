@@ -321,6 +321,9 @@ public:
     virtual unsigned int getMinimumBitSize() const;   // +0x350   - `return 48`
     virtual std::string  moveTo(const Vec3& position);
 
+    // Adds a named item to the controlled soldier when running as a server.
+    void pickup(std::string templateName);
+
     // Updates explosions, server-side abilities/mines/commander state, VOIP, radio
     // limits, and client team verification once per fixed step. Mine proximity runs
     // on its own 0.2-second cadence while alive.

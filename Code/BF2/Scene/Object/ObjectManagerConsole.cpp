@@ -135,6 +135,39 @@ BF2_CONSOLE_METHOD_2_RET(create, consoleObjectTemplateCreate, IObjectTemplate*, 
 // the others dereference the pointer isObjectActive already vouched for - as shipped.
 BF2_CONSOLE_OBJECT("Object", 2, 0)
 
+// BF2.exe 0x7110A1 / 0x71110B: read-only, dynamic pointer property of the active object.
+namespace {
+class ConsoleClassObjectTemplate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassObjectTemplate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "template";
+        m_type = 2;
+        m_minNoArgs = m_maxNoArgs = 0;
+        m_returnType = "const IObjectTemplate*";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+    BF2_CC_TAIL(0, kObjectManagerConsoleTag)
+    bool isObjectActive() const override { return objectManager->getActiveObject() != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 0) return;
+        m_hasReturnValue = true;
+        m_returnValue = objectManager->getActiveObject()->getTemplate();
+    }
+    void setArgFromString(int, const std::string&) override {}
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    const IObjectTemplate* m_returnValue;
+};
+static ConsoleClassObjectTemplate s_consoleObjectTemplate;
+}
+
 // Zero-argument pause command active only for an exact EffectBundleTemplate object.
 // Execution relies on availability checking and does not guard the receiver again.
 namespace {
@@ -341,6 +374,47 @@ private:
 static ConsoleClassPlayerActive s_consoleClassPlayerActive;
 } // namespace
 
+// BF2.exe 0x714A2D / 0x714AB9: always active, static method, two strings, id -1.
+BF2_CONSOLE_OBJECT("Player", 2, 0)
+namespace {
+class ConsoleClassPlayerCreate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassPlayerCreate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "create";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 2;
+        m_returnType = "IPlayer*";
+        m_hasReturnValue = false;
+        m_isDynamic = false;
+        m_argTypes[0] = "std::string";
+        m_argTypes[1] = "std::string";
+    BF2_CC_TAIL(2, kObjectManagerConsoleTag)
+    bool isObjectActive() const override { return true; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 2) return;
+        m_hasReturnValue = true;
+        m_returnValue = playerManager->createPlayer(BF2_CC_ARG(std::string, 0),
+                                                     BF2_CC_ARG(std::string, 1), -1);
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        BF2_CC_CONVERT(std::string, 1)
+        BF2_CC_CONVERT(std::string, 2)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    IPlayer* m_returnValue;
+};
+static ConsoleClassPlayerCreate s_consolePlayerCreate;
+}
+
 // windManager.globalWindSpeed / globalWindDirection - dedicated PE defaults 0x772E9E
 // ("WindManager", access 2, category 0); ctors 0x6C8BD0 / 0x6C8D80 (vtable off_7FC5A8 / off_7FC640,
 // set/get properties, m_isDynamic = 1). isObjectActive 0x6C8E80 is `dword_89AE54 != 0` (windManager);
@@ -394,10 +468,20 @@ std::string objectTemplateList(const std::string& filter)
 }
 } // namespace
 
+BF2_CONSOLE_OBJECT("objectTemplate", 2, 0)
+namespace {
+void objectTemplateWriteBinary(const std::string& file) { objectTemplateManager->writeBinary(file); }
+void objectTemplateReadBinary(const std::string& file) { objectTemplateManager->readBinary(file); }
+}
+// BF2.exe 0x713574 / 0x7135E5 and 0x713699 / 0x713716. Both manager methods
+// target the empty 0x5AB2A0 body in the client, as in the dedicated images.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(writeBinary, objectTemplateWriteBinary,
+                                   objectTemplateManager != 0, std::string, kObjectManagerConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(readBinary, objectTemplateReadBinary,
+                                   objectTemplateManager != 0, std::string, kObjectManagerConsoleTag)
 // ctor 0x6CE090 (vtable off_7FDCE0, m_type = 2, argc 0, returns std::string, m_isDynamic = 1).
 // isObjectActive 0x6CE130 = `getActiveObjectTemplate() != 0`; executor 0x6CE150 returns the active
 // template's name.
-BF2_CONSOLE_OBJECT("objectTemplate", 2, 0)
 namespace {
 class ConsoleClassObjectTemplateName : public ConsoleObjectBaseImpl
 {
