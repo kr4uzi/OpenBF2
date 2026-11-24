@@ -6,6 +6,9 @@
 #include "../../../Core/Ids.h"
 #include "../IObject.h"                             // getTemplate
 #include "../IObjectTemplate.h"                     // getNetworkableInfo
+#include "../../../Core/Debug.h"
+#include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
+#include "../../../Sound/ISoundObjectTemplate.h"
 
 namespace dice {
 namespace hfe {
@@ -57,6 +60,40 @@ int KitTemplate::getKitType() const { return m_kitType; }
 IObject* KitTemplate::createObject() const
 {
     return new Kit(this);
+}
+
+// Client PE 0x594A10, server PE 0x55CA70, ELF 0x8185CE0.
+// Kits do not cache child lookups or apply SimpleObjectTemplate's relative-position offset.
+void KitTemplate::addBundleChilds(IObject* object) const
+{
+    char childId = 0;
+    for (std::vector<TemplateInfo*>::const_iterator it = m_templateInfos.begin();
+         it != m_templateInfos.end(); ++it, ++childId)
+    {
+        TemplateInfo* info = *it;
+        IObjectTemplate* objectTemplate = objectTemplateManager->getTemplate(info->m_templateName);
+        if (!objectTemplate)
+        {
+            Debug(DEBUGTYPE_6, "Game/Objects/Game/kit.cpp", 691)
+                << getName() << " addBundleChilds() template not found:" << info->m_templateName;
+            continue;
+        }
+
+        ISoundObjectTemplate* soundTemplate = static_cast<ISoundObjectTemplate*>(
+            objectTemplate->queryInterface(0x00985FD2u));
+        if (soundTemplate)
+            soundTemplate->setRelativeTransformation(&info->m_transformation);
+
+        objectTemplate->getClassID();
+        IObject* child = objectTemplate->createObject();
+        if (!child)
+            continue;
+
+        child->setChildId(childId);
+        object->addChild(child);
+        child->setRelativeTransformation(info->m_transformation);
+        child->init();
+    }
 }
 
 // Reads the kit creation index and selected unlock level for CreateKitEvent.

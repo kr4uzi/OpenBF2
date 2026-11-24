@@ -791,7 +791,28 @@ DestroyableWindowsBundleTemplate::DestroyableWindowsBundleTemplate()
         m_effectTemplates[i] = 0;                    // +0x19C..+0x1BF, non-owning 3x3 cache
 }
 BF2_LEAF_BUNDLE(DestroyableWindowsBundleTemplate)
-BF2_LEAF_IBASE_IMPL(DestroyableWindowsBundleTemplate, BundleTemplate)
+void DestroyableWindowsBundleTemplate::addRef() { ++m_refCount; }
+int DestroyableWindowsBundleTemplate::getRef() { return m_refCount; }
+int DestroyableWindowsBundleTemplate::release()
+{
+    const int refs = --m_refCount;
+    if (refs == 0)
+        delete this;
+    return refs;
+}
+
+// Client PE 0x5F1F50, server PE 0x590070, ELF 0x8176870: no simple-object interface.
+void* DestroyableWindowsBundleTemplate::queryInterface(unsigned int iid) const
+{
+    DestroyableWindowsBundleTemplate* self = const_cast<DestroyableWindowsBundleTemplate*>(this);
+    if (iid == IID_IBase || iid == IID_IObjectTemplate)
+        return static_cast<IObjectTemplate*>(self);
+    if (iid == IID_IBundleTemplate)
+        return static_cast<IBundleTemplate*>(self);
+    if (iid == io::IID_IConsoleSaveable)
+        return static_cast<io::IConsoleSaveable*>(self);
+    return 0;
+}
 
 // . Ctor 76 B, and its one observable act is NOT updateFlags: `or byte [this+0xAC], 6` -
 // it sets bits 1 and 2 of SimpleObjectTemplate's physics-flags byte directly, which is the

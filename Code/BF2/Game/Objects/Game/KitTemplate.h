@@ -54,6 +54,9 @@ public:
     // [RETIRE-WHEN: kit-class]
     virtual IObject* createObject() const;                // +0x54 retail 47 B: new(0x188) Kit
 
+    // Resolves each child by name and uses its authored relative transformation unchanged.
+    virtual void addBundleChilds(IObject* object) const;
+
     // Player::getUnlockLevel / isUnlocked key the profile-unlock maps by m_creationIndex, read
     // RAW off this template (`mov eax,[template+1A8h]`, 0x80F6240/0x80F6190) - no getter exists in
     // the ELF (only Kit::getCreationIndex, which reads the same field through the kit's template
