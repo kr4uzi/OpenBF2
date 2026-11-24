@@ -71,7 +71,7 @@ public:
     virtual int  getKitType() const = 0;                                     // +0x58 13 with no kit
     virtual int  getLastContactMaterial() const = 0;                         // +0x5C
     virtual void bulletFlyBy(IObject* projectile, const Vec3& a, const Vec3& b) = 0;  // +0x60
-    virtual void dropWeaponFx(bool, Vec3&, int) = 0;                         // +0x64 Soldier: empty
+    virtual void dropWeaponFx(bool, Vec3&, int) = 0;                         // +0x64 client falling-weapon effect
     virtual float getSoldierRadius() const = 0;                              // +0x68 a global, not a field
     virtual float getStandingHeight() const = 0;                             // +0x6C a global, not a field
     // Returns the ragdoll's lowest particle or a point one metre below the soldier.

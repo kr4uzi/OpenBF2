@@ -164,7 +164,7 @@ public:
     virtual void setReadyToClimbTime(float);         // +0x2E0 [S]
     virtual bool applyCameraAnimation(const Mat4&, Mat4&);      // / client PE 0x61CB60
     virtual bool getIsSkyDiving() const;             // +0x2E8 [S]
-    virtual void dropWeaponFx(bool, Vec3&, int);     // +0x2EC [S] empty
+    virtual void dropWeaponFx(bool, Vec3&, int);     // +0x2EC client falling-weapon effect
     virtual float getCurrentAbility() const;         // +0x2F0 [S]
     virtual void setCurrentAbility(float);           // +0x2F4 [S]
     virtual bool taxAbility(float);                  // +0x2F8 [S]
@@ -400,9 +400,8 @@ private:
     /* +0x2C8 */ float    m_float2C8;                  // triggerDieAnimation stamps -1.0e9 (0xCE6E6B28)
                                                      // on a ragdoll-less death. [UNRESOLVED] reader
     /* +0x2CC */ float  m_currentAbility;            // the kit's consumable meter - taxAbility
-    // Two object-grid ids parked until revival. reviveAnimations resolves each in this order,
-    // calls destroy(true) when it still exists, then writes -1. Their higher-level roles remain
-    // [UNRESOLVED].
+    // Falling weapon and helmet object-grid ids (BF2.exe 0x61D1FF / 0x61D3D0).
+    // reviveAnimations resolves each in this order, destroys it if present, then writes -1.
     /* +0x2D0 */ int    m_dword2D0;
     /* +0x2D4 */ int    m_dword2D4;
     /* +0x2D8 */ int    m_dword2D8;                  // ctor 0

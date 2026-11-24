@@ -134,6 +134,30 @@ void wrapAnimatedUVValue(float& value, float max)
 
 } // unnamed namespace
 
+#if !DEDICATED
+// BF2.exe 0x71B1B0 / ELF 0x831B780. The template overload does not perform a manager lookup.
+// [INFERRED] Placement beside the existing string overload.
+bool setGeometry(IObject* object, geom::IGeometryTemplate* geometryTemplate)
+{
+    if (!object || !geometryTemplate)
+        return false;
+
+    IBase* const instance = static_cast<IBase*>(geometryTemplate->createInstance());
+    if (!instance)
+        return false;
+
+    if (!object->setComponent(geom::IID_IGeometry, instance))
+    {
+        instance->release();
+        return false;
+    }
+
+    geometry_part::setOwnerObject(instance, object);
+    instance->release();
+    return true;
+}
+#endif
+
 // Creates and attaches geometry on the client, releasing the temporary reference after attachment.
 // Returns false on unavailable services or lookup failure. Dedicated builds return false without attaching geometry.
 bool setGeometry(IObject* object, const std::string& geometry)

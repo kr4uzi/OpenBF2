@@ -47,6 +47,9 @@
 #include "../GameLogicComp/ArmorGLComp.h"        // handleMessage reads the armor status
 #include "../../../AI/AIInterface/AIInstance.h"  // the AI singleton, ds:0x8AC37F8
 #if !DEDICATED
+#include "../../../Core/Random.h"
+#include "../../../Geom/IGeometryTemplate.h"
+#include "../../../Physics/CollisionMesh.h"
 #include "SoldierHapticProfile.h"                // ledger N2: the control-box profile switch (HapticSettings)
 #include "../PlayerControlObjectTemplate.h"       // onEnter's unchecked +0x22C template view
 #include "../../HapticSettings.h"
@@ -101,6 +104,42 @@ extern IBase* materialManager;                   // ds:0x8AD2820 - Core/Globals.
 // Console-backed soldier tuning. Pose and speed tables capture values at static initialization.
 // Swim pose rows reuse sprint variable names, so their values alias the sprint row.
 namespace {
+
+#if !DEDICATED
+// BF2.exe 0x85B0D0..0x85B184; client effect tuning, absent from the dedicated bodies.
+float* const g_throwHelmetVar = Vars::getFloat("soldier_throwHelmet", 0.025f);
+float* const g_throwGunVar = Vars::getFloat("soldier_throwGun", 0.025f);
+float* const g_throwGunForwardVar = Vars::getFloat("soldier_throwGunForward", 1.0f);
+float* const g_dropMinVar = Vars::getFloat("soldier-drop-min", 0.5f);
+float* const g_dropMaxVar = Vars::getFloat("soldier-drop-max", 1.5f);
+
+// BF2.exe 0x440030, inlined at 0x61D04B/0x61D089/0x61D0C7.
+// [INFERRED] Helper name. Keep the shared Rand state and the signed shift before scaling.
+double fallingFxRandom(float lower, float upper)
+{
+    const int value = (static_cast<int>(Rand.getRaw() | 0x80u) >> 7) + 1;
+    return static_cast<double>(value) * (static_cast<double>(upper) - lower)
+        * (1.0 / 16777216.0) + lower;
+}
+
+// BF2.exe 0x61D02C..0x61D143 / 0x61D2BB..0x61D38B. Draw x, y, z in order;
+// x/y are materialized floats, whereas z remains an intermediate until the final vector store.
+Vec3 fallingFxSpin()
+{
+    float extent = *g_dropMaxVar - *g_dropMinVar;
+    const float x = static_cast<float>(fallingFxRandom(-extent, extent));
+    extent = *g_dropMaxVar - *g_dropMinVar;
+    const float y = static_cast<float>(fallingFxRandom(-extent, extent));
+    extent = *g_dropMaxVar - *g_dropMinVar;
+    const double z = fallingFxRandom(-extent, extent);
+    const Vec3 spin = {
+        x + (x > 0.0f ? *g_dropMinVar : -*g_dropMinVar),
+        y + (y > 0.0f ? *g_dropMinVar : -*g_dropMinVar),
+        static_cast<float>(z + (z > 0.0 ? *g_dropMinVar : -*g_dropMinVar))
+    };
+    return spin;
+}
+#endif
 
 float* const g_soldierTimeToEnableWeaponVar =
     Vars::getFloat("soldier-timeToEnableWeapon", 1.25f);
@@ -788,6 +827,10 @@ void Soldier::exit()
     if (m_ragDoll)                                                           // +0x220
     {
         m_ragDoll->setIsClient(false);
+#if !DEDICATED
+        // BF2.exe 0x5A71A2..0x5A71B5: released client ragdolls keep simulating.
+        if (isDedicated())
+#endif
         m_ragDoll->m_exited = true;                                        // byte +0x5C = 1
     }
     stopTinnitus();
@@ -829,6 +872,10 @@ void Soldier::exitPlayer()
     if (m_ragDoll)                                                           // +0x220
     {
         m_ragDoll->setIsClient(false);
+#if !DEDICATED
+        // BF2.exe 0x5A98D6..0x5A98E9; setIsClient(false) remains unconditional.
+        if (isDedicated())
+#endif
         m_ragDoll->m_exited = true;
     }
     stopTinnitus();
@@ -1259,7 +1306,68 @@ unsigned int Soldier::getGrapplingHookId() const { return m_grapplingHookId; }
 void Soldier::setReadyToClimbTime(float t)       { m_readyToClimbTime = t; }
 
 bool  Soldier::getIsSkyDiving() const            { return m_isSkyDiving; }
-void  Soldier::dropWeaponFx(bool, Vec3&, int)    { }
+// BF2.exe 0x61CF60..0x61D20A; dedicated PE 0x5BC650 / ELF 0x81B6E50 are empty.
+void Soldier::dropWeaponFx(bool useVelocity, Vec3& velocity, int lod)
+{
+#if !DEDICATED
+    typedef object_detail::LayoutAccess L;
+    if (m_activeItemIndex == -1 || isDedicated() || !m_soldierTemplate->m_weapObjTemplate)
+        return;
+
+    IObject* const weapon = getItem(m_activeItemIndex);
+    IObject* const fallingWeapon = m_soldierTemplate->m_weapObjTemplate->createObject();
+    fallingWeapon->init();
+    setGeometry(fallingWeapon, static_cast<geom::IGeometryTemplate*>(
+        geometry_part::getTemplate(L::geometry(weapon))));
+    if (L::geometry(fallingWeapon))
+        geometry_part::setLod(L::geometry(fallingWeapon), lod);
+
+    ICollisionMesh* const weaponCollision = static_cast<ICollisionMesh*>(L::collisionMesh(weapon));
+    if (weaponCollision)
+    {
+        CollisionMeshTemplate* const meshTemplate = weaponCollision->getTemplate();
+        if (meshTemplate)
+        {
+            // BF2.exe 0x61CFF7..0x61D029, CollisionMesh constructor 0x6E9DF0.
+            // setComponent retains the new handle; the weapon's shared template is borrowed.
+            CollisionMesh* const collision = new CollisionMesh(meshTemplate);
+            fallingWeapon->setComponent(IID_ICollisionMesh, collision);
+            if (collision)
+                collision->release();
+        }
+    }
+
+    IPhysicsNode* const physics = static_cast<IPhysicsNode*>(L::physicsNode(fallingWeapon));
+    physics->addRotationalSpeed(fallingFxSpin());
+    if (!useVelocity)
+    {
+        if (m_ragDoll)
+        {
+            const Vec3& speed = m_ragDoll->getParticleSpeed(34);
+            const float scale = *g_throwGunVar;
+            const Vec3 thrown = { speed.x * scale, speed.y * scale, speed.z * scale };
+            physics->addPositionalSpeed(thrown);
+        }
+        else
+        {
+            physics->addPositionalSpeed(static_cast<IPhysicsNode*>(m_physicsNode)->getPositionalSpeed());
+        }
+
+        const Mat4& transform = getAbsoluteTransformation();
+        const float scale = *g_throwGunForwardVar;
+        const Vec3 forward = { transform.m[8] * scale, transform.m[9] * scale, transform.m[10] * scale };
+        physics->addPositionalSpeed(forward);
+    }
+    else
+    {
+        physics->addPositionalSpeed(velocity);
+    }
+
+    fallingWeapon->setAbsoluteTransformation(weapon->getAbsoluteTransformation());
+    // BF2.exe 0x61D1F8..0x61D204: ISoldier +0x1A8 == Soldier +0x304 (ELF +0x2D0).
+    m_dword2D0 = static_cast<int>(L::objectId(fallingWeapon));
+#endif
+}
 float Soldier::getCurrentAbility() const         { return m_currentAbility; }
 void  Soldier::setCurrentAbility(float a)        { m_currentAbility = a; }
 
@@ -1463,11 +1571,47 @@ void Soldier::setHitByVehicleSpeed(const Vec3& speed)
     m_hitByVehicleSpeedTicks = WorldPref::getTickCount() + 16;
 }
 
-// . IT does NOT drop A helmet - it zeroes one dword. Whatever consumes +0x22C is what makes
-// the helmet appear; this only arms it.
+// BF2.exe 0x61D210..0x61D3EC. Dedicated PE 0x5BC660 / ELF 0x81B6E60 only clear the timer.
 void Soldier::dropHelmetFx()
 {
     m_helmetTime = 0.0f;
+#if !DEDICATED
+    typedef object_detail::LayoutAccess L;
+    if (isDedicated() || !m_kit)
+        return;
+
+    const KitTemplate* const kitTemplate = static_cast<const KitTemplate*>(L::objectTemplate(m_kit));
+    if (kitTemplate->m_dropHeadwear.empty())
+        return;
+    IObjectTemplate* const helmetTemplate = objectTemplateManager->getTemplate(kitTemplate->m_dropHeadwear);
+    if (!helmetTemplate)
+        return;
+
+    IObject* const helmet = helmetTemplate->createObject();
+    helmet->init();
+    IPhysicsNode* const physics = static_cast<IPhysicsNode*>(L::physicsNode(helmet));
+    const Mat4& worldTransform = getAbsoluteTransformation();
+    if (m_ragDoll)
+    {
+        const Vec3& speed = m_ragDoll->getParticleSpeed(47);
+        const float scale = *g_throwHelmetVar;
+        const Vec3 thrown = { speed.x * scale, speed.y * scale, speed.z * scale };
+        physics->addPositionalSpeed(thrown);
+        physics->addRotationalSpeed(fallingFxSpin());
+    }
+
+    // BF2.exe 0x61D38E..0x61D3C1: selected character rig, head bone 47, then soldier world.
+    // 0x6D9620 multiplies all sixteen entries, including the fourth column.
+    anim::Skeleton* const skeleton = m_characterMode == 0
+        ? static_cast<anim::Skeleton*>(m_animSkeleton) : m_collisionSkeleton;
+    Mat4 transform = Mat4::getIdentity();
+    transform.fullMult(skeleton->m_transforms[47], worldTransform);
+    helmet->setAbsoluteTransformation(transform);
+    m_dword2D4 = static_cast<int>(L::objectId(helmet));  // client Soldier +0x308 / ELF +0x2D4
+
+    if (L::geometry(m_kit))
+        geometry_part::setExcludedPart(L::geometry(m_kit), 47, true);
+#endif
 }
 
 // / 5 B / 5 B. All three are empty in the shipped binary. Footstep effects, the breath-holding

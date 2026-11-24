@@ -109,7 +109,8 @@ inline void setUvTranslation(void* geometry, int index, float x, float y)
 inline void setUvTransformation(void* geometry, int index, const Mat4* transform)
 { typedef void (BF2_GEOMETRY_PART_CALL* Function)(void*, int, const Mat4*); BF2_GEOMETRY_OP(0x98, 0x9C, SetUvTransformation)(geometry, index, transform); }
 inline void* setOwnerObject(void* geometry, void* object)
-{ typedef void* (BF2_GEOMETRY_PART_CALL* Function)(void*, void*); return BF2_GEOMETRY_OP(0x9C, 0x9C, SetOwnerObject)(geometry, object); }
+// setGeometry: BF2.exe 0x71B1DF / ELF 0x831B7EF (the destructor-slot shift).
+{ typedef void* (BF2_GEOMETRY_PART_CALL* Function)(void*, void*); return BF2_GEOMETRY_OP(0x9C, 0xA0, SetOwnerObject)(geometry, object); }
 inline void updateFlags(void* geometry, unsigned int set, unsigned int clear)
 { typedef void (BF2_GEOMETRY_PART_CALL* Function)(void*, unsigned int, unsigned int); BF2_GEOMETRY_OP(0xC0, 0xC4, UpdateFlags)(geometry, set, clear); }
 inline void* setNextGeometry(void* geometry, void* next)
