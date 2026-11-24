@@ -54,6 +54,26 @@ Each entry is a heading that names the fix, followed by these fields:
 
 ## Client
 
+### Shared zipline ride sound detaches from a destroyed container
+
+- **Retail:** `BfSound::getSound(name)` resolves the name to an ID and returns the stored sound
+  pointer without creating an instance or adding a reference (`BF2.exe` `0x7DE1F0`,
+  `0x7DF8A0`, `0x7DF7D0`). `addSound` stores one instance per name, releasing a replaced instance
+  (`0x7DF980`), and BfSound releases the game sounds on destruction (`0x7E15B0`–`0x7E15D5`).
+  Every ZiplineContainer binds this shared `S_ZiplineUsed` sound to its own ObjectSoundNode and
+  slide-speed float (`0x5DAD72`–`0x5DADDA`). Its destructor stops playback but leaves those
+  bindings (`0x5DA0A3`–`0x5DA0E5`); another container's successful entry plays the same sound
+  (`0x5DB361`–`0x5DB37B`), allowing reads through the destroyed container's pointers.
+  Stock content does not define `S_ZiplineUsed`; the defect requires content that defines it.
+  A retail game reproduction has not been run.
+- **OpenBF2:** When the destroyed container is still the sound's parent, clears the parent and
+  both evaluator bindings before the container's storage is freed. A successful entry binds the
+  sound to the riding container and its speed before playback. The sound remains owned by
+  BfSound, and the existing playback and stop conditions are preserved.
+- **Applies to:** Client; all platforms. No ABI, protocol or file-format changes.
+- **Source:** `Code/BF2/Game/Objects/Game/ZiplineContainer.cpp`,
+  `Code/Tests/client_effects_runtime.cpp`
+
 ### Unsupported stored video mode falls back to the closest supported one
 
 - **Retail:** `VideoOptions::setDynamicOption` accepts only entries of the enumerated resolution and

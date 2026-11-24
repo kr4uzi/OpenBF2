@@ -125,6 +125,7 @@ struct TestSound : NullSound {
     void play() override { calls.push_back("play"); playing = true; }
     int release() override { ++soundReleases; return 1; }
     void setParent(ISoundNode* value) override { parent = value; calls.push_back("parent"); }
+    ISoundNode* getParent() const override { return parent; }
     void setVolumeEvaluator(ISoundEvaluator* evaluator, const float* value) override
     { check(!evaluator, "template volume evaluator"); volume = value; calls.push_back("volume"); }
     void setPitchEvaluator(ISoundEvaluator* evaluator, const float* value) override
@@ -237,6 +238,11 @@ int main()
         std::vector<std::string> expected;
         if (!DEDICATED && state) expected.push_back("playing?");
         if (!DEDICATED && state == 2) expected.push_back("forceStop");
+        if (!DEDICATED && state)
+        {
+            expected.insert(expected.end(), {"parent", "volume", "pitch"});
+            check(!sound.parent && !sound.volume && !sound.pitch, "destroyed parent leaves no sound bindings");
+        }
         check(calls == expected, "absent/inactive/active sound teardown");
         check(soundReleases == 0, "borrowed sound not released by container");
     }
@@ -256,10 +262,55 @@ int main()
             calls.clear();
             check(zip._enter(&player) == success, "base entry result preserved");
             check(calls == ((!DEDICATED && available && success)
-                  ? std::vector<std::string>({"play"}) : std::vector<std::string>()),
+                  ? std::vector<std::string>({"parent", "volume", "pitch", "play"}) : std::vector<std::string>()),
                   "only successful entry with a sound starts playback");
         }
     }
+
+#if !DEDICATED
+    // BfSound lends one instance per name. Destroy the last constructor's parent,
+    // then ride the surviving container through its real _enter body.
+    soundOwner.sound = &sound;
+    ZiplineContainer* survivor = new ZiplineContainer(0);
+    survivor->m_zipline = &line;
+    ZiplineContainer* lastParent = new ZiplineContainer(0);
+    check(survivor->m_usedSound == lastParent->m_usedSound, "containers borrow the same ride sound");
+    check(sound.parent == &lastParent->m_soundNode && sound.volume == &lastParent->m_slopeSpeed,
+          "last constructor owns the shared bindings");
+    delete lastParent;
+    check(!sound.parent && !sound.volume && !sound.pitch, "shared sound detached after parent destruction");
+    player.vehicle = survivor;
+    entryResult = true;
+    calls.clear();
+    check(survivor->_enter(&player), "surviving container can be ridden");
+    check(calls == std::vector<std::string>({"parent", "volume", "pitch", "play"}),
+          "survivor binds shared sound before playback");
+    survivor->m_slopeSpeed = 7.0f;
+    check(sound.playing && sound.parent == &survivor->m_soundNode &&
+          sound.volume == &survivor->m_slopeSpeed && sound.pitch == sound.volume &&
+          *sound.volume == 7.0f && *sound.pitch == 7.0f,
+          "next ride uses the surviving node and speed");
+
+    // Another constructor takes the bindings; a failed entry must not steal them.
+    ZiplineContainer* other = new ZiplineContainer(0);
+    entryResult = false;
+    calls.clear();
+    check(!survivor->_enter(&player) && calls.empty(), "failed entry leaves shared sound untouched");
+    check(sound.parent == &other->m_soundNode && sound.volume == &other->m_slopeSpeed,
+          "failed entry preserves the other container's bindings");
+    entryResult = true;
+    check(survivor->_enter(&player), "successful entry reclaims bindings from another live container");
+    calls.clear();
+    delete other;
+    check(calls == std::vector<std::string>({"playing?", "forceStop"}),
+          "nonparent destruction preserves retail stop conditions without detaching");
+    check(sound.parent == &survivor->m_soundNode && sound.volume == &survivor->m_slopeSpeed &&
+          sound.pitch == sound.volume, "nonparent destruction preserves live bindings");
+    check(survivor->_enter(&player) && sound.playing, "ride restarts after nonparent destruction");
+    delete survivor;
+    check(!sound.parent && !sound.volume && !sound.pitch, "final parent clears all shared bindings");
+    check(soundReleases == 0, "shared sound remains owned by BfSound");
+#endif
 
     TestManager manager;
     TestTemplate mesh;

@@ -205,6 +205,14 @@ ZiplineContainer::~ZiplineContainer()
     {
         if (m_usedSound->isPlaying())
             m_usedSound->forceStop();
+        // [CHOSEN, not recovered] Retail fix "Shared zipline ride sound detaches from a destroyed container".
+        // BfSound lends the same sound to every container; preserve another container's bindings.
+        if (m_usedSound->getParent() == &m_soundNode)
+        {
+            m_usedSound->setParent(0);
+            m_usedSound->setVolumeEvaluator(0, 0);
+            m_usedSound->setPitchEvaluator(0, 0);
+        }
         m_usedSound = 0;
     }
 #endif
@@ -298,7 +306,14 @@ bool ZiplineContainer::_enter(IPlayer* player)
 #if !DEDICATED
     // BF2.exe 0x5DB361..0x5DB37B: only a successful entry starts the ride sound.
     if (entered && m_usedSound)
+    {
+        // [CHOSEN, not recovered] Retail fix "Shared zipline ride sound detaches from a destroyed container".
+        // A previous parent may have gone away, or another constructor may have rebound the sound.
+        m_usedSound->setParent(&m_soundNode);
+        m_usedSound->setVolumeEvaluator(0, &m_slopeSpeed);
+        m_usedSound->setPitchEvaluator(0, &m_slopeSpeed);
         m_usedSound->play();
+    }
 #endif
     return entered;
 }
