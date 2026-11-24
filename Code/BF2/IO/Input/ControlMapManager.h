@@ -39,9 +39,9 @@ public:
 
     virtual IControlMap* getControlMap(const std::string& name) const;  // 0x84974D0 [CHOSEN-STUB]
     virtual IControlMap* getControlMap(int id) const;           // 0x84975A0,   62   recovered
-    virtual void         deleteControlMap(const std::string& name);     // 0x84975E0 [CHOSEN-STUB]
+    virtual void         deleteControlMap(const std::string& name);     // 0x84975E0
     virtual void         deleteControlMap(int id);              // 0x8497610,   46   recovered
-    virtual void         deleteControlMap(const IControlMap* map);      // 0x8497640 [CHOSEN-STUB]
+    virtual void         deleteControlMap(const IControlMap* map);      // 0x8497640; does not release map
     virtual void         setActive(const std::string& name);    // 0x84977A0,   46   recovered
     virtual void         setActive(const IControlMap* map);     // 0x84977D0,   27   recovered
     virtual IControlMap* getActive() const;                     // 0x8497790,   11   recovered
@@ -62,6 +62,7 @@ public:
     bool allowDuplicate(int id, bool playerMap);                // 0x8498F50,  101   recovered
 
 private:
+    friend struct ControlMapFixture;
     /* 0x04 */ int                          m_refCount;
     /* 0x08 */ std::map<int, IControlMap*>  m_byId;
     /* 0x14 */ int                          m_nextId;       // [UNRESOLVED] name - ctor 0

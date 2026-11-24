@@ -22,13 +22,22 @@ ROOT = Path(__file__).resolve().parents[2]
 H = "dice::hfe::"
 
 
-def side(header, cls, image="host", source=None, probe="getRef", subobject=None):
-    return dict(header=header, cls=H + cls, image=image, source=source, probe=probe, subobject=subobject)
+def side(header, cls, image="host", source=None, probe="getRef", subobject=None, key_function=None):
+    return dict(header=header, cls=H + cls, image=image, source=source, probe=probe,
+                subobject=subobject, key_function=key_function)
 
 
 # A pair is a consumer declaration and the actual provider declaration, compiled
 # independently: several images deliberately declare the same qualified name.
 PAIRS = [
+    ("debug-text-writer", side("Code/BF2/GeomMisc/DebugTextWriter.h", "geom::IDebugTextWriter"),
+     side("Code/BF2/GeomMisc/DebugTextWriter.cpp", "geom::DebugTextWriter", "renderer")),
+    ("pov-native-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),
+     side("Code/BF2/IO/Input/NativeInputDeviceManager.h", "io::NativeGameControllerDevice", key_function="addRef")),
+    ("pov-directinput-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),
+     side("Code/BF2/IO/Input/GameControllerDevice.h", "io::GameControllerDevice", probe="readPOV(io::IDPOV_0)")),
+    ("advanced-native-mouse", side("Code/BF2/IO/Input/Input.h", "io::IAdvancedInputDevice"),
+     side("Code/BF2/IO/Input/NativeInputDeviceManager.h", "io::NativeMouseDevice", key_function="addRef")),
     ("class-manager", side("Code/RendDX9Abi/HfeAbi.h", "IClassManager", "renderer"),
      side("Code/BF2/Core/ClassManager.h", "ClassManager")),
     ("module", side("Code/BF2/Core/IModule.h", "IModule"),
@@ -262,14 +271,22 @@ class Compiler:
         # lay out inherited slots too. Merely taking &Derived::inheritedMethod
         # only requests the base table and would leave holes in coverage.
         cls = spec["cls"].replace("(anonymous namespace)::", "")
-        code = (f'#include "{spec["header"]}"\n'
-                f'struct AuditForce : {cls} {{ virtual void audit_force(); }};\n'
-                'void AuditForce::audit_force() {}\n')
+        if spec.get("key_function"):
+            # A final provider cannot be subclassed. Define its known void() key function
+            # only in this compile-only probe to force the complete provider table.
+            code = (f'#include "{spec["header"]}"\n'
+                    f'void {cls}::{spec["key_function"]}() {{}}\n')
+            table = cls
+        else:
+            code = (f'#include "{spec["header"]}"\n'
+                    f'struct AuditForce : {cls} {{ virtual void audit_force(); }};\n'
+                    'void AuditForce::audit_force() {}\n')
+            table = "AuditForce"
         output = self.compile(key, code, spec["image"], spec.get("source"))
         tables = layouts(output)
-        if "AuditForce" not in tables:
+        if table not in tables:
             raise RuntimeError(f"{key}: Clang did not emit {spec['cls']}")
-        key = "AuditForce" + ("@" + H + spec["subobject"] if spec.get("subobject") else "")
+        key = table + ("@" + H + spec["subobject"] if spec.get("subobject") else "")
         if key not in tables:
             raise RuntimeError(f"{key}: secondary subobject not emitted")
         return [s for s in tables[key] if s != "void audit_force()"]

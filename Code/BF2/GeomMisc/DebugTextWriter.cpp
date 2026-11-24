@@ -85,7 +85,7 @@ struct DebugTextGroup
 
 // The slot count is read: the table runs 0x1020CD10..0x1020CD58 and the next dword is 0.
 
-class DebugTextWriter : public IBase
+class DebugTextWriter : public IDebugTextWriter
 {
 public:
     DebugTextWriter();

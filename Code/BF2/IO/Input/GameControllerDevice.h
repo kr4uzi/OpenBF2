@@ -13,7 +13,7 @@ struct DIDEVCAPS;
 
 namespace dice { namespace hfe { namespace io {
 
-class GameControllerDevice : public IAdvancedInputDevice
+class GameControllerDevice : public IPOVInputDevice
 {
 public:
     GameControllerDevice();
@@ -44,8 +44,8 @@ public:
     bool buttonPressed(InputDeviceButtons) const override;
     bool buttonReleased(InputDeviceButtons) const override;
     float buttonPressedSampleLatency(InputDeviceButtons) const override;
-    virtual int getNumPOVs() const;                 // +68, 0x6BBD40
-    virtual int readPOV(InputDevicePOVs) const;     // +6C, 0x6D74A0
+    int getNumPOVs() const override;                 // +68, 0x6BBD40
+    int readPOV(InputDevicePOVs) const override;     // +6C, 0x6D74A0
     virtual bool slot_0x70() const;                // real false; identity [UNRESOLVED], const [INFERRED]
     virtual bool init(int index);                  // +74, 0x6D7610
     virtual int getDeviceIndex() const;            // +78, name/constness [INFERRED]

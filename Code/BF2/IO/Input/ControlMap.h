@@ -37,7 +37,7 @@ struct AxisMapping {
     int           negativeKey;    // +1C    first argument is the positive one - `addKeysToAxisMapping
                                   //      c_PIThrottle IDFKeyboard IDKey_W IDKey_S` makes W forward
     int           pov;            // +20  the POV id (addAxisMapping's POV form)          [INFERRED]
-    unsigned char flag24;         // +24  the POV form's first bool                        [UNRESOLVED]
+    unsigned char flag24;         // +24  horizontal POV component (sine); vertical uses negative cosine
     int           field28;        // +28  device flags of one half of a buttons/keys pair  [UNRESOLVED] which
     int           field2C;        // +2C  device flags of the other half
     int           field30;        // +30  button / key ids of the pair, four slots         [UNRESOLVED] assignment
@@ -83,7 +83,7 @@ struct TriggerRemap {             // ELF 84 / PE 104 bytes; the selector byte is
     TriggerMapping primary;       // +00
     TriggerMapping alternate;     // +28 ELF / +30 PE  (the sub-record getTriggerSampleLatency selects)
     unsigned char  state;         // +50 ELF / +60 PE  getTriggerState
-    unsigned char  selector;      // +51 ELF / +61 PE  getTriggerSampleLatency's test [UNRESOLVED] role
+    unsigned char  selector;      // +51 ELF / +61 PE  nonzero selects primary sample latency; update writes 1
 };
 
 // A named, individually created control map; ControlMapManager owns the registry, not a singleton.
@@ -207,7 +207,7 @@ private:
     bool  resolveTriggerMapping(TriggerMapping& mapping, float deltaTime);
     float axisToAxis(IAdvancedInputDevice* device, AxisMapping& mapping);
     float buttonsToAxis(IInputDevice* device, AxisMapping& mapping, float deltaTime);
-    float povToAxis(IInputDevice* device, AxisMapping& mapping, float deltaTime);
+    float povToAxis(IPOVInputDevice* device, AxisMapping& mapping, float deltaTime);
     bool  axisToTrigger(IAdvancedInputDevice* device, TriggerMapping& mapping);
     bool  buttonsToTrigger(IInputDevice* device, TriggerMapping& mapping, float deltaTime);
 

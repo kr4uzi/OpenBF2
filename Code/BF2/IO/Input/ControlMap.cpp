@@ -1,5 +1,4 @@
 // Input control maps and binding resolution. [INFERRED] Source placement.
-// [CHOSEN-STUB] Remaining incomplete operations are marked at their definitions.
 
 #include "ControlMap.h"
 #include "../../Core/Ids.h"                // [INFERRED] header name; the constants are attested
@@ -359,13 +358,13 @@ bool ControlMap::addAxisMapping(int axisId, InputDeviceFlags device,
     return true;
 }
 
-// POV hat -> axis, the splitting form. The two private calls differ only
-// in the fourth argument (1 then 0) and both pass a literal false last.
+// PE 0x006B13E0; ELF 0x084919F0. The first two booleans are ignored;
+// the last controls inversion. Both components always replace primary bindings.
 bool ControlMap::addAxisMapping(int axisId, int secondaryId, InputDeviceFlags device,
-                                InputDevicePOVs pov, bool /*a*/, bool b, bool /*c*/)
+                                InputDevicePOVs pov, bool /*a*/, bool /*b*/, bool invert)
 {
-    const bool first  = addAxisMapping(axisId, device, pov, true, b, false);
-    const bool second = addAxisMapping(secondaryId, device, pov, false, b, false);
+    const bool first  = addAxisMapping(axisId, device, pov, true, invert, false);
+    const bool second = addAxisMapping(secondaryId, device, pov, false, invert, false);
     return first && second;
 }
 
@@ -548,17 +547,77 @@ bool ControlMap::_addAxisMapping(int axisId, InputDeviceFlags device, InputDevic
     return true;
 }
 
-// [CHOSEN-STUB] POV mapping requires the undeclared advanced-device tail interface.
-// [RETIRE-WHEN: controlmap-pov] Implement after the IAdvancedInputDevice POV slots are established.
-bool ControlMap::addAxisMapping(int /*axisId*/, InputDeviceFlags /*device*/, InputDevicePOVs /*pov*/,
-                                bool /*a*/, bool /*b*/, bool /*alternate*/)
+// PE 0x006B13E0 (inlined); ELF 0x08491850. Rebinding preserves the record's other fields.
+bool ControlMap::addAxisMapping(int axisId, InputDeviceFlags device, InputDevicePOVs pov,
+                                bool horizontal, bool invert, bool alternate)
 {
-    return false;
+    AxisRemap* remap;
+    std::map<int, AxisRemap*>::iterator it = m_axisMappings.find(axisId);
+    if (it != m_axisMappings.end())
+        remap = it->second;
+    else
+    {
+        if (alternate)
+            return false;
+        remap = new AxisRemap;
+        if (!remap)
+            return false;
+        m_axisMappings[axisId] = remap;
+    }
+    AxisMapping& mapping = alternate ? remap->alternate : remap->primary;
+    mapping.type = 4;
+    mapping.device = device;
+    mapping.pov = pov;
+    mapping.flag24 = horizontal;
+    mapping.invert = invert;
+    return true;
 }
 
-float ControlMap::povToAxis(IInputDevice* /*device*/, AxisMapping& /*mapping*/, float /*deltaTime*/)
+// PE 0x006AED10; ELF 0x08491AA0. Angles are hundredths of a degree, -1 is centered.
+float ControlMap::povToAxis(IPOVInputDevice* device, AxisMapping& mapping, float deltaTime)
 {
-    return 0.0f;
+    bool positive = false;
+    bool negative = false;
+    const int pov = device->readPOV(static_cast<InputDevicePOVs>(mapping.pov));
+    if (pov != -1)
+    {
+        const float angle = (static_cast<float>(pov) / 100.0f) * 0.01745329238474369f;
+        if (mapping.flag24)
+        {
+            const float value = std::sin(angle);
+            positive = value > 0.001;
+            negative = value < -0.001;
+        }
+        else
+        {
+            const float value = std::cos(angle);
+            positive = value < -0.001;
+            negative = value > 0.001;
+        }
+    }
+    if (positive)
+    {
+        mapping.value += deltaTime / m_buttonRiseTime;
+        if (mapping.value > 1.0f)
+            mapping.value = 1.0f;
+    }
+    else if (negative)
+    {
+        mapping.value -= deltaTime / m_buttonRiseTime;
+        if (mapping.value < -1.0f)
+            mapping.value = -1.0f;
+    }
+    else
+    {
+        float sign = 1.0f;
+        if (mapping.value <= 0.0f)
+            sign = mapping.value >= 0.0f ? 0.0f : -1.0f;
+        float magnitude = std::fabs(mapping.value) - deltaTime / m_buttonFallTime;
+        if (magnitude < 0.0f)
+            magnitude = 0.0f;
+        mapping.value = sign * magnitude;
+    }
+    return mapping.value;
 }
 
 // Samples devices and updates mapped axis values and trigger states for the input tick.
@@ -609,7 +668,7 @@ void ControlMap::update(float deltaTime)
                 continue;
 
             remap->state    = resolveTriggerMapping(remap->primary, deltaTime) ? 1 : 0;
-            remap->selector = 1;                            // written unconditionally, then unread here
+            remap->selector = 1;                            // retail retains primary sample latency even when alternate fires
 
             if (!remap->alternate.device)
                 continue;
@@ -639,7 +698,7 @@ float ControlMap::resolveAxisMapping(AxisMapping& mapping, float deltaTime)
             value = buttonsToAxis(device, mapping, deltaTime);
             break;
         case 4:
-            value = povToAxis(device, mapping, deltaTime);
+            value = povToAxis(static_cast<IPOVInputDevice*>(device), mapping, deltaTime);
             break;
         case 5:
         {
@@ -877,9 +936,25 @@ bool ControlMap::buttonsToTrigger(IInputDevice* device, TriggerMapping& mapping,
     return state;
 }
 
-// [CHOSEN-STUB]
-void ControlMap::removeMapping(unsigned int /*id*/)
+// PE 0x006B0A40; ELF 0x08492800. A trigger takes precedence over an axis with the same id.
+void ControlMap::removeMapping(unsigned int id)
 {
+    const int key = static_cast<int>(id);
+    std::map<int, TriggerRemap*>::iterator trigger = m_triggerMappings.find(key);
+    if (trigger != m_triggerMappings.end())
+    {
+        TriggerRemap* const remap = trigger->second;
+        m_triggerMappings.erase(key);
+        delete remap;
+        return;
+    }
+    std::map<int, AxisRemap*>::iterator axis = m_axisMappings.find(key);
+    if (axis != m_axisMappings.end())
+    {
+        AxisRemap* const remap = axis->second;
+        m_axisMappings.erase(key);
+        delete remap;
+    }
 }
 
 // the trigger remaps are freed and their tree
@@ -997,10 +1072,19 @@ int ControlMap::getTriggerState(int triggerId) const
     return it->second->state;           // +0x50
 }
 
-// [CHOSEN-STUB] Returns zero latency. The original live-trigger path has an unresolved floating-point result.
-float ControlMap::getTriggerSampleLatency(int /*triggerId*/) const
+// PE 0x006AFA10; ELF 0x08492D00. Only a selected mouse binding has sample latency.
+float ControlMap::getTriggerSampleLatency(int triggerId) const
 {
-    return 0.0f;                        // [CHOSEN-STUB] - see the shipped defect note above
+    std::map<int, TriggerRemap*>::const_iterator it = m_triggerMappings.find(triggerId);
+    if (it == m_triggerMappings.end())
+        return 0.0f;
+    const TriggerRemap& remap = *it->second;
+    const TriggerMapping& mapping = remap.selector ? remap.primary : remap.alternate;
+    if (mapping.device != IDFMouse)
+        return 0.0f;
+    IAdvancedInputDevice* const mouse =
+        static_cast<IAdvancedInputDevice*>(deviceManager()->getInputDevice(IDFMouse));
+    return mouse->buttonPressedSampleLatency(static_cast<InputDeviceButtons>(mapping.button));
 }
 
 // Returns true without validating mappings.
@@ -1232,9 +1316,11 @@ void ControlMap::save(std::ostream& out, bool playerMap)
     out << std::endl;   // the blank line that separates one map's block from the next
 }
 
-// [CHOSEN-STUB] - a debug print, distinct from save().
-void ControlMap::dump(bool /*b*/)
+// PE 0x006AF0F0; ELF 0x084947B0. Serializes through save, then discards the text.
+void ControlMap::dump(bool playerMap)
 {
+    std::ostringstream out;
+    save(out, playerMap);
 }
 
 // ELF 0x8494960 (4595 bytes). Collects every binding of this map that already uses the device
@@ -1341,9 +1427,39 @@ bool ControlMap::findDuplicate(InputDeviceFlags& device, InputDeviceAxes& axis,
     return out.ids.size() != 0;
 }
 
-// ELF 0x8495B60. [CHOSEN-STUB]
-bool ControlMap::getInputMappedToMouseButton(bool /*b*/, PlayerInputMap& /*out*/)
+// PE 0x006B0520; ELF 0x08495B60. Axes precede triggers; primary precedes alternate.
+// The Falcon's first/eighth buttons mirror the mouse's first/second buttons.
+bool ControlMap::getInputMappedToMouseButton(bool firstButton, PlayerInputMap& out)
 {
+    const int mouseButton = firstButton ? 1 : 2;
+    const int falconButton = firstButton ? 1 : 8;
+    for (std::map<int, AxisRemap*>::const_iterator it = m_axisMappings.begin(); it != m_axisMappings.end(); ++it)
+    {
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            const AxisMapping& mapping = slot ? it->second->alternate : it->second->primary;
+            const int button = mapping.device == IDFMouse ? mouseButton : falconButton;
+            if ((mapping.device == IDFMouse || mapping.device == IDFFalcon)
+                && (mapping.positiveButton == button || mapping.negativeButton == button))
+            {
+                out = static_cast<PlayerInputMap>(it->first);
+                return true;
+            }
+        }
+    }
+    for (std::map<int, TriggerRemap*>::const_iterator it = m_triggerMappings.begin(); it != m_triggerMappings.end(); ++it)
+    {
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            const TriggerMapping& mapping = slot ? it->second->alternate : it->second->primary;
+            const int button = mapping.device == IDFMouse ? mouseButton : falconButton;
+            if ((mapping.device == IDFMouse || mapping.device == IDFFalcon) && mapping.button == button)
+            {
+                out = static_cast<PlayerInputMap>(it->first);
+                return true;
+            }
+        }
+    }
     return false;
 }
 

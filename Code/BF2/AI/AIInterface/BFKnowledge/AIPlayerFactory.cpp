@@ -75,9 +75,11 @@ AIPlayerFactory::AIPlayerFactory()
     m_players.resize(256, 0);
 }
 
-// ELF 0x842B8F0 / 0x842B970 / 0x842B9F0.
+// PE 0x00817F10; ELF 0x842B8F0 / 0x842B970 / 0x842B9F0.
 AIPlayerFactory::~AIPlayerFactory()
 {
+    for (std::vector<IAIPlayer*>::iterator it = m_players.begin(); it != m_players.end(); ++it)
+        delete *it;
 }
 
 // ELF 0x842BA80. Creates an unattached wrapper without inserting it into the id table.

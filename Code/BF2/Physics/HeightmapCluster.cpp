@@ -1,5 +1,4 @@
 // Terrain-tile lifecycle and query dispatch for the heightmap cluster.
-// The separate editor/debug camera-picking path remains [UNRESOLVED] where marked.
 
 #include "HeightmapCluster.h"
 
@@ -12,10 +11,13 @@
 #include "../Core/EventManager.h"
 #include "../Core/Ids.h"
 #include "../Game/Objects/IObject.h"
+#include "../Game/Objects/IPlayer.h"
+#include "../Game/Objects/ICameraObject.h"
 #include "../Game/Utility/Vars.h"
 #include "../Math/Intersect.h"
 #include "../Math/Vec3.h"
 #include "../Scene/Object/ObjectManager.h"
+#include "../Scene/Object/PlayerManager.h"
 #include "CollisionStats.h"          // world::collisionStatsData - the shared 0x3C block
 
 namespace dice {
@@ -39,10 +41,10 @@ int* hc_freeze = Vars::getInt("hc_freeze", 0);
 // [INFERRED] source name; address and increment are recovered from the ray dispatcher.
 int gVerticalRayCount = 0;
 
-// [CHOSEN, not recovered] Names for zero-initialized camera-ray state. intersectCameraRay
-// updates it while freezing is disabled and reuses it while freezing is enabled.
+// [INFERRED] Names for the zero-initialized camera position and forward direction.
+// PE 0x006E2A70 stores them while freezing is disabled; the fixed probes replace the local ray.
 Vec3 gFrozenRayFrom;
-Vec3 gFrozenRayTo;
+Vec3 gFrozenRayDirection;
 
 } // anonymous namespace
 
@@ -731,11 +733,73 @@ bool HeightmapCluster::isInsideHeightmapCluster(float x, float z) const
     return true;
 }
 
-// [UNRESOLVED] Unimplemented camera-picking helper with freezeable shared ray state.
-// Return type is [CHOSEN] void; callers have not established the original return contract.
+// PE 0x006E2A70; ELF 0x08386110. The console discards the result (PE 0x006DF574).
+// Retail retains the camera/freeze lookup but tests these 34 fixed rays instead of that ray.
 void HeightmapCluster::intersectCameraRay()
 {
-    // [CHOSEN, not recovered] - see the block above.
+    Vec3 from{0.0f, 0.0f, 0.0f};
+    Vec3 direction{0.0f, 0.0f, 0.0f};
+    if (!*hc_freeze)
+    {
+        PlayerManager* const manager =
+            reinterpret_cast<PlayerManager*>(classManager->getSingleton("PlayerManager"));
+        if (manager)
+        {
+            IPlayer* const player = manager->getLocalHumanPlayer();
+            if (player)
+            {
+                ICameraObject* const camera = player->getCamera();
+                if (camera)
+                {
+                    const Mat4& transform = camera->getTransformation(0.0f);
+                    from = Vec3{transform.m[12], transform.m[13], transform.m[14]};
+                    direction = Vec3{transform.m[8], transform.m[9], transform.m[10]};
+                    gFrozenRayFrom = from;
+                    gFrozenRayDirection = direction;
+                }
+            }
+        }
+    }
+    else
+    {
+        from = gFrozenRayFrom;
+        direction = gFrozenRayDirection;
+    }
+    const float length = *Vars::getFloat("coll-ray-len", 10.0f);
+    Vec3 to{from.x + direction.x * length, from.y + direction.y * length,
+            from.z + direction.z * length};
+    Vec3 hitPoint{0.0f, 0.0f, 0.0f};
+    Vec3 normal{0.0f, 0.0f, 0.0f};
+    const Vec3 starts[] = {
+        Vec3{749.239f, 61.0f, -491.325f}, Vec3{749.239f, 61.0000114f, -491.325f},
+        Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11},
+        Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11},
+        Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10},
+        Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10},
+        Vec3{11, 1, 11}, Vec3{11, 1, 13}, Vec3{10, 1, 13}, Vec3{9, 1, 13},
+        Vec3{9, 1, 11}, Vec3{9, 1, 9}, Vec3{10, 1, 9}, Vec3{11, 1, 9},
+        Vec3{13, 1, 10}, Vec3{13, 1, 11}, Vec3{11, 1, 11}, Vec3{9, 1, 11},
+        Vec3{9, 1, 10}, Vec3{9, 1, 9}, Vec3{11, 1, 9}, Vec3{13, 1, 9}
+    };
+    const Vec3 ends[] = {
+        Vec3{747.994f, 61.0f, -492.89f}, Vec3{747.994f, 61.0f, -492.89f},
+        Vec3{11, 1, 11}, Vec3{11, 1, 13}, Vec3{10, 1, 13}, Vec3{9, 1, 13},
+        Vec3{9, 1, 11}, Vec3{9, 1, 9}, Vec3{10, 1, 9}, Vec3{11, 1, 9},
+        Vec3{13, 1, 10}, Vec3{13, 1, 11}, Vec3{11, 1, 11}, Vec3{9, 1, 11},
+        Vec3{9, 1, 10}, Vec3{9, 1, 9}, Vec3{11, 1, 9}, Vec3{13, 1, 9},
+        Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11},
+        Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11}, Vec3{10, 45, 11},
+        Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10},
+        Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10}, Vec3{11, 45, 10}
+    };
+    float fraction;
+    unsigned char material;
+    for (unsigned int i = 0; i < 34; ++i)
+    {
+        from = starts[i];
+        to = ends[i];
+        intersectRayInWorldCoords(from, to, hitPoint, fraction, normal, material, true);
+    }
 }
 
 // Updates the object grid, bakes intersecting water meshes into each tile, then processes consumed objects.
