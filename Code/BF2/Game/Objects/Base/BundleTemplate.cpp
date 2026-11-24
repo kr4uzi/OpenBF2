@@ -11,6 +11,7 @@
 #include "../../../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
 #include "../../../Sound/ISoundObjectTemplate.h"
 #if !DEDICATED
+#include "../../../Core/ContentError.h"
 #include "../../Main/Game.h"
 #endif
 
@@ -204,11 +205,13 @@ void BundleTemplate::addBundleChilds(IObject* object) const
         {
 #if !DEDICATED
             // BF2.exe 0x0062892C..0x006289DA: missing/self references report
-            // through Debug, except for the optional S_ sound templates.
+            // through Debug(DebugTypeError, ..., 213), except optional S_ sounds:
+            // getName() << " addBundleChilds() template not found:" << info->m_templateName.
+            // [CHOSEN, not recovered] Retail fix "Content errors are logged without ending the game".
             if (!isDedicated() && compareIgnoreCase(info->m_templateName.c_str(), "S_", 2) != 0)
-                Debug(DebugTypeError, "Game/Objects/Base/BundleTemplate.cpp", 213)
-                    << getName() << " addBundleChilds() template not found:"
-                    << info->m_templateName;
+                reportContentError("Game/Objects/Base/BundleTemplate.cpp", 213,
+                    getName() + " addBundleChilds() template not found:" + info->m_templateName,
+                    info->m_templateName);
 #endif
             continue;
         }

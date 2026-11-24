@@ -6,7 +6,7 @@
 
 #include "../../../Animation/BoneAnimation/Skeleton.h"
 #include "../../../Sound/SoldierSound.h"
-#include "../../../Core/Debug.h"
+#include "../../../Core/ContentError.h"
 #include "../../../Core/Ids.h"
 
 namespace dice {
@@ -73,11 +73,14 @@ void SoldierTemplate::setRidingWithOffset(Vec3 value)
 }
 
 // BF2.exe 0x005F4870 / ELF 0x081B8C60. Retail refuses this save without calling
-// the base or touching the stream; DebugTypeError may terminate when enabled.
+// the base or touching the stream; its emitted DebugTypeError terminates.
 bool SoldierTemplate::makeScript(io::IStream*)
 {
-    Debug(DebugTypeError, "Game/Objects/Game/SoldierTemplate.cpp", 74, "")
-        << "SoldierTemplate doesn't have makeScript implemented. Save failed...";
+    // BF2.exe 0x005F4870: Debug(DebugTypeError, ..., 74, "")
+    // << "SoldierTemplate doesn't have makeScript implemented. Save failed...".
+    // [CHOSEN, not recovered] Retail fix "Content errors are logged without ending the game".
+    reportContentError("Game/Objects/Game/SoldierTemplate.cpp", 74,
+        "SoldierTemplate doesn't have makeScript implemented. Save failed...", getName());
     return false;
 }
 
