@@ -148,6 +148,17 @@ AIStrategicArea::AIStrategicArea(const std::string& name, unsigned int controlPo
     m_v416.z = 0.0f;
     m_fromControlPoint      = true;    // the phase selector - see the header
     m_orderPosesInitialised = false;
+
+    // [CHOSEN, not recovered] "AI control-point queries reject missing IDs" in
+    // docs/retail-fixes.md: rejected areas are destroyed before the deferred allocations.
+    m_flagsA = nullptr;
+    m_flagsB = nullptr;
+    m_listsA = nullptr;
+    m_listsB = nullptr;
+    m_mapsA = nullptr;
+    m_mapsB = nullptr;
+    m_mapsC = nullptr;
+    m_mapsD = nullptr;
 }
 
 // ELF 0x336F90 (D2; D1 0x337410, D0 0x337890; from AIStrategicObjectManager::reset/destructor):
@@ -198,18 +209,16 @@ float AIStrategicArea::getZExtent(int side) const
     return half + half;
 }
 
-// The query's own result and
-// its fourth (active) output are discarded; the local is seeded true only to be passed along.
-// Any assigned id answers true, whatever the engine wrote; the singleton is not null-checked.
+// [CHOSEN, not recovered] "AI control-point queries reject missing IDs" in docs/retail-fixes.md:
+// propagate existence, including non-capturable points; retail discarded the query result.
 // ELF 0x33A040.
 bool AIStrategicArea::getControlPointPosAndRadius(Vec3& position, float& radius)
 {
     bool active = true;
     if (m_controlPointId == static_cast<unsigned int>(-1))
         return false;
-    static_cast<IAIGame*>(CommonSingletonServer::m_iaiGame)
+    return static_cast<IAIGame*>(CommonSingletonServer::m_iaiGame)
         ->getControlPointInfo(m_controlPointId, position, radius, active);
-    return true;
 }
 
 // Resolves control-point position, height, and ownership after world objects are available.

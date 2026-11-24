@@ -2,6 +2,8 @@
 // and exact production lookup bodies; chosen lifetimes omit singleton registration and world work.
 // This exercises missing IDs and live owner/capture dispatch, not level loading or engine teardown.
 #include "bf_game_counter_runtime.h"
+#include "../../BF2/Game/Objects/ControlPointTemplate.h"
+#include "../../BF2/Game/Objects/IObjectTemplateComponent.h"
 #include "lookup_collaborators.inl"
 #include <limits>
 
@@ -24,12 +26,31 @@ Bundle::Bundle(const BundleTemplate*) : SimpleObject(nullptr) {}
 Bundle::~Bundle() {}
 ControlPoint::ControlPoint(const ControlPointTemplate*) : Bundle(nullptr) {}
 ControlPoint::~ControlPoint() {}
+IObjectTemplate::IObjectTemplate() {}
+IObjectTemplate::~IObjectTemplate() {}
+ObjectTemplate::ObjectTemplate() {}
+ObjectTemplate::~ObjectTemplate() {}
+SimpleObjectTemplate::SimpleObjectTemplate() {}
+SimpleObjectTemplate::~SimpleObjectTemplate() {}
+BundleTemplate::BundleTemplate() {}
+BundleTemplate::~BundleTemplate() {}
+ControlPointTemplate::ControlPointTemplate() {}
+ControlPointTemplate::~ControlPointTemplate() {}
 }
 } }
 
 using namespace dice::hfe;
 using namespace dice::hfe::ai;
 using namespace dice::hfe::world;
+
+class LookupTemplate : public ControlPointTemplate
+{
+public:
+    float pointRadius = 50.0f;
+    bool fixed = false;
+    float getRadius() const override { return pointRadius; }
+    bool getUnableToChangeTeam() const override { return fixed; }
+};
 
 class LookupPoint : public ControlPoint
 {
@@ -39,6 +60,9 @@ public:
     float counter = 0.75f;
     int teamReads = 0;
     int counterReads = 0;
+    Vec3 position = {10.0f, 20.0f, 30.0f};
+    void setTemplate(const IObjectTemplate* value) { IObject::m_template = value; }
+    const Vec3& getAbsolutePosition() const override { return position; }
     int getTeam() override { ++teamReads; return team; }
     float getTakeOverCounter() override { ++counterReads; return counter; }
 };
@@ -61,11 +85,15 @@ static void missing(const IAIGame& adapter, LookupLogic& logic, unsigned int id)
     require(logic.points == before, "missing lookups do not insert an entry");
 }
 
+void checkMissingControlPointAreas();
+
 int main()
 {
     BFGame adapter;
     LookupLogic logic;
     LookupPoint point;
+    LookupTemplate pointTemplate;
+    point.setTemplate(&pointTemplate);
     gameLogic = &logic;
     for (unsigned int id : {0u, 602u, 0x80000000u, 0xffffffffu})
         missing(adapter, logic, id);
@@ -83,6 +111,17 @@ int main()
         logic.points[id] = &point;
         point.team = 2;
         point.counter = 0.75f;
+        for (bool fixed : {false, true})
+        {
+            pointTemplate.fixed = fixed;
+            Vec3 position = {};
+            float radius = 0.0f;
+            bool active = fixed;
+            require(adapter.getControlPointInfo(id, position, radius, active), "existing ID returns true");
+            require(active == !fixed, "capture eligibility is independent of existence");
+            require(position.x == 10 && position.y == 20 && position.z == 30 && radius == 50,
+                    "valid geometry retained, including fixed main bases");
+        }
         require(adapter.getOwnerOfControlPoint(id) == 2, "valid owner");
         require(adapter.getControlPointTakeOverCounter(id) == 0.75f, "valid capture progress");
         point.team = 0;
@@ -94,4 +133,5 @@ int main()
     }
     require(point.teamReads == 8 && point.counterReads == 8, "exact valid dispatch count");
     std::printf("PASS control-point lookups: %d checks\n", checks);
+    checkMissingControlPointAreas();
 }

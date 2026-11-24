@@ -2624,7 +2624,8 @@ if(BF2_BUILD_POSIX AND Python3_Interpreter_FOUND)
     set(bf2_lookup_fixture "${CMAKE_CURRENT_BINARY_DIR}/control_point_lookup_check")
     add_custom_command(
         OUTPUT "${bf2_lookup_fixture}/lookup_actual.cpp" "${bf2_lookup_fixture}/lookup_collaborators.inl"
-        BYPRODUCTS "${bf2_lookup_fixture}/lookup_source.json"
+            "${bf2_lookup_fixture}/areas_actual.cpp" "${bf2_lookup_fixture}/area_collaborators.inl"
+        BYPRODUCTS "${bf2_lookup_fixture}/lookup_source.json" "${bf2_lookup_fixture}/areas_source.json"
         COMMAND "${Python3_EXECUTABLE}" -B
             "${CMAKE_CURRENT_SOURCE_DIR}/Code/Tests/aidll/control_point_lookup_runtime.py"
             generate "${bf2_lookup_fixture}"
@@ -2639,10 +2640,25 @@ if(BF2_BUILD_POSIX AND Python3_Interpreter_FOUND)
             "${BF2_ROOT}/Game/Objects/Base/SimpleObject.h"
             "${BF2_ROOT}/Game/Objects/Base/Bundle.h"
             "${BF2_ROOT}/Game/Objects/Game/ControlPoint.h"
+            "${BF2_ROOT}/Game/Objects/IObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/ObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/Base/SimpleObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/Base/BundleTemplate.h"
+            "${BF2_ROOT}/Game/Objects/ControlPointTemplate.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObject.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObjectManager.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObjectManager.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/Main/IAIPathfinding.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategic/SAI.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategic/SAI.h"
         VERBATIM)
     add_executable(bf2_control_point_lookup_check EXCLUDE_FROM_ALL
         Code/Tests/aidll/control_point_lookup_runtime.cpp
+        Code/Tests/aidll/control_point_area_runtime.cpp
         "${bf2_lookup_fixture}/lookup_actual.cpp"
+        "${bf2_lookup_fixture}/areas_actual.cpp"
         "${bf2_lookup_fixture}/lookup_collaborators.inl")
     bf2_configure_cpp_target(bf2_control_point_lookup_check)
     bf2_set_platform_compat(bf2_control_point_lookup_check)
