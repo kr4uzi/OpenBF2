@@ -11,6 +11,9 @@
 #include "../../../Core/Debug.h"
 #include "../../../Core/StringUtil.h"            // formatString - getArmorInfo, and the Debug arm
 #include "../../IGameLogic.h"                    // gameLogic - isServer (+0x13C, attested by use)
+#if !DEDICATED
+#include "../../SingletonServer.h"
+#endif
 #include "SupplyDropManager.h"                   // the landing arms' manager
 #include "../../../Scene/Object/ObjectManager.h" // objectManager - postMessage (+0xD0) /
                                                  // removeAllMessagesTo (+0xD4)
@@ -60,12 +63,21 @@ void SupplyObject::init()
 {
     Bundle::init();
     objectManager->postMessage(this, static_cast<TemplateMessage>(29), 1.0f);
+#if !DEDICATED
+    // BF2.exe 0x5FDFFE..0x5FE00B: publish the crate's world HUD icon.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->addTouchItem(this);
+#endif
 }
 
-// straight through. Bundle does not override disableCachedObject, so this is the
-// ordinary next-override call, stated so nobody "fixes" it into Bundle::.
+// Retires the client nametag before caching. Bundle has no disableCachedObject override.
 void SupplyObject::disableCachedObject()
 {
+#if !DEDICATED
+    // BF2.exe 0x5FE2E3..0x5FE2F2: retire the object nametag before caching.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->removeItem(2, this);
+#endif
     SimpleObject::disableCachedObject();
 }
 
@@ -76,11 +88,21 @@ void SupplyObject::enableCachedObject()
     reset();
     Bundle::enableCachedObject();
     objectManager->postMessage(this, static_cast<TemplateMessage>(29), 1.0f);
+#if !DEDICATED
+    // BF2.exe 0x5FE2CB..0x5FE2D8: cached crates regain their world HUD icon.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->addTouchItem(this);
+#endif
 }
 
 // Cancels queued heartbeat messages before base destruction.
 void SupplyObject::destroy(bool force)
 {
+#if !DEDICATED
+    // BF2.exe 0x5FE016..0x5FE025: remove the nametag before base destruction.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->removeItem(2, this);
+#endif
     objectManager->removeAllMessagesTo(this);
     SimpleObject::destroy(force);
 }
