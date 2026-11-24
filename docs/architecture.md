@@ -122,7 +122,12 @@ other subsystems before loading returns.
 
 On a client, `GameLogic::beginLoadStats` publishes the loading flag, fades main-menu
 or between-rounds music through `MusicPlayer`, and releases the old menu before
-posting the loading-screen events (BF2.exe `0x4EC030`).
+posting the loading-screen events (BF2.exe `0x4EC030`). Only runtime dedicated mode
+sets the callback interval to 1/30 second; a client keeps the configured interval
+(initially 0.5 seconds). The client load callback yields with `System::sleep(0)`
+and services `BF2::handleInGameWinMessages` when the application exists. That method
+keeps each platform's event pump and quit handling. Process working-set housekeeping
+remains the `loadcallback-client-preamble` frontier.
 
 Successful demo playback disables HUD paint and update through
 `BF2HudManager::setPaint(false)` (BF2.exe `0x40653A`). A lightmap worker accepts a
