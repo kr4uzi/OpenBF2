@@ -39,7 +39,7 @@ void memoryDebugCallback(bool ok, const char* text)
 BF2Log::BF2Log()
     : m_debugCallbackDisabled(false)        // +0x04
     , m_doNotDisplayErrorWindow(false)      // +0x05
-    , m_exitInsteadOfErrorWindow(true)      // +0x06  set true here, then false below
+    , m_exitInsteadOfErrorWindow(true)      // +0x06; retained by BF2.exe 0x44969A
     , m_debugOutputOnlyToFile(false)        // +0x07
     , m_logFileName(/* path literal — see BF2Log.h */)
     , m_logFile(0)                          // +0x18
@@ -48,12 +48,15 @@ BF2Log::BF2Log()
     // m_string0C / m_logName / m_pureLogName default-construct onto the shared empty rep; that is the
     // three refcount bumps in the binary and needs no code.
 
-    m_exitInsteadOfErrorWindow = false;     // the second write — see the header block
     m_debugOutputOnlyToFile    = false;
 
-    // Last act: allocator failures route here. the pointer is
+    // Allocator failures route here. The pointer is
     // dice::hfe::memoryDebugCallback (0x813E3AA loads its offset), defined above.
     memory::register_err_callback(&memoryDebugCallback);
+#if DEDICATED
+    // Dedicated PE 0x426DD6 / ELF 0x813E3B6; absent from client 0x449680.
+    m_exitInsteadOfErrorWindow = false;
+#endif
 }
 
 // Closes owned log files, then unhooks memory and debug callbacks in registration
@@ -301,7 +304,7 @@ void BF2Log::debugCallback(DebugType type, const std::string& module,
             if (log->getDoNotDisplayErrorWindow())
             {
                 if (log->getExitInsteadOfErrorWindow())
-                    exit(0);                        // unreachable on default flags
+                    exit(0);                        // BF2.exe 0x44AA77; requires window suppression
             }
             else
             {
