@@ -21,6 +21,9 @@
 #include "../../GameEvents/SetSquadLeaderEvent.h"    // leader-change broadcast
 #include "../../IGame.h"                             // game - sendGameEventToAllConnected (+0x94)
 #include "../../IGameLogic.h"                        // gameLogic - isServer, for getCommander
+#if !DEDICATED
+#include "../../Main/Game.h"
+#endif
 #include "../../Objects/ICameraObject.h"             // commander-to-soldier camera query
 #include "../../Objects/IObject.h"                   // IID_IObject result / handleMessage
 #include "../../Objects/IPlayer.h"                   // getIsCommander (+0x114) / getId (+0x54)
@@ -676,6 +679,15 @@ bool SquadManager::setIsAccepted(int teamId, int squadId, bool accepted,
         game->sendGameEventToAllConnected(                                     // IGame +0x94
             new SetAcceptOrderEvent(teamId, squadId, accepted, orderType, squadOrderType));
     }
+#if !DEDICATED
+    // BF2.exe 0x4E5CA3..0x4E5CE1: refresh the local squad even when the event is suppressed.
+    if (!isDedicated())
+    {
+        world::IPlayer* const player = world::playerManager->getLocalHumanPlayer();
+        if (player && player->getTeam() == teamId && player->getSquadId() == squadId)
+            updateOrderMarkers(player);
+    }
+#endif
     return true;
 }
 
