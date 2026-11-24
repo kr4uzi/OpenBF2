@@ -1,6 +1,7 @@
 #include "VoipPlayerMuteEvent.h"
 
 #include "../IGame.h"                            // isPlayingDemo, sendGameEvent(IfConnected)
+#include "../Main/Game.h"
 #include "../GameLogic/Player.h"                 // setIsMuted - the +0x288 slot
 #include "../../Core/EventManager.h"             // eventManager->postEvent
 #include "../../IO/BitStream.h"                  // readBits / writeBits
@@ -60,21 +61,41 @@ void VoipPlayerMuteEvent::executeClient()
         static_cast<Player*>(muted)->setIsMuted(m_muted);                              // +0x288
 }
 
-// Forwards the mute event and notification to the target player. Returns false
-// when the target is the local human; ignores connectionId and routes by payload id.
+// Delivers locally to a hosting target, otherwise forwards by payload id.
+// A local target in dedicated mode is refused; connectionId is unused.
 bool VoipPlayerMuteEvent::executeServer(int /*connectionId*/)
 {
     world::IPlayer* local = world::playerManager->getLocalHumanPlayer();               // +0x30
+#if !DEDICATED
+    // BF2.exe 0x542176..0x5421DB snapshots the HUD payload before testing the target.
+    VoipPlayerMuteNotification notification;
+    notification.muted = static_cast<unsigned char>(m_muted ? 1 : 0);
+    notification.mutedPlayerId = m_mutedPlayerId;
+#endif
     if (local && local->getId() == m_targetPlayerId)                                   // +0x54
+    {
+#if !DEDICATED
+        if (!isDedicated())
+        {
+            eventManager->postEvent(ECHud, NOTIFY_VOIP_PLAYER_MUTE, &notification, 0.0f);
+            world::IPlayer* muted = world::playerManager->getPlayerFromId(m_mutedPlayerId);
+            if (muted)
+                static_cast<Player*>(muted)->setIsMuted(m_muted);
+            return true;
+        }
+#endif
         return false;
+    }
 
     game->sendGameEvent(m_targetPlayerId,
                         new VoipPlayerMuteEvent(m_muted, m_mutedPlayerId,
                                                 m_targetPlayerId));                    // +0x90
 
+#if DEDICATED
     VoipPlayerMuteNotification notification;
     notification.muted         = static_cast<unsigned char>(m_muted ? 1 : 0);
     notification.mutedPlayerId = m_mutedPlayerId;                                      // never sent - see above
+#endif
     game->sendGameEventIfConnected(
         m_targetPlayerId,
         new PostRemoteEvent(ECHud, NOTIFY_VOIP_PLAYER_MUTE, true,

@@ -4192,20 +4192,22 @@ int Player::getProfileId()
     return m_profileId;                                  // +0x2D8
 }
 
-// . IPlayer +0x290. Sets the flag, then - client-only - relays it to the server.
-// THE relay IS dead ON A dedicated server. It fires only when `this` is the local human player
-// (there is none on a dedicated server) AND `game` is NOT an IGameServer (queryInterface returns
-// null - i.e. this process is a client). Reproduced in full; on the server it reduces to the store.
+// Sets voice state and relays the local human's change to the server or connected clients.
 void Player::setVoipEnabled(bool enabled)
 {
     m_voipEnabled = enabled;
 
     void* const asGameServer = game->queryInterface(IID_IGameServer);   // non-null iff game IS a server
     if (game
-        && this == world::playerManager->getLocalHumanPlayer()
-        && !asGameServer)
+        && this == world::playerManager->getLocalHumanPlayer())
     {
-        game->sendGameEvent(0xFFFFFFFFu, new VoipOnOffEvent(m_playerId, m_voipEnabled));   // connection id -1
+        if (!asGameServer)
+            game->sendGameEvent(0xFFFFFFFFu, new VoipOnOffEvent(m_playerId, m_voipEnabled));   // connection id -1
+#if !DEDICATED
+        // BF2.exe 0x4FA644..0x4FA677: PE IGame +0x90 is sendGameEventToAllConnected.
+        else if (!isDedicated())
+            game->sendGameEventToAllConnected(new VoipOnOffEvent(m_playerId, enabled));
+#endif
     }
 }
 

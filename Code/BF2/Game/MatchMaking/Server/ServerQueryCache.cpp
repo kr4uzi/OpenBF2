@@ -19,6 +19,7 @@
 #include "../../IModInfo.h"
 #include "../../MapList.h"
 #include "../../Main/BF2Engine.h"
+#include "../../Main/Game.h"
 
 namespace dice {
 namespace hfe {
@@ -92,7 +93,10 @@ void ServerQueryCache::update()
     IGameServer* const gs = game ? static_cast<IGameServer*>(game->queryInterface(IID_IGameServer)) : 0;
     if (gs)
         allClients = gs->getNumberOfConnectedClients() + gs->getNumberOfConnectingClients();
-    world::playerManager->getLocalHumanPlayer(); // return ignored, both ports
+    // BF2.exe 0x66BDAF..0x66BDC7 counts the host in addition to network connections.
+    // isDedicated() is constant true in the dedicated image (ELF 0x80C038A discards the lookup).
+    if (world::playerManager->getLocalHumanPlayer() && !isDedicated())
+        ++allClients;
     m_serverKeys[SQK_numberOfAllClients]= formatString("%d", allClients);
 
     m_serverKeys[SQK_maxPlayers]        = formatString("%d", sv->getMaxPlayers());
@@ -103,7 +107,8 @@ void ServerQueryCache::update()
     m_serverKeys[SQK_timeUntilRestartMap] = formatString("%f", gameLogic->getTimeUntilRestartMap());
     m_serverKeys[SQK_hasPassword]       = sv->getPassword().length() ? "1" : "0";
     m_serverKeys[SQK_isRanked]          = (sv->getRanked() == true) ? "1" : "0";
-    m_serverKeys[SQK_hardcoded1]        = "1";
+    // BF2.exe 0x66BF59..0x66BF73; dedicated ELF retains "1".
+    m_serverKeys[SQK_hardcoded1]        = (isDedicated() == true) ? "1" : "0";
     m_serverKeys[SQK_hasPunkbuster]     = (sv->getSvPunkBuster() == true) ? "1" : "0";
     m_serverKeys[SQK_autoRecording]     = (sv->m_autoRecord == true) ? "1" : "0";
     m_serverKeys[SQK_demoIndexURL]      = sv->m_demoIndexURL;
