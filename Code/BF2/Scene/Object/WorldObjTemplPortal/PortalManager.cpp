@@ -22,6 +22,12 @@ namespace dice {
 namespace hfe {
 namespace world {
 
+#if !DEDICATED
+namespace {
+void collectPortalStats(IObject* object, bool registeredSector);
+}
+#endif
+
 // Starts with one reference and an empty callback set for each of the two portal event types.
 PortalManager::PortalManager()
     : m_refCount(1)                                 // +0x04
@@ -109,9 +115,24 @@ void PortalManager::unSubscribeGlobalEvents(PortalEventType type, IPortalEventCa
     m_globalCallbacks[type]->erase(callback);       // 0x83271EC index, 0x8327200 erase
 }
 
-// Intentionally empty statistics rendering in the dedicated image.
+// Traverses portal polygons while statistics are enabled; no geometry is submitted.
 void PortalManager::renderStats()
 {
+#if !DEDICATED
+    // BF2.exe 0x0072E9E0..0x0072EEC6. The dedicated PE 0x006EBEF0 and
+    // ELF 0x08327470 are empty; the client has no runtime dedicated-mode test.
+    if (!m_showStats)
+        return;
+
+    for (std::set<IObject*>::const_iterator it = m_sectorObjects.begin();
+         it != m_sectorObjects.end(); ++it)
+        collectPortalStats(*it, true);
+
+    std::map<unsigned int, IObject*>& objects = objectManager->getAllObjectsFromGrid();
+    for (std::map<unsigned int, IObject*>::const_iterator it = objects.begin();
+         it != objects.end(); ++it)
+        collectPortalStats(it->second, false);
+#endif
 }
 
 // Reads or writes the statistics flag and integer debug level.
@@ -333,6 +354,83 @@ void normalisePortalDirection(Vec3& direction, PortalReal squaredLength)
             direction.x = direction.y = direction.z = 0.0f;
     }
 }
+
+#if !DEDICATED
+// BF2.exe 0x0072EA08..0x0072EBF0 and 0x0072EC70..0x0072EE57.
+// [INFERRED] Local packaging of the two polygon walks; meshes and objects are borrowed.
+void collectPortalStats(IObject* object, bool registeredSector)
+{
+    geom::IPortalMesh* mesh = static_cast<geom::IPortalMesh*>(getPortalMesh(object, 0));
+    if (!mesh)
+        return;
+
+    for (unsigned int portal = 0; portal < mesh->getPortalCount(); ++portal)
+    {
+        std::vector<Vec3> points;
+        Vec3 sum = {0.0f, 0.0f, 0.0f};
+        for (unsigned int vertex = 0; vertex < mesh->getPortalVertexCount(portal); ++vertex)
+        {
+            const Vec3& point = mesh->getPortalVertex(portal, vertex);
+            const Mat4& transform = object->getAbsoluteTransformation();
+            const float* m = transform.m;
+            Vec3 transformed;
+            if (registeredSector)
+            {
+                transformed.x = ((m[4] * point.y + m[8] * point.z) + point.x * m[0]) + m[12];
+                transformed.y = ((m[5] * point.y + m[9] * point.z) + point.x * m[1]) + m[13];
+                transformed.z = ((m[6] * point.y + m[10] * point.z) + point.x * m[2]) + m[14];
+            }
+            else
+            {
+                transformed.x = ((m[8] * point.z + m[4] * point.y) + point.x * m[0]) + m[12];
+                transformed.y = ((m[9] * point.z + m[1] * point.x) + point.y * m[5]) + m[13];
+                transformed.z = ((m[10] * point.z + m[2] * point.x) + point.y * m[6]) + m[14];
+            }
+            points.push_back(transformed);
+            sum.x += points[vertex].x;
+            sum.y += points[vertex].y;
+            sum.z += points[vertex].z;
+        }
+
+        // The count is queried again before closing the polygon, even though
+        // that answer is discarded. Copy the first point before a possible reallocation.
+        (void)mesh->getPortalVertexCount(portal);
+        if (!points.empty())
+        {
+            const Vec3 first = points.front();
+            points.push_back(first);
+        }
+        if (mesh->getPortalVertexCount(portal) > 2)
+        {
+            const Vec3 a = {points[1].x - points[0].x,
+                            points[1].y - points[0].y,
+                            points[1].z - points[0].z};
+            const Vec3 b = {points[2].x - points[0].x,
+                            points[2].y - points[0].y,
+                            points[2].z - points[0].z};
+            Vec3 normal = {a.z * b.y - a.y * b.z,
+                           a.x * b.z - a.z * b.x,
+                           a.y * b.x - a.x * b.y};
+            // BF2.exe 0x0072EBC2 / 0x0072EE29 calls 0x004639B0.
+            const float squaredLength = (normal.x * normal.x + normal.y * normal.y)
+                                      + normal.z * normal.z;
+            if (!(std::fabs(squaredLength - 1.0f) < FLT_EPSILON))
+            {
+                if (!(std::fabs(squaredLength) < FLT_EPSILON))
+                {
+                    const float inverseLength = 1.0f / std::sqrt(squaredLength);
+                    normal.x *= inverseLength;
+                    normal.y *= inverseLength;
+                    normal.z *= inverseLength;
+                }
+                else
+                    normal.x = normal.y = normal.z = 0.0f;
+            }
+        }
+        (void)sum;
+    }
+}
+#endif
 
 // PE 0x0072F18C..0x0072F226 / ELF 0x08326B03..0x08326C49.
 void portalMotion(IObject* object, PortalManager::PassingObjectData* data,
