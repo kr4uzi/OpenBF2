@@ -11,9 +11,17 @@
 #include "../../../Scene/Object/ObjectManager.h"
 #include "../../../Scene/Object/ObjectUtil.h"
 #include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
+#if !DEDICATED
+#include "../../../Geom/GeometryTemplateManager.h"
+#include "../../../Geom/IGeometryTemplate.h"
+#endif
 
 #include <cmath>
 #include <sstream>
+
+#if !DEDICATED
+namespace dice { namespace hfe { extern IBase* g_geometryTemplateManager; } }
+#endif
 
 namespace dice { namespace hfe { namespace world {
 namespace {
@@ -170,6 +178,21 @@ bool DestroyableWindowsBundleTemplate::makeScript(io::IStream* stream)
 {
     if (!BundleTemplate::makeScript(stream)) return false;
     std::ostringstream out;
+#if !DEDICATED
+    // Client PE 0x5F2290..0x5F22CB: the empty-name condition is as shipped.
+    if (m_geometry.empty() && g_geometryTemplateManager)
+    {
+        geom::IGeometryTemplate* geometryTemplate =
+            static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)->getTemplate(m_geometry);
+        if (geometryTemplate)
+        {
+            void* geometry = geometryTemplate->createInstance();
+            if (geometry)
+                numWindows = geometry_part::count(geometry);
+            // Retail retains the instance reference.
+        }
+    }
+#endif
     out << "ObjectTemplate.respawnDelay " << respawnDelay << std::endl;
     out << "ObjectTemplate.clientHitDetection " << clientHitDetection << std::endl;
     out << "ObjectTemplate.setNumWindows " << numWindows << std::endl;
