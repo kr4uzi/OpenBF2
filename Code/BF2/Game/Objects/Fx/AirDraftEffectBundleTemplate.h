@@ -22,7 +22,7 @@ public:
     virtual ~AirDraftEffectBundleTemplate();                  // the two bases' teardown
     virtual void templateInitialize();                        // empty, as shipped
     virtual void* queryImplementation(unsigned int classId);  // three CIDs, flat
-    virtual IObject* createObject() const;                    // returns NULL
+    virtual IObject* createObject() const;                    // dedicated null; client BF2.exe 0x646880
     virtual bool makeScript(io::IStream*);                    // ELF/PE recovered
 
     std::string   m_string2C0;                                // +0x2C0 [UNRESOLVED name]
