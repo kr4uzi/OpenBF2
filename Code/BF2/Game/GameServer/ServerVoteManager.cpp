@@ -4,6 +4,12 @@
 #include <cmath>                                   // ceil - calcVotesNeeded
 
 #include "../Common/VoteEvent.h"
+#include "../Main/Game.h"
+#if !DEDICATED
+#include "../Common/ClientVoteManager.h"
+#include "../GameServerSettings.h"
+#include "../../Core/ClassManager.h"
+#endif
 #include "../IGame.h"                              // game - sendGameEvent* / queryInterface
 #include "../IGameServer.h"                        // kickPlayer / getConnectionState / getPlayerConnectionIp
 #include "../IGameLogic.h"                         // gameLogic - setNextLevel / runNextLevel
@@ -20,6 +26,9 @@
 namespace dice {
 namespace hfe {
 
+#if !DEDICATED
+extern ClassManager* classManager;
+#endif
 extern IBase* squadManager;                        // ds:0x8ACBFA4 - Core/Globals.cpp (IBase*, no layout)
 
 namespace {
@@ -161,9 +170,18 @@ bool ServerVoteManager::getEnableKickPlayerVote(int team) const
     return m_kickVotes[index].m_enabled;
 }
 
-//  / 0x81299E0 / 0x8129A00 - serverSettings, or the no-settings defaults.
+// Dedicated settings use ServerSettings or defaults; a hosted game uses its settings singleton.
 float ServerVoteManager::getVotingTime() const
 {
+#if !DEDICATED
+    // BF2.exe 0x5BE19C..0x5BE1D2; the singleton is required, with no null guard.
+    if (!isDedicated())
+    {
+        IGameServerSettings* settings = static_cast<IGameServerSettings*>(
+            classManager->getSingleton(std::string("GameServerSettings")));
+        return static_cast<float>(settings->getVoteTime());
+    }
+#endif
     if (serverSettings)
         return (float)serverSettings->m_voteTime;          // +0x28 (cvtsi2ss)
     return 60.0f;                                          // flt_8891AD4
@@ -171,6 +189,15 @@ float ServerVoteManager::getVotingTime() const
 
 int ServerVoteManager::getMinPlayersForIssue() const
 {
+#if !DEDICATED
+    // BF2.exe 0x5BE20B..0x5BE238.
+    if (!isDedicated())
+    {
+        IGameServerSettings* settings = static_cast<IGameServerSettings*>(
+            classManager->getSingleton(std::string("GameServerSettings")));
+        return settings->getMinPlayersForVoting();
+    }
+#endif
     if (serverSettings)
         return serverSettings->m_minPlayersForVoting;      // +0x2C
     return 3;
@@ -178,6 +205,15 @@ int ServerVoteManager::getMinPlayersForIssue() const
 
 bool ServerVoteManager::getTeamVoteOnly() const
 {
+#if !DEDICATED
+    // BF2.exe 0x5BE278..0x5BE2A5.
+    if (!isDedicated())
+    {
+        IGameServerSettings* settings = static_cast<IGameServerSettings*>(
+            classManager->getSingleton(std::string("GameServerSettings")));
+        return settings->getTeamVoteOnly();
+    }
+#endif
     if (serverSettings)
         return serverSettings->m_teamVoteOnly;             // +0x30
     return true;
@@ -325,6 +361,11 @@ bool ServerVoteManager::handlePrematureVoteEnd(Vote& vote)
     event->m_votesAgainst = (unsigned char)counts[1];
     event->m_voteStatus   = Vote::VSPrematureEnd;
     event->m_votesNeeded  = (unsigned char)vote.m_votesNeeded;
+#if !DEDICATED
+    // BF2.exe 0x5BEBB9..0x5BEBCA: local delivery precedes the owning network send.
+    if (!isDedicated())
+        ClientVoteManager::getInstance()->receiveVote(*event);
+#endif
     game->sendGameEventToAllPlaying(event);                                  // IGame +0x84
     return true;
 }
@@ -367,6 +408,11 @@ void ServerVoteManager::updateVote(Vote& vote, float dt)
         event->m_voteStatus  = Vote::VSPassed;
         passed = true;
     }
+#if !DEDICATED
+    // BF2.exe 0x5BF0D7..0x5BF0E8: notify the host before broadcast and result application.
+    if (!isDedicated())
+        ClientVoteManager::getInstance()->receiveVote(*event);
+#endif
     game->sendGameEventToAllPlaying(event);                                  // IGame +0x84
     if (!passed)
         return;
@@ -403,6 +449,11 @@ void ServerVoteManager::discardVote(int playerId, Vote::VoteType type, int item,
     event->setVoteItem(item);
     event->setVoteCaster(playerId);
     event->m_time = 0.0f;
+#if !DEDICATED
+    // BF2.exe 0x5BE47F..0x5BE490 delivers locally even for a remote caster's discard.
+    if (!isDedicated())
+        ClientVoteManager::getInstance()->receiveVote(*event);
+#endif
     game->sendGameEvent((unsigned int)playerId, event);                      // IGame +0x90
 }
 
@@ -531,6 +582,11 @@ bool ServerVoteManager::castVote(Vote::VoteType type, Vote::VoteStatus status, i
         {
             event->m_voteStatus = Vote::VSUpdate;
         }
+#if !DEDICATED
+        // BF2.exe 0x5BEA62..0x5BEA73: receive the issue/update before broadcasting it.
+        if (!isDedicated())
+            ClientVoteManager::getInstance()->receiveVote(*event);
+#endif
         game->sendGameEventToAllPlaying(event);                            // IGame +0x84
     }
     return laid;
@@ -551,11 +607,17 @@ void ServerVoteManager::updateVotingParticipationStatus(int playerId, Vote::Vote
     event->setVoteItem(playerId);
     event->setVoteCaster(playerId);
     event->m_time = 0.0f;
+#if !DEDICATED
+    // BF2.exe 0x5BE529..0x5BE53A.
+    if (!isDedicated())
+        ClientVoteManager::getInstance()->receiveVote(*event);
+#endif
     game->sendGameEventToAllPlaying(event);                                // IGame +0x84
 }
 
 // Sends a human player's applicable running vote and existing ballots on joining.
-// Adds a pending ballot when absent and skips the issue notification for the local human.
+// Adds a pending ballot when absent. Local delivery consumes and deletes each event;
+// network delivery transfers ownership to the game.
 void ServerVoteManager::updateClientState(int playerId)
 {
     if (!world::playerManager)
@@ -584,7 +646,9 @@ void ServerVoteManager::updateClientState(int playerId)
     if (vote->getPlayerVote(playerId) < 0)
         vote->layVote(playerId, Vote::VONotVoted);
     std::vector<int>& counts = vote->getVoteCount();
+#if DEDICATED
     world::IPlayer* localHuman = world::playerManager->getLocalHumanPlayer();   // +0x30
+#endif
 
     VoteEvent* issue = new VoteEvent();
     issue->m_voteType = vote->m_type;
@@ -596,7 +660,21 @@ void ServerVoteManager::updateClientState(int playerId)
     issue->m_voteOption = 0;
     issue->m_voteStatus = Vote::VSIssue;
     issue->m_time = vote->timeRemaining();
+#if !DEDICATED
+    // BF2.exe 0x5BED55..0x5BED97 repeats the local lookup and calls the deleting destructor.
+    if (world::playerManager->getLocalHumanPlayer() &&
+        world::playerManager->getLocalHumanPlayer()->getId() == playerId)
+    {
+        if (!isDedicated())
+        {
+            ClientVoteManager::getInstance()->receiveVote(*issue);
+            delete issue;
+        }
+    }
+    else
+#else
     if (!localHuman || localHuman->getId() != playerId)
+#endif
         game->sendGameEvent((unsigned int)playerId, issue);                // IGame +0x90
 
     const std::list<world::IPlayer*>& players = world::playerManager->getPlayers();
@@ -618,8 +696,22 @@ void ServerVoteManager::updateClientState(int playerId)
         update->m_voteStatus = Vote::VSUpdate;
         update->m_voteOption = ((int)p->getVotingStatus() != 2) ? 1 : 0;
         update->m_time = vote->timeRemaining();
+#if !DEDICATED
+        // BF2.exe 0x5BEE92..0x5BEED4: same local ownership rule for every ballot update.
+        if (world::playerManager->getLocalHumanPlayer() &&
+            world::playerManager->getLocalHumanPlayer()->getId() == playerId)
+        {
+            if (!isDedicated())
+            {
+                ClientVoteManager::getInstance()->receiveVote(*update);
+                delete update;
+            }
+        }
+        else
+#else
         localHuman = world::playerManager->getLocalHumanPlayer();
         if (!localHuman || localHuman->getId() != playerId)
+#endif
             game->sendGameEvent((unsigned int)playerId, update);
     }
 }
@@ -639,6 +731,15 @@ void ServerVoteManager::receiveVote(int playerId, const VoteEvent& event)
         world::IPlayer* player = world::playerManager->getPlayerFromId(playerId);
         if (!player)
             return;
+#if !DEDICATED
+        // BF2.exe 0x5BF759..0x5BF778; PlayerManager +0x8C counts humans, not bots.
+        if (!isDedicated() && world::playerManager->getNumberOfHumanPlayers() == 1 &&
+            event.m_voteType == Vote::VTMap)
+        {
+            receiveMapVote(playerId, event);
+            return;
+        }
+#endif
         const int voters = getNumberOfPotentialVoters((Vote::VoteType)event.m_voteType,
                                                       player->getTeam(), playerId);
         if (voters < getMinPlayersForIssue())
@@ -649,6 +750,11 @@ void ServerVoteManager::receiveVote(int playerId, const VoteEvent& event)
             reply->setVoteItem(event.m_voteItem);
             reply->setVoteCaster(playerId);
             reply->m_time = 0.0f;
+#if !DEDICATED
+            // BF2.exe 0x5BF7EC..0x5BF7FD delivers the refusal before broadcasting it.
+            if (!isDedicated())
+                ClientVoteManager::getInstance()->receiveVote(*reply);
+#endif
             game->sendGameEventToAllPlaying(reply);                        // IGame +0x84
             return;
         }

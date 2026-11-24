@@ -5,6 +5,7 @@
 #include "../Objects/IPlayer.h"                  // getIsAIPlayer (+0x64)
 #include "../Python/PyRef.h"
 #include "../Python/PythonHost.h"                // pythonHost, buildArgs, handleEvent
+#include "../Main/Game.h"
 #include "../../Core/EventManager.h"             // eventManager->postEvent
 #include "../../IO/BitStream.h"                  // readBits / writeBits / skipBits
 #include "../../Scene/Object/PlayerManager.h"    // getPlayerFromId / getLocalHumanPlayer
@@ -95,7 +96,7 @@ void PythonCommandEvent::executeClient()
 }
 
 // Forwards recognized players' commands to Python without validating the command ID.
-// Always passes four arguments, including zero-filled trimmed values; trailing lookups remain observable.
+// Always passes four arguments, including zero-filled trimmed values, then notifies the local host.
 bool PythonCommandEvent::executeServer(int /*connectionId*/)
 {
     world::IPlayer* player = world::playerManager->getPlayerFromId(m_playerId);   // +0x20
@@ -112,9 +113,29 @@ bool PythonCommandEvent::executeServer(int /*connectionId*/)
             static_cast<ScriptEvent>(SCRIPT_EVENT_PYTHON_COMMAND), pyArgs.get());
     }
 
-    // results discarded - see above.
+#if !DEDICATED
+    // BF2.exe 0x542F5D..0x54303E: look up both players before testing dedicated mode or command.
+    world::IPlayer* a = world::playerManager->getPlayerFromId(m_args[1]);
+    world::IPlayer* b = world::playerManager->getPlayerFromId(m_args[2]);
+    if (!isDedicated() && m_commandId == HUD_COMMAND_ID)
+    {
+        if (m_args[0] == 0 || m_args[0] == 1)
+        {
+            bool punished = m_args[0] == 1;
+            if (b && a && b != a && b == world::playerManager->getLocalHumanPlayer())
+                eventManager->postEvent(ECHud, NOTIFY_HUD_62, &punished, 0.0f);
+        }
+        else if (m_args[0] == 2)
+        {
+            if (a == world::playerManager->getLocalHumanPlayer() && b && !b->getIsAIPlayer())
+                eventManager->postEvent(ECHud, NOTIFY_HUD_61, &m_args[0], 0.0f);
+        }
+    }
+#else
+    // ELF 0x8078690..0x80786B7 discards both results.
     world::playerManager->getPlayerFromId(m_args[1]);
     world::playerManager->getPlayerFromId(m_args[2]);
+#endif
 
     return true;
 }
