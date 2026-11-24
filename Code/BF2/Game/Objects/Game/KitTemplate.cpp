@@ -6,7 +6,7 @@
 #include "../../../Core/Ids.h"
 #include "../IObject.h"                             // getTemplate
 #include "../IObjectTemplate.h"                     // getNetworkableInfo
-#include "../../../Core/Debug.h"
+#include "../../../Core/ContentError.h"
 #include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 #include "../../../Sound/ISoundObjectTemplate.h"
 
@@ -74,8 +74,12 @@ void KitTemplate::addBundleChilds(IObject* object) const
         IObjectTemplate* objectTemplate = objectTemplateManager->getTemplate(info->m_templateName);
         if (!objectTemplate)
         {
-            Debug(DEBUGTYPE_6, "Game/Objects/Game/kit.cpp", 691)
-                << getName() << " addBundleChilds() template not found:" << info->m_templateName;
+            // PE client 0x594A10 / server 0x55CA70: Debug(DEBUGTYPE_6, ..., 691)
+            // << getName() << " addBundleChilds() template not found:" << info->m_templateName.
+            // [CHOSEN, not recovered] Retail fix "Content errors are logged without ending the game".
+            reportContentError("Game/Objects/Game/kit.cpp", 691,
+                getName() + " addBundleChilds() template not found:" + info->m_templateName,
+                info->m_templateName);
             continue;
         }
 

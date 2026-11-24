@@ -754,6 +754,40 @@ Each entry is a heading that names the fix, followed by these fields:
   client.
 - **Source:** `Code/BF2/Game/GameServer/GameServer.cpp`
 
+### Content errors are logged without ending the game
+
+- **Retail:** Four content checks emit Error (Debug type 6), which ends the process when
+  enabled: `BundleTemplate::addBundleChilds` reports a missing child other than an optional
+  `S_` sound on a non-dedicated client (`BF2.exe` `0x62892C`–`0x6289DA`);
+  `KitTemplate::addBundleChilds` reports any missing child (`BF2.exe` `0x594A10`,
+  `bf2_w32ded.exe` `0x55CA70`, Linux ia-32 server `0x8185CE0`);
+  the client `EventManager::postEvent` overloads and node `postEventNextUpdate` report
+  "Attempted use of unregistred event" for an unregistered category/ID, subject to their
+  existing exemptions (`BF2.exe` `0x68DB0E`, `0x68DCCB`, `0x68DE0B`); and
+  `SoldierTemplate::makeScript` reports "SoldierTemplate doesn't have makeScript implemented.
+  Save failed..." (`BF2.exe` `0x5F4870`, Linux ia-32 server `0x81B8C60`). The control flow
+  following these diagnostics already skips the missing child, dispatches or queues the event,
+  or returns false without writing a save. Termination prevents those failure paths from
+  completing. No retail game reproduction was run.
+- **OpenBF2:** These checks write their original text as Error through the normal typed log
+  and console sinks without invoking fatal diagnostic handling. Before the console exists,
+  the message goes to stderr. Repeats are suppressed for the process lifetime: one message
+  per parent/missing-child pair at each template site, per event category/ID across the three
+  event checks, and per soldier template name. The existing runtime dedicated guards,
+  optional-sound exemption, event exemptions, child IDs, dispatch order and failed-save
+  result remain. Other Error diagnostics and all frontiers keep their termination policy.
+- **Applies to:** Client on all platforms for the bundle and event checks; client and server
+  on all platforms for kit children and soldier saves. No platform-specific selection.
+- **Retail clients:** Only local content diagnostics change. Valid children, event payloads,
+  registrations, packet formats and save formats are unchanged. A host skips an unavailable
+  kit child as the existing failure path specifies, and a refused soldier save still returns
+  false with no output. No client message or protocol transition changes.
+- **Source:** `Code/BF2/Core/ContentError.h`, `Code/BF2/Core/EventManager.cpp`,
+  `Code/BF2/Game/Objects/Base/BundleTemplate.cpp`,
+  `Code/BF2/Game/Objects/Game/KitTemplate.cpp`,
+  `Code/BF2/Game/Objects/Game/SoldierTemplate.cpp`,
+  `Code/Tests/content_errors_runtime.cpp`, `Code/Tests/content_errors_runtime.py`.
+
 ### Wrong-length voice challenge datagram is dropped instead of ending the server
 
 - **Retail:** `VoipServerConnection::HandlePacketChallengeString` (Linux ia-32 server `0x8127600`,
