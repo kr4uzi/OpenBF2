@@ -14,6 +14,9 @@
 #include "Debug.h"      // dice::hfe::Debug, DEBUGTYPE_6 - the five sites above
 #include "IBase.h"      // create()'s return type
 #include "Ids.h"        // IID_IBase, IID_IEventManager
+#if !DEDICATED
+#include "../Game/Main/Game.h"
+#endif
 
 
 namespace dice {
@@ -135,6 +138,14 @@ unsigned int EventManager::postEvent(EventCategory category, EventNode* node, fl
         return 0;
     }
 
+#if !DEDICATED
+    // BF2.exe 0x0068DCCB..0x0068DD82. Keep both virtual ID reads and the
+    // null/listener guards before validation; notification nodes return -1.
+    if (!isDedicated() && node->getType() != -1 && category != 4 &&
+        m_eventNames[category].find(node->getType()) == m_eventNames[category].end())
+        Debug(DebugTypeError, "Core/EventManager.cpp", 162)
+            << "Attempted use of unregistred event";
+#endif
     node->m_category = category;
 
     if (delay > 0.0f)
@@ -149,6 +160,15 @@ unsigned int EventManager::postEvent(EventCategory category, EventNode* node, fl
 // and use the virtual node overload; idle immediate notifications reuse the embedded node.
 unsigned int EventManager::postEvent(EventCategory category, unsigned int id, void* data, float delay)
 {
+#if !DEDICATED
+    // BF2.exe 0x0068DB0E..0x0068DBC3: raw notifications additionally exempt
+    // category 2, and validate before choosing allocation or immediate dispatch.
+    if (!isDedicated() && id != static_cast<unsigned int>(-1) &&
+        category != 4 && category != 2 &&
+        m_eventNames[category].find(id) == m_eventNames[category].end())
+        Debug(DebugTypeError, "Core/EventManager.cpp", 112)
+            << "Attempted use of unregistred event";
+#endif
     if (delay > 0.0f)
     {
         NotificationEventNode* node = new NotificationEventNode(id, data);
@@ -183,6 +203,13 @@ unsigned int EventManager::postEventNextUpdate(EventCategory category, EventNode
         return 0;
     }
 
+#if !DEDICATED
+    // BF2.exe 0x0068DE0B..0x0068DEC2: the node overload exempts only category 4.
+    if (!isDedicated() && node->getType() != -1 && category != 4 &&
+        m_eventNames[category].find(node->getType()) == m_eventNames[category].end())
+        Debug(DebugTypeError, "Core/EventManager.cpp", 202)
+            << "Attempted use of unregistred event";
+#endif
     node->m_category = category;
     return insertEvent(node, 0.0f);
 }
