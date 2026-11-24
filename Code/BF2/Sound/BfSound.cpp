@@ -1176,18 +1176,20 @@ BF2_CONSOLE_PROPERTY_FN(volumeEnvelope, std::string, soundTemplate() != 0,
                         soundTemplate()->getVolumeEnvelope(), soundTemplate()->setVolumeEnvelope, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(pitchEnvelope, std::string, soundTemplate() != 0,
                         soundTemplate()->getPitchEnvelope(), soundTemplate()->setPitchEnvelope, kBfSoundConsoleTag)
+// Delta formatters: PE 0x007D7BF0 (integer 1), 0x007D7F40 (0.5),
+// 0x007D9E90 (float 1), 0x007D8B00 (0.01); shared ELF 0x083DEA80..0x083E7E20.
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(loopCount, int, soundTemplate() != 0,
-                        soundTemplate()->getLoopCount(), soundTemplate()->setLoopCount, 0, 100000, kBfSoundConsoleTag)
+                        soundTemplate()->getLoopCount(), soundTemplate()->setLoopCount, 0, 100000, 1, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(minDistance, float, soundTemplate() != 0,
-                        soundTemplate()->getMinDistance(), soundTemplate()->setMinDistance, 0.01f, 30000.0f, kBfSoundConsoleTag)
+                        soundTemplate()->getMinDistance(), soundTemplate()->setMinDistance, 0.01f, 30000.0f, 0.5f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(halfVolumeDistance, float, soundTemplate() != 0,
-                        soundTemplate()->getHalfVolumeDistance(), soundTemplate()->setHalfVolumeDistance, 0.0f, 30000.0f, kBfSoundConsoleTag)
+                        soundTemplate()->getHalfVolumeDistance(), soundTemplate()->setHalfVolumeDistance, 0.0f, 30000.0f, 1.0f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(volume, float, soundTemplate() != 0,
-                        soundTemplate()->getVolume(), soundTemplate()->setVolume, 0.0f, 1.0f, kBfSoundConsoleTag)
+                        soundTemplate()->getVolume(), soundTemplate()->setVolume, 0.0f, 1.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(pitch, float, soundTemplate() != 0,
-                        soundTemplate()->getPitch(), soundTemplate()->setPitch, 0.2f, 5.0f, kBfSoundConsoleTag)
+                        soundTemplate()->getPitch(), soundTemplate()->setPitch, 0.2f, 5.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(reverbLevel, float, soundTemplate() != 0,
-                        soundTemplate()->getReverbLevel(), soundTemplate()->setReverbLevel, 0.0f, 1.0f, kBfSoundConsoleTag)
+                        soundTemplate()->getReverbLevel(), soundTemplate()->setReverbLevel, 0.0f, 1.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(soundRadius, float, soundTemplate() != 0,
                         soundTemplate()->getSoundRadius(), soundTemplate()->setSoundRadius, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(lowSamples, int, soundTemplate() != 0,
@@ -1200,19 +1202,19 @@ BF2_CONSOLE_PROPERTY_FN(is3dSound, bool, soundTemplate() != 0 && soundImpl() != 
 BF2_CONSOLE_PROPERTY_FN(stopType, int, soundTemplate() != 0 && soundImpl() != 0,
                         soundImpl()->getStopType(), soundImpl()->setStopType, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(pan, float, soundTemplate() != 0 && soundImpl() != 0,
-                        soundImpl()->getPan(), soundImpl()->setPan, 0.0f, 1.0f, kBfSoundConsoleTag)
+                        soundImpl()->getPan(), soundImpl()->setPan, 0.0f, 1.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(position, Vec3, soundTemplate() != 0 && soundImpl() != 0,
                         soundImpl()->getPosition(), soundImpl()->setPosition, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(coneDirection, Vec3, soundTemplate() != 0 && soundImpl() != 0,
                         soundImpl()->getDirection(), soundImpl()->setDirection, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(coneInnerAngle, float, soundTemplate() != 0 && soundImpl() != 0,
-                        soundImpl()->getConeInnerAngle(), soundImpl()->setConeInnerAngle, 0.0f, 360.0f, kBfSoundConsoleTag)
+                        soundImpl()->getConeInnerAngle(), soundImpl()->setConeInnerAngle, 0.0f, 360.0f, 1.0f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(coneOuterAngle, float, soundTemplate() != 0 && soundImpl() != 0,
-                        soundImpl()->getConeOuterAngle(), soundImpl()->setConeOuterAngle, 0.0f, 360.0f, kBfSoundConsoleTag)
+                        soundImpl()->getConeOuterAngle(), soundImpl()->setConeOuterAngle, 0.0f, 360.0f, 1.0f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(coneOuterVolume, float, soundTemplate() != 0 && soundImpl() != 0,
-                        soundImpl()->getConeOuterVolume(), soundImpl()->setConeOuterVolume, 0.0f, 1.0f, kBfSoundConsoleTag)
+                        soundImpl()->getConeOuterVolume(), soundImpl()->setConeOuterVolume, 0.0f, 1.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_RANGED_T(globalEffectLevel, float, soundTemplate() != 0 && soundImpl() != 0,
-                        soundImpl()->getGlobalEffectLevel(), soundImpl()->setGlobalEffectLevel, 0.0f, 1.0f, kBfSoundConsoleTag)
+                        soundImpl()->getGlobalEffectLevel(), soundImpl()->setGlobalEffectLevel, 0.0f, 1.0f, 0.01f, kBfSoundConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(volumeGroup, int, soundTemplate() != 0 && soundImpl() != 0,
                         soundImpl()->getVolumeGroup(), soundImpl()->setVolumeGroup, kBfSoundConsoleTag)
 

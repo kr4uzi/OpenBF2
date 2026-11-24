@@ -139,10 +139,11 @@ IControlMap* ControlMapManager::getControlMap(int id) const
     return it->second;
 }
 
-// [CHOSEN-STUB] - by the shape of its 46 bytes it is the same
-// find-then-forward as the int overload below, via slot +0x18; not read, so not asserted.
-void ControlMapManager::deleteControlMap(const std::string& /*name*/)
+// PE 0x006C3590; ELF 0x084975E0. Both operations dispatch virtually.
+void ControlMapManager::deleteControlMap(const std::string& name)
 {
+    IControlMap* map = this->getControlMap(name);
+    this->deleteControlMap(map);
 }
 
 // Finds and deletes the map by id through virtual dispatch so overrides participate in both steps.
@@ -152,10 +153,13 @@ void ControlMapManager::deleteControlMap(int id)
     this->deleteControlMap(map);                        // slot +0x28, virtual
 }
 
-// [CHOSEN-STUB] - the real removal: unlink from both containers and
-// release the map.
-void ControlMapManager::deleteControlMap(const IControlMap* /*map*/)
+// PE 0x006C3FC0; ELF 0x08497640. Unlinks only: no release or active-map change.
+void ControlMapManager::deleteControlMap(const IControlMap* map)
 {
+    if (!map)
+        return;
+    m_byName.remove(map->getName());
+    m_byId.erase(map->getID());
 }
 
 // setActive(const std::string&) - Same two-virtual-call

@@ -151,7 +151,7 @@ private:
 // Game controller: an extended gamepad (GCController) presented as the DirectInput joystick an
 // Xbox controller reports: axes X, Y, Z (triggers), Rx, Ry; ten buttons; one POV hat whose four
 // cardinal directions also appear as buttons 10..13.
-class NativeGameControllerDevice final : public IAdvancedInputDevice
+class NativeGameControllerDevice final : public IPOVInputDevice
 {
 public:
     NativeGameControllerDevice();
@@ -182,8 +182,8 @@ public:
     bool buttonPressed(InputDeviceButtons) const override;
     bool buttonReleased(InputDeviceButtons) const override;
     float buttonPressedSampleLatency(InputDeviceButtons) const override;
-    virtual int getNumPOVs() const;
-    virtual int readPOV(InputDevicePOVs) const;
+    int getNumPOVs() const override;
+    int readPOV(InputDevicePOVs) const override;
     virtual bool slot_0x70() const;
     virtual bool init(int index);
     virtual int getDeviceIndex() const;
