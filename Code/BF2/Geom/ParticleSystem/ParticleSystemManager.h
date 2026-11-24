@@ -285,10 +285,13 @@ public:
     virtual void setAnimationFrameCountX(unsigned int value) = 0; // +0x258
     virtual unsigned int getAnimationFrameCountX() const = 0; // +0x25C
     // BF2.exe 0x64C200..0x64C250; ELF 0x82138F0..0x821398A (+4 for its second destructor slot).
+    // BF2.exe 0x0064C736..0x0064C7E9; ELF world forwarders 0x082138F0..0x082139ED.
     virtual void setWindSpeedAgeDistance(float value) = 0; // +0x260
     virtual float getWindSpeedAgeDistance() const = 0; // +0x264
     virtual void setWindAgingFactor(float value) = 0; // +0x268
     virtual float getWindAgingFactor() const = 0; // +0x26C
+    virtual void setNearCullingEnable(bool value) = 0; // +0x270
+    virtual bool getNearCullingEnable() const = 0; // +0x274
 };
 
 // NSA authoring tail: ELF 8205760..8205E10, PE descriptor1021F5B8 slots114..147.

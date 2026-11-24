@@ -772,8 +772,8 @@ const void* const kVtable[] =
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getWindSpeedAgeDistance, pt_s153),
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setWindAgingFactor, pt_s154),
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getWindAgingFactor, pt_s155),
-    reinterpret_cast<void*>(&pt_s156),
-    reinterpret_cast<void*>(&pt_s157),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setNearCullingEnable, pt_s156),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getNearCullingEnable, pt_s157),
 };
 #else
 const void* const kVtable[158] =

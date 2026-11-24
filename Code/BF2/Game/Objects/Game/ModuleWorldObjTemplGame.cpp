@@ -973,6 +973,12 @@ BF2_CONSOLE_PROPERTY(soldierExitRotation, Vec3,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setSoldierExitRotation, getSoldierExitRotation, kObjTemplGameConsoleTag)
 
+// BF2.exe 0x005361ED: only the player-control template is active for this property;
+// GET/SET dispatch through IPlayerControlObjectTemplate's typed offset accessors.
+BF2_CONSOLE_PROPERTY(nameTagOffset, Vec3,
+                     GameTemplateConsoleAccess::playerControlObject(),
+                     setNameTagOffset, getNameTagOffset, kObjTemplGameConsoleTag)
+
 // Occupant entry/exit policy, ducking and seat setup. Retail registers each as a plain ObjectTemplate
 // property (or, for addTargetObjectTypeToWatch, a one-int method) gated on CID_PlayerControlObjectTemplate.
 BF2_CONSOLE_PROPERTY_FN(allowDucking, bool,
