@@ -102,6 +102,7 @@
 #include "../Main/Game.h"                       // Game::outputChatString - ServerStringMessageEW
 #if !DEDICATED
 #include "../Common/ClientVoteManager.h"         // update()'s listen-server vote tick (BF2.exe 4D11AD)
+#include "../HudInformationLayer.h"
 #endif
 // the frame loop
 #include "ServerInfo.h"                         // the server-info broadcast (real class since this batch)
@@ -2619,6 +2620,11 @@ bool GameServer::simulateFrame(float dt)
         if (ai::g_aiInstance && ai::aiInstance()->isBotsGame())
             ai::aiInstance()->update(static_cast<double>(dt));
     }
+#if !DEDICATED
+    // BF2.exe 0x4CF4BF..0x4CF4D1: the simulation HUD step precedes event processing.
+    if (!isDedicated())
+        static_cast<HudInformationLayer*>(g_hudInformationLayer)->update(dt);
+#endif
     eventManager->processEvents(dt);                            // +0x20
     simulatePlayersUpdate(dt);
     if (gameLogic->getGameStatus() != 4)
@@ -4030,7 +4036,12 @@ void GameServer::handleStringReceivedEvent(StringReceivedEvent* event, void*)
         event->m_senderId = -1;
 
     StringMessageEW wrapper(event);
-    if (event->m_channel == 14)
+    // BF2.exe 0x4CB334..0x4CB359: only dedicated mode uses admin dispatch for channel 14.
+    if (
+#if !DEDICATED
+        isDedicated() &&
+#endif
+        event->m_channel == 14)
         adminToPlayerEvent(wrapper);
     else
         playerMessageEvent(wrapper);

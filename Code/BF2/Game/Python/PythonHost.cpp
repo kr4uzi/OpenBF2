@@ -24,6 +24,10 @@
 #include "../Persistence/PlayerAwards.h"
 #include "../EndOfRoundInfo.h"             // gl_sendEndOfRoundData data-block serializer
 #include "../GameServer/GameServer.h"      // gl_sendEndOfRoundData broadcast
+#if !DEDICATED
+#include "../../Core/ClassManager.h"
+#include "../../Menu/ISwiffHost.h"
+#endif
 #include "../GameLogic/ScoreSystem/ScoreManager.h"
 #include "../Persistence/IStatsManager.h" // GameSpy snapshot/new/end wrappers
 #include "../Persistence/IPlayerStats.h"  // pers_getStatsKeyVal current-object view
@@ -59,6 +63,9 @@
 namespace dice {
 namespace hfe {
 
+#if !DEDICATED
+extern ClassManager* classManager;
+#endif
 extern IBase* squadManager;                  // ds:0x8ACBFA4 - Core/Globals.cpp
 namespace world {
 extern IBase* scoreManager;                  // ds:0x8AD1740 - Core/Globals.cpp
@@ -1637,6 +1644,16 @@ PyObject* gl_sendEndOfRoundData(PyObject*, PyObject* args)
     const unsigned int size = endOfRound.getNetBufferSize();
     const void* const buffer = endOfRound.getNetBuffer();
     static_cast<GameServer*>(game)->sendDataBlockToAll(8, buffer, size, true);
+
+#if !DEDICATED
+    // BF2.exe 0x590FB4..0x590FFD: deliver the same data locally after the broadcast.
+    if (!isDedicated())
+    {
+        ui::ISwiffHost* const host = static_cast<ui::ISwiffHost*>(
+            classManager->getSingleton(std::string("SwiffHost")));
+        host->setEndOfRoundInfo(data, static_cast<float>(serverSettings->m_endOfRoundDelay));
+    }
+#endif
 
     Py_INCREF(Py_None);
     return Py_None;
