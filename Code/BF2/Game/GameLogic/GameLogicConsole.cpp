@@ -119,6 +119,10 @@ void gameLogicSetTicketLossAtEndPerMin(float rate)
 {
     gameLogic->setTicketLossAtEndPerMin(rate);
 }
+float gameLogicGetTicketLossAtEndPerMin()
+{
+    return gameLogic->getTicketLossAtEndPerMin();
+}
 
 // Commander-support console bindings require a live gameLogic instance.
 void gameLogicAddInvalidDropVehicleObject(const std::string& name, bool invalid)
@@ -196,6 +200,11 @@ BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setTicketLossPerMin, gameLogicSetTicketLossPe
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setTicketLossAtEndPerMin,
                                    gameLogicSetTicketLossAtEndPerMin, gameLogic != 0,
                                    float, kGameLogicConsoleTag)
+// Client PE ctor 0x0043BCF0, executor 0x0043BD43, gate 0x004390AB; dedicated executor
+// 0x0041B350: zero arguments, virtual float getter, active while gameLogic is live.
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getTicketLossAtEndPerMin,
+                                gameLogicGetTicketLossAtEndPerMin, float,
+                                gameLogic != 0, kGameLogicConsoleTag)
 
 // Commander vehicle-drop commands. The mixed dynamic flags are shipped behavior: the getter
 // stores a return value and is dynamic, while the four mutation-only methods are not.
