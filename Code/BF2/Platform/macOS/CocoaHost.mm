@@ -206,15 +206,17 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // [CHOSEN, not recovered] The start. The engine owns the main loop and does not service
     // AppKit while it initialises, for seconds before and after the window is created. So the
     // host completes AppKit's launch itself (initApplication runs -run, endLaunchRun ends it),
-    // asks to become the active application once, at launch, and runs the event loop until
-    // AppKit has answered (activateAtLaunch); createWindow does the same for a full-screen
-    // start's way into its Space (waitForFullscreen). From then on the engine's focus is what
+    // asks to become the active application at launch and runs the event loop until
+    // AppKit has answered (activateAtLaunch). Cooperative requests continue briefly after the
+    // window is shown; createWindow also waits for a full-screen start's way into its Space
+    // (waitForFullscreen). From then on the engine's focus is what
     // AppKit reports (syncFocus), and what the focus gate drops is reported (inputDropped).
     bool   launching = false;        // initApplication's -run for the launch is under way
     bool   launchTimedOut = false;   // AppKit did not report the end of the launch within kLaunchLimit
-    // uptime() of a launch request that got no answer within its wait; 0: none is open. The
-    // activation that comes later is logged once (applicationBecameActive).
-    double lateActivationSince = 0.0;
+    double activationRequestAt = 0.0;       // first request; 0 after activation was reported
+    double activationLastRequestAt = 0.0;   // spaces cooperative requests by one second
+    double activationWindowAt = 0.0;        // window shown; 0 when no more requests are due
+    unsigned activationRequests = 0;        // request numbers in the startup log
     double fullscreenEnterAt = 0.0;  // uptime() of the last Space entry started
     // The engine's window adapter has no window handle while createWindow runs and drops what
     // the host reports then (BF2Window_native.cpp). It sends the focus again itself; the pointer
@@ -222,7 +224,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     bool   pointerOwed = false;
     static constexpr double kLaunchLimit = 5.0;            // seconds: the launch pass
     static constexpr double kLaunchActivationWait = 1.0;   // the answer to the launch request
-    static constexpr double kFrontmostCheckAfter = 0.3;    // then: frontmost for the system, inactive for AppKit?
+    static constexpr double kActivationRepeatLimit = 5.0;  // seconds after ordering the window in
     static constexpr double kFullscreenRetryDelay = 0.3;   // between two attempts to enter the Space
     enum ServiceMode { DeliverInput, AppKitOnly, HoldEvents }; // see service()
 
@@ -262,6 +264,8 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         bool   appActive = false;        // [NSApp isActive]
         bool   windowKey = false;        // window.isKeyWindow
         bool   systemFrontmost = false;  // the system names this process the frontmost application
+        bool   cooperativeActivation = true; // macOS 14+: requests may be repeated
+        bool   windowVisible = false;   // an ordered-in, non-minimized game window
         double now = 0.0;                // focusNow()
     };
 #if defined(OPENBF2_HOST_TEST_SEAMS)
@@ -326,15 +330,31 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
                  atStart:YES];
     }
 
-    // [CHOSEN, not recovered] The one request to become the active application. macOS 14 and
-    // later: -[NSApplication activate]. Activation is cooperative there: the application in front
-    // allows it (the launcher yields to the game it started), and the system refuses a start
-    // that nobody in front asked for, so a client started in the background does not take the
-    // front from what the user works in. macOS 11 to 13: activateIgnoringOtherApps:YES, as a
-    // started program comes forward there; that branch follows AppKit's documentation, no such
-    // system was at hand to run it on.
-    void requestActivation()
+    bool cooperativeActivation() const
     {
+        if (const TestSystem* t = testSystemState())
+            return t->cooperativeActivation;
+        if (@available(macOS 14.0, *))
+            return true;
+        return false;
+    }
+
+    // [CHOSEN, not recovered] macOS 14+ activation is cooperative: repeating the request lets
+    // AppKit accept it after startup or a permission prompt, without forcing another application
+    // out of the front. On 11-13 the non-cooperative request is made only once, at launch.
+    void requestActivation(const char* when)
+    {
+        if (scriptedFocus || nsAppActive() || (!cooperativeActivation() && activationRequests != 0))
+            return;
+        const double now = focusNow();
+        if (activationRequests == 0)
+            activationRequestAt = now;
+        activationLastRequestAt = now;
+        ++activationRequests;
+        std::fprintf(stderr, "[host] activation requested at %s (#%u, %d ms since the launch request)\n",
+                     when, activationRequests, static_cast<int>((now - activationRequestAt) * 1000.0));
+        if (testSystemState() || testHeadless)
+            return;                              // [TEMP] count requests without activating a real application
         if (@available(macOS 14.0, *))
             [NSApp activate];
         else
@@ -346,23 +366,31 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         }
     }
 
-    // [CHOSEN, not recovered] "Frontmost for the system, inactive for AppKit": the application
-    // that started the game has made this process frontmost and AppKit has not noticed (seen
-    // with this unbundled client on Apple silicon). One request that ignores other applications
-    // settles it. It takes nothing from anybody, because the system has put this process in
-    // front already; a client started behind another application never meets the condition.
-    // Made at most once at launch and once at window creation. True when the request was made.
-    bool activateIfSystemFrontmost(const char* when)
+    // [CHOSEN, not recovered] A second cooperative request when the window is ordered in, then
+    // one per second for five seconds while it remains visible and inactive. The engine's pumps
+    // service these requests; no extra wait delays startup. Activation ends the retries for good.
+    void windowOrderedIn()
     {
-        if ([NSApp isActive] || !systemFrontmost())
-            return false;
-        std::fprintf(stderr, "[host] %s: the system names this process frontmost and AppKit has not "
-                     "activated it; asking AppKit again\n", when);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [NSApp activateIgnoringOtherApps:YES];
-#pragma clang diagnostic pop
-        return true;
+        if (scriptedFocus || nsAppActive() || !cooperativeActivation() || activationRequestAt == 0.0)
+            return;
+        activationWindowAt = focusNow();
+        requestActivation("window order-in");
+    }
+
+    void repeatCooperativeActivation()
+    {
+        if (activationWindowAt == 0.0)
+            return;
+        const double now = focusNow();
+        if (nsAppActive() || now - activationWindowAt > kActivationRepeatLimit)
+        {
+            activationWindowAt = 0.0;
+            return;
+        }
+        const TestSystem* t = testSystemState();
+        const bool onScreen = t ? t->windowVisible : window && window.isVisible && !minimized;
+        if (onScreen && now - activationLastRequestAt >= 1.0)
+            requestActivation("visible window");
     }
 
     // [CHOSEN, not recovered] Called once, at the end of initApplication: the game asks to be the
@@ -381,32 +409,25 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         {
             service(0.0, AppKitOnly);            // what the change of the activation policy queued
             NSRunningApplication* front = [[NSWorkspace sharedWorkspace] frontmostApplication];
-            std::fprintf(stderr, "[host] activation requested at launch (frontmost: %s pid %d)\n",
+            std::fprintf(stderr, "[host] launch frontmost: %s pid %d\n",
                          front.localizedName.UTF8String ?: "none", static_cast<int>(front.processIdentifier));
             const double start = uptime();
             if (![NSApp isActive])
-                requestActivation();
-            bool checked = false;
+                requestActivation("launch");
             while (![NSApp isActive] && uptime() - start < kLaunchActivationWait)
-            {
                 service(0.02, AppKitOnly);
-                if (!checked && uptime() - start >= kFrontmostCheckAfter)
-                {
-                    checked = true;
-                    activateIfSystemFrontmost("launch");
-                }
-            }
             const int ms = static_cast<int>((uptime() - start) * 1000.0);
             if ([NSApp isActive])
                 std::fprintf(stderr, "[host] application active after %d ms\n", ms);
             else
             {
-                lateActivationSince = start;
                 front = [[NSWorkspace sharedWorkspace] frontmostApplication];
                 std::fprintf(stderr, "[host] application not activated within %d ms (frontmost: %s pid %d, the "
-                             "system calls this process %s); the game window waits for a click or a switch to it\n",
+                             "system calls this process %s); %s\n",
                              ms, front.localizedName.UTF8String ?: "none", static_cast<int>(front.processIdentifier),
-                             [NSRunningApplication currentApplication].active ? "active" : "inactive");
+                             [NSRunningApplication currentApplication].active ? "active" : "inactive",
+                             cooperativeActivation() ? "cooperative requests resume when the game window is shown"
+                                                     : "the game window waits for a click or a switch to it");
             }
         }
         syncFocus();
@@ -435,21 +456,24 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // The application became active, by AppKit's callback or found by a run of the event loop.
     void applicationBecameActive()
     {
-        if (lateActivationSince != 0.0)
+        if (activationRequestAt != 0.0)
         {
-            std::fprintf(stderr, "[host] application active %d ms after the launch request\n",
-                         static_cast<int>((uptime() - lateActivationSince) * 1000.0));
-            lateActivationSince = 0.0;
+            std::fprintf(stderr, "[host] application active %d ms after the launch request (last request #%u, %d ms ago)\n",
+                         static_cast<int>((focusNow() - activationRequestAt) * 1000.0), activationRequests,
+                         static_cast<int>((focusNow() - activationLastRequestAt) * 1000.0));
+            activationRequestAt = 0.0;
         }
+        activationWindowAt = 0.0;
         startFullscreenTransition(fullscreen.activated());   // a full-screen request that waited
     }
 
-    // The focus part of one run of the event loop. Forced focus stays as it was set
-    // (focusFollowsSystem).
+    // The focus part of one run of the event loop, followed by any cooperative startup request
+    // due. Forced focus stays as it was set (focusFollowsSystem).
     void followFocus()
     {
         if (focusFollowsSystem())
             syncFocus();
+        repeatCooperativeActivation();
     }
 
     // Whether the focus state follows AppKit. Forced focus stays as it was set: scripted runs
@@ -469,7 +493,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     {
         // Input for an application in the background was not the game's: nothing was lost. The
         // system's answer counts too, so drops are reported in the state in which the system
-        // has this process in front and AppKit does not (activateIfSystemFrontmost).
+        // has this process in front and AppKit does not.
         if (!nsAppActive() && !systemFrontmost())
             return;
         ++droppedInputs;
@@ -1829,16 +1853,6 @@ bool ClientHost::createWindow(const HostWindowDesc& desc)
         // start, a click on the Dock icon), or its loss (the user went to another application),
         // counts from here.
         m_impl->service(0.0, Impl::AppKitOnly);
-        if (!m_impl->scriptedFocus && ![NSApp isActive])
-        {
-            m_impl->service(0.02, Impl::AppKitOnly);     // a turn of the run loop: the system's state is read fresh
-            if (m_impl->activateIfSystemFrontmost("window creation"))
-            {
-                const double asked = Impl::uptime();
-                while (![NSApp isActive] && Impl::uptime() - asked < Impl::kFrontmostCheckAfter)
-                    m_impl->service(0.02, Impl::AppKitOnly);
-            }
-        }
         NSScreen* screen = [NSScreen mainScreen];
         if (!screen)
             return false;
@@ -1884,10 +1898,11 @@ bool ClientHost::createWindow(const HostWindowDesc& desc)
         m_impl->visible = true;
         [window makeKeyAndOrderFront:nil];
         [window makeFirstResponder:view];
+        m_impl->windowOrderedIn();
 
         // [CHOSEN, not recovered] A full-screen start goes into the window's own Space now
-        // (NativeFullscreen.h) when the application is active, which the launch has seen to for
-        // a start made by the application in front; otherwise it follows the activation.
+        // (NativeFullscreen.h) when the application is active; otherwise it follows the
+        // activation, including one received after the host's bounded startup waits.
         if (desc.fullscreen)
             setFullscreen(true);
     }
@@ -1920,6 +1935,7 @@ void ClientHost::destroyWindow()
     m_impl->fullscreen = macos::NativeFullscreen();
     m_impl->spaceHidden = false;
     m_impl->visible = false;
+    m_impl->activationWindowAt = 0.0;
     m_impl->windowKey = false;
     // A quit posted for the destroyed window (Window::destroy posts one, as DestroyWindow
     // does) does not carry over to a later window. A quit before the first window stands, so
@@ -2435,6 +2451,8 @@ void CocoaHostTestHooks::setSystemFocusForTest(host::ClientHost& host, const Sys
     system.windowKey      = state->windowKey;
     system.now = state->now;
     system.systemFrontmost = state->systemFrontmost;
+    system.cooperativeActivation = state->cooperativeActivation;
+    system.windowVisible = state->windowVisible;
 }
 
 void CocoaHostTestHooks::focusCallbackForTest(host::ClientHost& host, bool whileBusy)
@@ -2448,6 +2466,28 @@ void CocoaHostTestHooks::focusCallbackForTest(host::ClientHost& host, bool while
 void CocoaHostTestHooks::pumpFocusForTest(host::ClientHost& host)
 {
     host.m_impl->followFocus();
+}
+
+void CocoaHostTestHooks::launchActivationForTest(host::ClientHost& host, bool forcedFocus)
+{
+    host.m_impl->activationRequests = 0;
+    host.m_impl->activationRequestAt = 0.0;
+    host.m_impl->activationLastRequestAt = 0.0;
+    host.m_impl->activationWindowAt = 0.0;
+    host.m_impl->fullscreen = NativeFullscreen();
+    host.m_impl->scriptedFocus = forcedFocus;
+    host.m_impl->requestActivation("launch");
+}
+
+void CocoaHostTestHooks::windowOrderedInForTest(host::ClientHost& host, bool fullscreen)
+{
+    host.m_impl->windowOrderedIn();
+    host.m_impl->fullscreen.request(fullscreen, host.m_impl->activeForFullscreen());
+}
+
+CocoaHostTestHooks::StartupState CocoaHostTestHooks::startupStateForTest(const host::ClientHost& host)
+{
+    return { host.m_impl->activationRequests, host.m_impl->fullscreen.waiting(), host.m_impl->fullscreen.entering() };
 }
 
 CocoaHostTestHooks::DroppedInputStats CocoaHostTestHooks::droppedInputStatsForTest(const host::ClientHost& host)

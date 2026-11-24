@@ -81,7 +81,7 @@ IInputDeviceManager::update(-1) polls, update(dt > 0) consumes  (InputManager::u
 - **Application.** `initApplication` creates `NSApplication`, the delegate and an application
   menu with Hide (Cmd-H) and Quit (Cmd-Q), completes AppKit's launch in one real run-loop pass
   (`[NSApp run]`, stopped from `applicationDidFinishLaunching:`), then makes the process a
-  regular application and asks once to be the active one (see *Start and activation*). After
+  regular application and asks to be the active one (see *Start and activation*). After
   that the engine owns the main loop: the pump drains the queue with
   `nextEventMatchingMask:untilDate:distantPast` each frame, the counterpart of
   `PeekMessage(PM_REMOVE)`. Quit (Cmd-Q, the Dock menu, `applicationShouldTerminate:`) and the
@@ -113,15 +113,17 @@ IInputDeviceManager::update(-1) polls, update(dt > 0) consumes  (InputManager::u
   second at most. The engine's window adapter has no window handle while `createWindow` runs,
   so it sends the focus the window has once more after creation (`BF2Window_native.cpp`), and
   the host reports the pointer position that goes with it at the first frame's pump.
-- **Start and activation.** [CHOSEN] The game asks to be the active application once, at
+- **Start and activation.** [CHOSEN] The game asks to be the active application at
   launch, before the engine starts, and the host runs the event loop itself until AppKit has
   answered (one second at most); a full-screen start then goes into its Space inside
-  `createWindow`, which waits for the transition (three seconds at most). The sequence, its
-  one conditional second request, the wait of a client started behind another application, the
+  `createWindow`, which waits for the transition (three seconds at most). On macOS 14+ an
+  inactive start asks cooperatively again at window order-in, then once a second while visible
+  for at most five seconds; macOS 11-13 keeps the single launch request. The sequence, delayed
+  activation after a permission prompt or after the waits have expired, the
   retries of a refused Space entry and the hand-over of a game that restarts itself are
   described in [macos-port.md](macos-port.md#native-full-screen), "The start" and the items
-  after it. Compiled and checked headless; not run on screen, and the macOS 11 to 13 branches
-  not run at all.
+  after it. The revised requests were compiled and checked headless; no window was opened,
+  `macos_host_test` was compiled only, and macOS 11-13 was simulated only.
 - **Cursor.** `showCursor` reproduces Win32 `ShowCursor`'s display counter (visible while
   >= 0). `setCursorHiddenInView` is `SetCursor(0)` over the client area. Relative mouse mode
   (an exclusively acquired DirectInput mouse) hides the cursor, parks it in the view's centre

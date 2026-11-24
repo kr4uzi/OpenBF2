@@ -71,25 +71,37 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
      `applicationDidFinishLaunching:` stops (five seconds at most). Only then does the process
      become a regular application (Dock icon, `setActivationPolicy:`): set before the launch has
      finished, an unbundled program's menu bar stays dead until the next application switch.
-  2. *One activation request, at launch.* `[NSApp activate]` on macOS 14 and later, where the
-     application in front has to allow it (the launcher yields to the game it started) and the
-     system refuses a start nobody in front asked for; `activateIgnoringOtherApps:YES` on
-     macOS 11 to 13. The host runs the event loop until AppKit reports the application active,
-     one second at most. Once, 0.3 s into that wait: if the system names the process frontmost
-     while AppKit still reports it inactive (seen with this unbundled client on Apple silicon),
-     one `activateIgnoringOtherApps:YES`. That takes nothing from anybody, because the system
-     has put the process in front already. Scripted runs with forced focus never ask.
+  2. *Activation at launch.* `[NSApp activate]` on macOS 14 and later, where activation is
+     cooperative (the launcher yields to the game it started). The host runs the event loop
+     until AppKit reports the application active, one second at most. An unanswered request
+     can be repeated when the window appears; it never falls back to force-activation on
+     these systems. On macOS 11 to 13 only, `activateIgnoringOtherApps:YES` is requested once
+     at launch and never repeated. Scripted runs with forced focus never ask.
   3. *Window.* `createWindow` first reads the queue once, so an activation that arrived while
-     the engine started, or its loss, counts (and repeats the conditional request of step 2 once
-     if that state is found). It orders the window in, and a full-screen start of an active
+     the engine started, or its loss, counts. On macOS 14+ it makes another cooperative request
+     when the inactive application's window is ordered in, then one per second while the
+     window remains visible and not minimized, for at most five seconds after order-in.
+     Requests run with the event loop, without another blocking wait; an engine stall does not
+     produce a burst of overdue requests or extend the deadline. Activation ends these requests
+     permanently, so switching away afterwards never restarts them. A full-screen start of an active
      application goes into its Space at once while the host runs the event loop until the
      transition has ended and that Space is the active one. On screen that is one standard
      full-screen animation at window creation instead of a window that sits on the desktop
      until the first frame.
   A full-screen request made while the application is inactive still waits for its activation:
-  going into a new Space switches the user there, so a client started behind another
-  application stays a window until it is clicked or switched to. A queued entry is not made
-  either when the application has become inactive meanwhile.
+  going into a new Space switches the user there. While another application remains in front,
+  the system decides whether to grant a cooperative request. If it refuses them all, the client
+  stays windowed until clicked or switched to. An activation received later, including after
+  a permission prompt or after all bounded waits and requests have expired, immediately starts
+  the pending Space entry. A queued entry is not made when the application has become inactive
+  meanwhile.
+
+  Owner-run Intel macOS 15.7 starts of `bfeab3d5` showed why one early request is insufficient:
+  the shell start logged an unanswered launch request after 1020 ms and stayed inactive and
+  windowed. A LaunchServices start met the start application's first local-network permission
+  prompt and also stayed inactive. These runs did not establish which request macOS would
+  accept later. The bounded cooperative repeats address that timing; their on-screen result
+  still needs the coordinator's next starts.
 - **A refused entry.** AppKit refuses a transition during another animation or a gesture. An
   entry is then tried again while the application is active, three attempts in all, 0.3 s
   apart; with an inactive application it waits for the activation. AppKit reports a refused
@@ -128,26 +140,36 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   repeated requests, an accounting of when the host first looked at it, a launcher-or-bystander
   rule by process ancestry, a list of clicked-away applications, a restart marker in the
   environment, a reset through the Dock, a fallback to the system's state and a focus
-  self-repair. All of it is gone. What remains is listed above: one request at launch with one
-  conditional second one, the wait of an inactive application's full-screen request, the
+  self-repair. Those mechanisms are gone. Startup requests now have only a number, timestamps
+  and a five-second deadline; none use ancestry, clicks, the Dock or a forced fallback on
+  macOS 14+. What remains is listed above: `syncFocus`, the wait of an inactive application's full-screen request, the
   dropped-input report, and three bounded waits in which the host runs the event loop itself
   (activation 1 s, Space entry 3 s, restart hand-over 2 s). In those waits events go to AppKit
   only; input made then does not reach the engine. Any events held by the loading service go
   to AppKit first, before newer queued events, without being routed to game input.
 - **Log.** `[host] launch: finished after N ms (activation policy at the start: ...)`,
-  `[host] activation requested at launch (frontmost: ...)`, then
+  `[host] launch frontmost: ...` and
+  `[host] activation requested at launch (#1, 0 ms since the launch request)`, then
   `[host] application active after N ms` or `[host] application not activated within N ms ...`
-  (a later activation: `[host] application active N ms after the launch request`).
+  An inactive start on macOS 14+ continues with
+  `[host] activation requested at window order-in (#2, N ms since the launch request)` and
+  `[host] activation requested at visible window (#3, N ms since the launch request)` (and so
+  on, at least a second apart, within five seconds of order-in). Activation logs
+  `[host] application active N ms after the launch request (last request #K, M ms ago)` once,
+  including an activation after requests have ended. The last request number and its age show
+  which request preceded AppKit's answer; they do not prove that request caused the activation.
   `[host] full screen: ...` lines mark each step: entering, in the Space after N ms, windowed,
   left through the system, waiting for the activation, a refused transition and its retries,
   the Space off or on screen. `[host] restart: ...` says what a restart handed over.
 
-Not verified on screen: the start sequence, the hand-over of a restart and the active-Space test
-were compiled and their rules checked headless (`Code/Tests/macos_input`: focus following
-AppKit, the dropped-input report, the full-screen state including refusals); nothing that opens
-a window was run for them, and `Code/Tests/macos_host` with its new launch checks and
-`--fullscreen-start` was compiled only. The macOS 11 to 13 branches follow AppKit's
-documentation; no such system was at hand. Apple silicon has not run this sequence.
+The revised requests were compiled and checked headless (`Code/Tests/macos_input`: request
+spacing and deadline, visibility, single requests on 11-13, forced focus, and delayed activation
+starting the pending full-screen entry, alongside focus, dropped input and refusal checks).
+Nothing that opens a window was run for this revision. `Code/Tests/macos_host`, including its
+launch checks and `--fullscreen-start`, was compiled only. Actual cooperative activation after
+a prompt, full-screen animation, restart hand-over and active-Space focus remain unverified for
+this revision. The macOS 11 to 13 branches were simulated only; no such system was at hand.
+Apple silicon has not run this sequence.
 
 ## PR #55 integration
 
