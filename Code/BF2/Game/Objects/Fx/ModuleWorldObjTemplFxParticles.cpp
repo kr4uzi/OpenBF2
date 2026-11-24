@@ -129,6 +129,12 @@ BF2_CONSOLE_PROPERTY(sizeGraph, Vec4, activeParticleSpriteBase(), setSizeGraph, 
 BF2_CONSOLE_PROPERTY(randomSize, float, activeParticleSpriteBase(), setRandomSize, getRandomSize, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomIntensity, float, activeParticleSpriteBase(), setRandomIntensity, getRandomIntensity, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(alphaCull, float, activeParticleSpriteBase(), setAlphaCull, getAlphaCull, kParticleConsoleTag)
+// BF2.exe 0x56802A/0x568143, executors 0x5680E8/0x568213: ObjectTemplate, access 2,
+// category 21. Static systems use the sprite base; near culling uses only ordinary sprites.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 21)
+BF2_CONSOLE_PROPERTY(isStaticSystem, bool, activeParticleSpriteBase(), setIsStaticSystem, getIsStaticSystem, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(nearCullingEnable, bool, activeSpriteParticle(), setNearCullingEnable, getNearCullingEnable, kParticleConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
 // Ordinary sprites have their own retail overloads and descriptor-tail slots.
 // ELF ConsoleClass312/313 (86F8C60/86F9310); client PE 56A591/56A70E.

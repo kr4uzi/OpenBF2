@@ -291,8 +291,134 @@ std::string Console_getActiveMethods(const std::string& name)
     return result;
 }
 
-// The twelve rows
+// Console state, scripts and registry reflection.
 BF2_CONSOLE_OBJECT("Console", 2, 0)
+
+// BF2.exe 0x6914F3, 0x691F00, 0x69200F, 0x693C28..0x693F34. These
+// file-static properties dispatch to mainConsole, without a singleton null guard.
+#define CONSOLE_STATE(name, T, setter, getter) \
+namespace { \
+class BF2_CC_NAME : public ConsoleObjectBaseImpl { \
+    BF2_CC_HEAD(name, 1, 0, 1, #T, false) \
+        m_argTypes[0] = #T; \
+    BF2_CC_TAIL(1, kFileConsoleTag) \
+    bool isObjectActive() const override { return true; } \
+    void executeObjectMethod() override { \
+        if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = mainConsole->getter(); } \
+        else if (m_argCount == 1) { m_hasReturnValue = false; mainConsole->setter(BF2_CC_ARG(T, 0)); } \
+    } \
+    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(T, 1) } \
+    BF2_CC_RETURN_AS_STRING \
+    BF2_CC_COMMON_HOOKS \
+    T m_returnValue; \
+}; \
+static BF2_CC_NAME BF2_CC_INSTANCE; \
+}
+CONSOLE_STATE(workingPath, std::string, setWorkingPath, getWorkingPath)
+CONSOLE_STATE(echo, bool, setEcho, getEcho)
+CONSOLE_STATE(echoErrors, bool, setEchoErrors, getEchoErrors)
+CONSOLE_STATE(maxLineSize, int, setMaxLineSize, getMaxLineSize)
+CONSOLE_STATE(maxHistorySize, int, setMaxHistorySize, getMaxHistorySize)
+CONSOLE_STATE(maxCommandHistorySize, int, setMaxCommandHistorySize, getMaxCommandHistorySize)
+CONSOLE_STATE(useRelativePaths, bool, setUseRelativePaths, getUseRelativePaths)
+#undef CONSOLE_STATE
+
+namespace {
+std::string consoleListVariables(const std::string& prefix) { return mainConsole->listVariables(prefix); }
+std::string consoleListConstants(const std::string& prefix) { return mainConsole->listConstants(prefix); }
+bool consoleBindKey(int key, const std::string& script) { return mainConsole->bindKeyToConsoleScript(key, script); }
+}
+// BF2.exe 0x69211E/0x6922C7 default the prefix to v_/c_; 0x692470 binds key and script.
+#define CONSOLE_LIST(name, target, prefix) \
+namespace { \
+class BF2_CC_NAME : public ConsoleObjectBaseImpl { \
+    BF2_CC_HEAD(name, 0, 0, 1, "std::string", false) \
+        m_argTypes[0] = "std::string"; \
+    BF2_CC_TAIL(1, kFileConsoleTag) \
+    bool isObjectActive() const override { return true; } \
+    void executeObjectMethod() override { \
+        if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = target(prefix); } \
+        else if (m_argCount == 1) { m_hasReturnValue = true; m_returnValue = target(BF2_CC_ARG(std::string, 0)); } \
+    } \
+    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(std::string, 1) } \
+    BF2_CC_RETURN_AS_STRING \
+    BF2_CC_COMMON_HOOKS \
+    std::string m_returnValue; \
+}; \
+static BF2_CC_NAME BF2_CC_INSTANCE; \
+}
+CONSOLE_LIST(listVariables, consoleListVariables, "v_")
+CONSOLE_LIST(listConstants, consoleListConstants, "c_")
+#undef CONSOLE_LIST
+// The returning two-argument generator is dynamic; this retail row is file-static.
+namespace {
+class ConsoleBindKey : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleBindKey()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "bindKeyToConsoleScript";
+        m_type = 0; m_minNoArgs = m_maxNoArgs = 2; m_returnType = "bool";
+        m_hasReturnValue = false; m_isDynamic = false;
+        m_argTypes[0] = "int"; m_argTypes[1] = "std::string";
+        m_argNeedsConversion[0] = -1; m_argNeedsConversion[1] = 0;
+        consoleBindingList(kFileConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return true; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 2) return;
+        m_hasReturnValue = true;
+        m_returnValue = consoleBindKey(BF2_CC_ARG(int, 0), BF2_CC_ARG(std::string, 1));
+    }
+    void setArgFromString(int index, const std::string& value) override
+    { BF2_CC_CONVERT(int, 1) BF2_CC_CONVERT(std::string, 2) }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    bool m_returnValue;
+};
+static ConsoleBindKey s_consoleBindKey;
+
+// BF2.exe 0x691655/0x691744: one to five strings; omitted arguments are empty.
+// The bool returned by run is streamed into a string, and the script output is discarded.
+class ConsoleRun : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleRun()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "run";
+        m_type = 0; m_minNoArgs = 1; m_maxNoArgs = 5; m_returnType = "std::string";
+        m_hasReturnValue = false; m_isDynamic = false;
+        for (int i = 0; i < 5; ++i) { m_argTypes[i] = "std::string"; m_argNeedsConversion[i] = 0; }
+        consoleBindingList(kFileConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return true; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount < 1 || m_argCount > 5) return;
+        std::string args[5];
+        for (int i = 0; i < m_argCount; ++i) args[i] = BF2_CC_ARG(std::string, i);
+        m_hasReturnValue = true;
+        std::ostringstream result;
+        result << mainConsole->run(args[0], args[1], args[2], args[3], args[4],
+                                  "", "", "", "", Console::ignoredString_);
+        m_returnValue = result.str();
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        BF2_CC_CONVERT(std::string, 1) BF2_CC_CONVERT(std::string, 2)
+        BF2_CC_CONVERT(std::string, 3) BF2_CC_CONVERT(std::string, 4) BF2_CC_CONVERT(std::string, 5)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    std::string m_returnValue;
+};
+static ConsoleRun s_consoleRun;
+}
 
 // Shared two-string reflection binding. Explicit class-name suffixes avoid collisions with line-generated names.
 #define BF2_IO_CONSOLE_REFLECTION_ROW_2(ClassName, fnLiteral, target)                              \
@@ -740,6 +866,22 @@ SETTINGS_GET_BINDING(U32Get, U32, U32Get, 0u)
 #endif
 
 BF2_CONSOLE_OBJECT("FileManager", 2, 0)
+
+namespace {
+void consoleAddPath(const std::string& path) { fileManager->addPath(path); }
+bool consoleDeleteFile(const std::string& path) { return fileManager->deleteFile(path); }
+bool consoleMoveFile(const std::string& from, const std::string& to) { return fileManager->moveFile(from, to); }
+bool consoleCopyFile(const std::string& from, const std::string& to) { return fileManager->copyFile(from, to, true); }
+}
+// BF2.exe 0x6979C7: file-static addPath. 0x697E91/0x697FC4/0x69818A:
+// dynamic file operations, active only with fileManager; copyFile passes a literal true flag.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(addPath, consoleAddPath, fileManager != 0, std::string, kFileConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(deleteFile, consoleDeleteFile, bool, fileManager != 0,
+                                std::string, kFileConsoleTag)
+BF2_CONSOLE_METHOD_2_RET_ACTIVE(moveFile, consoleMoveFile, bool, fileManager != 0,
+                                std::string, std::string, kFileConsoleTag)
+BF2_CONSOLE_METHOD_2_RET_ACTIVE(copyFile, consoleCopyFile, bool, fileManager != 0,
+                                std::string, std::string, kFileConsoleTag)
 
 // mountArchive accepts an optional contentCheck argument.
 BF2_CONSOLE_METHOD_2_3(mountArchive, consoleMountArchive, std::string, std::string, bool, kFileConsoleTag)

@@ -45,6 +45,48 @@ void addConstantToAllConsoles(const std::string& name, const std::string& value)
 
 namespace world {
 
+// BF2.exe 0x50871A: exact full or short names, no numeric arm; unknown tokens select 22.
+std::istream& operator>>(std::istream& stream, ToolTipType& type)
+{
+    static const char* const names[] = {"HeavyTank", "LightTank", "Artillery", "Apc", "ScoutCar",
+        "Fighter", "DiveBomber", "Bomber", "AAGun", "StationaryMG", "Destroyer", "Battleship",
+        "Carrier", "Submarine", "Lcvp", "DefGun", "BF110", "Mosquito", "ATGun", "ArmoredCar",
+        "SturmGeschutz", "M3GMC"};
+    std::string token;
+    stream >> token;
+    type = static_cast<ToolTipType>(22);
+    for (int i = 0; i < 22; ++i)
+        if (token == names[i] || token == std::string("TT") + names[i])
+        { type = static_cast<ToolTipType>(i); break; }
+    return stream;
+}
+
+// BF2.exe 0x5068F8/0x508E90: case-insensitive names and exact decimal -1..3.
+std::ostream& operator<<(std::ostream& stream, CameraShakeTriggers type)
+{
+    static const char* const names[] = {"CstNoShake", "CstExplosion", "CstMachinegun", "CstHitShake", "CstDieShake"};
+    const int value = static_cast<int>(type);
+    if (value >= -1 && value <= 3) stream << names[value + 1];
+    return stream;
+}
+
+std::istream& operator>>(std::istream& stream, CameraShakeTriggers& type)
+{
+    std::string token;
+    stream >> token;
+    if (token.size() == 1)
+    {
+        std::ostringstream text;
+        text << static_cast<CameraShakeTriggers>(std::atoi(token.c_str()));
+        token = text.str();
+    }
+    static const char* const names[] = {"CstNoShake", "CstExplosion", "CstMachinegun", "CstHitShake", "CstDieShake"};
+    for (int i = 0; i < 5; ++i)
+        if (equalsIgnoreCase(token, names[i]) || token == std::to_string(i - 1))
+        { type = static_cast<CameraShakeTriggers>(i - 1); break; }
+    return stream;
+}
+
 // Publishes an unsigned constant to all consoles using standard stream formatting.
 void addConstantHelper(const std::string& name, unsigned int value)
 {
@@ -1188,6 +1230,16 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setNumWindows, objectTemplateSetNumWindows,
 
 // Stock parachutes preserve the soldier's camera pitch when entering and leaving the seat.
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 15)
+// BF2.exe 0x529E5A/0x529EFE: player-control secondary interface, ranged -1..3.
+namespace {
+CameraShakeTriggers getVehicleShake()
+{ return static_cast<CameraShakeTriggers>(GameTemplateConsoleAccess::playerControlObject()->getVehicleCameraShake()); }
+void setVehicleShake(CameraShakeTriggers value)
+{ GameTemplateConsoleAccess::playerControlObject()->setVehicleCameraShake(value); }
+}
+BF2_CONSOLE_PROPERTY_FN_RANGED(vehicleCameraShake, CameraShakeTriggers,
+                               GameTemplateConsoleAccess::playerControlObject() != 0,
+                               getVehicleShake(), setVehicleShake, -1, 3, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(maintainCameraOnExit, bool,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setMaintainCameraOnExit, getMaintainCameraOnExit, kObjTemplGameConsoleTag)
@@ -1195,6 +1247,43 @@ BF2_CONSOLE_PROPERTY(maintainCameraOnEnter, bool,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setMaintainCameraOnEnter, getMaintainCameraOnEnter, kObjTemplGameConsoleTag)
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
+
+// BF2.exe 0x535EE2/0x535F53: set-only method on the player-control secondary interface.
+namespace {
+class ConsoleSetToolTipType : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleSetToolTipType()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "setToolTipType";
+        m_type = 0; m_minNoArgs = m_maxNoArgs = 1; m_returnType = "void";
+        m_hasReturnValue = false; m_isDynamic = false;
+        m_argTypes[0] = "dice::hfe::world::ToolTipType"; m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplGameConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return GameTemplateConsoleAccess::playerControlObject() != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 1) return;
+        const ToolTipType value = BF2_CC_ARG(ToolTipType, 0);
+        m_hasReturnValue = false;
+        GameTemplateConsoleAccess::playerControlObject()->setToolTipType(value);
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        if (index != 1) return;
+        static ToolTipType argument;
+        std::istringstream stream(value);
+        // BF2.exe 0x535F81 keeps the reader's default even when token extraction fails.
+        stream >> argument;
+        m_args[0] = reinterpret_cast<std::string*>(&argument);
+    }
+    BF2_CC_NO_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+};
+static ConsoleSetToolTipType s_consoleSetToolTipType;
+}
 
 // ConsoleClass1020/1021: ELF executors 0x862E9F0/0x862F1D0 and folded PE 0x4B3150
 // accept exactly (std::string, Vec3, Vec3), gate on CID_PlayerControlObjectTemplate, and

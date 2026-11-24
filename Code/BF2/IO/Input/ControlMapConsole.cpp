@@ -46,6 +46,18 @@ bool consoleSetDeviceAxisScale(InputDeviceFlags device, InputDeviceAxes axis, fl
     return true;
 }
 
+// BF2.exe 0x68F82D: unavailable devices return false; advanced devices receive the axis and flag.
+bool consoleSetDeviceInvertAxis(InputDeviceFlags device, InputDeviceAxes axis, bool invert)
+{
+    IInputDevice* dev = inputDeviceManager
+        ? static_cast<IInputDeviceManager*>(static_cast<void*>(inputDeviceManager))->getInputDevice(device)
+        : 0;
+    if (!dev)
+        return false;
+    static_cast<IAdvancedInputDevice*>(dev)->setInvertAxis(axis, invert);
+    return true;
+}
+
 // The three manager rows (guard 0x695810)
 void consoleCreate(const std::string& name)           { manager()->create(name); }            // +0x14
 void consoleSetActive(const std::string& name)        { manager()->setActive(name); }         // +0x30 (MSVC: the string overload)
@@ -113,6 +125,44 @@ BF2_CONSOLE_METHOD_2_ACTIVE(setAxisScale, consoleSetAxisScale, activeMap() != 0,
 // device-axis-scale command (PE ctor 0x64831F, argc 3, return bool) lives on this object, not on
 // ControlMap; it is registered in both images.
 BF2_CONSOLE_OBJECT("InputDevices", 1, 0)
+// BF2.exe ctor 0x69531E, executor 0x69548D; file-static, bool result, exactly three arguments.
+namespace {
+class ConsoleSetInvertAxis : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleSetInvertAxis()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess(); m_category = consoleDefaultCategory();
+        m_functionName = "setInvertAxis"; m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 3; m_returnType = "bool";
+        m_hasReturnValue = false; m_isDynamic = false;
+        m_argTypes[0] = "InputDeviceFlags";
+        m_argTypes[1] = "InputDeviceAxes";
+        m_argTypes[2] = "bool";
+        for (int i = 0; i < 3; ++i) m_argNeedsConversion[i] = -1;
+        consoleBindingList(kControlMapConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return true; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 3) return;
+        m_hasReturnValue = true;
+        m_returnValue = consoleSetDeviceInvertAxis(BF2_CC_ARG(InputDeviceFlags, 0),
+            BF2_CC_ARG(InputDeviceAxes, 1), BF2_CC_ARG(bool, 2));
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        BF2_CC_CONVERT(InputDeviceFlags, 1)
+        BF2_CC_CONVERT(InputDeviceAxes, 2)
+        BF2_CC_CONVERT(bool, 3)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+    bool m_returnValue;
+};
+static ConsoleSetInvertAxis s_consoleSetInvertAxis;
+}
 BF2_CONSOLE_METHOD_3_RET_ACTIVE(setAxisScale, consoleSetDeviceAxisScale, bool, true,
                                 InputDeviceFlags, InputDeviceAxes, float, kControlMapConsoleTag)
 

@@ -694,6 +694,19 @@ BF2_CONSOLE_OBJECT("CollisionManager", 2, 0)
 BF2_CONSOLE_METHOD_1(createTemplate, collisionManager_createTemplate, std::string,
                      kCollisionManagerConsoleTag)
 
+namespace {
+void consoleGetNameOfObjectInFocus() { collisionManager->getNameOfObjectInFocus(); }
+void consoleIdentityRotateObjectInFocus() { collisionManager->identityRotateObjectInFocus(); }
+void consoleBuildDebugCollisionMeshes() { collisionManager->buildDebugCollisionMeshes(); }
+}
+// BF2.exe 0x6E10CB/0x6E135C/0x6E1695: file-static void commands with the manager guard.
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(getNameOfObjectInFocus, consoleGetNameOfObjectInFocus,
+                                   collisionManager != 0, kCollisionManagerConsoleTag)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(identityRotateObjectInFocus, consoleIdentityRotateObjectInFocus,
+                                   collisionManager != 0, kCollisionManagerConsoleTag)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(buildDebugCollisionMeshes, consoleBuildDebugCollisionMeshes,
+                                   collisionManager != 0, kCollisionManagerConsoleTag)
+
 ConsoleObjectList& collisionManagerConsoleObjects()
 {
     return consoleBindingList(kCollisionManagerConsoleTag);

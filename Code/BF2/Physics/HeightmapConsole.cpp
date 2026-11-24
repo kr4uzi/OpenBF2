@@ -167,6 +167,8 @@ BF2_CONSOLE_METHOD_1(setHeightmapSize, consoleClusterSetHeightmapSize, int, kHei
 BF2_CONSOLE_METHOD_1(setSeaWaterLevel, consoleClusterSetSeaWaterLevel, float, kHeightmapConsoleTag)
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(intersectCameraRay, consoleClusterIntersectCameraRay,
                                    heightmapCluster != 0, kHeightmapConsoleTag)
+// [FRONTIER] compileWaterMeshesIntoHeightmap (BF2.exe 0x6DF674/0x6DF6D2) stays
+// unpublished until HeightmapCluster's absorbed-water-object state update is recovered.
 namespace {
 ConsoleClassImportSurroundingRawHeightMap s_consoleClassImportSurroundingRawHeightMap;
 }

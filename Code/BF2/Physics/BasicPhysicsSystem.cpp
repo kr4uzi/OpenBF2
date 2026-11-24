@@ -122,6 +122,14 @@ BF2_CONSOLE_PROPERTY(gravity, float, static_cast<IPhysicsSystem*>(basicPhysicsSy
 BF2_CONSOLE_PROPERTY(airDensityZeroAtHeight, float, static_cast<IPhysicsSystem*>(basicPhysicsSystem),
                      setAirDensityZeroAtHeight, getAirDensityZeroAtHeight, kPhysicsConsoleTag)
 
+namespace {
+std::string consoleListPhysicsProperties()
+{ return static_cast<IPhysicsSystem*>(basicPhysicsSystem)->listProperties(); }
+}
+// BF2.exe 0x6DEFBA/0x6DF025: dynamic, active with the physics singleton, string result.
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(listProperties, consoleListPhysicsProperties, std::string,
+                                basicPhysicsSystem != 0, kPhysicsConsoleTag)
+
 ConsoleObjectList& physicsConsoleObjects()
 {
     return consoleBindingList(kPhysicsConsoleTag);
