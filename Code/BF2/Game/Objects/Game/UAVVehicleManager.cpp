@@ -10,6 +10,7 @@
 #include "../../Common/GameEvent.h"
 #include "../../IGame.h"
 #include "../../IGameLogic.h"
+#include "../../Main/Game.h"
 #include "../../../Core/EventManager.h"
 #include "../../../Core/IBase.h"
 #include "../../../IO/Network/INetworkable.h"
@@ -111,6 +112,11 @@ void UAVVehicleManager::removeUAVVehicle(int team)
 
     game->sendGameEventToAll(
         new PostRemoteEvent(ECGameLogic, 20u, false, payload, 8u, 0.0f));
+#if !DEDICATED
+    // BF2.exe 0x5C61E0..0x5C61FB: remove the local marker/reset reload before destruction.
+    if (!isDedicated())
+        eventManager->postEvent(ECGameLogic, 20u, payload, 0.0f);
+#endif
     objectManager->destroyObject(vehicle);
     m_uavVehicles[team - 1] = 0;
     m_uavActive[team - 1] = false;
@@ -159,6 +165,11 @@ void UAVVehicleManager::createUAVVehicle(Vec3& position, int team)
     payload[1] = team;
     game->sendGameEventToAll(
         new PostRemoteEvent(ECGameLogic, 19u, false, payload, 8u, 0.0f));
+#if !DEDICATED
+    // BF2.exe 0x5C632C..0x5C6347: register the UAV locally after the remote broadcast.
+    if (!isDedicated())
+        eventManager->postEvent(ECGameLogic, 19u, payload, 0.0f);
+#endif
 }
 
 void UAVVehicleManager::initUAVVehicle(int team)

@@ -490,7 +490,10 @@ void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int tea
     if (objectId == -1)
         return;
 
-    (void)playerManager->getLocalHumanPlayer();             // retained, unused retail call
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+#if DEDICATED
+    (void)local;
+#endif
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
 
     DropVehicleHudPayload payload;
@@ -500,9 +503,20 @@ void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int tea
 
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
-        PostRemoteEvent* const event =
-            new PostRemoteEvent(ECHud, 74u, false, &payload, 20u, 0.0f);
-        game->sendGameEventIfConnected((*it)->getId(), event);
+#if !DEDICATED
+        // BF2.exe 0x5C71E0..0x5C7227: local delivery replaces this recipient's remote send.
+        if (!isDedicated() && (!local || local->getId() == (*it)->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 74u, &payload, 0.0f);
+        }
+        else
+#endif
+        {
+            PostRemoteEvent* const event =
+                new PostRemoteEvent(ECHud, 74u, false, &payload, 20u, 0.0f);
+            game->sendGameEventIfConnected((*it)->getId(), event);
+        }
     }
 }
 
@@ -537,15 +551,29 @@ float CommanderToolsManager::getPercentOfDropVehicles(int team)
 void CommanderToolsManager::addDropVehicleToTeam(int team)
 {
     --m_teamStates[team - 1].m_dropVehicleCount;
-    (void)playerManager->getLocalHumanPlayer();             // retained, unused retail call
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+#if DEDICATED
+    (void)local;
+#endif
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
     float remainingFraction = getPercentOfDropVehicles(team);
 
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
-        PostRemoteEvent* const event =
-            new PostRemoteEvent(ECHud, 75u, false, &remainingFraction, 4u, 0.0f);
-        game->sendGameEventIfConnected((*it)->getId(), event);
+#if !DEDICATED
+        // BF2.exe 0x5C6F25..0x5C6F6B: the same local-recipient selection as HUD 74.
+        if (!isDedicated() && (!local || local->getId() == (*it)->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 75u, &remainingFraction, 0.0f);
+        }
+        else
+#endif
+        {
+            PostRemoteEvent* const event =
+                new PostRemoteEvent(ECHud, 75u, false, &remainingFraction, 4u, 0.0f);
+            game->sendGameEventIfConnected((*it)->getId(), event);
+        }
     }
 }
 
