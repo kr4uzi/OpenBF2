@@ -11,6 +11,7 @@
 #include "../BF2/Game/GameLogic/GameLogic.h"
 #include "../BF2/Game/GameLogic/ServerGameLogic.h"
 #include "../BF2/Game/GameLogic/ScoreSystem/ScoreManager.h"
+#include "../BF2/Game/GameLogic/SquadManager/ISquadManager.h"
 #include "../BF2/Game/GameServer/GameServer.h"
 #include "../BF2/Game/Common/GameEvent.h"
 #include "../BF2/Game/Objects/Object.h"
@@ -41,6 +42,7 @@
 
 namespace dice { namespace hfe {
 extern ClassManager* classManager;
+extern IBase* squadManager;
 ConsoleObjectList& gameLogicConsoleObjects();
 ConsoleObjectList& moduleGameConsoleObjects();
 ConsoleObjectList& serverSettingsConsoleObjects();
@@ -189,6 +191,10 @@ struct Players : world::PlayerManager
     PlayerObserver* player = nullptr;
     PlayerObserver* local = nullptr;
     int creates = 0;
+    std::list<world::IPlayer*> members;
+    int memberReads = 0, memberTeam = -1, memberSquad = -1;
+    const std::list<world::IPlayer*>& getPlayersInSquad(int team, int squad) override
+    { ++memberReads; memberTeam = team; memberSquad = squad; return members; }
     world::IPlayer* getLocalHumanPlayer() override { return local; }
     world::IPlayer* createPlayer(const std::string& type, const std::string& name, int id) override
     {
@@ -201,9 +207,104 @@ struct Players : world::PlayerManager
 
 struct Server : GameServer
 {
+    mutable int interfaceQueries = 0;
+    void* queryInterface(unsigned iid) const override
+    { ++interfaceQueries; return GameServer::queryInterface(iid); }
     // Constructor/reset broadcasts are consumed here; this fixture has no network peers.
     void sendGameEventToAllPlaying(GameEvent* event) override { delete event; }
     void sendGameEventToAllConnected(GameEvent* event) override { delete event; }
+};
+struct SquadPlayer : PlayerObserver
+{
+    int id = 31, team = 2, squad = 7;
+    std::string name = "Squad Player";
+    mutable std::vector<int> queries;
+    int getId() const override { queries.push_back(1); return id; }
+    int getSquadId() const override { queries.push_back(2); return squad; }
+    int getTeam() const override { queries.push_back(3); return team; }
+    const std::string& getName() const override { return name; }
+};
+struct SquadInfo : ISquadInfo
+{
+    int id = 0;
+    std::string name;
+    bool isPrivate = false;
+    const std::string& getSquadName() override { return name; }
+    bool getIsPrivate() override { return isPrivate; }
+    int getSquadId() override { return id; }
+    bool getIsAccepted(SquadOrderType, OrderType) override { std::abort(); }
+    SquadOrder* getSquadOrders() override { std::abort(); }
+    SquadOrder* getCommanderOrders() override { std::abort(); }
+    SquadOrder* getRequest(SquadOrderType) override { std::abort(); }
+    int getSpawnGroupId() override { std::abort(); }
+    void addSquadLeaderSpawnPoint(world::IPlayer*) override { std::abort(); }
+    void removeSquadLeaderSpawnPoint(world::IPlayer*) override { std::abort(); }
+};
+struct Squads : ISquadManager
+{
+    // Only listing and renaming belong to this fixture; other interface calls must stop.
+#define UNUSED_SQUAD_SLOT(result, name, args) result name args override { std::abort(); }
+    UNUSED_SQUAD_SLOT(void, addRef, ())
+    UNUSED_SQUAD_SLOT(int, getRef, ())
+    UNUSED_SQUAD_SLOT(int, release, ())
+    UNUSED_SQUAD_SLOT(void*, queryInterface, (unsigned) const)
+    UNUSED_SQUAD_SLOT(void, reset, ())
+    UNUSED_SQUAD_SLOT(void, reAddDynamicSpawnGroups, ())
+    UNUSED_SQUAD_SLOT(void, sendSquadManagerState, (int))
+    UNUSED_SQUAD_SLOT(void, setIsPrivate, (int, int, bool, bool))
+    UNUSED_SQUAD_SLOT(bool, setIsAccepted, (int, int, bool, OrderType, SquadOrderType, bool))
+    UNUSED_SQUAD_SLOT(void, inviteToSquad, (int, int, int, bool, bool))
+    UNUSED_SQUAD_SLOT(bool, addToSquad, (int, int, int))
+    UNUSED_SQUAD_SLOT(void, removeFromSquad, (int, int, int, bool))
+    UNUSED_SQUAD_SLOT(void, setSquadLeader, (int, int, int, bool))
+    UNUSED_SQUAD_SLOT(int, getSquadLeader, (int, int))
+    UNUSED_SQUAD_SLOT(int, getFirstUnusedSquad, (int) const)
+    UNUSED_SQUAD_SLOT(void, issueSquadOrder, (int, int, SquadOrder&, bool))
+    UNUSED_SQUAD_SLOT(void, issueCommanderOrder, (int, int, SquadOrder&, bool))
+    UNUSED_SQUAD_SLOT(void, issueRequest, (int, int, SquadOrder&, bool))
+    UNUSED_SQUAD_SLOT(void, resetSquad, (int, int))
+    UNUSED_SQUAD_SLOT(void, findNewSquadLeader, (int, int, int))
+    UNUSED_SQUAD_SLOT(void, applyForCommander, (int, int))
+    UNUSED_SQUAD_SLOT(int, popNextCommanderApplicant, (int))
+    UNUSED_SQUAD_SLOT(void, acceptCommander, (int, int))
+    UNUSED_SQUAD_SLOT(void, declineCommander, (int, int))
+    UNUSED_SQUAD_SLOT(void, resignCommander, (int))
+    UNUSED_SQUAD_SLOT(void, setCommander, (int, int))
+    UNUSED_SQUAD_SLOT(int, getCommander, (int))
+    UNUSED_SQUAD_SLOT(void*, getCommanderCam, (int))
+    UNUSED_SQUAD_SLOT(void, setCommanderToSoldierMode, (int))
+    UNUSED_SQUAD_SLOT(void, setCommanderToOverheadCamMode, (int))
+    UNUSED_SQUAD_SLOT(void, setCommanderOverheadCamZoomMode, (int, bool))
+    UNUSED_SQUAD_SLOT(void, removeCommanderApplicant, (int, int))
+    UNUSED_SQUAD_SLOT(void, addOrderMarker, (int, SquadOrder&))
+    UNUSED_SQUAD_SLOT(void, removeAllOrderMarkers, ())
+    UNUSED_SQUAD_SLOT(void, removeOrderMarker, (int))
+    UNUSED_SQUAD_SLOT(void, updateOrderMarkers, (world::IPlayer*))
+#undef UNUSED_SQUAD_SLOT
+    std::map<int, ISquadInfo*> entries;
+    std::vector<int> reads;
+    int renames = 0;
+    bool accept = true;
+    ISquadInfo* getSquadInfo(int team, int squad) override
+    { check(team == 2, "squad listing forwards team"); reads.push_back(squad); return entries[squad]; }
+    bool setSquadName(int team, int squad, int player, const std::string& name, bool flag) override
+    {
+        ++renames;
+        check(team == 2 && squad == 7 && player == 31 && name == "Two words" && !flag,
+              "rename forwards local player identity and forces false");
+        return accept;
+    }
+};
+struct SquadEvents : EventManager
+{
+    int refusals = 0;
+    unsigned postEvent(EventCategory category, unsigned id, void* data, float delay) override
+    {
+        check(category == ECHud && id == 15 && !data && delay == 0.0f,
+              "rename refusal posts the immediate HUD notification");
+        ++refusals;
+        return 0;
+    }
 };
 struct Scores : world::ScoreManager
 {
@@ -296,6 +397,9 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
 
     struct Metadata { const char* object; const char* command; int type, min, max; const char* result; bool dynamic; int access; };
     const Metadata expected[] = {
+        {"squadManager", "changeSquadName", 0, 2, 2, "void", false, 2},
+        {"squadManager", "listSquadMembers", 0, 2, 2, "std::string", true, 2},
+        {"squadManager", "listSquads", 0, 1, 1, "std::string", true, 2},
         {"pythonHost", "sendCommand", 0, 1, 9, "bool", true, 2},
         {"gameLogic", "getTeamLanguage", 0, 1, 1, "std::string", true, 2},
         {"gameLogic", "getTeamName", 0, 1, 1, "std::string", true, 2},
@@ -330,6 +434,15 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     }
 
     gameLogic = nullptr;
+    game = nullptr;
+    for (const char* name : {"changeSquadName", "listSquadMembers", "listSquads"})
+        check(!row("squadManager", name)->isActive(), "squad commands require the global game");
+    check(std::strcmp(row("squadManager", "changeSquadName")->getArgType(0), "std::string") == 0 &&
+          std::strcmp(row("squadManager", "changeSquadName")->getArgType(1), "bool") == 0 &&
+          std::strcmp(row("squadManager", "listSquadMembers")->getArgType(0), "int") == 0 &&
+          std::strcmp(row("squadManager", "listSquadMembers")->getArgType(1), "int") == 0 &&
+          std::strcmp(row("squadManager", "listSquads")->getArgType(0), "int") == 0,
+          "squad argument metadata preserves retail types");
     for (const char* name : {"teleportTo", "teleportCameraTo", "getNumberOfTickets"})
         check(!row("gameLogic", name)->isActive(), "server command requires game logic");
     world::playerManager = nullptr;
@@ -465,11 +578,86 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
         ai::operator<<(out, static_cast<KitType>(invalid));
         check(out.str() == "prefix", "invalid AI kit values append no token");
     }
-    // Real ServerGameLogic construction and targets, with only position/physics/camera
-    // collaborators observed. No server initialization, map, sockets or application entry.
+    // Real Game receivers with observed squad/player/event collaborators, followed by
+    // ServerGameLogic position/physics/camera checks. No server initialization or sockets.
     world::objectManager = new world::ObjectManager;
     gameEventRegistry = new GameEventRegistry;
-    game = new Server;
+    Server* squadGame = new Server;
+    game = squadGame;
+    Squads* squads = new Squads;
+    squadManager = nullptr;
+    for (const char* name : {"changeSquadName", "listSquadMembers", "listSquads"})
+    {
+        check(row("squadManager", name)->isActive(), "squad binding gate tests only game");
+        check(!row("squadManager", name)->hasRange(), "squad arguments have no range clamp");
+        check(mainConsoleObjects->getConsoleObject("game", name) == nullptr,
+              "squad commands belong only to squadManager");
+    }
+    check(line("squadManager.listSquads 2").empty(), "absent squad manager returns an empty list");
+    squadManager = squads;
+    SquadInfo* publicSquad = new SquadInfo;
+    publicSquad->id = 0; publicSquad->name = "Public Squad";
+    SquadInfo* privateSquad = new SquadInfo;
+    privateSquad->id = 7; privateSquad->name = "Private Squad";
+    privateSquad->isPrivate = true;
+    squads->entries[0] = publicSquad;
+    squads->entries[7] = privateSquad;
+    squads->entries[8] = publicSquad;
+    io::mainConsole->setAccess(1);
+    line("squadManager.listSquads 2");
+    check(squads->reads.empty(), "squad commands reject access below level two");
+    io::mainConsole->setAccess(2);
+    check(line("squadManager.listSquads +2") ==
+          "id:0 Public Squad is public.\nid:7 Private Squad is private.\n" &&
+          squads->reads == std::vector<int>({0, 1, 2, 3, 4, 5, 6, 7}),
+          "squad listing preserves text, gaps, order and the eight-ID limit");
+    check(row("squadManager", "listSquads")->hasReturnValue(), "squad list publishes its string result");
+    SquadPlayer* firstMember = new SquadPlayer;
+    SquadPlayer* secondMember = new SquadPlayer;
+    secondMember->id = 4; secondMember->name = "Other Player";
+    players->members = {firstMember, secondMember};
+    check(line("squadManager.listSquadMembers +2 7") == "id:31 Squad Player\nid:4 Other Player\n" &&
+          players->memberTeam == 2 && players->memberSquad == 7,
+          "member listing forwards integers and preserves player-manager order and text");
+    players->members.clear();
+    check(line("squadManager.listSquadMembers -2 -1").empty() &&
+          players->memberTeam == -2 && players->memberSquad == -1,
+          "empty member list and signed arguments are preserved");
+    const int memberReads = players->memberReads;
+    squads->reads.clear();
+    invoke(row("squadManager", "listSquads"), {});
+    invoke(row("squadManager", "listSquads"), {"2", "7"});
+    invoke(row("squadManager", "listSquadMembers"), {"2"});
+    invoke(row("squadManager", "listSquadMembers"), {"2", "7", "0"});
+    invoke(row("squadManager", "changeSquadName"), {"Two words"});
+    invoke(row("squadManager", "changeSquadName"), {"Two words", "0", "extra"});
+    check(squads->reads.empty() && players->memberReads == memberReads && squads->renames == 0,
+          "wrong argument counts do not dispatch squad receivers");
+    EventManager* savedEvents = eventManager;
+    SquadEvents* squadEvents = new SquadEvents;
+    eventManager = squadEvents;
+    firstMember->queries.clear();
+    players->local = nullptr;
+    line("squadManager.changeSquadName \"Two words\" 1");
+    players->local = firstMember;
+    squadManager = nullptr;
+    line("squadManager.changeSquadName \"Two words\" 0");
+    check(squads->renames == 0 && squadEvents->refusals == 0 && firstMember->queries.empty(),
+          "rename requires both the local human and squad manager before reading player identity");
+    squadManager = squads;
+    firstMember->queries.clear();
+    check(line("squadManager.changeSquadName \"Two words\" 1").empty() && squads->renames == 1 &&
+          squadEvents->refusals == 0 && firstMember->queries == std::vector<int>({1, 2, 3}) &&
+          !row("squadManager", "changeSquadName")->hasReturnValue(),
+          "successful rename preserves player-query order and returns void");
+    squads->accept = false;
+    line("squadManager.changeSquadName \"Two words\" 0");
+    check(squads->renames == 2 && squadEvents->refusals == 1,
+          "failed rename notifies the HUD for either accepted Boolean value");
+    check(squadGame->interfaceQueries == 0, "squad bindings dispatch directly through the global game");
+    eventManager = savedEvents;
+    squadManager = nullptr;
+    players->local = nullptr;
     io::networkManager = new io::NetworkManager;
     Scores* scores = new Scores;
     world::scoreManager = static_cast<world::IScoreManager*>(scores);
@@ -609,6 +797,8 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     mainConsoleObjects->unregisterConsoleObjects(moduleGameConsoleObjects());
     check(mainConsoleObjects->getConsoleObject("pythonHost", "sendCommand") == nullptr,
           "ModuleGame command list unregisters");
+    for (const char* name : {"changeSquadName", "listSquadMembers", "listSquads"})
+        check(!mainConsoleObjects->getConsoleObject("squadManager", name), "ModuleGame squad commands unregister");
     std::printf("PASS console commands: %u checks (DEDICATED=%d)\n", checks, DEDICATED);
     std::fflush(stdout);
     std::_Exit(0); // No full-engine teardown for this bounded, pre-init fixture.

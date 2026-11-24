@@ -324,6 +324,7 @@ void Game::leaveSquad(int squad)
             player->getTeam(), squad, player->getId(), false);
 }
 
+// BF2.exe 0x441D20; dedicated PE 0x4340C0; ELF 0x805BAB0.
 std::string Game::listSquadMembers(int team, int squad)
 {
     std::string result;
@@ -340,6 +341,7 @@ std::string Game::listSquadMembers(int team, int squad)
     return result;
 }
 
+// BF2.exe 0x440740; dedicated PE 0x433A10; ELF 0x805B900.
 std::string Game::listSquads(int team)
 {
     std::string result;
@@ -361,14 +363,19 @@ std::string Game::listSquads(int team)
     return result;
 }
 
+// BF2.exe 0x441CB0; dedicated PE 0x434050; ELF 0x805B4B0.
 void Game::changeSquadName(const std::string& name, bool)
 {
     world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
     if (!player || !squadManager)
         return;
 
+    // Preserve the player-query order independently of argument evaluation order.
+    const int playerId = player->getId();
+    const int squadId = player->getSquadId();
+    const int team = player->getTeam();
     if (!static_cast<ISquadManager*>(squadManager)->setSquadName(
-            player->getTeam(), player->getSquadId(), player->getId(), name, false))
+            team, squadId, playerId, name, false))
         eventManager->postEvent(ECHud, 15, 0, 0.0f);
 }
 

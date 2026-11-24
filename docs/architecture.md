@@ -366,6 +366,9 @@ require its voice-message owner. Player edits require an active player.
 | Commands | Arguments and result |
 | --- | --- |
 | `pythonHost.sendCommand` | One command string and up to eight optional strings; dispatches Python event `ConsoleSendCommand` (33) as `(command, argsTuple)`. Omissions are empty strings; only trailing empty arguments are trimmed. Access level 2; returns Boolean true even when no handler runs. |
+| `squadManager.changeSquadName` | Squad name and Boolean; returns void. Renames the local human player's squad; an absent local player or squad manager does nothing. The Boolean is accepted but ignored; the manager receives false. A refused rename posts HUD event 15. Access level 2, category 0; requires the global game and a live player manager. |
+| `squadManager.listSquadMembers` | Team and squad integers; returns members in player-manager order as `id:<id> <name>` lines, each ending in a newline. Access level 2, category 0; requires the global game and a live player manager. |
+| `squadManager.listSquads` | Team integer; returns existing squad IDs 0 through 7 as `id:<id> <name> is private.` or `id:<id> <name> is public.` lines, each ending in a newline. An absent squad manager returns an empty string. Access level 2, category 0; requires the global game. |
 | `gameLogic.getTeamLanguage`, `gameLogic.getTeamName` | Team number; returns the configured string. |
 | `gameLogic.defaultLevel` | No argument reads the name; one string sets it. |
 | `gameLogic.setKit` | Team, kit type, kit template, soldier template. Types accept `KTMedic`, `Medic`, or `5` (the seven stock types); unknown tokens select the no-kit sentinel 13. |

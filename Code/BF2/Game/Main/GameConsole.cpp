@@ -213,6 +213,26 @@ BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(toggleDemoPauseOrPlay, demoTogglePauseOrPlay,
                                    kGameConsoleTag)
 #endif
 
+// BF2.exe defaults 0x84376F; constructors 0x428884/0x428A0F/0x428B84,
+// parsers 0x428962/0x428AA8/0x428C0F, executors 0x428915/0x428B2F/0x428C5C.
+// Dedicated PE defaults 0x761000; constructors 0x4CCDE0/0x4CD040/0x4CD270,
+// parsers 0x4CCF80/0x4CD170/0x4CD360, executors 0x4CCF10/0x4CD210/0x4CD3C0.
+// Both images dispatch directly through game; their shared gate tests only that pointer.
+BF2_CONSOLE_OBJECT("squadManager", 2, 0)
+namespace {
+// The executor copies the name before passing it by reference to the game.
+void squadChangeSquadName(std::string name, bool flag)
+{
+    ::dice::hfe::game->changeSquadName(name, flag);
+}
+} // namespace
+BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(changeSquadName, squadChangeSquadName,
+                                   ::dice::hfe::game != 0, std::string, bool, kModuleGameConsoleTag)
+BF2_CONSOLE_METHOD_2_RET_ACTIVE(listSquadMembers, ::dice::hfe::game->listSquadMembers,
+                                std::string, ::dice::hfe::game != 0, int, int, kModuleGameConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(listSquads, ::dice::hfe::game->listSquads,
+                                std::string, ::dice::hfe::game != 0, int, kModuleGameConsoleTag)
+
 // BF2.exe defaults 0x84385D, constructor 0x428EA2, executor 0x429004 and
 // converter 0x429A14; dedicated PE 0x4CD740/0x4CD9E0/0x4CE520.
 // Every accepted arity passes nine strings by value, padding omitted arguments empty.
