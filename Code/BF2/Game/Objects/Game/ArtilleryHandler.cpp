@@ -288,7 +288,10 @@ void ArtilleryHandler::findHelperObjects(ArtilleryObjectStruct& artillery)
 
 void ArtilleryHandler::update(float deltaTime)
 {
-    if (m_firePending && m_fireAtTick < WorldPref::getTickCount())
+    // BF2.exe 0x5C5332..0x5C5335 / ELF update export 0x0816CD20:
+    // the scheduled tick comparison is unsigned.
+    if (m_firePending && static_cast<unsigned int>(m_fireAtTick) <
+        static_cast<unsigned int>(WorldPref::getTickCount()))
     {
         m_firePending = false;
         doFire();
@@ -479,8 +482,12 @@ bool ArtilleryHandler::calcArtilleryAngles(Vec3& from, Vec3& to, float velocity,
 
 void ArtilleryHandler::requestFire()
 {
-    if (WorldPref::getTickCount() - m_fireAtTick <
-        m_minIntervalTicks - m_fireDelayTicks)
+    // BF2.exe 0x5C5479..0x5C5489 / ELF requestFire export 0x0816DC00:
+    // both tick differences use unsigned arithmetic, including a future fire tick.
+    if (static_cast<unsigned int>(WorldPref::getTickCount()) -
+            static_cast<unsigned int>(m_fireAtTick) <
+        static_cast<unsigned int>(m_minIntervalTicks) -
+            static_cast<unsigned int>(m_fireDelayTicks))
     {
         failedFire();
         return;
