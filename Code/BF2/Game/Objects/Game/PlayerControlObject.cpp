@@ -32,6 +32,7 @@
 #include "Soldier.h"                              // the child-soldier weapon delegation
 #include "Kit.h"
 #include "GroundContactSound.h"
+#include "../../Main/Game.h"
 #include "../GameLogicComp/IArmorGLComp.h"
 #include "../WarningHudCompTemplate.h"
 #include "../../../Physics/MaterialManager.h"
@@ -355,6 +356,15 @@ void PlayerControlObject::init()
 
     if (!getParent())
         gameLogic->addPco(this);                                 // IGameLogic +0x194, recovered
+#if !DEDICATED
+    // BF2.exe 0x5FA887..0x5FA93A: root-only sound allocation precedes wheel discovery.
+    if (!object_detail::LayoutAccess::parent(this) && !isDedicated()
+        && m_template->m_groundContactVolume > FLT_EPSILON)
+    {
+        m_groundContactSound = new GroundContactSound(this, m_template->m_groundContactVolume);
+        findDriveWheels(&m_driveWheelFirst, &m_driveWheelSecond, this);
+    }
+#endif
     setSleepTimeoutRecursive(this, 90);
 }
 
@@ -1142,9 +1152,21 @@ namespace {
     }
 }
 
-// GroundContactSound::updateState - ELF 81A2430; PE 592D30 with change helper 592C80.
-// The client ctor (5F4CB0) supplies the embedded fixed node and controller layout, but no
-// allocation branch is added to this dedicated owner. State 0 delays; unknown states do nothing.
+#if !DEDICATED
+// BF2.exe 0x5F4CB0..0x5F4D17. The null sound starts with one retained reference.
+GroundContactSound::GroundContactSound(IObject* owner, float volume)
+    : m_sound(g_nullSound), m_hasContact(false), m_materialChanged(false),
+      m_material(-1), m_otherMaterial(-1), m_input(0.0f), m_volume(volume),
+      m_node(owner), m_state(1), m_ticks(0),
+      m_controller(&m_input, *Vars::getFloat("pco-gcm-factor", 0.08f))
+{
+    m_sound->addRef();
+}
+#endif
+
+// GroundContactSound::updateState - ELF 81A2430; dedicated PE 592D30/592C80;
+// client BF2.exe 5F4DD0 with material-change helper 5F4D20.
+// State 0 delays; unknown states do nothing.
 void GroundContactSound::updateState()
 {
     if (m_state == 0)

@@ -47,6 +47,8 @@
 #include "../GameLogicComp/ArmorGLComp.h"        // handleMessage reads the armor status
 #include "../../../AI/AIInterface/AIInstance.h"  // the AI singleton, ds:0x8AC37F8
 #if !DEDICATED
+#include "../Fx/EffectBundle.h"
+#include "../../../Math/Plane3.h"
 #include "SoldierHapticProfile.h"                // ledger N2: the control-box profile switch (HapticSettings)
 #include "../PlayerControlObjectTemplate.h"       // onEnter's unchecked +0x22C template view
 #include "../../HapticSettings.h"
@@ -103,6 +105,14 @@ extern IBase* materialManager;                   // ds:0x8AD2820 - Core/Globals.
 // Console-backed soldier tuning. Pose and speed tables capture values at static initialization.
 // Swim pose rows reuse sprint variable names, so their values alias the sprint row.
 namespace {
+
+#if !DEDICATED
+// BF2.exe 0x854340..0x8543B1: client footstep tuning, in registration order.
+float* const g_footstepCullDistance = Vars::getFloat("soldier-footstep-effect-cull-distance", 20.0f);
+float* const g_footstepOffsetY = Vars::getFloat("soldier-footstep-offset-y", -0.99f);
+float* const g_footstepOffsetStand = Vars::getFloat("soldier-footstep-offset-dof-stand", 0.13f);
+float* const g_footstepOffsetProne = Vars::getFloat("soldier-footstep-offset-dof-prone", 0.0f);
+#endif
 
 float* const g_soldierTimeToEnableWeaponVar =
     Vars::getFloat("soldier-timeToEnableWeapon", 1.25f);
@@ -1472,9 +1482,65 @@ void Soldier::dropHelmetFx()
     m_helmetTime = 0.0f;
 }
 
-// / 5 B / 5 B. All three are empty in the shipped binary. Footstep effects, the breath-holding
-// meter and leaving a ladder are named, dispatched and do nothing - on this build.
-void Soldier::triggerFootStepEffect(int, int)    { }
+// BF2.exe 0x5A7A50..0x5A7C08; dedicated ELF 0x81AD580 is empty.
+void Soldier::triggerFootStepEffect(int material, int footMaterial)
+{
+#if !DEDICATED
+    if (isDedicated() || footMaterial < 0 || m_pose != 0)
+        return;
+    IPlayerControlObject* const control = static_cast<IPlayerControlObject*>(this);
+    if (!control->getOccupingPlayer() || control->getOccupingPlayer()->hasFirstPersonView())
+        return;
+
+    Mat4 camera = Mat4::getIdentity();
+    objectManager->getCameraInfo(&camera, 0, 0);
+    const Vec3& position = getAbsolutePosition();
+    const Vec3 distance = {camera.m[12] - position.x, camera.m[13] - position.y,
+                           camera.m[14] - position.z};
+    if (std::sqrt(distance.x * distance.x + distance.y * distance.y + distance.z * distance.z)
+        > *g_footstepCullDistance)
+        return;
+
+    IObjectTemplate* const effectTemplate = static_cast<IObjectTemplate*>(
+        static_cast<MaterialManager*>(materialManager)->getEffectTemplate(material, footMaterial, 0));
+    if (!effectTemplate)
+        return;
+    IObject* const effect = effectTemplate->createObject();
+    if (!effect)
+        return;
+
+    // Retail re-reads pose after creation, even though the entry gate requires standing.
+    const float offset = m_pose == 0 ? *g_footstepOffsetStand : *g_footstepOffsetProne;
+    Mat4 transform = getAbsoluteTransformation();
+    transform.m[12] += 0.0f;
+    transform.m[13] += *g_footstepOffsetY;
+    transform.m[14] += 0.0f;
+    const Vec3& speed = static_cast<IPhysicsNode*>(
+        object_detail::LayoutAccess::physicsNode(this))->getPositionalSpeed();
+    const Vec3 displacement = {speed.x * offset, speed.y * offset, speed.z * offset};
+    transform.m[12] += displacement.x;
+    transform.m[13] += displacement.y;
+    transform.m[14] += displacement.z;
+
+    if (object_detail::LayoutAccess::objectTemplate(effect)->getClassID() == CID_EffectBundleTemplate ||
+        object_detail::LayoutAccess::objectTemplate(effect)->getClassID() == CID_GroundEffectBundleTemplate)
+    {
+        const Plane3 plane = {{transform.m[4], transform.m[5], transform.m[6]},
+            -(transform.m[14] * transform.m[6] + transform.m[13] * transform.m[5]
+              + transform.m[12] * transform.m[4])};
+        static_cast<EffectBundle*>(effect)->setCollisionPlane(plane);
+    }
+    // BF2.exe 0x4C4B60 selects the relative setter for an already parented object.
+    if (object_detail::LayoutAccess::parent(effect))
+        effect->setRelativeTransformation(transform);
+    else
+        effect->setAbsoluteTransformation(transform);
+    effect->init();
+    effect->handleMessage(static_cast<TemplateMessage>(0), 0, false);
+#endif
+}
+
+// Dedicated bodies for the breath-holding meter and ladder exit are empty.
 void Soldier::updateHoldBreathUnderwaterTime(float) { }
 void Soldier::removeFromLadder()                 { }
 

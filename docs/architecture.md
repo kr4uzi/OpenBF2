@@ -300,6 +300,32 @@ dedicated sound creation still returns null. The death dispatch and first-person
 damage gate remain those of retail (`Soldier::handleMessage`, BF2.exe `0x5A7570`,
 ELF `0x081ACD90`; `SoldierSound::die`, BF2.exe `0x7E2CB0`, ELF `0x083F35E0`).
 
+Root vehicle initialization also creates a `GroundContactSound` when the client is
+not in dedicated mode and the template's `groundContactVolume` exceeds float epsilon
+(BF2.exe `0x5FA887..0x5FA93A`, constructor `0x5F4CB0`). Its fixed sound node borrows
+the vehicle; the vehicle owns the carrier and stops/releases its sound before deletion.
+Wheel discovery follows allocation. The existing tick and material-change paths
+(`0x5FBCDB..0x5FBD67`, `0x5F4DD0`, `0x5F4D20`) drive the retained null sound or
+the material-pair sound through the proportional controller. Dedicated images leave
+the carrier null.
+
+## Client material effects
+
+`Soldier::triggerFootStepEffect` follows BF2.exe `0x5A7A50..0x5A7C08`: standing
+soldiers with an occupant outside first-person view create the material-pair effect
+within the camera distance limit (20 units by default). The transform includes the
+configured vertical offset and velocity lead; effect bundles receive a collision plane
+before transform assignment, initialization and message 0. Dedicated images retain
+the empty body. `EffectBundleTemplate::preCache` also warms child mesh-particle
+geometries after the base call on its first client precache (`0x642250`).
+
+Aircraft downwash remains missing: `AirDraftEffectBundleTemplate` is reconstructed,
+but its client runtime `AirDraftEffectBundle` is absent. The retail factory at
+`0x646880` constructs a 0x1D0-byte x86 object through `0x646400`; its runtime
+layout, virtual overrides and material/effect/sound ownership must be recovered
+together before enabling this factory. The current dedicated null factory does
+not establish client downwash support.
+
 ## Content and the console
 
 `.con` files are executable engine configuration. The console binds command names such as

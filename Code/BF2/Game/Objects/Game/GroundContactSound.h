@@ -13,11 +13,14 @@ class ISound;
 namespace world {
 class PlayerControlObject;
 
-// Field names are [INFERRED] from the ctor/tick/state operations. No virtual table,
-// factory or construction path is introduced here: dedicated PCO leaves its owner null.
+// Field names are [INFERRED] from the ctor/tick/state operations. This carrier has
+// no virtual table; its embedded node borrows the owning object.
 class GroundContactSound
 {
 public:
+#if !DEDICATED
+    GroundContactSound(IObject* owner, float volume);
+#endif
     void updateState();
 
 private:
@@ -36,4 +39,10 @@ private:
 };
 
 } } }
+
+static_assert(sizeof(void*) != 4 || sizeof(dice::hfe::world::GroundContactSound) == 0x34,
+              "GroundContactSound retail layout");
+// [CHOSEN, not recovered] Native pointers widen the sound, node and controller.
+static_assert(sizeof(void*) != 8 || sizeof(dice::hfe::world::GroundContactSound) == 0x48,
+              "GroundContactSound native layout");
 #endif
