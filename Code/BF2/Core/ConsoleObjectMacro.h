@@ -336,6 +336,25 @@ private:                                                                        
 static BF2_CC_NAME BF2_CC_INSTANCE;                                                                \
 }
 
+// A file-static zero-argument command returning a value through an existing receiver.
+#define BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(fnName, target, RET, activeExpr, listTag) \
+namespace { \
+class BF2_CC_NAME : public ::dice::hfe::ConsoleObjectBaseImpl { \
+    BF2_CC_HEAD(fnName, 0, 0, 0, #RET, false) \
+    BF2_CC_TAIL(0, listTag) \
+    bool isObjectActive() const override { return (activeExpr); } \
+    void executeObjectMethod() override { \
+        if (m_argCount != 0) return; \
+        m_hasReturnValue = true; m_returnValue = target(); \
+    } \
+    void setArgFromString(int, const std::string&) override {} \
+    BF2_CC_RETURN_AS_STRING \
+    BF2_CC_COMMON_HOOKS \
+private: RET m_returnValue; \
+}; \
+static BF2_CC_NAME BF2_CC_INSTANCE; \
+}
+
 // Binds a two-argument command with an availability check.
 #define BF2_CONSOLE_METHOD_2_ACTIVE(fnName, target, activeExpr, A0, A1, listTag)                    \
 namespace {                                                                                        \

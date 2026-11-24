@@ -274,6 +274,18 @@ bool SpriteParticleSystemTemplateBase::getIsStaticSystem() const
     return static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getIsStaticSystem();
 }
 
+// BF2.exe 0x64C260/0x64C280: only the setter guards the renderer descriptor.
+void SpriteParticleSystemTemplate::setNearCullingEnable(bool value)
+{
+    if (m_impl)
+        static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->setNearCullingEnable(value);
+}
+
+bool SpriteParticleSystemTemplate::getNearCullingEnable() const
+{
+    return static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getNearCullingEnable();
+}
+
 SpriteParticleSystemTemplateBase::~SpriteParticleSystemTemplateBase()
 {
 }

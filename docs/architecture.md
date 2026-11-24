@@ -301,6 +301,28 @@ at its registration or loading boundary before adding fallback behavior. Python 
 use the embedded interpreter and native bindings; a fixture that bypasses those scripts
 does not validate production content loading.
 
+The shared console catalogue includes these settings and inspection commands in both game images:
+
+| Object | Commands and properties |
+| --- | --- |
+| `Console` | `workingPath`, `echo`, `echoErrors`, `maxLineSize`, `maxHistorySize`, `maxCommandHistorySize`, `useRelativePaths`, `allowMultipleFileLoad`; `listVariables [prefix]` (default `v_`), `listConstants [prefix]` (default `c_`), `run <file> [arg1..arg4]`, `bindKeyToConsoleScript <1..12> <script>`; registry reflection through `getArgumentTypes`, `getEnumName`, `getRange`, `getReturnType`, `getDelta`, `hasBundledType`, `getTypeDescription`, `isDynamic`, `isSetGet`, `hasRange`, `getCategory`, `getActiveMethods`. |
+| `FileManager` | `addPath <path>` makes the path the first search/write path; `fileExists`, `deleteFile`, `moveFile <from> <to>`, `copyFile <from> <to>`, `mountArchive`. Copy forwards the shipped `true` third argument; the POSIX filesystem refuses an existing destination and creates a hard link. |
+| `InputDevices` | `setInvertAxis <device> <axis> <bool>`, `setAxisScale <device> <axis> <float>`; unavailable devices return false. |
+| `ObjectTemplate` | Particle `nearCullingEnable` (ordinary sprites only) and `isStaticSystem` (sprite, mesh, trail and NSA systems), access 2/category Emitter. `setToolTipType <name>` uses full `TT*` or short case-sensitive names; unknown tokens, including numeric tokens, select 22. `vehicleCameraShake` accepts `CstNoShake`, `CstExplosion`, `CstMachinegun`, `CstHitShake`, `CstDieShake` and decimal -1..3. `grip` accepts eight `PGF*` bit names, their `c_` forms and numeric normalization; its published range remains 0..7 without clamping. `zoom.changeCameraViewMode` and `zoom.startCameraViewMode` accept `CVMFirstPerson`, `CVMInside`, `CVMNose`, `CVMChase`, `CVMFrontChase`, `CVMFlyBy`, `CVMTrace`, `CVMExternTrace` and single-digit numeric normalization. `listTemplateClasses` lists registered classes. |
+| Inspection | `physics.listProperties`; `CollisionManager.getNameOfObjectInFocus`, `identityRotateObjectInFocus`, `buildDebugCollisionMeshes`; `Object.setAsSkyLight` (lights only), `Object.getLightSourceMask`; `Player.listPlayerClasses`; `Terrain.refreshTerrainSampling`; `Editor.getActiveObjectTemplate` and `Editor.getActiveObject` return borrowed name/pointer proxies. |
+
+`Console.run` returns the script-open status as text (`0`/`1`); script output is discarded.
+The particle flags forward to renderer descriptors: near culling drives the sorted sprite
+collector's distance/age fade and alpha rejection; static systems enable initial simulation
+prewarming. Additive collection keeps its separate shipped behavior. The flags do not create
+renderer descriptors in a dedicated image. `HeightmapCluster.compileWaterMeshesIntoHeightmap`
+remains unpublished while its absorbed-water-object state update is unresolved.
+
+`Code/Tests/console_bindings_runtime.py` exercises the registry, real console, loose-file
+operations, enum conversions, template selectors and forwarding into typed descriptor observers
+without a window or game startup. It requires a completed macOS renderer-enabled client build;
+particle-manager construction, particle collection, rendered pixels and a joined player are untested.
+
 ### The `openbf2` console extension
 
 `openbf2.*` is an OpenBF2 extension, not a recovered command; no retail image defines it. It is

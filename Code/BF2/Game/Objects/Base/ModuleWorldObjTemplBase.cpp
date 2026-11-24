@@ -15,6 +15,7 @@
 #include "../../../Physics/PhysicsType.h"                 // symbolic Point/Mesh vocabulary
 #include "../../../Core/Ids.h"                            // CID_SimpleObjectTemplate
 #include <string>
+#include <cstdio>
 
 namespace dice {
 namespace hfe {
@@ -26,11 +27,52 @@ namespace world {
 typedef Math::Vec3 Vec3ColorFloatIntensity;
 typedef unsigned int uint;
 
-// [CHOSEN, not recovered] Retail's console metadata spelling. The generated executor stores the
-// parsed value as one unsigned dword and all 201 stock uses are numeric; keeping the alias local
-// preserves that exact content path without inventing a new public engine type or an unread
-// symbolic-token vocabulary.
-typedef unsigned int PhysicsGripFlags;
+// BF2.exe 0x54FC10/0x54FF4E: the console vocabulary names individual bits, not combinations.
+enum PhysicsGripFlags : unsigned int
+{
+    PGFNoGrip = 1, PGFContactGrip = 2, PGFRollGrip = 4, PGFEngineGrip = 8,
+    PGFRollGripWhenOccupied = 16, PGFDummyGrip = 32, PGFStaticFriction = 64,
+    PGFEngineDummyGrip = 128
+};
+
+std::ostream& operator<<(std::ostream& stream, PhysicsGripFlags value)
+{
+    switch (value)
+    {
+    case PGFContactGrip: return stream << "PGFContactGrip";
+    case PGFRollGrip: return stream << "PGFRollGrip";
+    case PGFEngineGrip: return stream << "PGFEngineGrip";
+    case PGFRollGripWhenOccupied: return stream << "PGFRollGripWhenOccupied";
+    case PGFDummyGrip: return stream << "PGFDummyGrip";
+    case PGFStaticFriction: return stream << "PGFStaticFriction";
+    case PGFEngineDummyGrip: return stream << "PGFEngineDummyGrip";
+    default: return stream << "PGFNoGrip";
+    }
+}
+
+std::istream& operator>>(std::istream& stream, PhysicsGripFlags& value)
+{
+    std::string token;
+    stream >> token;
+    std::string numericName;
+    if (token.size() <= 3)
+    {
+        int numeric = -1;
+        if (std::sscanf(token.c_str(), "%d", &numeric) == 1)
+        {
+            std::ostringstream text;
+            text << static_cast<PhysicsGripFlags>(numeric);
+            numericName = text.str();
+        }
+    }
+    static const char* const names[] = {"PGFNoGrip", "PGFContactGrip", "PGFRollGrip", "PGFEngineGrip",
+        "PGFRollGripWhenOccupied", "PGFDummyGrip", "PGFStaticFriction", "PGFEngineDummyGrip"};
+    value = PGFNoGrip;
+    for (unsigned int i = 0; i < 8; ++i)
+        if (token == names[i] || token == std::string("c_") + names[i] || numericName == names[i])
+        { value = static_cast<PhysicsGripFlags>(1u << i); break; }
+    return stream;
+}
 
 // Zero-layout friend bridge for direct-field/template-cursor executors. Keeping this access here
 // avoids inventing public gameplay setters/getters or exposing BundleTemplate's shipped static
@@ -59,7 +101,7 @@ struct BaseTemplateConsoleAccess
     }
     static const Math::Vec3& getInertiaModifier() { return simpleObject()->m_inertiaModifier; }
     static void setInertiaModifier(const Math::Vec3& value) { simpleObject()->m_inertiaModifier = value; }
-    static PhysicsGripFlags getGrip() { return simpleObject()->m_grip; }
+    static PhysicsGripFlags getGrip() { return static_cast<PhysicsGripFlags>(simpleObject()->m_grip); }
     static void setGrip(PhysicsGripFlags value) { simpleObject()->m_grip = value; }
     static U32 getCollisionGroups() { return simpleObject()->m_collisionGroups; }
     static void setCollisionGroups(U32 value) { simpleObject()->m_collisionGroups = value; }
@@ -590,10 +632,50 @@ BF2_CONSOLE_PROPERTY_FN(inertiaModifier, Vec3,
 // bit 8 is present. Stock tanks author grip 8 on their drive wheels and grip 128 on passive road
 // wheels; without this property every wheel kept the constructor default 2 and no track force was
 // ever produced.
-BF2_CONSOLE_PROPERTY_FN(grip, PhysicsGripFlags,
-                        getActiveTemplate(CID_SimpleObjectTemplate) != 0,
-                        BaseTemplateConsoleAccess::getGrip(),
-                        BaseTemplateConsoleAccess::setGrip, kObjTemplBaseConsoleTag)
+// BF2.exe 0x553318/0x553339 publishes numeric range 0..7, despite the bit-valued vocabulary.
+// Its range checker is empty (0x586B53), and its delta text is PGFNoGrip (0x5533F5).
+namespace {
+class ConsoleGrip : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleGrip()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "grip";
+        m_type = 1; m_minNoArgs = 0; m_maxNoArgs = 1; m_returnType = "PhysicsGripFlags";
+        m_hasReturnValue = false; m_isDynamic = true;
+        m_argTypes[0] = "PhysicsGripFlags"; m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return getActiveTemplate(CID_SimpleObjectTemplate) != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = BaseTemplateConsoleAccess::getGrip(); }
+        else if (m_argCount == 1) { m_hasReturnValue = false; BaseTemplateConsoleAccess::setGrip(BF2_CC_ARG(PhysicsGripFlags, 0)); }
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        if (index != 1) return;
+        static PhysicsGripFlags argument;
+        std::istringstream stream(value);
+        // BF2.exe 0x553438 extracts in place, including the reader's fallback on empty input.
+        stream >> argument;
+        m_args[0] = reinterpret_cast<std::string*>(&argument);
+    }
+    BF2_CC_RETURN_AS_STRING
+    bool objectHasRange() const override { return true; }
+    std::pair<const void*, const void*> getObjectRange() const override
+    { m_min = 0; m_max = 7; return std::make_pair(&m_min, &m_max); }
+    std::pair<std::string, std::string> getObjectRangeAsString() const override
+    { m_min = 0; m_max = 7; return std::make_pair(std::string("0"), std::string("7")); }
+    std::string getObjectDeltaAsString() const override { return "PGFNoGrip"; }
+    void checkObjectRange(bool) override {}
+private:
+    PhysicsGripFlags m_returnValue;
+    mutable unsigned int m_min, m_max;
+};
+static ConsoleGrip s_consoleGrip;
+}
 
 // Collision, simulation frequency and portal-passing properties.
 BF2_CONSOLE_PROPERTY_FN(centerOfCollisionOffset, Vec3,

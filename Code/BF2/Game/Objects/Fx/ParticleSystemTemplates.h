@@ -201,6 +201,8 @@ public:
     virtual void setDrawOrder(const std::string& name);            // +0x138 .cpp
     virtual std::string getDrawOrder() const;                      // +0x13C BY value
     virtual int  getParticleDrawOrderEnum() const;                 // +0x140 impl-pull
+    void setNearCullingEnable(bool value);
+    bool getNearCullingEnable() const;
     void setTextureName(const std::string& name);
     const std::string& getTextureName() const;
     void setRotationSpeed(float value);

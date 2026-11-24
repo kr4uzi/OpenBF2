@@ -18,7 +18,22 @@ namespace tool {
 namespace {
 // Stands in for the original's file-scope list (ELF 0x8B1EF24).
 const char* const kToolObjectConsoleTag = "tool.moduleToolObject";
+world::IObjectTemplate_ptrproxy consoleGetActiveObjectTemplate()
+{
+    world::IObjectTemplate_ptrproxy result;
+    result.ptr = world::objectTemplateManager->getActiveObjectTemplate();
+    return result;
+}
+world::IObject_ptrproxy consoleGetActiveObject()
+{ return world::IObject_ptrproxy(world::objectManager->getActiveObject()); }
 } // namespace
+
+// BF2.exe 0x718382/0x71845A: file-static Editor commands return borrowed pointer proxies.
+BF2_CONSOLE_OBJECT("Editor", 2, 0)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(getActiveObjectTemplate, consoleGetActiveObjectTemplate,
+                                       world::IObjectTemplate_ptrproxy, true, kToolObjectConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(getActiveObject, consoleGetActiveObject,
+                                       world::IObject_ptrproxy, true, kToolObjectConsoleTag)
 
 BF2_CONSOLE_OBJECT("Object", 2, 0)
 

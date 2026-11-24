@@ -12,6 +12,7 @@
 #include "ObjectUtil.h"                         // Object.setIsDisabledRecursive - updateFlagsRecursive
 #include "../../Game/Objects/ObjectLayoutAccess.h"   // Object.togglePause - the raw +0x14 template read
 #include "../../Game/Objects/Fx/EffectBundle.h"      // Object.togglePause - EffectBundle::togglePause
+#include "../../Game/Objects/Visual/LightSource.h"
 #include "../../Core/Ids.h"                           // CID_EffectBundleTemplate
 #include "../../Math/Mat4.h"                     // get/setRotationZXY - Object.rotation
 #include "../../Math/Vec3.h"
@@ -28,6 +29,32 @@ namespace {
 // Stands in for the original's file-scope list (ELF 0x8B1B944). world::Module::init registers it.
 const char* const kObjectManagerConsoleTag = "world.objectManager";
 
+// BF2.exe 0x7156EC/0x7157A8: preserve manager order and the trailing newline per class.
+std::string consoleListTemplateClasses()
+{
+    std::list<std::pair<unsigned int, std::string> > classes;
+    objectTemplateManager->getTemplateClasses(classes);
+    std::string result;
+    for (const auto& entry : classes) result += entry.second + "\n";
+    return result;
+}
+std::string consoleListPlayerClasses()
+{
+    std::list<std::pair<unsigned int, std::string> > classes;
+    playerManager->getPlayerClasses(classes);
+    std::string result;
+    for (const auto& entry : classes) result += entry.second + "\n";
+    return result;
+}
+LightSource* activeSkyLight()
+{
+    IObject* object = objectManager->getActiveObject();
+    return object && object->getClassID() == CID_LightSource ? static_cast<LightSource*>(object) : 0;
+}
+void consoleSetAsSkyLight() { activeSkyLight()->setAsSkyLight(); }
+int consoleGetLightSourceMask() { return objectManager->getActiveObject()->getLightSourceMask(); }
+void consoleRefreshTerrainSampling() { objectManager->refreshTerrainSampling(); }
+
 // The create target: ConsoleClass353's executor (0x87F1C20) calls the manager's string,string
 // overload (+0x5C) and returns the template pointer - which createTemplate has already published
 // and made the active cursor on every path (including the already-exists path, which re-activates
@@ -39,6 +66,24 @@ IObjectTemplate* consoleObjectTemplateCreate(const std::string& className, const
 }
 
 } // namespace
+
+// BF2.exe 0x710F7A/0x711AB7: only lights accept setAsSkyLight; all active objects expose the mask.
+BF2_CONSOLE_OBJECT("Object", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(setAsSkyLight, consoleSetAsSkyLight, activeSkyLight() != 0,
+                                   kObjectManagerConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getLightSourceMask, consoleGetLightSourceMask, int,
+                                objectManager->getActiveObject() != 0, kObjectManagerConsoleTag)
+// BF2.exe 0x713A2E/0x714D49: file-static class listings have no receiver-availability guard.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(listTemplateClasses, consoleListTemplateClasses, std::string,
+                                       true, kObjectManagerConsoleTag)
+BF2_CONSOLE_OBJECT("Player", 2, 0)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(listPlayerClasses, consoleListPlayerClasses, std::string,
+                                       true, kObjectManagerConsoleTag)
+// BF2.exe 0x715B67: the shipped object name is Terrain; the receiver is ObjectManager.
+BF2_CONSOLE_OBJECT("Terrain", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(refreshTerrainSampling, consoleRefreshTerrainSampling,
+                                   objectManager != 0, kObjectManagerConsoleTag)
 
 // Registers ObjectTemplate creation under category 11 (Flags).
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 11)
