@@ -88,6 +88,21 @@ GameLogic* serverGameLogic()
     return static_cast<GameLogic*>(gameLogic);
 }
 
+void gameLogicTeleportTo(Vec3 position)
+{
+    static_cast<ServerGameLogic*>(serverGameLogic())->moveLocalHumanPlayerToPoint(position);
+}
+
+void gameLogicTeleportCameraTo(Vec3 position)
+{
+    static_cast<ServerGameLogic*>(serverGameLogic())->moveLocalHumanCameraToPoint(position);
+}
+
+U32 gameLogicGetNumberOfTickets(U32 team)
+{
+    return static_cast<ServerGameLogic*>(serverGameLogic())->getNumberOfTickets(team);
+}
+
 Vec3 gameLogicGetBeforeSpawnCameraPosition()
 {
     return serverGameLogic()->getBeforeSpawnCameraPosition();
@@ -223,6 +238,14 @@ BF2_CONSOLE_METHOD_1_RET_ACTIVE(getTeamName, gameLogicGetTeamName, std::string,
                                 gameLogic != 0, int, kGameLogicConsoleTag)
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setBeforeSpawnCamera, gameLogicSetBeforeSpawnCamera,
                                    gameLogic != 0, Vec3, Vec3, kGameLogicConsoleTag)
+// BF2.exe 0x43A422 / 0x43A53C / 0x43B9BC; gate 0x43C019 resolves the
+// GSIsServer receiver (0x437813). Dedicated executors 0x418C30 / 0x418DF0 / 0x41ADA0.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(teleportTo, gameLogicTeleportTo,
+                                   serverGameLogic() != 0, Vec3, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(teleportCameraTo, gameLogicTeleportCameraTo,
+                                   serverGameLogic() != 0, Vec3, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(getNumberOfTickets, gameLogicGetNumberOfTickets, U32,
+                                serverGameLogic() != 0, U32, kGameLogicConsoleTag)
 // ConsoleClass195 - exec 0x419710, gate 0x418D60 (GSIsServer && gameLogic), argc exactly 1,
 // returns void. Only caller of ServerGameLogic::createObject.
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(createObject, gameLogicCreateObject,

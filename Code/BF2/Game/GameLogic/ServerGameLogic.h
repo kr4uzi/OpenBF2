@@ -211,6 +211,10 @@ public:
     int   getTicketLimit(unsigned int team, int key);           // the limit map find
     float getTicketChangePerSecond(unsigned int team);
     virtual void  suicide();                                                // +0x68 [S]
+    // Moves the local player's controlled vehicle, resetting its cached physics node if present.
+    void moveLocalHumanPlayerToPoint(const Vec3& position);
+    // Moves the local player's current camera object. A present camera must expose IObject.
+    void moveLocalHumanCameraToPoint(const Vec3& position);
     virtual void  toggleLocalFreeCamera();                                  // +0x208 [S]
     void do_toggleFreeCamera(world::IPlayer*);          // inlined in PE 0x4558A0
     virtual void  togglePause();                                            // +0x218 [S]

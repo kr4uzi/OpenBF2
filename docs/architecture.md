@@ -310,6 +310,9 @@ require its voice-message owner. Player edits require an active player.
 | `gameLogic.getTeamLanguage`, `gameLogic.getTeamName` | Team number; returns the configured string. |
 | `gameLogic.defaultLevel` | No argument reads the name; one string sets it. |
 | `gameLogic.setKit` | Team, kit type, kit template, soldier template. Types accept `KTMedic`, `Medic`, or `5` (the seven stock types); unknown tokens select the no-kit sentinel 13. |
+| `gameLogic.teleportTo` | Slash-separated position; moves the local human player's controlled vehicle and resets its cached physics node when present. Requires `GSIsServer` and live game logic. |
+| `gameLogic.teleportCameraTo` | Slash-separated position; moves the local human player's current camera object. Requires `GSIsServer` and live game logic. |
+| `gameLogic.getNumberOfTickets` | Unsigned team number; returns current tickets for team 1 or 2, or zero for another team. Requires `GSIsServer` and live game logic. |
 | `gameLogic.messages.playRadioMessage` | Team, message name, voice name, filter name; returns the message result integer. |
 | `gameLogic.messages.playHelpMessage` | Help key; returns the message result integer. |
 | `player.pickup` | Item template name; adds it to the controlled soldier on a server. |
@@ -320,6 +323,12 @@ require its voice-message owner. Player edits require an active player.
 | `kitTemplate.getType` | No arguments; returns the active AI kit's `KTSpecops` through `KTExtended6` token. Out-of-range values print no token. |
 | `reservedSlots.configFile`, `reservedSlots.load`, `reservedSlots.save` | Read/set the filename, load its console script, or save the current list; load/save return Boolean results. |
 | `reservedSlots.addNick`, `reservedSlots.removeNick`, `reservedSlots.clear`, `reservedSlots.list` | Add/remove one nickname, clear, or return newline-separated nicknames. Administrator access level 1. |
+| `sv.maxConnectionType` | No argument reads the connection-class name; one name sets the ceiling. Names are case-sensitive: `CTConnecting`, `CTModem28Kbps`, `CTModem56Kbps`, `CTCable128Kbps`, `CTCable256Kbps`, `CTLanT1` (values 0 through 5). Unknown names, including numeric tokens, select 6 and print `CTNumTypes`. Administrator access level 1. |
+
+For example, `sv.maxConnectionType CTCable256Kbps` in `serversettings.con` sets the
+ceiling to class 4. Query `sv.maxConnectionType` to read the name back. Teleport commands
+need a local human player; a headless server normally has none, so they leave the world
+unchanged there. Camera teleport uses the current camera, including a vehicle camera.
 
 Reserved nicknames load during `GameServer::init` from
 `<GSModDirectory>/settings/reservedSlots.con` (normally `mods/bf2/settings/reservedSlots.con`),
