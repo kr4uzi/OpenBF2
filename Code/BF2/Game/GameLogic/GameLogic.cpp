@@ -8,6 +8,9 @@
 #include "../VoipClient/BF2VoipClient.h"   // bf2VoipClient (ds:0x9A4DA0)
 #include "../AudioSettings.h"              // loadVoiceMessages' englishOnlyVoices read (+0x90)
 #include "../Main/BF2ClientSeams.h"        // g_audioSettings (ds:0x987384)
+#include "../Main/BF2.h"                   // loading-time message pump
+#include "../../Menu/IMenuLogic.h"
+#include "../../Sound/BfSound/MusicPlayer.h"
 #endif
 #include "GameLogicCollision.h"                        // doImpact's exact static forwarding target
 #include "GameLogicExplosion.h"                        // common explosion presentation forwarder
@@ -310,12 +313,25 @@ bool GameLogic::loadAllConFiles(const std::string& path)
 }
 
 // Pump server updates and report changed loading percentages. Clients also post
-// a loading-screen event; LoadStat throttles callbacks to thirty per second.
+// a loading-screen event; LoadStat uses the interval selected for this process.
 // [UNRESOLVED] Some LoadStat member names remain provisional.
-// [RETIRE-WHEN: loadcallback-client-preamble] Recover the client message-pump
-// return contract and working-set operations before restoring the omitted preamble.
 static void loadCallback()
 {
+#if !DEDICATED
+    // BF2.exe 0x4EBED9..0x4EBF09: yield and pump only with an application facade.
+    // The existing pump handles quit itself; 0x401500/0x401568 return AL=0 on
+    // every returning path, so the caller's conditional exit cannot be reached.
+    if (bf2Engine && bf2Engine->getApplication())
+    {
+        g_system->sleep(0);
+        bf2Engine->getApplication()->handleInGameWinMessages();
+    }
+    // [FRONTIER] BF2.exe 0x4EBF0F calls 0x4013E0 -> 0x401350 unconditionally.
+    // [RETIRE-WHEN: loadcallback-client-preamble] Expose BF2.cpp's existing Win32
+    // trimOtherProcessesAndFileCache helper through a typed entry point, establish
+    // the native OS policy, and validate the loading-time call before restoring it.
+#endif
+
     if (game != 0 && game->queryInterface(IID_IGameServer) != 0)
         game->update(0, -1.0f);                            // pump the server
 
@@ -363,7 +379,7 @@ static void loadCallback()
 }
 
 // Resets progress, records the start time, announces the level on HUD/frame
-// channels, and arms the callback at the exact widened float interval 1/30.
+// channels, and arms the callback. Only dedicated mode selects a 1/30 interval.
 void GameLogic::beginLoadStats(const std::string& levelPath)
 {
     LoadStat* stat = loadStat;                             // ds:0x8ABBC98
@@ -372,7 +388,7 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
     stat->m_unknown1C = now;                               // +0x1C - the load start time
 
 #if !DEDICATED
-    // [PLATFORM] BF2.exe 0x4EC051-0x4EC08C publishes the loading state before the menu events
+    // BF2.exe 0x4EC051-0x4EC08C publishes the loading state before the menu events
     // below can construct endOfRound.swf. The SwiffHost lookup and result are both unguarded in
     // retail. Without this write the movie sees getIsLoading()==false on its first frame and skips
     // the progress bar and the EOR_finishedloading ("validating client data") state entirely.
@@ -381,6 +397,20 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
         ui::ISwiffHost* host = static_cast<ui::ISwiffHost*>(
             classManager->getSingleton(std::string("SwiffHost")));
         host->setFlag7B8(true);                             // +0xD0
+
+        // BF2.exe 0x4EC092..0x4EC0EF: fade before releasing the old menu and
+        // posting loading events. Preserve the repeated class-id and global reads.
+        if (menuLogic)
+        {
+            MusicPlayer* music = bf2Engine->getMusicPlayer();
+            if (menuLogic->getClassId() == CID_MainMenuLogic && music)
+                music->setState(1, 0);
+            else if (menuLogic->getClassId() == CID_BetweenRoundsLogic && music)
+                music->setState(3, 0);
+            if (menuLogic)
+                menuLogic->release();
+            menuLogic = 0;
+        }
     }
 #endif
 
@@ -389,7 +419,9 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
     eventManager->postEvent(static_cast<EventCategory>(10), 3,
                             const_cast<std::string*>(&levelPath), 0.0f);
 
-    stat->setSecondsBetweenCallbacks(static_cast<double>(1.0f / 30.0f));
+    // BF2.exe 0x4EC120..0x4EC13C; both dedicated images select this unconditionally.
+    if (isDedicated())
+        stat->setSecondsBetweenCallbacks(static_cast<double>(1.0f / 30.0f));
     stat->registerLoadCallback(&loadCallback);
 }
 

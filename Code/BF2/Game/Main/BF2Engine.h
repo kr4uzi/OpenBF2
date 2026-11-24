@@ -106,6 +106,9 @@ public:
 
     // [INFERRED] Accessor for a direct field read in the original.
     BF2Window* getWindow() const { return window; }
+    // [INFERRED] Accessor names for direct client reads in loading callbacks.
+    BF2* getApplication() const { return bf2; }
+    MusicPlayer* getMusicPlayer() const { return musicPlayer; }
     // [CHOSEN] Accessors expose fields used directly by client console bindings.
     bool getAllowToggleFullscreen() const { return byte64; }
     void setAllowToggleFullscreen(bool allow) { byte64 = allow; }
