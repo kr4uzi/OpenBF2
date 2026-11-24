@@ -73,9 +73,11 @@ SpawnManager::SpawnManager()
     // self-linked sentinel allocations amount to.
 }
 
-// [UNRESOLVED] Original destructor body is unread; owned-group teardown is not yet implemented.
+// BF2.exe 0x6598C0 (call 0x6598CF) / ELF 0x81127C0, 0x8112930, 0x8112AA0:
+// remove registered groups before destroying the registry containers.
 SpawnManager::~SpawnManager()
 {
+    removeAll();
 }
 
 // `lea eax, [this+0x0C]; ret`.
