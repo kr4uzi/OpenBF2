@@ -28,6 +28,12 @@
 #include "../../../Physics/Material.h"
 #include "../../../Physics/MaterialManager.h"
 #include "../GameLogicComp/IArmorGLComp.h"
+#if !DEDICATED
+#include "../GameLogicComp/IRadioGLComp.h"
+#include "../IPlayer.h"
+#include "../../../Scene/Object/ObjectPredicator.h"
+#include "../../../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
+#endif
 #include "../../../Scene/Object/ObjectUtil.h"
 #include "../../../Scene/Object/PlayerManager.h"
 #include "../../../Scene/Object/WorldObjTemplPortal/PortalManager.h"
@@ -51,6 +57,24 @@ namespace world {
 extern IBase* materialManager;      // ds:0x8AD2820, defined in Core/Globals.cpp
 
 namespace {
+
+#if !DEDICATED
+// [INFERRED] Name. BF2.exe 0x6273A0, vtable 0x92FF4C: tests the template's
+// player-control implementation, rather than the live object's interface.
+class PlayerControlTemplatePredicator : public ObjectPredicator
+{
+public:
+    bool predicate(IObject* object) override
+    {
+        if (!object || !object->getTemplate())
+            return false;
+        return const_cast<IObjectTemplate*>(object->getTemplate())
+                   ->queryImplementation(CID_PlayerControlObjectTemplate) != 0;
+    }
+    unsigned int getFlags() const override { return 0; }
+    bool performCulling(IObject*) override { return true; }
+};
+#endif
 
 #if defined(_MSC_VER)
 #  define BF2_SIMPLE_VCALL __thiscall
@@ -462,10 +486,58 @@ void SimpleObject::handleUpdate(float deltaTime, unsigned int)
         static_cast<IResponsePhysics*>(m_responsePhysics)->updateEffect(deltaTime);
 }
 
+// Client radio callouts use the first player-control descendant's root team and the
+// nearest ancestor armor state. Messages 39/40 still reach every attached component.
 void SimpleObject::handleMessage(TemplateMessage message, IPlayer* player, bool flag)
 {
     if (m_radioGLComponent)
+    {
+#if !DEDICATED
+        // BF2.exe 0x628260..0x62837C. ELF 0x81EFCB0 retains only the local-player
+        // lookup: the playback branch is absent from the dedicated image.
+        IRadioGLComp* const radio = static_cast<IRadioGLComp*>(m_radioGLComponent);
+        IPlayer* const localPlayer = playerManager->getLocalHumanPlayer();
+        if (!isDedicated() && localPlayer && gameLogic->getGameStatus() == GameStatus_Playing)
+        {
+            std::vector<IObject*> objects;
+            PlayerControlTemplatePredicator predicator;
+            getChilds(this, objects, &predicator, 0);                 // PE 0x71B670
+            // PE 0x6282D9..0x62831E tests only the first match, including self.
+            if (!objects.empty() && objects.front())
+            {
+                const int localTeam = localPlayer->getTeam();
+                IObject* const root = getRootParent(objects.front());
+                IPlayerControlObject* const pco = static_cast<IPlayerControlObject*>(
+                    root->queryInterface(IID_IPlayerControlObject)); // PE 0x6004F0
+                if ((pco ? pco->getTeam() : 0) != localTeam)
+                    return;
+            }
+
+            if (message == static_cast<TemplateMessage>(24) ||
+                message == static_cast<TemplateMessage>(25))
+            {
+                IArmorGLComp* armor = 0;
+                for (IObject* object = this; object; object = object->getParent())
+                {
+                    if (IObjectComponent* component = object->getArmorComponent())
+                    {
+                        armor = static_cast<IArmorGLComp*>(component); // PE 0x4DB1B0
+                        break;
+                    }
+                }
+                if (armor)
+                {
+                    if (message == static_cast<TemplateMessage>(24) && armor->getStatus() == 1)
+                        radio->playDestroyedMessage();               // PE 0x62836F, slot +0x48
+                    else if (message == static_cast<TemplateMessage>(25) && armor->getStatus() == 0)
+                        radio->playRepairedMessage();                // PE 0x628347, slot +0x4C
+                }
+            }
+        }
+#else
         playerManager->getLocalHumanPlayer();
+#endif
+    }
 
     if (message == static_cast<TemplateMessage>(39) ||
         message == static_cast<TemplateMessage>(40))
