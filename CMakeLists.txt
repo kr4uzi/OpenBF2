@@ -2605,6 +2605,44 @@ if(APPLE)
     endif()
 endif()
 
+# [TEMP] [CHOSEN, not recovered] Headless missing-ID regression check with exact production
+# BFGame lookup definitions and native typed collaborators. No sockets or game content.
+if(BF2_BUILD_POSIX)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+endif()
+if(BF2_BUILD_POSIX AND Python3_Interpreter_FOUND)
+    set(bf2_lookup_fixture "${CMAKE_CURRENT_BINARY_DIR}/control_point_lookup_check")
+    add_custom_command(
+        OUTPUT "${bf2_lookup_fixture}/lookup_actual.cpp" "${bf2_lookup_fixture}/lookup_collaborators.inl"
+        BYPRODUCTS "${bf2_lookup_fixture}/lookup_source.json"
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/Code/Tests/aidll/control_point_lookup_runtime.py"
+            generate "${bf2_lookup_fixture}"
+        DEPENDS
+            Code/Tests/aidll/control_point_lookup_runtime.py
+            Code/Tests/aidll/bf_game_counts_runtime.py
+            "${BF2_ROOT}/AI/AIInterface/BFKnowledge/BFGame.cpp"
+            "${BF2_ROOT}/AI/AIInterface/BFKnowledge/BFGame.h"
+            "${BF2_ROOT}/Game/IGameLogic.h"
+            "${BF2_ROOT}/Game/Objects/IObject.h"
+            "${BF2_ROOT}/Game/Objects/Object.h"
+            "${BF2_ROOT}/Game/Objects/Base/SimpleObject.h"
+            "${BF2_ROOT}/Game/Objects/Base/Bundle.h"
+            "${BF2_ROOT}/Game/Objects/Game/ControlPoint.h"
+        VERBATIM)
+    add_executable(bf2_control_point_lookup_check EXCLUDE_FROM_ALL
+        Code/Tests/aidll/control_point_lookup_runtime.cpp
+        "${bf2_lookup_fixture}/lookup_actual.cpp"
+        "${bf2_lookup_fixture}/lookup_collaborators.inl")
+    bf2_configure_cpp_target(bf2_control_point_lookup_check)
+    bf2_set_platform_compat(bf2_control_point_lookup_check)
+    bf2_set_image(bf2_control_point_lookup_check 0)
+    target_include_directories(bf2_control_point_lookup_check PRIVATE "${bf2_lookup_fixture}")
+    if(BUILD_TESTING)
+        add_test(NAME bf2_control_point_lookup_check COMMAND bf2_control_point_lookup_check)
+    endif()
+endif()
+
 # [TEMP] Cumulative fixture for game frontier-closure sites no normal session reaches
 # (Code/Tests/game_frontier_check.cpp; docs/tracks/game/frontier-closure.md). Built on request; the
 # families it never calls stay unresolved, as /FORCE:UNRESOLVED leaves them in the Windows fixtures.
