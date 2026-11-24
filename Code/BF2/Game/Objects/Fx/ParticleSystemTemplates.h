@@ -248,6 +248,10 @@ public:
     unsigned int getAnimationFrameCountX() const;
     void setAnimationFrameWidthRelative(float value);
     void setAnimationFrameHeightRelative(float value);
+    void setWindSpeedAgeDistance(float value);
+    float getWindSpeedAgeDistance() const;
+    void setWindAgingFactor(float value);
+    float getWindAgingFactor() const;
 protected:
     /* +0x48 */ int         m_refCount;
     /* +0x4C */ std::string m_particleTypeName;       // setParticleType's copy of the parsed token

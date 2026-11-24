@@ -79,7 +79,7 @@ protected:
     /* 0x15C */ Vec3    m_specColor;
     /* 0x168 */ float   m_hdrIntensity;
     /* 0x16C */ float   m_coneAngle1;
-    /* 0x170 */ float   m_coneAngleRads1;         // not written by the ctor or the setters (client-side)
+    /* 0x170 */ float   m_coneAngleRads1;         // client setter's radians cache
     /* 0x174 */ float   m_coneAngle2;
     /* 0x178 */ float   m_coneAngleRads2;
     /* 0x17C */ bool    m_enabled;

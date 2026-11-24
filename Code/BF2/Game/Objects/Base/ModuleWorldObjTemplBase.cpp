@@ -325,6 +325,10 @@ void objTemplCollisionMeshSet(const std::string& v)
 // General ObjectTemplate defaults use category 0. Some later general rows retain category-1 metadata.
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
+// BF2.exe 0x550DCB: base getter returns empty; assignment dispatches the virtual setter.
+BF2_CONSOLE_PROPERTY(destroyableWindowsTemplate, std::string, BaseTemplateConsoleAccess::simpleObject(),
+                     setDestroyableWindowsTemplate, getDestroyableWindowsTemplate, kObjTemplBaseConsoleTag)
+
 // Reads or sets the active template's cull-radius scale.
 BF2_CONSOLE_PROPERTY(cullRadiusScale, float, getActiveTemplate(CID_ObjectTemplate), setCullRadiusScale, getCullRadiusScale, kObjTemplBaseConsoleTag)
 

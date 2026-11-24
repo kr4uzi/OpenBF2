@@ -95,6 +95,9 @@ BF2_CONSOLE_PROPERTY(emitRangeZ, RandomDistribution, activeParticleBase(), setEm
 BF2_CONSOLE_PROPERTY(timeToLive, float, activeParticleBase(), setTimeToLive, getTimeToLive, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomTimeToLive, float, activeParticleBase(), setRandomTimeToLive, getRandomTimeToLive, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(windAffectionFactor, float, activeParticleBase(), setWindAffectionFactor, getWindAffectionFactor, kParticleConsoleTag)
+// BF2.exe 0x570A33/0x570B48: only the sprite-system template accepts these shared properties.
+BF2_CONSOLE_PROPERTY(windAgingFactor, float, activeSpriteParticle(), setWindAgingFactor, getWindAgingFactor, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(windSpeedAgeDistance, float, activeSpriteParticle(), setWindSpeedAgeDistance, getWindSpeedAgeDistance, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(rotationGraph, Vec4, activeParticleBase(), setRotationGraph, getRotationGraph, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(gravityGraph, Vec4, activeParticleBase(), setGravityGraph, getGravityGraph, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(airResistanceGraph, Vec4, activeParticleBase(), setAirResistanceGraph, getAirResistanceGraph, kParticleConsoleTag)

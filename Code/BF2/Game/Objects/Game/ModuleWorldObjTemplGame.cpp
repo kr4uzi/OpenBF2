@@ -1169,6 +1169,9 @@ BF2_CONSOLE_FIELD(maxTriggerDistance, float, activeGroundEffectBundle(),
                   m_maxTriggerDistance, kObjTemplGameConsoleTag)
 BF2_CONSOLE_FIELD(clientHitDetection, bool, activeDestroyableWindowsBundle(),
                   clientHitDetection, kObjTemplGameConsoleTag)
+// BF2.exe 0x523633: direct string get/set on the window bundle.
+BF2_CONSOLE_FIELD(effectTemplateBaseName, std::string, activeDestroyableWindowsBundle(),
+                  effectTemplateBaseName, kObjTemplGameConsoleTag)
 // objectTemplate.setNumWindows - dedicated PE gate 0x4AAAF0 =
 // `getActiveTemplate(0xC4DC = CID_DestroyableWindowsBundleTemplate) != 0`; ctor 0x4AAA00,
 // executor 0x4AAB70, one int argument, void, file-static. Set-only: the shipped executor's only
@@ -1720,6 +1723,10 @@ BF2_CONSOLE_PROPERTY_FN(maxCorner, Vec3, getActiveTemplate(CID_DestroyableObject
                         GameTemplateConsoleAccess::setMaxCorner, kObjTemplGameConsoleTag)
 
 // Antenna sway properties. maxSwayAngle contains separate X and Z limits.
+// BF2.exe 0x50C9E7; dedicated PE 0x487B50: shared skeleton property.
+BF2_CONSOLE_PROPERTY_FN_NAMED("antenna.skeleton", std::string, getActiveTemplate(CID_AntennaObjectTemplate) != 0,
+    GameTemplateConsoleAccess::antenna()->getSkeleton(),
+    GameTemplateConsoleAccess::antenna()->setSkeleton, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_NAMED("antenna.maxSwayAngle", Vec2, getActiveTemplate(CID_AntennaObjectTemplate) != 0,
                               GameTemplateConsoleAccess::getAntennaMaxSwayAngle(),
                               GameTemplateConsoleAccess::setAntennaMaxSwayAngle, kObjTemplGameConsoleTag)

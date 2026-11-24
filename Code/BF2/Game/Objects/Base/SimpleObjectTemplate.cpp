@@ -775,6 +775,12 @@ void SimpleObjectTemplate::setDestroyableWindowsTemplate(const std::string&)
     // Intentional five-byte no-op in this base; a destroyable-window subclass overrides it.
 }
 
+// BF2.exe 0x5DF330 / ELF 0x81F2BB0: the base getter constructs an empty string by value.
+std::string SimpleObjectTemplate::getDestroyableWindowsTemplate() const
+{
+    return std::string();
+}
+
 // Updates the mobile-physics bit while preserving every other physics flag.
 void SimpleObjectTemplate::setHasMobilePhysics(bool mobile)
 {
