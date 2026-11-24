@@ -7,6 +7,7 @@
 #include "../BF2/Core/SettingsRepostitory.h"
 #include "../BF2/Core/System.h"
 #include "../BF2/Game/Main/Game.h"
+#include "../BF2/Game/Python/PythonHost.h"
 #include "../BF2/Game/GameLogic/GameLogic.h"
 #include "../BF2/Game/GameLogic/ServerGameLogic.h"
 #include "../BF2/Game/GameLogic/ScoreSystem/ScoreManager.h"
@@ -41,6 +42,7 @@
 namespace dice { namespace hfe {
 extern ClassManager* classManager;
 ConsoleObjectList& gameLogicConsoleObjects();
+ConsoleObjectList& moduleGameConsoleObjects();
 ConsoleObjectList& serverSettingsConsoleObjects();
 namespace world { extern IBase* scoreManager; }
 namespace world { extern PhysicsNodeManager* physicsNodeManager; }
@@ -169,6 +171,7 @@ struct Logic : GameLogic
     void setKit(int t, int k, const std::string& name, const std::string& soldier) override
     { ++calls; team = t; kit = k; kitName = name; soldierName = soldier; }
     void voice(VoiceMessages* value) { m_voiceMessages = value; }
+    void roundState(int status, int phase) { m_gameStatus = status; m_beginRoundState = phase; }
 };
 struct PlayerObserver : Player
 {
@@ -286,12 +289,14 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     Files* files = new Files;
     io::fileManager = files;
     mainConsoleObjects->registerConsoleObjects(gameLogicConsoleObjects());
+    mainConsoleObjects->registerConsoleObjects(moduleGameConsoleObjects());
     mainConsoleObjects->registerConsoleObjects(serverSettingsConsoleObjects());
     mainConsoleObjects->registerConsoleObjects(world::objectManagerConsoleObjects());
     mainConsoleObjects->registerConsoleObjects(ai::kitTemplateConsoleObjects());
 
     struct Metadata { const char* object; const char* command; int type, min, max; const char* result; bool dynamic; int access; };
     const Metadata expected[] = {
+        {"pythonHost", "sendCommand", 0, 1, 9, "bool", true, 2},
         {"gameLogic", "getTeamLanguage", 0, 1, 1, "std::string", true, 2},
         {"gameLogic", "getTeamName", 0, 1, 1, "std::string", true, 2},
         {"gameLogic", "defaultLevel", 1, 0, 1, "std::string", true, 2},
@@ -514,6 +519,96 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     invoke(row("gameLogic", "teleportTo"), {});
     invoke(row("gameLogic", "teleportCameraTo"), {"1/2/3", "4/5/6"});
     check(teleportCalls.empty(), "teleports reject wrong arity");
+
+    ConsoleObject* send = row("pythonHost", "sendCommand");
+    check(send->isActive(), "Python command requires the host pointer, not initialization");
+    for (int i = 0; i < 9; ++i)
+        check(std::strcmp(send->getArgType(i), "std::string") == 0,
+              "Python command exposes nine raw string arguments");
+    Py_NoSiteFlag = 1;
+    Py_Initialize();
+    check(!python::pythonHost()->isInitialized() && line("pythonHost.sendCommand beforeInit") == "1",
+          "uninitialized host still returns true after attempting dispatch");
+    // In-memory bf2 supplies only initialization prerequisites; all host registration,
+    // tuple construction and callback dispatch below use the production implementation.
+    PyObject* module = PyImport_AddModule(const_cast<char*>("bf2"));
+    PyObject* globals = PyModule_GetDict(module);
+    PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+    PyObject* setup = PyRun_String(
+        "def playerConvFunc(id):\n return id\ndef init_module():\n pass\n",
+        Py_file_input, globals, globals);
+    check(setup != nullptr, "in-memory bf2 initialization prerequisites");
+    Py_DECREF(setup);
+    check(python::pythonHost()->initialize(false), "production PythonHost initializes");
+    gameLogic = logic;
+    logic->roundState(0, 0);
+    check(line("pythonHost.sendCommand noHandlers") == "1", "dispatch without handlers returns true");
+    setup = PyRun_String(
+        "import host\nseen = []\ngated = []\n"
+        "def receive(command, args):\n seen.append((command, args))\n"
+        "def receivePlaying(command, args):\n gated.append((command, args))\n"
+        "def fail(command, args):\n raise RuntimeError('fixture callback')\n"
+        "host.registerHandler('ConsoleSendCommand', fail, 1)\n"
+        "host.registerHandler('ConsoleSendCommand', receive, 1)\n"
+        "host.registerHandler('ConsoleSendCommand', receivePlaying)\n",
+        Py_file_input, globals, globals);
+    check(setup != nullptr, "production host registers ConsoleSendCommand handlers");
+    Py_DECREF(setup);
+    PyObject* seen = PyDict_GetItemString(globals, "seen");
+    for (int count = 1; count <= 9; ++count)
+    {
+        std::vector<std::string> args;
+        for (int i = 0; i < count; ++i)
+            args.push_back("argument " + std::to_string(i));
+        check(send->execute(args.data(), count) == "1", "every accepted Python command arity returns true");
+        PyObject* record = PyList_GetItem(seen, count - 1);
+        check(record && PyTuple_Size(record) == 2 &&
+              std::string(PyString_AsString(PyTuple_GetItem(record, 0))) == args[0],
+              "ConsoleSendCommand carries command first");
+        PyObject* values = PyTuple_GetItem(record, 1);
+        check(PyTuple_Check(values) && PyTuple_Size(values) == count - 1,
+              "omitted arguments are padded empty and trimmed from the tuple");
+        for (int i = 1; i < count; ++i)
+            check(std::string(PyString_AsString(PyTuple_GetItem(values, i - 1))) == args[i],
+                  "all optional strings preserve order and spaces");
+        check(!PyErr_Occurred(), "a failing handler is cleared and later handlers still run");
+    }
+    check(PyList_Size(seen) == 9, "one callback per accepted arity");
+    check(line("pythonHost.sendCommand \"quoted command\" \"\" \"two words\" \"\" \"\"") == "1",
+          "real console preserves quoted strings and explicit empty arguments");
+    PyObject* record = PyList_GetItem(seen, 9);
+    PyObject* values = PyTuple_GetItem(record, 1);
+    check(std::string(PyString_AsString(PyTuple_GetItem(record, 0))) == "quoted command" &&
+          PyTuple_Size(values) == 2 &&
+          std::string(PyString_AsString(PyTuple_GetItem(values, 0))).empty() &&
+          std::string(PyString_AsString(PyTuple_GetItem(values, 1))) == "two words",
+          "tuple trims only trailing empties, preserving interior empties");
+    check(values->ob_refcnt == 1 && PyTuple_GetItem(values, 1)->ob_refcnt == 1,
+          "outer tuple transfers nested tuple and string ownership without extra references");
+    check(line("pythonHost.sendCommand alone") == "1" &&
+          PyTuple_Size(PyTuple_GetItem(PyList_GetItem(seen, 10), 1)) == 0,
+          "short calls do not reuse optional arguments from earlier calls");
+    check(invoke(send, {"", "", ""}) == "1" &&
+          std::string(PyString_AsString(PyTuple_GetItem(PyList_GetItem(seen, 11), 0))).empty() &&
+          PyTuple_Size(PyTuple_GetItem(PyList_GetItem(seen, 11), 1)) == 0,
+          "empty command is still dispatched with an empty optional tuple");
+    invoke(send, {});
+    invoke(send, {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"});
+    check(PyList_Size(seen) == 12, "Python command rejects zero and ten arguments");
+    PyObject* gated = PyDict_GetItemString(globals, "gated");
+    gameLogic = logic;
+    logic->roundState(0, 3);
+    check(line("pythonHost.sendCommand outsideRound") == "1" && PyList_Size(gated) == 0,
+          "ordinary handlers stay gated outside playing status");
+    logic->roundState(GameStatus_Playing, 0);
+    check(line("pythonHost.sendCommand beforeBeginRound") == "1" && PyList_Size(gated) == 0,
+          "ordinary handlers stay gated before running begin-round state");
+    logic->roundState(GameStatus_Playing, 3);
+    check(line("pythonHost.sendCommand playing payload") == "1" && PyList_Size(gated) == 1,
+          "ordinary handlers receive console commands in a running round");
+    mainConsoleObjects->unregisterConsoleObjects(moduleGameConsoleObjects());
+    check(mainConsoleObjects->getConsoleObject("pythonHost", "sendCommand") == nullptr,
+          "ModuleGame command list unregisters");
     std::printf("PASS console commands: %u checks (DEDICATED=%d)\n", checks, DEDICATED);
     std::fflush(stdout);
     std::_Exit(0); // No full-engine teardown for this bounded, pre-init fixture.

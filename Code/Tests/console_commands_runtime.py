@@ -31,7 +31,7 @@ for target, dedicated in (("bf2_client", 0), ("bf2", 1)):
     link = [arg for arg in link if not arg.startswith("-Wl,-map,")]
     link += [str(obj), "-Wl,-e,_bf2ConsoleCommandsMain"]
     subprocess.run(link, cwd=build, check=True)
-    result = subprocess.run([str(exe)], cwd=build, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([str(exe), "+noSound", "1"], cwd=build, capture_output=True, text=True, timeout=30)
     (build / f"console_commands_{target}.run.log").write_text(result.stdout + result.stderr)
     print(result.stdout, end="", flush=True)
     if result.returncode:
