@@ -16,6 +16,11 @@
 #include "../../../../IO/Stream/IStream.h"
 #include "../../../../Physics/BasicPhysicsSystem.h"
 #include "../../../../Physics/IPhysicsNode.h"
+#if !DEDICATED
+#include "../../../Main/Game.h"
+#include "../../../../Core/SmartItf.h"
+#include "../../../../GeomMisc/DebugRenderer.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -150,6 +155,25 @@ bool PreDestinedFollowComp::followTarget(IObject* target, float)
             m_debugPointCounter = 0;
             m_debugPoints.insert(m_debugPoints.begin(), m_initObject->getAbsolutePosition());
         }
+#if !DEDICATED
+        // BF2.exe 0x0061C391..0x0061C484: only subsequent follow updates
+        // publish the saved points. The singleton is borrowed and unguarded.
+        if (!isDedicated())
+        {
+            geom::IDebugRenderer* renderer = static_cast<geom::IDebugRenderer*>(
+                classManager->getSingleton("DebugRenderer"));
+            for (std::list<Vec3>::const_iterator it = m_debugPoints.begin();
+                 it != m_debugPoints.end(); ++it)
+            {
+                Mat4 transform = {};
+                transform.m[0] = transform.m[5] = transform.m[10] = transform.m[15] = 1.0f;
+                transform.m[12] = it->x;
+                transform.m[13] = it->y;
+                transform.m[14] = it->z;
+                renderer->queueGeometry(geom::CID_DebugSphereMeshTemplate, transform, "");
+            }
+        }
+#endif
     }
 
     if (gameLogic->getDebugMissiles())
