@@ -2774,6 +2774,11 @@ void GameLogic::selectWeapon(world::IPlayer* player, world::IObject* vehicle,
             {
                 if (itemIndex != -1)
                 {
+#if !DEDICATED
+                    // BF2.exe 0x004F2AED..0x004F2B07 refuses before changing either device.
+                    if (hudManager && hudManager->isCommanderShown())
+                        return;
+#endif
                     bool clearedTheOther = false;
                     if (player->getNightVision())                              // +0x2E8
                     {

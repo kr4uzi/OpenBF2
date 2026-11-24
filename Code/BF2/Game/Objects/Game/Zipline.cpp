@@ -38,6 +38,9 @@
 #include "../../Python/PyRef.h"
 #include "../../Python/PythonHost.h"
 #include "../../Utility/Vars.h"
+#if !DEDICATED
+#include "../../../Sound/BfSound.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -197,6 +200,14 @@ void Zipline::init()
 
         _byte17D = true;
         m_endPoint = endpoint;
+
+#if !DEDICATED
+        // BF2.exe 0x005DD523..0x005DD56C: the facade owns the sound; play at the
+        // saved endpoint before building the rope, without acquiring a reference.
+        ISound* const sound = g_bfSound->getSound(std::string("S_ZiplineAttached"));
+        if (sound)
+            sound->playAt(endpoint);
+#endif
 
         Vec3 ropeDirection = {
             m_endPoint.x - ropeTransformation.m[12],

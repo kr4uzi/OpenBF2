@@ -7,6 +7,10 @@
 #include "../../../Core/StringUtil.h"              // compareIgnoreCase - the name-table parsers
 #include "../../../Geom/ParticleSystem/ParticleSystemManager.h"
 #include "../IObject.h"                            // createObject's (always null) product type
+#if !DEDICATED
+#include "../../../Geom/GeometryTemplateManager.h"
+#include "../../../Geom/IGeometryTemplate.h"
+#endif
 
 #include <cstdio>                                  // sscanf - the GasCloudType reader
 #include <istream>
@@ -19,6 +23,9 @@ namespace hfe {
 // hfe scope, NOT world - an extern declared inside world would mint a wrong-scope twin of the
 // global (the SimpleObject.cpp lesson). Core/Globals.cpp:137 defines it.
 extern ClassManager* classManager;                   // ds:0x8AC85A0
+#if !DEDICATED
+extern IBase* g_geometryTemplateManager;              // BF2.exe ds:0x009A5578
+#endif
 
 namespace world {
 
@@ -466,7 +473,25 @@ IObject* MeshParticleSystemTemplate::createObject() const
 void MeshParticleSystemTemplate::preCache() const
 {
     if ((getFlags() & 0x20) == 0)
+    {
         ObjectTemplate::preCache();
+#if !DEDICATED
+        // BF2.exe 0x0064CDB3..0x0064CDFD warms geometry with a temporary instance.
+        // Preserve both virtual name reads and all three resource null guards.
+        if (g_geometryTemplateManager && !getGeometry().empty())
+        {
+            geom::IGeometryTemplate* const geometryTemplate =
+                static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)
+                    ->getTemplate(getGeometry());
+            if (geometryTemplate)
+            {
+                IBase* const instance = static_cast<IBase*>(geometryTemplate->createInstance());
+                if (instance)
+                    instance->release();
+            }
+        }
+#endif
+    }
 }
 
 // setBlendMode - 0x8203D50, 151 B: ParticleBlendModeNames[0..1]; a match keeps the token (+0x4C);
