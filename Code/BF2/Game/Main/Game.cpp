@@ -1211,6 +1211,42 @@ bool Game::registerGameEvents()
     gameEventRegistry->registerEventMaker(GEVerifyPlayerTeam,    "VerifyPlayerTeamEvent",    &g_verifyPlayerTeamEventMaker);
     gameEventRegistry->registerEventMaker(GEFixPlayerTeam,       "FixPlayerTeamEvent",       &g_fixPlayerTeamEventMaker);
 
+    // BF2.exe 0x443CAA..0x4441BA, DED PE 0x435812..0x435D28,
+    // ELF 0x805A01A..0x805AAAC: notification names follow the network makers
+    // in the same order under this function's one-time guard in every image
+    // (DED PE 0x434A79 / ELF 0x8057AFC), before GameClient/GameServer construction.
+    eventManager->registerEvent(ECNetwork, 1, "ECNetworkNEDataBlockReady");
+    eventManager->registerEvent(ECNetwork, 11, "ECNetworkNEStringReceived");
+    eventManager->registerEvent(ECNetwork, 2, "ECNetworkNELoadComplete");
+    eventManager->registerEvent(ECNetwork, 3, "ECNetworkNEStartSimulation");
+    eventManager->registerEvent(ECNetwork, 4, "ECNetworkNEDatabaseComplete");
+    eventManager->registerEvent(ECNetwork, 5, "ECNetworkNEReset");
+    eventManager->registerEvent(ECNetwork, 6, "ECNetworkNESelectSpawnGroup");
+    eventManager->registerEvent(ECNetwork, 7, "ECNetworkNESelectTeam");
+    eventManager->registerEvent(ECNetwork, 8, "ECNetworkNESelectKit");
+    eventManager->registerEvent(ECNetwork, 9, "ECNetworkNEPlayerSpawned");
+    eventManager->registerEvent(ECNetwork, 10, "ECNetworkNEPlayerDead");
+    eventManager->registerEvent(ECNetwork, 12, "ECNetworkNESuicide");
+    eventManager->registerEvent(ECNetwork, 13, "ECNetworkNERadioMessageReceived");
+    eventManager->registerEvent(ECNetwork, 14, "ECNetworkNETraceComplete");
+    eventManager->registerEvent(ECNetwork, 15, "ECNetworkNETraceFailed");
+    eventManager->registerEvent(ECNetwork, 16, "ECNetworkNETraceResourceConnect");
+    eventManager->registerEvent(ECNetwork, 17, "ECNetworkNENetworkableDestroyed");
+    eventManager->registerEvent(ECNetwork, 18, "ECNetworkNERemoteConsoleCommand");
+    eventManager->registerEvent(ECNetwork, 19, "ECNetworkNERemoteConsoleFeedback");
+    eventManager->registerEvent(ECNetwork, 20, "ECNetworkNEEndOfRoundGuard");
+    eventManager->registerEvent(ECGame, 1, "ECGameGNDestroyObject");
+    eventManager->registerEvent(ECGame, 2, "ECGameGNDestroyPlayer");
+    eventManager->registerEvent(ECGame, 3, "ECGameGNCreateObject");
+    eventManager->registerEvent(ECGame, 4, "ECGameGNCreatePlayer");
+    eventManager->registerEvent(ECGame, 5, "ECGameGNImmediateCreatePlayer");
+    eventManager->registerEvent(ECGame, 6, "ECGameGNPlayerSpawned");
+    eventManager->registerEvent(ECGame, 7, "ECGameGNSelectSpawnGroup");
+    eventManager->registerEvent(ECGame, 8, "ECGameGNPlayerDead");
+    eventManager->registerEvent(ECGame, 9, "ECGameGNEnterVehicle");
+    eventManager->registerEvent(ECGame, 11, "ECGameGNExitVehicle");
+    eventManager->registerEvent(ECGame, 10, "ECGameGNFreeCameraFire");
+
     return true;
 }
 

@@ -2216,6 +2216,36 @@ GameLogic::GameLogic()
     eventManager->registerEventHandler(ECGame, this, 0);
     eventManager->registerEventHandler(ECGameLogic, this, 0);
 
+    // BF2.exe 0x4F6C31..0x4F6F9B, DED PE 0x46C4DB..0x46C84B,
+    // ELF 0x80C8D6B / 0x80C8DCF..0x80C9419: the same order and one-time guard
+    // in every image, after the listeners and before manager construction or reset.
+    static bool eventsRegistered = false;
+    if (!eventsRegistered)
+    {
+        eventsRegistered = true;
+        eventManager->registerEvent(ECGameLogic, 1, "ECGameLogicGLGameStatus");
+        eventManager->registerEvent(ECGameLogic, 2, "ECGameLogicGLControlPointChangedTeam");
+        eventManager->registerEvent(ECGameLogic, 3, "ECGameLogicGLKilledBy");
+        eventManager->registerEvent(ECGameLogic, 4, "ECGameLogicGLLowOnTickets");
+        eventManager->registerEvent(ECGameLogic, 5, "ECGameLogicGLFailedToChangePosition");
+        eventManager->registerEvent(ECGameLogic, 6, "ECGameLogicGLReset");
+        eventManager->registerEvent(ECGameLogic, 7, "ECGameLogicGLStartApplyForCommander");
+        eventManager->registerEvent(ECGameLogic, 8, "ECGameLogicGLChangedTeam");
+        eventManager->registerEvent(ECGameLogic, 9, "ECGameLogicGLAssistKill");
+        eventManager->registerEvent(ECGameLogic, 13, "ECGameLogicGLTinnitus");
+        eventManager->registerEvent(ECGameLogic, 11, "ECGameLogicGLTeamDamage");
+        eventManager->registerEvent(ECGameLogic, 10, "ECGameLogicGLReplenish");
+        eventManager->registerEvent(ECGameLogic, 12, "ECGameLogicGLConquest");
+        eventManager->registerEvent(ECGameLogic, 14, "ECGameLogicGLRevive");
+        eventManager->registerEvent(ECGameLogic, 15, "ECGameLogicGLGameEventLocal");
+        eventManager->registerEvent(ECGameLogic, 17, "ECGameLogicGLUAV");
+        eventManager->registerEvent(ECGameLogic, 18, "ECGameLogicGLScan");
+        eventManager->registerEvent(ECGameLogic, 19, "ECGameLogicGLUAVVehicleCreated");
+        eventManager->registerEvent(ECGameLogic, 20, "ECGameLogicGLUAVVehicleDestroyed");
+        eventManager->registerEvent(ECGameLogic, 21, "ECGameLogicGLDropVehicle");
+        eventManager->registerEvent(ECGameLogic, 22, "ECGameLogicGLAddParachuteToDropVehicle");
+    }
+
     // Clients require the renderer's DecalManager singleton before game-logic construction.
     // Its returned decal client is owned through the renderer's decal-object interface.
     if (!isDedicated())

@@ -127,6 +127,11 @@ bool Module::init()
     REGISTER_CORE_EVENT(CEStartPerformanceTest);
     REGISTER_CORE_EVENT(CEStopPerformanceTest);
     REGISTER_CORE_EVENT(CEReportPerformanceInfo);
+#if !DEDICATED
+    // BF2.exe 0x68CEF5..0x68CF1B: this name belongs to the frame manager.
+    // DED PE Module::init returns at 0x63EC97 and ELF at 0x84F8FD0 without this registration.
+    frameEventManager->registerEvent(ECCore, 0xDEADBEEF, "MemoryInfoDrawerEvent");
+#endif
     return true;
 }
 
