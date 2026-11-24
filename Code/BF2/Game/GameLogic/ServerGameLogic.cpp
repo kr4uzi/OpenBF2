@@ -186,6 +186,36 @@ void ServerGameLogic::suicide()
         killPlayer(player, true, true);
 }
 
+// BF2.exe 0x4DBF80 / dedicated PE 0x455140 / ELF 0x81049E0. The cached physics node is read after
+// moving the vehicle; reset(true) is conditional, and does not query another interface.
+void ServerGameLogic::moveLocalHumanPlayerToPoint(const Vec3& position)
+{
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player)
+        return;
+    world::IObject* vehicle = player->getVehicle();
+    if (!vehicle)
+        return;
+    vehicle->setAbsolutePosition(position);
+    world::IPhysicsNode* physics = static_cast<world::IPhysicsNode*>(
+        world::object_detail::LayoutAccess::physicsNode(vehicle));
+    if (physics)
+        physics->reset(true);
+}
+
+// BF2.exe 0x4DBFD0 / dedicated PE 0x455190 / ELF 0x8104A50. getCamera selects the current view;
+// only the player and camera are guarded, not the IObject query result.
+void ServerGameLogic::moveLocalHumanCameraToPoint(const Vec3& position)
+{
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player)
+        return;
+    world::ICameraObject* camera = player->getCamera();
+    if (camera)
+        static_cast<world::IObject*>(camera->queryInterface(world::IID_IObject))
+            ->setAbsolutePosition(position);
+}
+
 //  / PE 0x4558A0 (helper inlined).
 void ServerGameLogic::toggleLocalFreeCamera()
 {
@@ -2297,7 +2327,7 @@ void ServerGameLogic::setNumberOfTickets(unsigned int team, unsigned int tickets
     }
 }
 
-// getNumberOfTickets - 0x8103760, 57 B: the TeamScore +0x84 field, raw as shipped.
+// ELF 0x8103760 / BF2.exe 0x4DBB60 / dedicated PE 0x454CE0: TeamScore +0x84, raw as shipped.
 unsigned int ServerGameLogic::getNumberOfTickets(unsigned int team) const
 {
     if (team - 1 <= 1)

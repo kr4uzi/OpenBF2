@@ -8,6 +8,15 @@
 #include "../BF2/Core/System.h"
 #include "../BF2/Game/Main/Game.h"
 #include "../BF2/Game/GameLogic/GameLogic.h"
+#include "../BF2/Game/GameLogic/ServerGameLogic.h"
+#include "../BF2/Game/GameLogic/ScoreSystem/ScoreManager.h"
+#include "../BF2/Game/GameServer/GameServer.h"
+#include "../BF2/Game/Common/GameEvent.h"
+#include "../BF2/Game/Objects/Object.h"
+#include "../BF2/Game/Objects/ObjectLayoutAccess.h"
+#include "../BF2/Game/Objects/ICameraObject.h"
+#include "../BF2/Physics/PhysicsNode.h"
+#include "../BF2/Physics/PhysicsNodeManager.h"
 #include "../BF2/Game/GameLogic/Player.h"
 #include "../BF2/Game/GameLogic/VoiceMessages.h"
 #include "../BF2/Game/GameServer/ServerSettings.h"
@@ -15,7 +24,11 @@
 #include "../BF2/IO/File/FileManager.h"
 #include "../BF2/IO/Stream/IStream.h"
 #include "../BF2/IO/Input/PlayerInput.h"
+#include "../BF2/IO/Network/NetworkManager.h"
 #include "../BF2/Scene/Object/PlayerManager.h"
+#include "../BF2/Scene/Object/ObjectManager.h"
+#include "../BF2/Scene/Object/BinTreeCuller.h"
+#include "../BF2/Scene/Object/QuadTreeCuller.h"
 #include "../BF2/Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 #include "../BF2/AI/AIInterface/Module/BFConsole.h"
 #include "../BF2/AI/AIInterface/BFKnowledge/KitTemplateManager.h"
@@ -28,6 +41,9 @@
 namespace dice { namespace hfe {
 extern ClassManager* classManager;
 ConsoleObjectList& gameLogicConsoleObjects();
+ConsoleObjectList& serverSettingsConsoleObjects();
+namespace world { extern IBase* scoreManager; }
+namespace world { extern PhysicsNodeManager* physicsNodeManager; }
 namespace world { ConsoleObjectList& objectManagerConsoleObjects(); }
 namespace ai { std::ostream& operator<<(std::ostream&, KitType); }
 } }
@@ -38,6 +54,10 @@ void check(bool good, const char* message)
 {
     ++checks;
     if (!good) { std::fprintf(stderr, "FAIL: %s\n", message); std::_Exit(2); }
+}
+bool at(const Vec3& value, float x, float y, float z)
+{
+    return value.x == x && value.y == y && value.z == z;
 }
 ConsoleObject* row(const char* object, const char* command)
 {
@@ -154,12 +174,19 @@ struct PlayerObserver : Player
 {
     PlayerObserver() : Player(-1, nullptr) {}
     Vec3 position;
+    world::IObject* vehicle = nullptr;
+    world::ICameraObject* camera = nullptr;
+    world::IObject* getVehicle() const override { return vehicle; }
+    world::ICameraObject* getCamera() const override { return camera; }
+    world::IObject* getFreeCamera() const override { std::abort(); }
     std::string moveTo(const Vec3& value) override { position = value; return "moved"; }
 };
 struct Players : world::PlayerManager
 {
     PlayerObserver* player = nullptr;
+    PlayerObserver* local = nullptr;
     int creates = 0;
+    world::IPlayer* getLocalHumanPlayer() override { return local; }
     world::IPlayer* createPlayer(const std::string& type, const std::string& name, int id) override
     {
         check(type == "Player" && name == "Console Player" && id == -1, "Player.create forwards both strings and automatic ID");
@@ -167,6 +194,81 @@ struct Players : world::PlayerManager
         return player;
     }
     world::IPlayer* getActivePlayer() const override { return player; }
+};
+
+struct Server : GameServer
+{
+    // Constructor/reset broadcasts are consumed here; this fixture has no network peers.
+    void sendGameEventToAllPlaying(GameEvent* event) override { delete event; }
+    void sendGameEventToAllConnected(GameEvent* event) override { delete event; }
+};
+struct Scores : world::ScoreManager
+{
+    unsigned reads = 0;
+    world::TeamScore* getTeamScore(unsigned team) override
+    { ++reads; return world::ScoreManager::getTeamScore(team); }
+};
+struct Classes : ClassManager
+{
+    IBase* createInstance(unsigned cid, unsigned iid, IBase* outer) override
+    {
+        if (cid == world::CID_BinTreeCuller) return world::BinTreeCuller::create(iid, outer);
+        if (cid == world::CID_QuadTreeCuller) return world::QuadTreeCuller::create(iid, outer);
+        return ClassManager::createInstance(cid, iid, outer);
+    }
+};
+std::vector<int> teleportCalls;
+struct Node : world::PhysicsNode
+{
+    void reset(bool full) override
+    { check(full, "teleport requests a full physics reset"); teleportCalls.push_back(2); }
+};
+struct TeleportObject : world::Object, world::ICameraObject
+{
+    TeleportObject() : world::Object(nullptr) {}
+    Vec3 position;
+    world::IPhysicsNode* installOnMove = nullptr;
+    void setAbsolutePosition(const Vec3& value) override
+    {
+        position = value;
+        teleportCalls.push_back(1);
+        if (installOnMove)
+            world::object_detail::LayoutAccess::physicsNode(this) = installOnMove;
+    }
+    void* queryInterface(unsigned iid) const override
+    {
+        check(iid == world::IID_IObject, "camera teleport queries IObject");
+        teleportCalls.push_back(3);
+        return static_cast<world::IObject*>(const_cast<TeleportObject*>(this));
+    }
+#define UNUSED_CAMERA(result, name, args) result name args override { std::abort(); }
+    UNUSED_CAMERA(void, addRef, ())
+    UNUSED_CAMERA(int, getRef, ())
+    UNUSED_CAMERA(int, release, ())
+    UNUSED_CAMERA(const Mat4&, getTransformation, (float))
+    UNUSED_CAMERA(void, setInterpolatedMode, (bool))
+    UNUSED_CAMERA(bool, setViewMode, (world::CameraViewMode, world::IObject*, bool))
+    UNUSED_CAMERA(world::CameraViewMode, getViewMode, () const)
+    UNUSED_CAMERA(bool, isActive, () const)
+    UNUSED_CAMERA(void, setIsActive, (bool))
+    UNUSED_CAMERA(void, setCameraId, (int))
+    UNUSED_CAMERA(int, getCameraId, ())
+    UNUSED_CAMERA(void, prevViewMode, ())
+    UNUSED_CAMERA(void, setTraceObjectId, (unsigned))
+    UNUSED_CAMERA(unsigned, getTraceObjectId, ())
+    UNUSED_CAMERA(void, setExternCameraTrans, (Mat4))
+    UNUSED_CAMERA(Mat4*, getExternCameraTrans, ())
+    UNUSED_CAMERA(bool, getToggleMouseLook, ())
+    UNUSED_CAMERA(int, getPcoId, ())
+    UNUSED_CAMERA(void, handleExplosion, (float))
+    UNUSED_CAMERA(void, resetCameraView, (bool))
+    UNUSED_CAMERA(void, updateCameraView, (bool))
+    UNUSED_CAMERA(float, getActiveFOV, () const)
+    UNUSED_CAMERA(const Vec3&, getStaticSunDirection, () const)
+    UNUSED_CAMERA(const Vec3&, getStaticSunColor, () const)
+    UNUSED_CAMERA(const Vec3&, getStaticSunDamageColor, () const)
+    UNUSED_CAMERA(const Vec3&, getStaticSunAmbientColor, () const)
+#undef UNUSED_CAMERA
 };
 }
 
@@ -176,7 +278,7 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     setDedicated(true); // Constructor-only environment: prevents renderer/tutorial initialization.
 #endif
     g_system = new System;
-    classManager = new ClassManager;
+    classManager = new Classes;
     eventManager = new EventManager;
     settings = new SettingsRepostitory;
     io::mainConsole = new io::OldConsole;
@@ -184,6 +286,7 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     Files* files = new Files;
     io::fileManager = files;
     mainConsoleObjects->registerConsoleObjects(gameLogicConsoleObjects());
+    mainConsoleObjects->registerConsoleObjects(serverSettingsConsoleObjects());
     mainConsoleObjects->registerConsoleObjects(world::objectManagerConsoleObjects());
     mainConsoleObjects->registerConsoleObjects(ai::kitTemplateConsoleObjects());
 
@@ -192,6 +295,10 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
         {"gameLogic", "getTeamLanguage", 0, 1, 1, "std::string", true, 2},
         {"gameLogic", "getTeamName", 0, 1, 1, "std::string", true, 2},
         {"gameLogic", "defaultLevel", 1, 0, 1, "std::string", true, 2},
+        {"gameLogic", "teleportTo", 0, 1, 1, "void", false, 2},
+        {"gameLogic", "teleportCameraTo", 0, 1, 1, "void", false, 2},
+        {"gameLogic", "getNumberOfTickets", 0, 1, 1, "U32", true, 2},
+        {"sv", "maxConnectionType", 1, 0, 1, "ConnectionType", true, 1},
         {"gameLogic", "messages.playRadioMessage", 0, 4, 4, "int", true, 2},
         {"gameLogic", "messages.playHelpMessage", 0, 1, 1, "int", true, 2},
         {"player", "pickup", 0, 1, 1, "void", false, 2},
@@ -218,6 +325,8 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
     }
 
     gameLogic = nullptr;
+    for (const char* name : {"teleportTo", "teleportCameraTo", "getNumberOfTickets"})
+        check(!row("gameLogic", name)->isActive(), "server command requires game logic");
     world::playerManager = nullptr;
     check(!row("gameLogic", "getTeamName")->isActive() && !row("gameLogic", "messages.playHelpMessage")->isActive(), "absent game-logic gates");
     check(!row("player", "pickup")->isActive() && !row("player", "moveTo")->isActive(), "absent player-manager gates");
@@ -230,6 +339,33 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
         return out;
     };
     io::mainConsole->setAccess(1);
+    serverSettings = new ServerSettings;
+    check(line("sv.maxConnectionType") == "CTLanT1", "default connection ceiling prints its name");
+    const char* connections[] = {"CTConnecting", "CTModem28Kbps", "CTModem56Kbps",
+        "CTCable128Kbps", "CTCable256Kbps", "CTLanT1"};
+    for (int i = 0; i < 6; ++i)
+    {
+        check(line(std::string("sv.maxConnectionType ") + connections[i]).empty() &&
+              serverSettings->m_maxConnectionType == i && line("sv.maxConnectionType") == connections[i],
+              "connection names parse and print their exact values");
+    }
+    for (const char* invalid : {"unknown", "ctconnecting", "4", "6", "-1", "CTNumTypes", ""})
+    {
+        invoke(row("sv", "maxConnectionType"), {"CTLanT1"});
+        check(invoke(row("sv", "maxConnectionType"), {invalid}).empty() &&
+              serverSettings->m_maxConnectionType == 6 && line("sv.maxConnectionType") == "CTNumTypes",
+              "unknown/numeric/empty connection token replaces the prior value with sentinel");
+    }
+    for (int invalid : {-1, 6, 99})
+    {
+        serverSettings->m_maxConnectionType = invalid;
+        check(line("sv.maxConnectionType") == "CTNumTypes", "out-of-range stored connection prints sentinel");
+    }
+    files->input.text = "sv.maxConnectionType CTCable256Kbps\n";
+    std::string scriptResult;
+    check(io::mainConsole->run("settings/serversettings.con", "", "", "", "", "", "", "", "", scriptResult) &&
+          serverSettings->m_maxConnectionType == 4,
+          "serversettings script restores the named connection ceiling");
     check(line("reservedSlots.configFile mods/bf2/settings/reservedSlots.con").empty(), "admin sets reserved-list path");
     check(line("reservedSlots.configFile") == "mods/bf2/settings/reservedSlots.con", "admin reads reserved-list path");
     line("reservedSlots.clear");
@@ -263,6 +399,9 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
 
     Logic* logic = new Logic;
     gameLogic = logic;
+    settings->boolSet("GSIsServer", false);
+    for (const char* name : {"teleportTo", "teleportCameraTo", "getNumberOfTickets"})
+        check(!row("gameLogic", name)->isActive(), "live game logic without GSIsServer stays inactive");
     logic->setTeamName(1, "US");
     logic->setTeamLanguage(1, "English");
     check(line("gameLogic.getTeamName 1") == "US" && line("gameLogic.getTeamLanguage 1") == "English", "team string getters dispatch");
@@ -321,6 +460,60 @@ extern "C" int bf2ConsoleCommandsMain(int, char**)
         ai::operator<<(out, static_cast<KitType>(invalid));
         check(out.str() == "prefix", "invalid AI kit values append no token");
     }
+    // Real ServerGameLogic construction and targets, with only position/physics/camera
+    // collaborators observed. No server initialization, map, sockets or application entry.
+    world::objectManager = new world::ObjectManager;
+    gameEventRegistry = new GameEventRegistry;
+    game = new Server;
+    io::networkManager = new io::NetworkManager;
+    Scores* scores = new Scores;
+    world::scoreManager = static_cast<world::IScoreManager*>(scores);
+    gameLogic = nullptr;
+    ServerGameLogic* serverLogic = new ServerGameLogic;
+    gameLogic = serverLogic;
+    settings->boolSet("GSIsServer", true);
+    for (const char* name : {"teleportTo", "teleportCameraTo", "getNumberOfTickets"})
+        check(row("gameLogic", name)->isActive(), "server receiver enables command");
+    scores->getTeamScore(1)->m_tickets = 173;
+    scores->getTeamScore(2)->m_tickets = 291;
+    check(line("gameLogic.getNumberOfTickets 1") == "173" &&
+          line("gameLogic.getNumberOfTickets 2") == "291", "ticket query returns current team score");
+    for (const char* invalid : {"0", "3", "4294967295"})
+        check(invoke(row("gameLogic", "getNumberOfTickets"), {invalid}) == "0", "invalid team returns zero");
+    const unsigned reads = scores->reads;
+    invoke(row("gameLogic", "getNumberOfTickets"), {});
+    invoke(row("gameLogic", "getNumberOfTickets"), {"1", "2"});
+    check(scores->reads == reads, "ticket query rejects wrong arity before score lookup");
+    teleportCalls.clear();
+    line("gameLogic.teleportTo 1/2/3");
+    line("gameLogic.teleportCameraTo 1/2/3");
+    check(teleportCalls.empty(), "teleports do nothing without local human player");
+    players->local = new PlayerObserver;
+    line("gameLogic.teleportTo 1/2/3");
+    line("gameLogic.teleportCameraTo 1/2/3");
+    check(teleportCalls.empty(), "teleports guard missing vehicle and camera");
+    TeleportObject* vehicle = new TeleportObject;
+    TeleportObject* camera = new TeleportObject;
+    players->local->vehicle = vehicle;
+    players->local->camera = camera;
+    line("gameLogic.teleportTo 10/20/30");
+    check(teleportCalls == std::vector<int>({1}) && at(vehicle->position, 10,20,30),
+          "teleport moves the local vehicle without requiring physics");
+    world::physicsNodeManager = new world::PhysicsNodeManager;
+    Node* node = new Node;
+    vehicle->installOnMove = node;
+    teleportCalls.clear();
+    line("gameLogic.teleportTo 40/50/60");
+    check(teleportCalls == std::vector<int>({1,2}) && at(vehicle->position, 40,50,60),
+          "teleport reads cached physics after moving and resets it in order");
+    teleportCalls.clear();
+    line("gameLogic.teleportCameraTo 70/80/90");
+    check(teleportCalls == std::vector<int>({3,1}) && at(camera->position, 70,80,90) &&
+          at(vehicle->position, 40,50,60), "camera teleport queries the current camera and moves only it");
+    teleportCalls.clear();
+    invoke(row("gameLogic", "teleportTo"), {});
+    invoke(row("gameLogic", "teleportCameraTo"), {"1/2/3", "4/5/6"});
+    check(teleportCalls.empty(), "teleports reject wrong arity");
     std::printf("PASS console commands: %u checks (DEDICATED=%d)\n", checks, DEDICATED);
     std::fflush(stdout);
     std::_Exit(0); // No full-engine teardown for this bounded, pre-init fixture.

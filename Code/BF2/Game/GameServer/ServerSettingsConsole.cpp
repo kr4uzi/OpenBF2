@@ -4,6 +4,7 @@
 #include "../../Core/ConsoleObjectMacro.h"
 #include "ServerSettings.h"
 #include "../IGame.h"
+#include "../IGameServer.h"
 #include <algorithm>
 #include <string>
 
@@ -12,6 +13,37 @@ namespace hfe {
 
 extern IGame*             game;              // ds:dice::hfe::game
 extern const unsigned int IID_IGameClient;   // Core/Globals.cpp
+
+// BF2.exe parser 0x4346CC / writer 0x434651; dedicated PE 0x410250 / 0x4101BE;
+// ELF 0x85704C0 / 0x8570430. Unknown or unextractable tokens select CTNumTypes.
+std::istream& operator>>(std::istream& in, ConnectionType& type)
+{
+    std::string name;
+    in >> name;
+    type = CTNumTypes;
+    if (name == "CTConnecting") type = CTConnecting;
+    else if (name == "CTModem28Kbps") type = CTModem28Kbps;
+    else if (name == "CTModem56Kbps") type = CTModem56Kbps;
+    else if (name == "CTCable128Kbps") type = CTCable128Kbps;
+    else if (name == "CTCable256Kbps") type = CTCable256Kbps;
+    else if (name == "CTLanT1") type = CTLanT1;
+    return in;
+}
+
+std::ostream& operator<<(std::ostream& out, ConnectionType type)
+{
+    switch (type)
+    {
+    case CTConnecting: out << "CTConnecting"; break;
+    case CTModem28Kbps: out << "CTModem28Kbps"; break;
+    case CTModem56Kbps: out << "CTModem56Kbps"; break;
+    case CTCable128Kbps: out << "CTCable128Kbps"; break;
+    case CTCable256Kbps: out << "CTCable256Kbps"; break;
+    case CTLanT1: out << "CTLanT1"; break;
+    default: out << "CTNumTypes"; break;
+    }
+    return out;
+}
 
 namespace {
 
@@ -308,7 +340,58 @@ BF2_CONSOLE_GETSET_1(password, std::string, svReceiver() != 0, svReceiver()->m_p
 BF2_CONSOLE_GETSET_1(internet, bool, svReceiver() != 0, svReceiver()->m_internet, svInternetSet, kSvConsoleTag)
 
 // Internet-server connection-type ceiling; the LAN path ignores it.
-BF2_SV_FIELD_AS(maxConnectionType, int, "ConnectionType", m_maxConnectionType)
+// BF2.exe 0x42A573 converts even when extraction fails; 0x42A5C0 snapshots the
+// argument before resolving svReceiver. The stored field retains its integer layout.
+namespace {
+class ConsoleClassMaxConnectionType : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassMaxConnectionType()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "maxConnectionType";
+        m_type = 1;
+        m_minNoArgs = 0;
+        m_maxNoArgs = 1;
+        m_returnType = "ConnectionType";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        m_argTypes[0] = "ConnectionType";
+    BF2_CC_TAIL(1, kSvConsoleTag)
+    bool isObjectActive() const override { return svReceiver() != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount == 1)
+        {
+            const ConnectionType value = BF2_CC_ARG(ConnectionType, 0);
+            m_hasReturnValue = false;
+            svReceiver()->m_maxConnectionType = value;
+        }
+        else if (m_argCount == 0)
+        {
+            m_hasReturnValue = true;
+            m_returnValue = static_cast<ConnectionType>(svReceiver()->m_maxConnectionType);
+        }
+    }
+    void setArgFromString(int index, const std::string& value) override
+    {
+        if (index == 1)
+        {
+            static ConnectionType type;
+            std::istringstream in(value);
+            in >> type;
+            m_args[0] = reinterpret_cast<std::string*>(&type);
+        }
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    ConnectionType m_returnValue;
+};
+static ConsoleClassMaxConnectionType s_consoleMaxConnectionType;
+}
 
 // welcomeMessage: 0x82AC90 -> ctor 0x4CF6F0 / executor 0x4CF7E0. SET calls setWelcomeMessage, which
 // publishes into ServerInfo's welcome list (truncating to 256 chars) before storing the untruncated
