@@ -819,6 +819,28 @@ void PythonHost::handleEvent(ScriptEvent eventId, PyObject* args)
     }
 }
 
+// BF2.exe 0x45F9C0, dedicated PE 0x42AFB0, ELF 0x81611D0. Tuple setters steal
+// their items; releasing the outer tuple releases the command and nested tuple.
+bool PythonHost::consoleSendCommand(std::string command, std::string arg1, std::string arg2,
+                                    std::string arg3, std::string arg4, std::string arg5,
+                                    std::string arg6, std::string arg7, std::string arg8)
+{
+    const std::string* arguments[] = { &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8 };
+    PyObject* args = PyTuple_New(2);
+    PyTuple_SetItem(args, 0, PyString_FromString(command.c_str()));
+
+    int count = 8;
+    while (count > 0 && arguments[count - 1]->empty())
+        --count;
+    PyObject* values = PyTuple_New(count);
+    for (int i = 0; i < count; ++i)
+        PyTuple_SetItem(values, i, PyString_FromString(arguments[i]->c_str()));
+    PyTuple_SetItem(args, 1, values);
+    handleEvent(static_cast<ScriptEvent>(33), args);
+    Py_XDECREF(args);
+    return true;
+}
+
 // Invalidates the Python player wrapper after native lookup removal but before
 // deletion. Allocates arguments even before initialization and skips a missing
 // converter. The original successful call result is deliberately not released.

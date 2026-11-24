@@ -307,6 +307,7 @@ require its voice-message owner. Player edits require an active player.
 
 | Commands | Arguments and result |
 | --- | --- |
+| `pythonHost.sendCommand` | One command string and up to eight optional strings; dispatches Python event `ConsoleSendCommand` (33) as `(command, argsTuple)`. Omissions are empty strings; only trailing empty arguments are trimmed. Access level 2; returns Boolean true even when no handler runs. |
 | `gameLogic.getTeamLanguage`, `gameLogic.getTeamName` | Team number; returns the configured string. |
 | `gameLogic.defaultLevel` | No argument reads the name; one string sets it. |
 | `gameLogic.setKit` | Team, kit type, kit template, soldier template. Types accept `KTMedic`, `Medic`, or `5` (the seven stock types); unknown tokens select the no-kit sentinel 13. |
@@ -329,6 +330,14 @@ For example, `sv.maxConnectionType CTCable256Kbps` in `serversettings.con` sets 
 ceiling to class 4. Query `sv.maxConnectionType` to read the name back. Teleport commands
 need a local human player; a headless server normally has none, so they leave the world
 unchanged there. Camera teleport uses the current camera, including a vehicle camera.
+
+`pythonHost.sendCommand` requires the host pointer and an already running interpreter.
+The host's normal initialization and round-state gates still decide which handlers run;
+its Boolean reply does not report whether a Python command succeeded. The stock
+`bf2.stats.fragalyzer_log` handler accepts `pythonHost.sendCommand falog 1` to enable
+Fragalyzer logging for the current round, or `falog 0` to disable it. With that handler
+initialized and the round playing, the Python output reports the logging state and
+announces its chosen log filename when enabling.
 
 Reserved nicknames load during `GameServer::init` from
 `<GSModDirectory>/settings/reservedSlots.con` (normally `mods/bf2/settings/reservedSlots.con`),

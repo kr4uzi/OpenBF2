@@ -13,6 +13,7 @@
 namespace dice { namespace hfe {
 class ConsoleObject;                                        // Core/ConsoleObject.h
 std::list<ConsoleObject*>& gameConsoleObjects();            // Game/Main/GameConsole.cpp
+std::list<ConsoleObject*>& moduleGameConsoleObjects();      // Game/Main/GameConsole.cpp
 #if DEDICATED
 std::list<ConsoleObject*>& openBf2ConsoleObjects();         // Game/Main/OpenBF2Console.cpp [CHOSEN, not recovered]
 #endif
@@ -1002,6 +1003,7 @@ bool ModuleGame::init()
     consoleObjects()->registerConsoleObjects(gameLogicConsoleObjects());
     // Combat-area bindings apply the authored battlefield boundaries from level scripts.
     consoleObjects()->registerConsoleObjects(combatAreaConsoleObjects());
+    consoleObjects()->registerConsoleObjects(moduleGameConsoleObjects());
 #if !DEDICATED
     // PE4107C3 registers list 0x98913C before the event handlers. These four
     // static command constructors append to that same ModuleGame list.
@@ -1134,6 +1136,7 @@ bool ModuleGame::close()
     consoleObjects()->unregisterConsoleObjects(mapListConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(gameLogicConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(combatAreaConsoleObjects());
+    consoleObjects()->unregisterConsoleObjects(moduleGameConsoleObjects());
 #if !DEDICATED
     consoleObjects()->unregisterConsoleObjects(menuTeamConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(localProfileConsoleObjects());
