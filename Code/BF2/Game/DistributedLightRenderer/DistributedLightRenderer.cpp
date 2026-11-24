@@ -97,8 +97,8 @@ IBase* DistributedLightRenderer::create(unsigned int iid, IBase* outer)
     return result;
 }
 
-// 46C350. +08 is not written in retail (the job counter starts with whatever the heap held);
-// [CHOSEN, not recovered] it starts at 0 here.
+// [CHOSEN, not recovered] Retail fix "Distributed lightmap jobs start numbering at zero".
+// BF2.exe 0x46C350 and ELF 0x080C15A0 / 0x080C1C20 leave the +0x08 counter unwritten.
 DistributedLightRenderer::DistributedLightRenderer() : m_refCount(1), m_nextJobId(0) {}
 
 // 46C120: the containers are cleared; the queued and assigned work items are not freed.

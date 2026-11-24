@@ -430,6 +430,52 @@ Each entry is a heading that names the fix, followed by these fields:
 
 ## Client and server
 
+### Distributed lightmap jobs start numbering at zero
+
+- **Retail:** `DistributedLightRenderer`'s constructors leave the job counter at `+0x08`
+  unwritten (`BF2.exe` `0x46C350`; Linux ia-32 server `0x080C15A0`, `0x080C1C20`). Its first
+  read is in `addObjectToJobQueue` (`BF2.exe` `0x46C20A`; Linux `0x080C2946`): the old value
+  becomes the queued work item's id, then the counter advances. The first lightmap job therefore
+  gets whatever number the heap held. Not reproduced in a retail lightmap farm.
+- **OpenBF2:** Initializes the counter to 0, so jobs are numbered from 0 for each new renderer.
+- **Applies to:** Client and server lightmap-farm code in client builds; all platforms. The
+  rebuilt dedicated image excludes this implementation; no constructor was identified in
+  `bf2_w32ded.exe`.
+- **Retail clients:** The counter is internal queue bookkeeping. `assignWorkItem` (`BF2.exe`
+  `0x46BA30`; Linux `0x080C3460`) sends the object id or terrain-patch index in data block 4,
+  not this job id. The block's format and contents are unchanged.
+- **Source:** `Code/BF2/Game/DistributedLightRenderer/DistributedLightRenderer.cpp`
+
+### The material manager's unwritten word starts at zero
+
+- **Retail:** `MaterialManager`'s constructors leave the word at `+0x10` unwritten (Linux ia-32
+  server `0x0810E480`, `0x0810E540`). No read of that word was identified in the image's
+  `MaterialManager` methods, so no first consumer or gameplay failure is established. The Windows
+  layout differs: `BF2.exe` `0x63C340` and `bf2_w32ded.exe` `0x5ED190` initialize a map count at
+  `+0x10` (`0x63C379`, `0x5ED1C9`); no corresponding independent scalar was identified there.
+- **OpenBF2:** Initializes the retained `m_unknown10` member to 0 instead of leaving its value
+  indeterminate. Its purpose remains unknown, and no observable behavior change is established.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** No code in the rebuilt tree reads this member. Material selection, collision
+  properties, saved material data and network messages are unchanged.
+- **Source:** `Code/BF2/Physics/MaterialManager.cpp`
+
+### The spawn manager's unwritten words start at zero
+
+- **Retail:** `SpawnManager`'s constructors leave the words at `+0x14` and `+0x24` unwritten
+  (Linux ia-32 server `0x081124F0`, `0x081126B0`). No reads of either word were identified in
+  the image's `SpawnManager` methods, so no first consumers or gameplay failures are established.
+  The Windows constructors (`BF2.exe` `0x6599A0`; `bf2_w32ded.exe` `0x611EE0`) use a different
+  container layout: the spawn-group map starts at `+0x14`, the mapped-id map at `+0x24`, and the
+  group-id counter at `+0x20` starts at 1. No corresponding independent scalars were identified.
+- **OpenBF2:** Initializes the retained `m_unknown14` and `m_unknown24` members to 0 instead of
+  leaving their values indeterminate. Their purposes remain unknown, and no observable behavior
+  change is established. The separate group-id counter still starts at 1.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** No code in the rebuilt tree reads these members. Spawn-group allocation,
+  selection and replication are unchanged, including the group ids sent to retail clients.
+- **Source:** `Code/BF2/Game/GameLogic/SpawnSystem/SpawnManager.cpp`
+
 ### Option values longer than 255 characters no longer overrun the parser's buffer
 
 - **Retail:** `SimpleParser::getKey` copies an option's value with `strncpy` into a 256-byte stack

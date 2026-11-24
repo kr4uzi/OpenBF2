@@ -59,10 +59,11 @@ void* MaterialManager::queryInterface(unsigned int iid) const
 }
 
 // Starts with no selected attacker/defender material (sentinel 10001) and a 10000-bucket cell table.
-// Zeroing m_unknown10 is [CHOSEN]; the original leaves it uninitialized.
+// [CHOSEN, not recovered] Retail fix "The material manager's unwritten word starts at zero".
+// ELF 0x0810E480 / 0x0810E540 leave +0x10 unwritten; no reader is identified.
 MaterialManager::MaterialManager()
     : m_refCount(1)
-    , m_unknown10(0)            // [CHOSEN] - the original leaves it uninitialised
+    , m_unknown10(0)
     , m_attMaterial(10001)
     , m_defMaterial(10001)
     , m_speedDamage(0.1f)
