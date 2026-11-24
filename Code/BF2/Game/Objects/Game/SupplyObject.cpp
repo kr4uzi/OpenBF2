@@ -23,6 +23,10 @@
 #include "../../IGame.h"                         // game->destroyObject (+0xA0) - the empty-crate arm
 #include "../GameLogicComp/IArmorGLComp.h"       // isDestroyed (slot 21) - update's opening call
 
+#if !DEDICATED
+#include "../../SingletonServer.h"
+#endif
+
 namespace dice {
 namespace hfe {
 namespace world {
@@ -110,11 +114,11 @@ void SupplyObject::initNetworkableComp()
     }
 }
 
-// Runs the server supply tick: selects team, expires exhausted crates, serves soldiers then vehicles,
-// and regenerates heal/ammo storage. Shared fallback storage is never regenerated.
+// Removes a destroyed supply root's client marker, then runs the server supply tick.
+// Shared fallback storage is never regenerated.
 void SupplyObject::update(float dt)
 {
-    // 1. The nearest armor component up the parent chain - and the answer is discarded. See above.
+    // 1. Find the nearest armor component up the parent chain.
     IObjectComponent* armor = 0;
     for (IObject* object = this; object; object = object->m_parent)
     {
@@ -123,7 +127,19 @@ void SupplyObject::update(float dt)
             break;
     }
     if (armor)
-        static_cast<IArmorGLComp*>(armor)->isDestroyed();     // slot 21 result unused, as shipped
+    {
+#if !DEDICATED
+        // BF2.exe 0x005FEFC5..0x005FEFE2: remove the root's marker before testing isServer.
+        if (static_cast<IArmorGLComp*>(armor)->isDestroyed())
+        {
+            INametagManager* const nametags = SingletonServer::m_iNametagManager;
+            if (nametags)
+                nametags->removeItem(2, getRootParent(this));
+        }
+#else
+        static_cast<IArmorGLComp*>(armor)->isDestroyed();
+#endif
+    }
 
     // 2. Server only.
     if (!gameLogic->isServer())
