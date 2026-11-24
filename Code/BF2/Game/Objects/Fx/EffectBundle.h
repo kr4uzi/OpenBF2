@@ -19,6 +19,9 @@ extern bool g_effectsDisabled; // ; enableParticles is its inverse.
 class EffectBundle : public Bundle, public ISoundNode, public IEffectController
 {
     friend class WheelEffectBundle; // ELF 82159CE / PE 5FC6AA: direct speed/has-speed stores.
+#if !DEDICATED
+    friend class AirDraftEffectBundle; // BF2.exe 0x645B24..0x645B46: direct speed/has-speed stores.
+#endif
     friend class Emitter;           // PE 648603: handleUpdate reads the parent's m_fovOverride (+1AC).
 public:
     explicit EffectBundle(const EffectBundleTemplate* objectTemplate);

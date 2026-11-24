@@ -290,6 +290,12 @@ Existing `bfsound-debug-draw` frontiers are outside this factory and remain unch
 
 ## Content and the console
 
+Aircraft downwash is created by the client `AirDraftEffectBundleTemplate` factory;
+dedicated factories return null. Its runtime selects material-cell effects and
+sound using the aircraft engine and a downward object/terrain query. See the
+[air-draft recovery contract](recovery-notes/Game/air-draft-effect-bundle.md)
+for the client vtable, lifecycle, stock aircraft references and validation limits.
+
 `.con` files are executable engine configuration. The console binds command names such as
 `ObjectTemplate.*`, `Object.*`, and `sv.*` to typed engine operations. Templates describe
 shared object definitions; instantiated world objects carry live state. Registration and

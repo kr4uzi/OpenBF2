@@ -59,6 +59,9 @@ public:
     // Rotor reads the engine-running state and rotation inputs directly.
     friend class Rotor;
     friend class EffectBundle; // client PE 0x641EB0 / ELF 0x81FB0B0 reads m_engineRunning
+#if !DEDICATED
+    friend class AirDraftEffectBundle; // BF2.exe 0x64655E reads m_engineRunning directly.
+#endif
     friend class ::dice::hfe::EngineSound; // sway reads m_gear directly: ELF +0x1E8 / PE +0x200
     friend class ObjectSpawner;   // the hold arm reads m_input (retail +0x1C4) directly
 
