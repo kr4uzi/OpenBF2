@@ -5,9 +5,13 @@
 #define GAME_OBJECTS_GAME_ZIPLINECONTAINER_H
 
 #include "PlayerControlObject.h"
+#if !DEDICATED
+#include "../../../Sound/ObjectSoundNode.h"
+#endif
 
 namespace dice {
 namespace hfe {
+class ISound;
 namespace world {
 
 class Zipline;
@@ -59,7 +63,8 @@ private:
 
     friend class Zipline;
 
-    // ELF offsets are shown. PE places every member below +0x4C later (+0x408..+0x498).
+    // Dedicated ELF offsets are shown. Dedicated PE adds +0x4C; client PE also
+    // inserts the sound node and pointer before m_slopeSpeed (+0x49C).
     /* +0x3BC */ int      m_refCount2;
     /* +0x3C0 */ Zipline* m_zipline;
     /* +0x3C4 */ float    m_action;                  // PIAction
@@ -76,6 +81,11 @@ private:
     /* +0x420 */ Vec3     m_traversalEnd;
     /* +0x42C */ Vec3     m_lastSoldierPosition;     // detach fallback, periodically refreshed
     /* +0x438 */ Vec3     m_accumulatedSlopeMotion;
+#if !DEDICATED
+    // Client PE 0x5DAD4E: the node borrows this object; BfSound owns the sound.
+    ObjectSoundNode m_soundNode;                    // client +0x490
+    ISound* m_usedSound;                            // client +0x498, borrowed
+#endif
     /* +0x444 */ float    m_slopeSpeed;
     /* +0x448 */ float    m_force;                   // addForce clamps to [-30,+30]; no own reader
     /* +0x44C */ bool     _byte44C;                  // ctor/_exit zero [UNRESOLVED]

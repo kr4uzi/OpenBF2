@@ -19,11 +19,11 @@
 #include <cmath>
 #include <sstream>
 
+namespace dice { namespace hfe {
 #if !DEDICATED
-namespace dice { namespace hfe { extern IBase* g_geometryTemplateManager; } }
+extern IBase* g_geometryTemplateManager;
 #endif
-
-namespace dice { namespace hfe { namespace world {
+namespace world {
 namespace {
 // Narrow renderer seam, as in Base/Bundle.cpp: no complete IGeometry interface is recovered.
 // Both dedicated images retain these calls even though normal dedicated objects have no geometry.
@@ -63,7 +63,30 @@ void setPartTransformation(void* geometry, const Mat4& matrix, int part)
 }
 
 DestroyableWindowsBundle::DestroyableWindowsBundle(const DestroyableWindowsBundleTemplate* objectTemplate)
-    : Bundle(objectTemplate), m_refCount(1), m_states(~0u), m_previousStates(0) {}
+    : Bundle(objectTemplate), m_refCount(1), m_states(~0u), m_previousStates(0)
+{
+#if !DEDICATED
+    // BF2.exe 0x5F219A..0x5F2208: a second instance of the same mesh selects
+    // geometry 2, whose parts updateStates shows in place of broken windows.
+    if (m_geometry && !objectTemplate->m_geometry.empty() && g_geometryTemplateManager)
+    {
+        geom::IGeometryTemplate* geometryTemplate =
+            static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)->getTemplate(
+                objectTemplate->m_geometry);
+        if (geometryTemplate)
+        {
+            void* instance = geometryTemplate->createInstance();
+            if (instance)
+            {
+                geometry_part::getSubgeomCount(instance); // shipped discarded query
+                geometry_part::setNextGeometry(m_geometry, instance);
+                geometry_part::setOwnerObject(instance, this);
+                geometry_part::setSubgeom(instance, 2);
+            }
+        }
+    }
+#endif
+}
 DestroyableWindowsBundle::~DestroyableWindowsBundle()
 {
     if (m_geometry && secondaryGeometry(m_geometry))

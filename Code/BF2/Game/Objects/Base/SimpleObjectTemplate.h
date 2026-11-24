@@ -154,6 +154,7 @@ public:
 protected:
     friend struct BaseTemplateConsoleAccess;      // recovered direct-field console executors
     friend class SimpleObject;
+    friend class DestroyableWindowsBundle;        // secondary geometry uses the authored mesh name
     friend class ai::BFObjectEnvironment;        // the spawner query reads m_aiTemplate directly
     friend class ai::AIObjectUnit;               // m_aiTemplate (+296) of a soldier's KIT - the
                                                 // AIObjectUnit reads the kit template directly.

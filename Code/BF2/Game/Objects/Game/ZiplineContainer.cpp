@@ -23,6 +23,9 @@
 #include "../../../Scene/Object/ObjectManager.h"
 #include "../../../Scene/Object/ObjectPredicator.h"
 #include "../../Utility/Vars.h"
+#if !DEDICATED
+#include "../../../Sound/BfSound.h"
+#endif
 
 #include <cfloat>
 #include <cmath>
@@ -164,6 +167,10 @@ ZiplineContainer::ZiplineContainer(const ZiplineContainerTemplate* objectTemplat
     , m_traversalEnd()
     , m_lastSoldierPosition()
     , m_accumulatedSlopeMotion()
+#if !DEDICATED
+    , m_soundNode(0)
+    , m_usedSound(0)
+#endif
     , m_slopeSpeed(0.0f)
     , m_force(0.0f)
     , _byte44C(false)
@@ -177,10 +184,30 @@ ZiplineContainer::ZiplineContainer(const ZiplineContainerTemplate* objectTemplat
     m_traversalEnd.x = m_traversalEnd.y = m_traversalEnd.z = 0.0f;
     m_lastSoldierPosition.x = m_lastSoldierPosition.y = m_lastSoldierPosition.z = 0.0f;
     m_accumulatedSlopeMotion.x = m_accumulatedSlopeMotion.y = m_accumulatedSlopeMotion.z = 0.0f;
+#if !DEDICATED
+    // BF2.exe 0x5DAD72..0x5DADDA. Both evaluators read the live slide speed.
+    m_usedSound = g_bfSound->getSound(std::string("S_ZiplineUsed"));
+    if (m_usedSound)
+    {
+        m_soundNode.m_object = this;
+        m_usedSound->setParent(&m_soundNode);
+        m_usedSound->setVolumeEvaluator(0, &m_slopeSpeed);
+        m_usedSound->setPitchEvaluator(0, &m_slopeSpeed);
+    }
+#endif
 }
 
 ZiplineContainer::~ZiplineContainer()
 {
+#if !DEDICATED
+    // BF2.exe 0x5DA0A3..0x5DA0E5. BfSound owns/releases it (0x7E15B0..0x7E15D5).
+    if (m_usedSound)
+    {
+        if (m_usedSound->isPlaying())
+            m_usedSound->forceStop();
+        m_usedSound = 0;
+    }
+#endif
     if (!getParent())
         gameLogic->removePco(this);
 }
@@ -268,6 +295,11 @@ bool ZiplineContainer::_enter(IPlayer* player)
         static_cast<RotationalBundle*>(getCamera())->setCurrentRotation(rotation);
     }
 
+#if !DEDICATED
+    // BF2.exe 0x5DB361..0x5DB37B: only a successful entry starts the ride sound.
+    if (entered && m_usedSound)
+        m_usedSound->play();
+#endif
     return entered;
 }
 
