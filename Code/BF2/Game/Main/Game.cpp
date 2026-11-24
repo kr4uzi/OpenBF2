@@ -96,6 +96,7 @@
 #include "../../Core/Debug.h"            // the client chat display's unknown-type error
 #if !DEDICATED
 #include "../../Menu/BF2HudManager.h"    // the chat display and the radio speech localisation
+#include "../../Core/Random.h"          // failedExitVehicle's player-local seed
 #endif
 
 #include "../Objects/Game/TriggerManager.h"
@@ -141,6 +142,16 @@ world::IPlayerControlObject* findPlayerControlObject(world::IObject* object)
     return 0;
 }
 
+#if !DEDICATED
+// BF2.exe 0x00440030, using the raw draw at 0x0043FFA0.
+// [INFERRED] Local helper name; preserves the signed shift and range arithmetic.
+float failedExitRandomRange(Random& random, float minimum, float maximum)
+{
+    const int value = (static_cast<int>(random.getRaw() | 0x80u) >> 7) + 1;
+    return (static_cast<float>(value) * (maximum - minimum)) * 5.960464477539063e-8f + minimum;
+}
+#endif
+
 }
 
 Game::Game()
@@ -153,7 +164,7 @@ Game::Game()
     m_currentChannel = static_cast<TargetChannel>(0);
     m_currentType = static_cast<ChannelMessageType>(1);
     m_currentFlags = 0;
-    m_failedExitVehicleSoundId = 0;
+    m_failedExitVehicleSoundId = 0; // BF2.exe 0x004448AA: zero, despite the lookup's -1 sentinel.
     m_abortLoadingLevel = false;
 }
 
@@ -586,10 +597,36 @@ void Game::setCurrentMapSize(unsigned int mapSize)
     m_currentMapSize = mapSize;
 }
 
-void Game::failedExitVehicle(int)
+// BF2.exe 0x00440E00. Dedicated PE 0x00433FC0 / ELF 0x0805D2D0 are empty.
+void Game::failedExitVehicle(int playerId)
 {
-    // The dedicated-server implementation is intentionally empty. The shared field is consumed
-    // only by the retail client, which lazily resolves and plays the failed-exit sound.
+#if !DEDICATED
+    world::IPlayer* const player = world::playerManager->getLocalHumanPlayer();
+    if (!player || world::playerManager->getPlayerFromId(playerId) != player)
+        return;
+    if (!player->hasFirstPersonView())
+        return;
+    if (world::object_detail::LayoutAccess::objectTemplate(player->getVehicle())->getClassID()
+            != world::CID_PlayerControlObjectTemplate)
+        return;
+
+    // Both tick loads are interpreted unsigned. Retail stores the sum as float
+    // before comparing, without wrapping the addition at UINT_MAX.
+    const float retryAtTick =
+        static_cast<float>(static_cast<double>(player->getFailedExitAtTick()) + 90.0);
+    if (!(static_cast<double>(static_cast<unsigned int>(WorldPref::getTickCount())) > retryAtTick))
+        return;
+
+    if (m_failedExitVehicleSoundId == -1)
+        m_failedExitVehicleSoundId = g_bfSound->getSoundId("failedExitVehicle");
+    g_bfSound->playSound(m_failedExitVehicleSoundId);
+
+    // BF2.exe 0x00440EF1: this seed is local to each refusal; global Rand is untouched.
+    Random random;
+    random.m_seed = static_cast<unsigned int>(playerId) & 0x7FFFFFFFu;
+    const int backoff = static_cast<int>(failedExitRandomRange(random, 0.0f, 1.5f) * 30.0f);
+    player->setFailedExitAtTick(static_cast<unsigned int>(WorldPref::getTickCount()) - backoff);
+#endif
 }
 
 bool Game::getAbortLoadLevel() const

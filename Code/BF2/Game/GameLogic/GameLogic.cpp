@@ -1749,10 +1749,14 @@ bool GameLogic::isVoipClientRunning()
 namespace {
 } // namespace
 
-// : `ret`. The base's per-tick update is empty; ServerGameLogic::update does the work
-// and calls this first.
+// BF2.exe 0x004EDF00 publishes state 3 every update; BfSound::updateGroups clears it.
+// Dedicated PE 0x00464F20 / ELF 0x080D5330 have an empty base update.
 void GameLogic::update(float)
 {
+#if !DEDICATED
+    if (m_voiceMessages)
+        g_bfSound->setMuteState(static_cast<MuteState>(3), m_voiceMessages->isHelpVOPlaying());
+#endif
 }
 
 //  / 0x80CCDF0 / 0x80CCE00 / 0x80CCE50 - the combat-area quartet on +0x1D0..+0x1E0.
