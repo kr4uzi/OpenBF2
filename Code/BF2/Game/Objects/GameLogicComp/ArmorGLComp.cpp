@@ -37,6 +37,7 @@
 #include "../../../Geom/DecalSystem/DecalObjectAccess.h"
 #include "../../../Physics/ICollisionMesh.h"            // setGeometry (slot 13)
 #include "../../../Math/Mat4.h"
+#include "../../../Platform/X87Compat.h"
 #include <cstdio>
 #include <cstdlib>
 #include <float.h>
@@ -1211,6 +1212,20 @@ void ArmorGLComp::updateStatus(float hitPoints, bool notify)
     IObject* root = getRootParent(obj);
     if (root && (object_detail::LayoutAccess::flags(root) & 0x20) == 0)
         rootIsLive = true;
+
+#if !DEDICATED
+    // Client PE 0x687959..0x6879A4: refresh the root's damage flag before destruction checks.
+    if (bf2x87::greater(m_template->m_showDamageAsDirt, 0.0f) && root)
+    {
+        if (void* geometry = object_detail::LayoutAccess::geometry(root))
+        {
+            if (bf2x87::greater(hitPoints, m_template->m_showDamageAsDirt))
+                geometryShowDamage(geometry, 1, 0);
+            else
+                geometryShowDamage(geometry, 0, 1);
+        }
+    }
+#endif
 
     ArmorGLCompTemplate* t;
     float hp;
