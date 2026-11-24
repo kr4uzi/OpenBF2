@@ -110,6 +110,21 @@ for name, view_header, view_cls, provider_header, provider_cls, image, subobject
 for cls in ("dx9rend::DX9RendModule", "Rend::RendModule", "geom::ModuleGeom", "geom::ModuleGeomMisc"):
     PAIRS.append(("module-" + cls, side("Code/BF2/Core/IModule.h", "IModule"),
                   side("Code/RendDX9Abi/PluginModules.h", cls, "renderer")))
+
+# Item PE 0x8EFFBC / ELF 0x8899868: eight slots, including the IBase quartet.
+# Kit inherits that face; window bundles retain IBundleTemplate without exposing ISimpleObjectTemplate.
+for name, header, cls, view_header, view_cls in [
+    ("item-template", "ItemTemplate.h", "ItemTemplate", "IItemTemplate.h", "IItemTemplate"),
+    ("kit-item-template", "Game/KitTemplate.h", "KitTemplate", "IItemTemplate.h", "IItemTemplate"),
+    ("item-object-template", "ItemTemplate.h", "ItemTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+    ("kit-object-template", "Game/KitTemplate.h", "KitTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+    ("windows-bundle-template", "TemplateLeaves.h", "DestroyableWindowsBundleTemplate", "Base/BundleTemplate.h", "IBundleTemplate"),
+    ("windows-object-template", "TemplateLeaves.h", "DestroyableWindowsBundleTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+]:
+    PAIRS.append((name, side("Code/BF2/Game/Objects/" + view_header, "world::" + view_cls),
+                  side("Code/BF2/Game/Objects/" + header, "world::" + cls,
+                       subobject="world::" + view_cls if view_cls != "IObjectTemplate" else None)))
+
 PAIRS.extend([
     ("decal-object-implementation", side("Code/BF2/Geom/DecalSystem/DecalObject.h", "geom::IDecalObject", "renderer"),
      side("Code/BF2/Geom/DecalSystem/DecalObject.h", "geom::DecalObject", "renderer")),
