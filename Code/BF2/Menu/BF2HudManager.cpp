@@ -196,7 +196,9 @@ void BF2HudManager::toggleUAVState()
     if (getMode() == 23) {
         setMode(15, true);
     } else if (getUAVEnabled() && getUAVAvailability() > 0) {
-        if (hudMap && player->getOverheadCameraEnabled() && !hudMap->m_uavReloading) {
+        // BF2.exe 0x7B20DE..0x7B20F9: Player +0x118 is getUAVIsReady
+        // (0x4FA430), independent of the overhead-camera state.
+        if (hudMap && player->getUAVIsReady() && !hudMap->m_uavReloading) {
             setMode(23, true);
         } else {
             const std::string message("uav_in_use");
