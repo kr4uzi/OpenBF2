@@ -841,6 +841,34 @@ Each entry is a heading that names the fix, followed by these fields:
   changes; nothing on the wire changes.
 - **Source:** `Code/BF2/AI/AIDLL/AI/AIPathFinding/Cluster/ClusterNodeManager.cpp`
 
+### AI control-point queries reject missing IDs
+
+- **Retail:** `BFGame::getOwnerOfControlPoint`, `getControlPointTakeOverCounter` and
+  `getControlPointInfo` dereference the result of the control-point map's `find` without an
+  end check (`BF2.exe` `0x8164E0`, `0x816520`, `0x816560`; Linux ia-32 `bf2` `0x83FF220`,
+  `0x83FF270`, `0x83FF2C0`). `AIStrategicArea::postLoadInit` passes its scripted ID to the
+  info query and discards its return (`AIDLL.dll` `0x1006BB30`, call at `0x1006BB81`;
+  Linux ia-32 `libaidll.so` `0x337E20`). An absent ID reads past the map's end node and can
+  crash during level loading. Highway Tampa's installed `server.zip` has an empty
+  `GameModes/gpm_cq/16/AI/StrategicAreas.ai` and control points 101, 103, 104 and 109 in
+  that layer's `GamePlayObjects.con`. Its `GameModes/sp1/16/AI/StrategicAreas.ai` instead
+  names 602 (`CPNAME_MC_SP16_hotel`), 604, 603 and 601; none belongs to the conquest layer,
+  and the sp1/16 gameplay file defines no control points at all. The hotel is the first area
+  in name order, so loading those strategic areas reaches missing ID 602 first.
+- **OpenBF2:** Tests for the end iterator in all three queries. A missing ID returns neutral
+  owner 0, capture progress 0, or false with position, radius and active outputs zeroed.
+  Existing IDs keep their live queries, including position and radius for points that cannot
+  change teams. No map entry is inserted, and content files are unchanged. Defined failure
+  outputs also cover AI callers that discard the info result.
+- **Applies to:** Client and server, all platforms. This is a shared retail fix under the rule
+  above, rather than an omission limited to a native platform arm.
+- **Retail clients:** The change handles only invalid local AI lookups. It changes no interface,
+  control-point ID, packet, state transition or file format; valid control-point queries and
+  retail-client communication are unchanged. It does not supply missing AI/navigation content.
+- **Source:** `Code/BF2/AI/AIInterface/BFKnowledge/BFGame.cpp`;
+  `Code/Tests/aidll/control_point_lookup_runtime.cpp` (headless regression check,
+  `bf2_control_point_lookup_check`).
+
 ### BoneAnimation::load keeps channel samples inside the declared sample block
 
 - **Retail:** The `.baf` loader allocates the declared number of 16-bit samples per bone and then,
