@@ -135,8 +135,7 @@ void ObjectTemplateManager::handleEvent(EventCategory /*cat*/, unsigned int /*id
 {
 }
 
-// empty / 0x8324c70, 5 bytes - empty. Neither direction of the binary
-// template cache is implemented in the dedicated-server build. Do not write bodies for these.
+// ELF 0x8324C60 / 0x8324C70; BF2.exe 0x5AB2A0 (both slots): empty cache methods.
 void ObjectTemplateManager::writeBinary(const std::string& /*file*/) const
 {
 }

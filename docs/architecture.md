@@ -359,6 +359,36 @@ at its registration or loading boundary before adding fallback behavior. Python 
 use the embedded interpreter and native bindings; a fixture that bypasses those scripts
 does not validate production content loading.
 
+The following inspection and administration commands are registered in both client and
+dedicated images. Game-logic commands require a live game logic; message commands also
+require its voice-message owner. Player edits require an active player.
+
+| Commands | Arguments and result |
+| --- | --- |
+| `gameLogic.getTeamLanguage`, `gameLogic.getTeamName` | Team number; returns the configured string. |
+| `gameLogic.defaultLevel` | No argument reads the name; one string sets it. |
+| `gameLogic.setKit` | Team, kit type, kit template, soldier template. Types accept `KTMedic`, `Medic`, or `5` (the seven stock types); unknown tokens select the no-kit sentinel 13. |
+| `gameLogic.messages.playRadioMessage` | Team, message name, voice name, filter name; returns the message result integer. |
+| `gameLogic.messages.playHelpMessage` | Help key; returns the message result integer. |
+| `player.pickup` | Item template name; adds it to the controlled soldier on a server. |
+| `player.moveTo` | Slash-separated position; moves the root vehicle on a server, or returns a refusal string. |
+| `Player.create` | Player class name and player name; creates with automatic ID `-1`, returning the player pointer. |
+| `Object.template` | Read-only template pointer of the active object. |
+| `ObjectTemplate.writeBinary`, `ObjectTemplate.readBinary` | One filename; accepted no-ops, as in the shipped game. |
+| `kitTemplate.getType` | No arguments; returns the active AI kit's `KTSpecops` through `KTExtended6` token. Out-of-range values print no token. |
+| `reservedSlots.configFile`, `reservedSlots.load`, `reservedSlots.save` | Read/set the filename, load its console script, or save the current list; load/save return Boolean results. |
+| `reservedSlots.addNick`, `reservedSlots.removeNick`, `reservedSlots.clear`, `reservedSlots.list` | Add/remove one nickname, clear, or return newline-separated nicknames. Administrator access level 1. |
+
+Reserved nicknames load during `GameServer::init` from
+`<GSModDirectory>/settings/reservedSlots.con` (normally `mods/bf2/settings/reservedSlots.con`),
+resolved by the virtual filesystem. `+rsconfig <file>` overrides that filename. Each file
+line uses `reservedSlots.addNick "Nickname"`; `reservedSlots.save` writes that same syntax.
+After initialization, an administrator can read `reservedSlots.configFile` and
+`reservedSlots.list` to verify the selected file and loaded names. Loading merges with the
+current list; clear it explicitly before reloading if replacement is intended. Addition and
+reservation checks strip everything through the first space as a clan prefix; removal uses
+the stored spelling exactly. Matching and duplicate suppression are case-sensitive.
+
 ### The `openbf2` console extension
 
 `openbf2.*` is an OpenBF2 extension, not a recovered command; no retail image defines it. It is

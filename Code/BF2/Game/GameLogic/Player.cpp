@@ -4302,6 +4302,22 @@ void Player::doAddTouchItem(world::IPlayer* other)
         SingletonServer::m_iNametagManager->addTouchItem(other);
 }
 
+// BF2.exe 0x4FEE60; dedicated PE 0x475FA0; ELF 0x80F5790. Inspect the weak target
+// directly: getVehicle() can release a destroyed target, which this command does not do.
+void Player::pickup(std::string templateName)
+{
+    if (!game->queryInterface(IID_IGameServer))
+        return;
+    const WeakPtr<world::IObject>::Ctrl* vehicle =
+        static_cast<const WeakPtr<world::IObject>::Ctrl*>(m_vehicleWeak);
+    if (!vehicle || !vehicle->target)
+        return;
+    if (vehicle->target->getTemplate()->getClassID() != world::CID_SoldierTemplate)
+        return;
+    vehicle = static_cast<const WeakPtr<world::IObject>::Ctrl*>(m_vehicleWeak);
+    static_cast<world::Soldier*>(vehicle->target)->addItem(templateName, -1);
+}
+
 //  / PE 0x472BC0. Both return a string by value, empty on success.
 std::string Player::moveTo(const Vec3& position)
 {
