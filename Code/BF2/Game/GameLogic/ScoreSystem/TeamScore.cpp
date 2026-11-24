@@ -1,6 +1,9 @@
 // Team score state and wire serialization. [INFERRED] source path.
 
 #include "TeamScore.h"
+#if !DEDICATED
+#include "../../../Core/EventManager.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -44,17 +47,31 @@ void TeamScore::subTicket(int n)
         m_tickets = 0;
 }
 
-//  and 0x81074F0 — 17 bytes each, plain stores. These two are what made this class
-// reachable at all: the setter sweep found them writing +0x8C and +0x90 directly, which named the
-// class and gave two offsets before the constructor supplied the rest.
+// BF2.exe 0x005C7620 publishes the changed state after storing it. Dedicated ELF
+// 0x08107510 only stores; the HUD notification carries this team's borrowed score object.
 void TeamScore::setTicketState(int state)
 {
+#if !DEDICATED
+    const int previous = m_ticketState;
+#endif
     m_ticketState = state;      // +0x8C
+#if !DEDICATED
+    if (previous != state)
+        eventManager->postEvent(ECHud, 71, this, 0.0f);
+#endif
 }
 
+// BF2.exe 0x005C75F0; dedicated ELF 0x081074F0 retains its plain byte store.
 void TeamScore::setTicketBleed(bool bleeding)
 {
+#if !DEDICATED
+    const bool previous = m_ticketBleed;
+#endif
     m_ticketBleed = bleeding;   // +0x90
+#if !DEDICATED
+    if (previous != bleeding)
+        eventManager->postEvent(ECHud, 70, this, 0.0f);
+#endif
 }
 
 } // namespace world
