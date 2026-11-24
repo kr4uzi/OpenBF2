@@ -5,8 +5,9 @@
 // positive pass per input tick, 10.0 on the last) and checks what the engine-facing device
 // interfaces report against the DirectInput semantics of the recovered DX8 devices
 // (KeyboardDevice.cpp, MouseDevice.cpp). Focus follows a simulated AppKit state; dropped input
-// is counted and rate-limited without asking for activation. The full-screen state machine is
-// checked without a window. [RETIRE-WHEN: macos-client-window]
+// is counted and rate-limited. Cooperative startup requests are counted without activating a
+// real application, including delayed activation of a pending full-screen request. The full-screen
+// state machine is checked without a window. [RETIRE-WHEN: macos-client-window]
 
 #import <AppKit/AppKit.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -774,6 +775,127 @@ void testFocusFollowsAppKit()
     settle();
 }
 
+// The same focus pass as service() counts activation requests against a simulated clock and
+// AppKit state. No NSApplication, window, actual activation or wall-clock wait is involved.
+void testCooperativeStartup()
+{
+    begin("bounded cooperative startup requests and delayed full screen");
+    typedef CocoaHostTestHooks Hooks;
+    ClientHost& host = ClientHost::instance();
+    Hooks::SystemFocus sys = {};
+    sys.now = 2000.0;
+    sys.systemFrontmost = true;                 // even this state must never force activation
+    FocusLog focus;
+    host.addListener(&focus);
+    Hooks::overrideFocusForTest(host, false, false);
+    const auto apply = [&](double seconds) { sys.now += seconds; Hooks::setSystemFocusForTest(host, &sys); };
+    const auto pump = [&]() { Hooks::pumpFocusForTest(host); };
+    const auto state = [&]() { return Hooks::startupStateForTest(host); };
+    apply(0.0);
+    Hooks::launchActivationForTest(host);
+    check(state().requests == 1 && !host.isAppActive(), "one launch request, without inventing activation");
+    apply(0.3); pump();
+    apply(1.0); pump();
+    check(state().requests == 1, "no force-activation fallback or retries before the window exists");
+
+    apply(6.7);                                // engine startup outlasted the launch activation wait
+    sys.windowVisible = true;
+    apply(0.0);
+    Hooks::windowOrderedInForTest(host, true);
+    check(state().requests == 2 && state().fullscreenWaiting && !state().fullscreenEntering,
+          "window order-in requests again, inactive full-screen start waits");
+    apply(0.99); pump();
+    check(state().requests == 2, "visible-window requests are at least one second apart");
+    apply(0.01); pump(); pump();
+    check(state().requests == 3, "one request at the next second, repeated pumps do not duplicate it");
+    for (unsigned i = 2; i <= 5; ++i)
+    {
+        apply(1.0); pump();
+        check(state().requests == i + 2, "one cooperative request per second through the five-second limit");
+    }
+    apply(0.01); pump();
+    apply(6.0); pump();
+    check(state().requests == 7 && state().fullscreenWaiting && !host.isAppActive(),
+          "bounded retries end without dropping the pending full-screen request");
+
+    sys.appActive = sys.windowKey = true;       // a permission prompt answered, or a later click
+    apply(0.0);
+    focus.reset();
+    pump();
+    check(host.hasFocus() && !state().fullscreenWaiting && state().fullscreenEntering,
+          "activation after all startup waits expired immediately starts the pending Space entry");
+    pump(); Hooks::focusCallbackForTest(host);
+    check(focus.activations == 1 && focus.focusChanges == 1 && state().requests == 7,
+          "delayed activation is reported once and sends no further requests");
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 7, "leaving the game after activation never restarts startup requests");
+
+    // A windowed start uses the same request path. A hidden/minimized window does not ask.
+    apply(10.0);
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, false);
+    sys.windowVisible = false;
+    apply(1.0); pump();
+    check(state().requests == 2 && !state().fullscreenWaiting && !state().fullscreenEntering,
+          "hidden windowed start makes no repeat request and has no pending Space entry");
+    sys.windowVisible = true;
+    apply(0.5); pump();
+    check(state().requests == 3, "a visible window can retry within the original deadline");
+    apply(0.5); pump();
+    check(state().requests == 3, "visibility changes do not shorten the one-second spacing");
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::focusCallbackForTest(host);
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 3, "activation by callback ends retries even if focus is lost again before a pump");
+
+    // No burst of overdue requests after the engine stalls beyond the five-second window.
+    apply(10.0);
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, true);
+    apply(6.0); pump();
+    check(state().requests == 2 && state().fullscreenWaiting, "a long engine stall expires requests without a burst");
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::focusCallbackForTest(host);
+    check(state().fullscreenEntering && !state().fullscreenWaiting,
+          "delayed activation callback starts full screen without needing another pump");
+
+    // macOS 11-13's single, non-cooperative request must not be repeated.
+    sys.appActive = sys.windowKey = false;
+    sys.cooperativeActivation = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, true);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 1 && state().fullscreenWaiting, "11-13 request only at launch, never on order-in or pumps");
+    sys.appActive = sys.windowKey = true;
+    apply(1.0); pump();
+    check(state().fullscreenEntering, "11-13 delayed activation still starts the pending Space entry");
+
+    sys.appActive = sys.windowKey = false;
+    sys.cooperativeActivation = true;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host, true);
+    Hooks::windowOrderedInForTest(host, false);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 0, "scripted forced-focus runs never ask for activation");
+
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::launchActivationForTest(host);        // finish the fixture with no pending startup state
+    pump();
+    check(state().requests == 0, "an already active application needs no launch or order-in request");
+    Hooks::windowOrderedInForTest(host, false);
+    check(state().requests == 0, "active window order-in sends no request");
+    Hooks::setSystemFocusForTest(host, nullptr);
+    host.removeListener(&focus);
+    setFocus(true);
+    settle();
+}
+
 // NativeFullscreen.h: the game window's own full-screen Space. The engine's request is what the
 // host reports at once; the window follows with one AppKit transition at a time, waits for the
 // application's activation, and stays windowed after the user left the Space.
@@ -1029,6 +1151,7 @@ int main(int argc, char** argv)
         testHostBoundary();
         testCursorScale();
         testFocusFollowsAppKit();
+        testCooperativeStartup();
         testNativeFullscreen();
 
         host.removeListener(&log);

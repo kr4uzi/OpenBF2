@@ -26,8 +26,10 @@ public:
     {
         bool   appActive;        // [NSApp isActive]
         bool   windowKey;        // the game window is the key window
-        double now;              // the clock of the dropped-input report, in seconds
+        double now;              // the clock of activation and dropped-input reports, in seconds
         bool   systemFrontmost;  // the system names this process the frontmost application
+        bool   cooperativeActivation = true; // macOS 14+; false simulates 11-13
+        bool   windowVisible = false; // the game window is on screen and not minimized
     };
     // Simulates that state, so the host's focus rules run without an application or a window;
     // null ends the simulation.
@@ -38,6 +40,17 @@ public:
     static void focusCallbackForTest(host::ClientHost& host);
     // The focus part of one run of the event loop, as a frame's pump makes it.
     static void pumpFocusForTest(host::ClientHost& host);
+    // Starts an independent activation fixture without NSApplication or its launch wait.
+    static void launchActivationForTest(host::ClientHost& host, bool forcedFocus = false);
+    // Runs the order-in activation path and seeds the requested full-screen state without a window.
+    static void windowOrderedInForTest(host::ClientHost& host, bool fullscreen);
+    struct StartupState
+    {
+        unsigned requests;
+        bool fullscreenWaiting;
+        bool fullscreenEntering;
+    };
+    static StartupState startupStateForTest(const host::ClientHost& host);
     struct DroppedInputStats
     {
         unsigned droppedInputs;  // input events the focus gate dropped while the application was in front
