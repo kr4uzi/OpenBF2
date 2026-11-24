@@ -667,12 +667,8 @@ void ObjectModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_ObjectManager, "dice.hfe.world.ObjectManager.Standard", &world::ObjectManager::create});
     out.push_back(ClassRegInfo{CID_WindManager, "dice.hfe.world.WindManager.Standard", &world::WindManager::create});
     out.push_back(ClassRegInfo{CID_Object, "dice.hfe.world.Object.Standard", &world::Object::create});
-#if DEDICATED
-    // Dedicated body preserves retail's absent-render-singleton fault in update().
+    // BF2.exe 0x715CCE: shared registration; the client update reads its Renderer singleton.
     out.push_back(ClassRegInfo{CID_ObjectPriorityCalculator, "dice.hfe.world.ObjectPriorityCalculator.Standard", &world::ObjectPriorityCalculator::create});
-#else
-    // RW-6: the client render-singleton update arm remains unrecovered.
-#endif
     out.push_back(ClassRegInfo{CID_QuadTreeCuller, "dice.hfe.world.Culler.QuadTreeCuller", &world::QuadTreeCuller::create});
     out.push_back(ClassRegInfo{CID_BinTreeCuller, "dice.hfe.world.Culler.BinTreeCuller", &world::BinTreeCuller::create});
 }
@@ -800,9 +796,8 @@ void GameLogicObjTemplFxModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_DecalTemplate, "dice.hfe.world.ObjectTemplate.Decal", &world::ClassFactory<world::DecalTemplate>::create});
     out.push_back(ClassRegInfo{CID_EmitterTemplate, "dice.hfe.world.ObjectTemplate.Emitter", &world::ClassFactory<world::EmitterTemplate>::create});
     out.push_back(ClassRegInfo{CID_ParticleTemplate, "dice.hfe.world.ObjectTemplate.Particle", &world::ClassFactory<world::ParticleTemplate>::create});
-#if DEDICATED
+    // BF2.exe 0x576A6E, factory 0x55F771: the legacy sprite class is registered in both images.
     out.push_back(ClassRegInfo{CID_SpriteParticleTemplate, "dice.hfe.world.ObjectTemplate.SpriteParticle", &world::ClassFactory<world::SpriteParticleTemplate>::create});
-#endif // Client particle presentation remains outside the dedicated recovery.
     // Particle templates must retain registration order so client and server assign matching template IDs.
     out.push_back(ClassRegInfo{CID_SpriteParticleSystemTemplate, "dice.hfe.world.ObjectTemplate.SpriteParticleSystem", &world::ClassFactory<world::SpriteParticleSystemTemplate>::create});
     out.push_back(ClassRegInfo{CID_MeshParticleSystemTemplate, "dice.hfe.world.ObjectTemplate.MeshParticleSystem", &world::ClassFactory<world::MeshParticleSystemTemplate>::create});
@@ -848,10 +843,9 @@ void GameLogicObjTemplBFModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_ObjectSpawnerTemplate, "dice.hfe.world.ObjectTemplate.ObjectSpawner", &world::ClassFactory<world::ObjectSpawnerTemplate>::create});
     out.push_back(ClassRegInfo{CID_PlayerControlObjectTemplate, "dice.hfe.world.ObjectTemplate.PlayerControlObject", &world::ClassFactory<world::PlayerControlObjectTemplate>::create});
     out.push_back(ClassRegInfo{CID_ParachuteTemplate, "dice.hfe.world.ObjectTemplate.Parachute", &world::ClassFactory<world::ParachuteTemplate>::create});
-#if DEDICATED
+    // BF2.exe 0x5375ED/0x53762C, factories 0x506F0E/0x506F50: shared template registrations.
     out.push_back(ClassRegInfo{CID_KitPartTemplate, "dice.hfe.world.ObjectTemplate.KitPart", &world::ClassFactory<world::KitPartTemplate>::create});
     out.push_back(ClassRegInfo{CID_SupplyDepotTemplate, "dice.hfe.world.ObjectTemplate.SupplyDepot", &world::ClassFactory<world::SupplyDepotTemplate>::create});
-#endif // Client presentation paths have not been attested by this server recovery.
     out.push_back(ClassRegInfo{CID_SupplyObjectTemplate, "dice.hfe.world.ObjectTemplate.SupplyObject", &world::ClassFactory<world::SupplyObjectTemplate>::create});
     out.push_back(ClassRegInfo{CID_ControlPointTemplate, "dice.hfe.world.ObjectTemplate.ControlPoint", &world::ClassFactory<world::ControlPointTemplate>::create});
     out.push_back(ClassRegInfo{CID_ObstacleTemplate, "dice.hfe.world.ObjectTemplate.Obstacle", &world::ClassFactory<world::ObstacleTemplate>::create});

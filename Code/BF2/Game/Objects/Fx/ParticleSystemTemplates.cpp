@@ -648,6 +648,29 @@ int SpriteParticleSystemTemplate::getParticleDrawOrderEnum() const
     return static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getDrawOrder();
 }
 
+// BF2.exe 0x64C200/0x64C220; ELF 0x82138F0/0x8213920.
+// Setters tolerate an absent renderer descriptor; getters retain the shipped unguarded dispatch.
+void SpriteParticleSystemTemplate::setWindSpeedAgeDistance(float value)
+{
+    if (m_impl)
+        static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->setWindSpeedAgeDistance(value);
+}
+float SpriteParticleSystemTemplate::getWindSpeedAgeDistance() const
+{
+    return static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getWindSpeedAgeDistance();
+}
+
+// BF2.exe 0x64C230/0x64C250; ELF 0x8213940/0x8213970.
+void SpriteParticleSystemTemplate::setWindAgingFactor(float value)
+{
+    if (m_impl)
+        static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->setWindAgingFactor(value);
+}
+float SpriteParticleSystemTemplate::getWindAgingFactor() const
+{
+    return static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getWindAgingFactor();
+}
+
 // ParticleSystemEmitterTemplate
 // Impl is the type-3 descriptor - which derives from the base interface, not the sprite one, the
 // same way this class does. ELF 0x820DAE0 (40 B) / 0x820DB10 (27 B); impl ELF +0x168 / +0x16C.

@@ -125,6 +125,7 @@ public:
 
     // Base no-op; destroyable-window templates override it.
     virtual void  setDestroyableWindowsTemplate(const std::string&);     // +0x10C
+    std::string getDestroyableWindowsTemplate() const;
 
     // Creates and returns a sound template marked with flag 0x400.
     virtual ObjectTemplate* addSoundTemplate(const std::string&);        // +0x110

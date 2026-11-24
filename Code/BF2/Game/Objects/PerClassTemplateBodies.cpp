@@ -58,7 +58,30 @@ AntennaObjectTemplate::AntennaObjectTemplate()
     speedFactor = 1.0f;
 }
 
-AntennaObjectTemplate::~AntennaObjectTemplate() {}
+// BF2.exe 0x5F40B0 / ELF 0x8169C00: the template owns its loaded skeleton.
+AntennaObjectTemplate::~AntennaObjectTemplate() { delete m_skeleton; }
+
+// BF2.exe 0x5F3AA0 / ELF 0x816A090: replace without releasing the previous skeleton.
+// The PE's +0x214 and ELF's +0x168 are the same derived field after their different bases.
+void AntennaObjectTemplate::setSkeleton(const std::string& name)
+{
+    bool loaded;
+    m_skeleton = new anim::Skeleton(name, &loaded, 0);
+    if (!loaded)
+    {
+        delete m_skeleton;
+        m_skeleton = 0;
+    }
+}
+
+// BF2.exe 0x5F39E0 / ELF 0x816A110 return an empty string even with a loaded skeleton.
+const std::string& AntennaObjectTemplate::getSkeleton() const
+{
+    if (!m_skeleton)
+        return getEmptyString();
+    static const std::string empty;
+    return empty;
+}
 
 unsigned int AntennaObjectTemplate::getClassID() const { return CID_AntennaObjectTemplate; }
 

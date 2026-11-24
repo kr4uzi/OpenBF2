@@ -411,6 +411,21 @@ void objTemplOverheatPenaltySet(float v) { activeFireArm()->setOverheatPenalty(v
 // The retail defaults for this property block: ("ObjectTemplate", access 2, category 0x10).
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 16)
 
+// BF2.exe 0x50D2AE: the obsolete Item yaw property only selects the template.
+namespace {
+float objectTemplateGetYawSpeed()
+{
+    getActiveTemplate(CID_ItemTemplate);
+    return 0.0f;
+}
+void objectTemplateSetYawSpeed(float)
+{
+    getActiveTemplate(CID_ItemTemplate);
+}
+}
+BF2_CONSOLE_PROPERTY_FN(yawSpeed, float, getActiveTemplate(CID_ItemTemplate) != 0,
+                        objectTemplateGetYawSpeed(), objectTemplateSetYawSpeed, kWeaponConsoleTag)
+
 // GenericFireArmTemplate's item identity properties. The generated executors are attested in the
 // PE at 0x489AF0 (itemIndex) and the adjacent itemType class; the ELF accessors are
 // ..0x8256D40. These are load-bearing for Kit::init: without itemIndex registration every
