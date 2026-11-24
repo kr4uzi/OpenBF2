@@ -114,6 +114,11 @@ public:
 
     void resetSatelliteReload();
     void resetUAVReload();
+    // Tracks a vehicle with positive radar radius while the local player has a vehicle.
+    // Stored object pointers are borrowed. Helper names are [INFERRED].
+    void addVehicleRadar(hfe::world::IObject* object);
+    // Removes the supplied object's radar entry; object must be nonnull.
+    void removeVehicleRadar(hfe::world::IObject* object);
     int cycleZoom();
     void prepareOrder(int type);
     void clearOrder();                                  // 772C00, clears pointer without deleting
@@ -380,6 +385,9 @@ private:
                                int networkId, TextureHandle texture);
     void updateUavTarget(hfe::world::IObject* object,
                          int networkId, TextureHandle texture);
+    // Inserts a borrowed object once by object ID, or the UAV sentinel for null.
+    // [INFERRED] name.
+    void addUavObject(hfe::world::IObject* object);
     // [INFERRED] name; complete PE body is map<unsigned,IObject*>::erase(key).
     void removeUavObject(unsigned int networkId);
     void collectIconFamily783F90();

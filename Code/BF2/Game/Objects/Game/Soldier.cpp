@@ -51,6 +51,8 @@
 #include "../PlayerControlObjectTemplate.h"       // onEnter's unchecked +0x22C template view
 #include "../../HapticSettings.h"
 #include "../../Main/BF2ClientSeams.h"           // g_hapticSettings, ds:0x987394
+#include "../../../Menu/BF2HudManager.h"
+#include "../../../Menu/Bf2MenuMapNode.h"
 #endif
 #include "../../../AI/AIInterface/BFKnowledge/IAIObject.h"   // init()'s lock bracket, the revive's init()
 #include "../../GameServer/ServerSettings.h"     // serverSettings - the man-down time
@@ -868,6 +870,16 @@ void Soldier::onExit()
                 if (pco)
                     break;
             }
+#if !DEDICATED
+            // BF2.exe 0x5AB4E4..0x5AB52F: remove the root radar before kit bonuses.
+            // The root PCO's seat-map copy lives across the HUD call (0x4CF410/0x4CF430).
+            if (!isDedicated() && L::abilityGLComponent(used)
+                && findOwningPlayerControlObject(used))
+            {
+                const std::map<int, IPlayerControlObject*> pcos(*pco->getPcos());
+                hudManager->getMap()->removeVehicleRadar(root);
+            }
+#endif
             const std::string& rootName = L::objectTemplate(root)->getName();   // +0x14 > +0x2C, root unchecked
             if (pco)
             {
@@ -4195,6 +4207,21 @@ void Soldier::onEnter(IObject* entering)
         if (seat)
             break;
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5ACADE..0x5ACB58: a friendly soldier entering an ability-equipped
+    // object registers its radar. PCO +0x98 / IPlayer +0xE4 are the team getters.
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+    if (!isDedicated() && L::abilityGLComponent(entering) && local)
+    {
+        const int team = getTeam();
+        if (team == local->getTeam() && seat)
+        {
+            const std::map<int, IPlayerControlObject*> pcos(*seat->getPcos());
+            hudManager->getMap()->addVehicleRadar(entering);
+        }
+    }
+#endif
 
     if (seat && !seat->getCameras()->empty())                          // +0x38 then the node count
     {

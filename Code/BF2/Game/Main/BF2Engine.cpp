@@ -206,13 +206,21 @@ void CheckServerAliveThread::run()
 
 // File-scope helpers, all attested in the ELF symbol table. See the notes further down.
 void bf2ExitCallback(void*);                    // _ZN4dice3hfe15bf2ExitCallbackEPv    0x8138B50
-// Sends an unthrottled watchdog heartbeat for each load increment. Does nothing
-// when the engine is absent; this callback does not repaint loading progress.
+// Sends an unthrottled watchdog heartbeat for dedicated-server load increments.
+// Does nothing when the engine is absent; this callback does not repaint loading progress.
 void atIncLoadCallback();                       // _ZN4dice3hfe17atIncLoadCallbackEv   0x812E8D0
 void atIncLoadCallback()
 {
     if (bf2Engine)
+    {
+#if !DEDICATED
+        // BF2.exe 0x403ACB..0x403AD2 skips the heartbeat on a normal client.
+        // Dedicated PE 0x402A20 / ELF 0x812E8D0 have no runtime mode test.
+        if (!isDedicated())
+            return;
+#endif
         bf2Engine->markAsStillRunning();
+    }
 }
 extern EventManager*         eventManager;   //  = _ZN4dice3hfe12eventManagerE
 extern SettingsRepostitory*  settings;       // Shared settings repository.
