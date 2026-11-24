@@ -34,6 +34,9 @@ public:
     virtual int getOwnerOfControlPoint(unsigned int index) const = 0;
     // forward IControlPoint's float result in ST0.
     virtual float getControlPointTakeOverCounter(unsigned int index) const = 0;
+    // [CHOSEN, not recovered] "AI control-point queries reject missing IDs" in
+    // docs/retail-fixes.md: true for an existing ID; active separately reports capture eligibility.
+    // A missing ID returns false and zeros position, radius and active.
     virtual bool getControlPointInfo(unsigned int index, Vec3& position, float& radius, bool& active) const = 0;
     virtual int findControlPoint(const Vec2& a, const Vec2& b) const = 0;
     // Borrowed addresses: , .

@@ -666,18 +666,52 @@ Each entry is a heading that names the fix, followed by these fields:
   names 602 (`CPNAME_MC_SP16_hotel`), 604, 603 and 601; none belongs to the conquest layer,
   and the sp1/16 gameplay file defines no control points at all. The hotel is the first area
   in name order, so loading those strategic areas reaches missing ID 602 first.
+  `AIStrategicArea::init` itself reads no control-point object: AIDLL.dll `0x10065DEF`
+  loads the cached `IAITerrain` pointer from `0x10160E60`, dereferences its vtable at
+  `0x10065DF5` and calls terrain altitude at `0x10065E04`. It then reads the pathfinding
+  singleton (`0x10065E1E`) and queries used maps/polygons. Post-load's position and radius
+  values cannot make a null terrain pointer safe. The owner's native crash report
+  (`bf2_client-2026-11-24-235450.ips`, `init()+46`, `rdi=0`) identifies that terrain
+  dereference. Retail also requires a live terrain adapter here; surviving an unchecked
+  end-node read is heap-dependent undefined behavior, not a retail missing-area policy.
 - **OpenBF2:** Tests for the end iterator in all three queries. A missing ID returns neutral
   owner 0, capture progress 0, or false with position, radius and active outputs zeroed.
   Existing IDs keep their live queries, including position and radius for points that cannot
   change teams. No map entry is inserted, and content files are unchanged. Defined failure
-  outputs also cover AI callers that discard the info result.
+  outputs also cover AI callers that discard the info result. The info query's Boolean now
+  reports ID existence, while `active` still reports whether the point can change teams.
+  Retail returns `active`; every existing production caller discarded that Boolean. The
+  area position/radius helper now propagates existence so a fixed-team main base remains valid.
+  This is an intentional internal return-contract change between rebuilt images, with no
+  signature, virtual-slot or object-layout change; rebuild the host and AIDLL together.
+
+  Before any post-load area initialization, the strategic-object manager logs and removes
+  control-point areas whose IDs are absent. It unlinks both neighbor vectors, name tables,
+  active selection and category entries, deletes their waypoints and areas, and compacts
+  the object/category indices and surviving waypoint keys together. Deferred array pointers
+  are initialized to null so rejected areas can be destroyed without running their deferred
+  constructor work. Debug primitives are cleared using their old indices before compaction.
+  Bounded areas are retained. An empty roster skips `SAI::update` before strategy/planning
+  work; respawn/position notifications and owned-point tests also reject a null closest area.
+  This avoids publishing a phantom neutral target or ordering bots toward the zero position.
+
+  The AI-side consumer audit covers area owner/capture updates, takeability, radius/order
+  positioning, SAI owned/takeable queries, `VehicleUrgencyCalculator`, all three
+  `BBPFireInfantery` flag branches, squad taking-flag checks, and `BotSpawner`'s spawn-group
+  control-point IDs. They use surviving areas, the guarded BFGame queries, or already reject
+  a null closest object. Strategies store type/status modifiers rather than control-point IDs;
+  their area lists and bot orders are populated from the filtered manager roster. This does
+  not initialize a missing terrain adapter: a valid area still requires terrain and pathfinding.
 - **Applies to:** Client and server, all platforms. This is a shared retail fix under the rule
   above, rather than an omission limited to a native platform arm.
-- **Retail clients:** The change handles only invalid local AI lookups. It changes no interface,
-  control-point ID, packet, state transition or file format; valid control-point queries and
-  retail-client communication are unchanged. It does not supply missing AI/navigation content.
+- **Retail clients:** The change handles invalid local AI lookups. It changes no network interface,
+  control-point ID, packet, state transition or file format; valid geometry, ownership,
+  capture eligibility and retail-client communication are unchanged. It does not supply
+  missing AI/navigation content.
 - **Source:** `Code/BF2/AI/AIInterface/BFKnowledge/BFGame.cpp`;
-  `Code/Tests/aidll/control_point_lookup_runtime.cpp` (headless regression check,
+  `Code/BF2/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.cpp`,
+  `AIStrategicObjectManager.cpp`; `Code/BF2/AI/AIDLL/AI/AIStrategic/SAI.cpp`;
+  `Code/Tests/aidll/control_point_lookup_runtime.cpp`, `control_point_area_runtime.cpp` (headless regression check,
   `bf2_control_point_lookup_check`).
 
 ### BoneAnimation::load keeps channel samples inside the declared sample block

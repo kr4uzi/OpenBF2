@@ -279,7 +279,8 @@ float BFGame::getControlPointTakeOverCounter(unsigned int index) const
     return static_cast<world::ControlPoint*>(found->second)->getTakeOverCounter();
 }
 
-// Returns whether the control point can change teams and writes that value to active.
+// [CHOSEN, not recovered] Same retail fix: return ID existence, independently of active
+// (whether the point can change teams). Existing production callers discarded the return.
 // Writes the live position and template radius, or zeros all outputs for a missing ID.
 bool BFGame::getControlPointInfo(unsigned int index, Vec3& position, float& radius, bool& active) const
 {
@@ -309,7 +310,7 @@ bool BFGame::getControlPointInfo(unsigned int index, Vec3& position, float& radi
 
     active = !controlPointTemplate->getUnableToChangeTeam();
 
-    return active;
+    return true;
 }
 
 // bf2 0x83FF350. The id of the first control point (key order) whose XZ position lies in the box

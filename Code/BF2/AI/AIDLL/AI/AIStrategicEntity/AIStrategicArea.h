@@ -57,7 +57,7 @@ public:
     void postLoadInit();
     void initOrderPoses();
 
-    // Writes the control-point position and radius; returns false for an unassigned id.
+    // Writes the control-point position and radius; false for an unassigned or missing ID.
     bool getControlPointPosAndRadius(Vec3& position, float& radius);
 
     // ELF 0x33BD30: bit test of the landing-zone equipment mask (+340).
