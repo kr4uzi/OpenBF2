@@ -23,6 +23,10 @@
 #include "../../GameLogic/Player.h"            // the concrete player handleUpdate follows
 #include "../IObject.h"
 #include "../ObjectLayoutAccess.h"     // createdOnLoad - init's +0x78 store
+#if !DEDICATED
+#include "../../Main/Game.h"
+#include "../../../Platform/X87Compat.h"
+#endif
 
 namespace dice {
 namespace hfe {
@@ -795,9 +799,15 @@ void FreeCamera::handlePlayerInputDefault(IPlayer* /*player*/, const io::PlayerI
 }
 
 // Mode 6 selects death/follow-player view; other modes use the object's absolute transform.
-// Copies the chosen transform into the member and returns that reference.
+// Clients return the cached view for ordered non-positive steps; otherwise refresh that cache.
 const Mat4& FreeCamera::getTransformation(float deltaTime)
 {
+#if !DEDICATED
+    // BF2.exe 0x63E9A6..0x63E9C7: FCOMP / TEST AH,0x41 / JP computes on NaN.
+    // The adjusted camera receiver's +0x11C is this object's m_transformation.
+    if (!isDedicated() && bf2x87::lessEqual(deltaTime, 0.0f))
+        return *reinterpret_cast<const Mat4*>(m_transformation);
+#endif
     const Mat4* transform;
     if (m_viewMode == 6)                                     // +0x190
     {

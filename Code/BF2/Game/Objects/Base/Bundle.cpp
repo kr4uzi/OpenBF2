@@ -10,6 +10,9 @@
 #include "../../../Physics/ICollisionMesh.h"
 #include "../../../Physics/IPhysicsNode.h"
 #include "../GameLogicComp/IArmorGLComp.h"
+#if !DEDICATED
+#include "../../Main/Game.h"
+#endif
 
 #include <cfloat>
 #include <cmath>
@@ -159,6 +162,22 @@ void Bundle::init()
                                     objectTemplate->getCollisionMesh());
 
     turnOffChildFloaters(getChild());
+#if !DEDICATED
+    // BF2.exe 0x62724A..0x627298: only the root registers its own and child driver decals.
+    if (!isDedicated() && !m_parent)
+    {
+        static_cast<const BundleTemplate*>(m_template)->addDriverDecals(this);
+        for (IObject* child = getChild(); child; child = child->getSibling())
+        {
+            BundleTemplate* childTemplate = static_cast<BundleTemplate*>(
+                const_cast<IObjectTemplate*>(child->m_template)->queryImplementation(
+                    CID_BundleTemplate));
+            if (childTemplate)
+                childTemplate->addDriverDecals(child);
+        }
+        return;
+    }
+#endif
     if (m_parent)
     {
         IBundleTemplate* parentTemplate = static_cast<IBundleTemplate*>(
