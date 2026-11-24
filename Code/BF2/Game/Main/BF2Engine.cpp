@@ -2941,7 +2941,11 @@ bool BF2Engine::playDemo(bool fromConfigName, const std::string& name)
 
         if (started)
         {
-            // (*(void*)0)[9](0, 0);                      // 0x8137D91 - see the header block
+#if !DEDICATED
+            // BF2.exe 0x40653A..0x406544: successful playback disables HUD paint
+            // and update through the unguarded manager call.
+            hudManager->setPaint(false);
+#endif
             return true;
         }
     }

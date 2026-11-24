@@ -120,6 +120,15 @@ world state through the engine's event and object systems. The order is observab
 commands refer to registered types and resources, while synchronous load events can invoke
 other subsystems before loading returns.
 
+On a client, `GameLogic::beginLoadStats` publishes the loading flag, fades main-menu
+or between-rounds music through `MusicPlayer`, and releases the old menu before
+posting the loading-screen events (BF2.exe `0x4EC030`).
+
+Successful demo playback disables HUD paint and update through
+`BF2HudManager::setPaint(false)` (BF2.exe `0x40653A`). A lightmap worker accepts a
+nonnull player's spawn-group selection without posting a gameplay request
+(`0x4E1C42`); ordinary clients retain the normal request path.
+
 `BF2::run` delegates each iteration to `BF2Engine::mainLoop`. Timing supplies the server's
 simulation step count and timestep; `GameServer::update` coordinates connection work,
 simulation, events, and outgoing state. Loading also pumps a special update path, so seeing
