@@ -312,11 +312,18 @@ def windows_sign(paths, script):
     """Sign every program and DLL in `paths` that lacks a valid signature, then require a valid one on each.
     `script` is tools/windows/ci/sign.ps1 (its environment names signtool and the certificate); a .py
     stand-in runs under this Python, for the packaging fixtures."""
+    environment = None
     if script.suffix == ".py":
         command = [sys.executable, str(script)]
+    elif shutil.which("pwsh"):
+        command = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
     else:
+        # Windows PowerShell started from a PowerShell 7 session inherits its PSModulePath, finds PowerShell 7's
+        # Microsoft.PowerShell.Security first and cannot load it (Get-AuthenticodeSignature); without the
+        # variable it uses its own default module path.
+        environment = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
         command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-    result = subprocess.run(command + [str(path) for path in paths])
+    result = subprocess.run(command + [str(path) for path in paths], env=environment)
     if result.returncode != 0:
         raise ValueError("Signing failed with exit code {} ({})".format(result.returncode, script))
 

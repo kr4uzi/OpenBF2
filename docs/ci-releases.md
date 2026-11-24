@@ -6,8 +6,12 @@ requests use read-only permissions and require no secrets. Repository settings m
 require a maintainer to approve a first-time contributor's workflow run.
 For Linux-only packaging changes, manual dispatch offers `linux_only`: it runs
 the Linux server/client matrix and Linux package job without rebuilding Windows
-or macOS. Its default is false; pull requests, `main` pushes and published
-releases retain all-platform coverage. Validate locally before dispatching.
+or macOS. `windows_only` likewise runs only the Windows matrix, the Windows
+installer and the Windows package. Dispatched on a `v*` tag, that run is a
+release run with the `release` environment, so it exercises Windows signing
+without building Linux or macOS and without touching a release. Both default
+to false; pull requests, `main` pushes and published releases retain
+all-platform coverage. Validate locally before dispatching.
 
 Use the [local CI tooling](local-ci.md) before a PR to run the Linux build,
 installer and package jobs with `act`. The optional pre-push guard checks saved
