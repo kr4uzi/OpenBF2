@@ -5,6 +5,7 @@
 #define GAME_OBJECTS_SOLDIERTEMPLATE_H
 
 #include "../Base/BundleTemplate.h"
+#include "../ISoldierTemplate.h"
 #include <string>
 #include "../../../Math/Vec3.h"     // m_nameTagOffset is a Vec3 - see the layout note below
 
@@ -19,7 +20,7 @@ namespace world {
 
 struct GameTemplateConsoleAccess;
 
-class SoldierTemplate : public BundleTemplate /* , public ISoldierTemplate @ +380 */
+class SoldierTemplate : public BundleTemplate, public ISoldierTemplate
 {
 public:
     // Soldier reads its template configuration directly.
@@ -29,7 +30,7 @@ public:
 
 protected:
     // Original ELF field offsets are references; native STL layouts may differ.
-    /* 380 */ void* pVMT_ISoldierTemplate;           // second base, RTTI-proven @ +380
+    // ISoldierTemplate supplies the secondary vptr (ELF +380 / PE +556).
     /* 384 */ int   m_refCount3;
 
     /* 388 */ float m_ridingWithDistMod;
@@ -99,6 +100,8 @@ public:
     virtual void addRef() override;
     virtual int getRef() override;
     virtual int release() override;
+    virtual void* queryInterface(unsigned int iid) const override;
+    virtual bool makeScript(io::IStream* stream) override;
 
     // Initializes soldier inventory, movement, camera and animation defaults.
     SoldierTemplate()
@@ -145,8 +148,22 @@ public:
         initAnimation();
     }
 
-    // the accessors Soldier forwards to. Each is [CHOSEN] in name only - the offsets and the
-    // forwarding are attested by the Soldier bodies that read them.
+    // Primary virtual tail: ELF 0x088A0A08..0x088A0A38, PE 0x008F18C8..0x008F18F4.
+    virtual void setNameTagOffset(Vec3 value);
+    virtual const Vec3& getNameTagOffset() { return m_nameTagOffset; }
+    virtual void setRidingWithOffset(Vec3 value);
+    virtual const Vec3& getRidingWithOffset() { return m_ridingWithOffset; }
+    virtual void setRidingWithDistMod(float value) { m_ridingWithDistMod = value; }
+    virtual float getRidingWithDistMod() { return m_ridingWithDistMod; }
+    virtual void setManDownCameraOffsetInDof(float value) { m_manDownCameraOffsetInDof = value; }
+    virtual float getManDownCameraOffsetInDof() const { return m_manDownCameraOffsetInDof; }
+    virtual void setManDownCameraOffsetInUp(float value) { m_manDownCameraOffsetInUp = value; }
+    virtual float getManDownCameraOffsetInUp() const { return m_manDownCameraOffsetInUp; }
+    virtual int getInventorySize() override { return m_inventorySize; }
+    virtual float getListenerObstruction() const { return 0.0f; }
+    virtual void setListenerObstruction(float) {}
+
+    // Const access to the same configuration for live soldier consumers.
     const Vec3& getNameTagOffset() const      { return m_nameTagOffset; }
     const Vec3& getRidingWithOffset() const   { return m_ridingWithOffset; }
     float getRidingWithDistMod() const        { return m_ridingWithDistMod; }

@@ -30,6 +30,7 @@ public:
     virtual ~AnimatedBundleTemplate();
     virtual void* queryImplementation(unsigned int);
     virtual IObject* createObject() const;           // new(0x154) AnimatedBundle(this)
+    virtual bool makeScript(io::IStream* stream) override;
 
     // The three ObjectTemplate authoring methods. Each resolves its path immediately to the
     // object stored below; the animation systems themselves defer reading their .inc files until

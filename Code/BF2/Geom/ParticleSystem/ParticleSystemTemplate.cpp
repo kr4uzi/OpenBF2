@@ -285,10 +285,10 @@ PT_GETF(pt_s147, 0xDC)
 PT_GETD(pt_s149, 0xE0)
 PT_GETD(pt_s151, 0xE4)
 // PE 0x101775A0
-PT_SETF(pt_s152, 0xB4)
+PT_SETFLT(pt_s152, 0xB4)
 PT_GETF(pt_s153, 0xB4)
 // PE 0x101775C0
-PT_SETF(pt_s154, 0xB0)
+PT_SETFLT(pt_s154, 0xB0)
 PT_GETF(pt_s155, 0xB0)
 // PE 0x10177600
 PT_SETB(pt_s156, 0x29C)
@@ -768,12 +768,12 @@ const void* const kVtable[] =
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getAnimationFrameCount, pt_s149),
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setAnimationFrameCountX, pt_s150),
     BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getAnimationFrameCountX, pt_s151),
-    reinterpret_cast<void*>(&pt_s152),
-    reinterpret_cast<void*>(&pt_s153),
-    reinterpret_cast<void*>(&pt_s154),
-    reinterpret_cast<void*>(&pt_s155),
-    reinterpret_cast<void*>(&pt_s156),
-    reinterpret_cast<void*>(&pt_s157),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setWindSpeedAgeDistance, pt_s152),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getWindSpeedAgeDistance, pt_s153),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setWindAgingFactor, pt_s154),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getWindAgingFactor, pt_s155),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, setNearCullingEnable, pt_s156),
+    BF2_NATIVE_SLOT(::dice::hfe::geom::IParticleSystemTemplateType0, getNearCullingEnable, pt_s157),
 };
 #else
 const void* const kVtable[158] =

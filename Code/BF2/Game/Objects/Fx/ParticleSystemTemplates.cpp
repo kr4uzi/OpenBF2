@@ -7,6 +7,8 @@
 #include "../../../Core/StringUtil.h"              // compareIgnoreCase - the name-table parsers
 #include "../../../Geom/ParticleSystem/ParticleSystemManager.h"
 #include "../IObject.h"                            // createObject's (always null) product type
+#include "../../../IO/Stream/IStream.h"
+#include <sstream>
 
 namespace dice {
 namespace hfe {
@@ -707,6 +709,188 @@ std::string SpriteParticleSystemTemplate::getParticleType() const
 std::string SpriteParticleSystemTemplate::getDrawOrder() const
 {
     return ParticleDrawOrderNames[getParticleDrawOrderEnum()];
+}
+
+// BF2.exe 0x0064FB30 / ELF 0x0820E2A0. Every value is emitted, in this order;
+// descriptor getters intentionally have no blanket null fallback on save paths.
+bool ParticleSystemTemplateBase::makeScript(io::IStream* stream)
+{
+    if (!ObjectTemplate::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.showInFirstPerson " << m_byte40 << std::endl;
+    out << "ObjectTemplate.showInThirdPerson " << m_byte41 << std::endl;
+    out << "ObjectTemplate.emitPrio " << getEmitPrio() << std::endl;
+    out << "ObjectTemplate.lodDistance " << getLodDistance() << std::endl;
+    out << "ObjectTemplate.qualityLevel " << getQualityLevel() << std::endl;
+    out << "ObjectTemplate.emitterType " << SpriteParticleEmitterTypeNames[m_emitterType] << std::endl;
+    out << "ObjectTemplate.isLocalSystem " << getIsLocalSystem() << std::endl;
+    out << "ObjectTemplate.emitRadius " << m_impl->getEmitRadius() << std::endl;
+    out << "ObjectTemplate.emitRangeX " << getEmitRangeX() << std::endl;
+    out << "ObjectTemplate.emitRangeY " << getEmitRangeY() << std::endl;
+    out << "ObjectTemplate.emitRangeZ " << getEmitRangeZ() << std::endl;
+    out << "ObjectTemplate.randomRadialDirection " << getRandomRadialDirection() << std::endl;
+    out << "ObjectTemplate.radialDirection " << getRadialDirection() << std::endl;
+    out << "ObjectTemplate.emitFrequency " << m_impl->getEmitFrequency() << std::endl;
+    out << "ObjectTemplate.preWarmTime " << m_impl->getPreWarmTime() << std::endl;
+    out << "ObjectTemplate.emitTime " << m_impl->getEmitTime() << std::endl;
+    out << "ObjectTemplate.emitDelay " << m_impl->getEmitDelay() << std::endl;
+    out << "ObjectTemplate.isLooping " << m_impl->getIsLooping() << std::endl;
+    out << "ObjectTemplate.emitSpeed " << m_impl->getEmitSpeed() << std::endl;
+    out << "ObjectTemplate.emitDirection " << m_impl->getEmitDirection() << std::endl;
+    out << "ObjectTemplate.timeToLive " << m_impl->getTimeToLive() << std::endl;
+    out << "ObjectTemplate.randomTimeToLive " << m_impl->getRandomTimeToLive() << std::endl;
+    out << "ObjectTemplate.windAffectionFactor " << m_impl->getWindAffectionFactor() << std::endl;
+    out << "ObjectTemplate.forceToWaterSurface " << m_impl->getForceToWaterSurface() << std::endl;
+    out << "ObjectTemplate.waterSurfaceOffset " << m_impl->getWaterSurfaceOffset() << std::endl;
+    out << "ObjectTemplate.rotationGraph " << m_impl->getRotationGraph() << std::endl;
+    out << "ObjectTemplate.alignRotationToSpeed " << m_impl->getAlignRotationToSpeed() << std::endl;
+    out << "ObjectTemplate.transparencyGraph " << m_impl->getTransparencyGraph() << std::endl;
+    out << "ObjectTemplate.gravity " << m_impl->getGravity() << std::endl;
+    out << "ObjectTemplate.gravityGraph " << m_impl->getGravityGraph() << std::endl;
+    out << "ObjectTemplate.airResistanceGraph " << m_impl->getAirResistanceGraph() << std::endl;
+    out << "ObjectTemplate.emitSpeedGraph " << m_impl->getEmitSpeedGraph() << std::endl;
+    out << "ObjectTemplate.randomSpeed " << m_impl->getRandomSpeed() << std::endl;
+    out << "ObjectTemplate.randomDirectionAngle " << m_impl->getRandomDirectionAngle() << std::endl;
+    out << "ObjectTemplate.airResistance " << m_impl->getAirResistance() << std::endl;
+    out << "ObjectTemplate.collisionEnable " << m_impl->getCollisionEnable() << std::endl;
+    out << "ObjectTemplate.collisionSpeedAlongNormal " << m_impl->getCollisionSpeedAlongNormal() << std::endl;
+    out << "ObjectTemplate.collisionSpeedAlongPlane " << m_impl->getCollisionSpeedAlongPlane() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x00650540 / ELF 0x08210770. The two conditional getters are called
+// again for output; light affection includes zero and excludes unordered values.
+bool SpriteParticleSystemTemplateBase::makeScript(io::IStream* stream)
+{
+    if (!ParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.randomSize " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getRandomSize() << std::endl;
+    out << "ObjectTemplate.particleMaxSize " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getParticleMaxSize() << std::endl;
+    out << "ObjectTemplate.sizeGraph " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getSizeGraph() << std::endl;
+    out << "ObjectTemplate.randomIntensity " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getRandomIntensity() << std::endl;
+    out << "ObjectTemplate.lightMapIntensityOffset " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getLightMapIntensityOffset() << std::endl;
+    if (static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getLightAffectionFactor() >= 0.0f)
+        out << "ObjectTemplate.lightAffectionFactor " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getLightAffectionFactor() << std::endl;
+    out << "ObjectTemplate.color1 " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getColor1() << std::endl;
+    out << "ObjectTemplate.color2 " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getColor2() << std::endl;
+    out << "ObjectTemplate.colorBlendGraph " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getColorBlendGraph() << std::endl;
+    out << "ObjectTemplate.alphaCull " << static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getAlphaCull() << std::endl;
+    if (getIsStaticSystem()) out << "ObjectTemplate.isStaticSystem " << getIsStaticSystem() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x0064CE10 / ELF 0x08203E90.
+bool MeshParticleSystemTemplate::makeScript(io::IStream* stream)
+{
+    if (!SpriteParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.randomRotation " << getRandomRotation() << std::endl;
+    out << "ObjectTemplate.randomRotationSpeed " << getRandomRotationSpeed() << std::endl;
+    out << "ObjectTemplate.rotationSpeed " << getRotationSpeed() << std::endl;
+    out << "ObjectTemplate.directionalScale " << getDirectionalScale() << std::endl;
+    out << "ObjectTemplate.blendMode " << getBlendMode() << std::endl;
+    out << "ObjectTemplate.drawOrder " << ParticleDrawOrderNames[getParticleDrawOrderEnum()] << std::endl;
+    out << "ObjectTemplate.writeZ " << static_cast<geom::IParticleSystemTemplateType1*>(m_impl)->getWriteZ() << std::endl;
+    out << "ObjectTemplate.geometry " << getGeometry() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x0064DC00 / ELF 0x0820D520.
+bool ParticleSystemEmitterTemplate::makeScript(io::IStream* stream)
+{
+    if (!ParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.randomRotation " << getRandomRotation() << std::endl;
+    out << "ObjectTemplate.randomRotationSpeed " << getRandomRotationSpeed() << std::endl;
+    out << "ObjectTemplate.rotationSpeed " << getRotationSpeed() << std::endl;
+    out << "ObjectTemplate.speedFromParticle " << getSpeedFromParticle() << std::endl;
+    out << "ObjectTemplate.particleSystemTemplate " << getParticleSystemTemplate() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x0064C310 / ELF 0x08212750. The animation descriptor is captured before
+// animationEnable; the remaining descriptor reads still reload the member.
+bool SpriteParticleSystemTemplate::makeScript(io::IStream* stream)
+{
+    if (!SpriteParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.particleType " << SpriteParticleSystemTypeNames[getParticleTypeEnum()] << std::endl;
+    out << "ObjectTemplate.drawOrder " << ParticleDrawOrderNames[getParticleDrawOrderEnum()] << std::endl;
+    out << "ObjectTemplate.randomRotation " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getRandomRotation() << std::endl;
+    out << "ObjectTemplate.randomRotationSpeed " << getRandomRotationSpeed() << std::endl;
+    out << "ObjectTemplate.rotationSpeed " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getRotationSpeed() << std::endl;
+    out << "ObjectTemplate.pivotOffset " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getPivotOffset() << std::endl;
+    out << "ObjectTemplate.selfShadowIntensity " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getSelfShadowIntensity() << std::endl;
+    out << "ObjectTemplate.textureName " << getTextureName() << std::endl;
+    geom::IParticleSystemTemplateType0* const animation = static_cast<geom::IParticleSystemTemplateType0*>(m_impl);
+    out << "ObjectTemplate.animationEnable " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationEnable() << std::endl;
+    out << "ObjectTemplate.animationSpeed " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationSpeed() << std::endl;
+    out << "ObjectTemplate.animationPlayOnce " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationPlayOnce() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameWidthRelative " << animation->getAnimationFrameWidthRelative() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameHeightRelative " << animation->getAnimationFrameHeightRelative() << std::endl;
+    out << "ObjectTemplate.animationRandomizedStartFrame " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationRandomizedStartFrame() << std::endl;
+    out << "ObjectTemplate.animationFrameCount " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationFrameCount() << std::endl;
+    out << "ObjectTemplate.animationFrameCountX " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getAnimationFrameCountX() << std::endl;
+    if (static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getNearCullingEnable())
+        out << "ObjectTemplate.nearCullingEnable " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getNearCullingEnable() << std::endl;
+    if (static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getWindAgingFactor() > 0.0f)
+    {
+        out << "ObjectTemplate.windAgingFactor " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getWindAgingFactor() << std::endl;
+        out << "ObjectTemplate.windSpeedAgeDistance " << static_cast<geom::IParticleSystemTemplateType0*>(m_impl)->getWindSpeedAgeDistance() << std::endl;
+    }
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x0064E0F0 / ELF 0x08205030.
+bool NonScreenAlignedParticleSystemTemplate::makeScript(io::IStream* stream)
+{
+    if (!SpriteParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.randomRotation " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getRandomRotation() << std::endl;
+    out << "ObjectTemplate.randomRotationSpeed " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getRandomRotationSpeed() << std::endl;
+    out << "ObjectTemplate.rotationSpeed " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getRotationSpeed() << std::endl;
+    out << "ObjectTemplate.pivotOffset " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getPivotOffset() << std::endl;
+    out << "ObjectTemplate.selfShadowIntensity " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getSelfShadowIntensity() << std::endl;
+    out << "ObjectTemplate.textureName " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getTextureName() << std::endl;
+    geom::IParticleSystemTemplateType4* const animation = static_cast<geom::IParticleSystemTemplateType4*>(m_impl);
+    out << "ObjectTemplate.animationEnable " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationEnable() << std::endl;
+    out << "ObjectTemplate.animationSpeed " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationSpeed() << std::endl;
+    out << "ObjectTemplate.animationPlayOnce " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationPlayOnce() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameWidthRelative " << animation->getAnimationFrameWidthRelative() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameHeightRelative " << animation->getAnimationFrameHeightRelative() << std::endl;
+    out << "ObjectTemplate.animationRandomizedStartFrame " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationRandomizedStartFrame() << std::endl;
+    out << "ObjectTemplate.animationFrameCount " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationFrameCount() << std::endl;
+    out << "ObjectTemplate.animationFrameCountX " << static_cast<geom::IParticleSystemTemplateType4*>(m_impl)->getAnimationFrameCountX() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
+// BF2.exe 0x0064D510 / ELF 0x08214800.
+bool TrailSystemTemplate::makeScript(io::IStream* stream)
+{
+    if (!SpriteParticleSystemTemplateBase::makeScript(stream)) return false;
+    std::ostringstream out;
+    out << "ObjectTemplate.textureName " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getTextureName() << std::endl;
+    geom::IParticleSystemTemplateType2* const animation = static_cast<geom::IParticleSystemTemplateType2*>(m_impl);
+    out << "ObjectTemplate.animationEnable " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getAnimationEnable() << std::endl;
+    out << "ObjectTemplate.animationSpeed " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getAnimationSpeed() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameWidthRelative " << animation->getAnimationFrameWidthRelative() << std::endl;
+    out << "ObjectTemplate.setAnimationFrameHeightRelative " << animation->getAnimationFrameHeightRelative() << std::endl;
+    out << "ObjectTemplate.animationFrameCount " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getAnimationFrameCount() << std::endl;
+    out << "ObjectTemplate.animationFrameCountX " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getAnimationFrameCountX() << std::endl;
+    out << "ObjectTemplate.fadeInFactor " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getFadeInFactor() << std::endl;
+    out << "ObjectTemplate.fadeOutFactor " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getFadeOutFactor() << std::endl;
+    out << "ObjectTemplate.textureTileFactor " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getTextureTileFactor() << std::endl;
+    out << "ObjectTemplate.textureOffsetVelocity " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getTextureOffsetVelocity() << std::endl;
+    out << "ObjectTemplate.numPlanes " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getNumPlanes() << std::endl;
+    out << "ObjectTemplate.minTrailVelocity " << static_cast<geom::IParticleSystemTemplateType2*>(m_impl)->getMinTrailVelocity() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
 }
 
 } // namespace world

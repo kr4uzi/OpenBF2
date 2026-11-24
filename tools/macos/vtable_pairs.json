@@ -312,7 +312,13 @@
     {"method": "setAnimationFrameCount", "function": "pt_s148"},
     {"method": "getAnimationFrameCount", "function": "pt_s149"},
     {"method": "setAnimationFrameCountX", "function": "pt_s150"},
-    {"method": "getAnimationFrameCountX", "function": "pt_s151"}
+    {"method": "getAnimationFrameCountX", "function": "pt_s151"},
+    {"method": "setWindSpeedAgeDistance", "function": "pt_s152"},
+    {"method": "getWindSpeedAgeDistance", "function": "pt_s153"},
+    {"method": "setWindAgingFactor", "function": "pt_s154"},
+    {"method": "getWindAgingFactor", "function": "pt_s155"},
+    {"method": "setNearCullingEnable", "function": "pt_s156"},
+    {"method": "getNearCullingEnable", "function": "pt_s157"}
   ],
   "particle-template-1": [
     {"method": "~destructor", "function": "n1_dtor:complete"},

@@ -35,6 +35,7 @@ class ParticleSystemTemplateBase : public ObjectTemplate
 public:
     ParticleSystemTemplateBase();
     virtual ~ParticleSystemTemplateBase();
+    virtual bool makeScript(io::IStream* stream) override;
 
     // Base particle-system virtual methods.
     virtual void  setIsLocalSystem(bool);                            // +0xE8 impl-forward
@@ -140,6 +141,7 @@ class SpriteParticleSystemTemplateBase : public ParticleSystemTemplateBase
 public:
     SpriteParticleSystemTemplateBase();
     virtual ~SpriteParticleSystemTemplateBase();
+    virtual bool makeScript(io::IStream* stream) override;
 
     virtual void setIsStaticSystem(bool);             // +0x124 impl-forward
     virtual bool getIsStaticSystem() const;           // +0x128 impl-pull
@@ -185,6 +187,7 @@ protected:
     virtual unsigned int getClassID() const;                                                \
     virtual void* queryImplementation(unsigned int classId);                                \
     virtual void  templateInitialize();                                                     \
+    virtual bool  makeScript(io::IStream* stream) override;                                  \
     virtual IObject* createObject() const
 
 // Concrete particle-system templates.

@@ -2,6 +2,9 @@
 #include "CameraTemplate.h"
 #include "Base/Camera.h"
 #include "../../Core/Ids.h"
+#include "../../IO/Stream/IStream.h"
+#include <cmath>
+#include <sstream>
 
 namespace dice {
 namespace hfe {
@@ -76,6 +79,68 @@ void* CameraTemplate::queryImplementation(unsigned int cid)
 IObject* CameraTemplate::createObject() const
 {
     return new Camera(this);
+}
+
+// BF2.exe 0x005A1E50 / ELF 0x081DE520. The duplicate FOV pair and grouped shake/bounce
+// omissions are shipped output; the nose-position test includes +/-0.0001 and unordered values.
+bool CameraTemplate::makeScript(io::IStream* stream)
+{
+    std::ostringstream out;
+    if (!RotationalBundleTemplate::makeScript(stream)) return false;
+    if (m_hasTarget) out << "ObjectTemplate.setHasTarget 1" << std::endl;
+    if (m_toggleMouseLook) out << "ObjectTemplate.toggleMouseLook 1" << std::endl;
+    if (m_cameraId) out << "ObjectTemplate.CameraId " << m_cameraId << std::endl;
+    if (!m_CVMInside) out << "ObjectTemplate.CVMInside 0" << std::endl;
+    if (!m_CVMChase) out << "ObjectTemplate.CVMChase 0" << std::endl;
+    if (!m_CVMFrontChase) out << "ObjectTemplate.CVMFrontChase 0" << std::endl;
+    if (!m_CVMFlyBy) out << "ObjectTemplate.CVMFlyBy 0" << std::endl;
+    if (m_CVMTrace) out << "ObjectTemplate.CVMTrace 1" << std::endl;
+    if (m_CVMExternTrace) out << "ObjectTemplate.CVMExternTrace 1" << std::endl;
+    if (m_CVMNose) out << "ObjectTemplate.CVMNose 1" << std::endl;
+    if (m_cameraShakeSensitivity != 0.1f)
+        out << "ObjectTemplate.cameraShakeSensitivity " << m_cameraShakeSensitivity << std::endl;
+    if (m_cameraShakeStartSpeed != 0.0f)
+    {
+        out << "ObjectTemplate.cameraShakeStartSpeed " << m_cameraShakeStartSpeed << std::endl;
+        out << "ObjectTemplate.cameraShakeMaxSpeed " << m_cameraShakeMaxSpeed << std::endl;
+    }
+    if (m_bounceLength != 0.0f)
+    {
+        out << "ObjectTemplate.bounceLength " << m_bounceLength << std::endl;
+        if (m_bounceSensitivity != 1.0f)
+            out << "ObjectTemplate.bounceSensitivity " << m_bounceSensitivity << std::endl;
+        out << "ObjectTemplate.bounceStrength " << m_bounceStrength << std::endl;
+        out << "ObjectTemplate.bounceDamping " << m_bounceDamping << std::endl;
+    }
+    if (m_nosePos.x < -0.0001f || m_nosePos.x > 0.0001f ||
+        m_nosePos.y < -0.0001f || m_nosePos.y > 0.0001f ||
+        m_nosePos.z < -0.0001f || m_nosePos.z > 0.0001f)
+        out << "ObjectTemplate.nosePos " << m_nosePos << std::endl;
+    if (m_followStiffness != 1.0f)
+        out << "ObjectTemplate.followStiffness " << m_followStiffness << std::endl;
+    if (m_chaseDistance != -1.0f)
+        out << "ObjectTemplate.chaseDistance " << m_chaseDistance << std::endl;
+    if (m_chaseAngle != 0.3f)
+        out << "ObjectTemplate.chaseAngle " << m_chaseAngle << std::endl;
+    if (std::sqrt(m_chaseOffset.x * m_chaseOffset.x + m_chaseOffset.y * m_chaseOffset.y +
+                  m_chaseOffset.z * m_chaseOffset.z) > 0.0f)
+        out << "ObjectTemplate.chaseOffset " << m_chaseOffset << std::endl;
+    out << "ObjectTemplate.worldFOV " << m_worldFOV << std::endl;
+    out << "ObjectTemplate.insideFOV " << m_insideFOV << std::endl;
+    out << "ObjectTemplate.worldFOV " << m_worldFOV << std::endl;
+    out << "ObjectTemplate.insideFOV " << m_insideFOV << std::endl;
+    out << "ObjectTemplate.allowInsideDynamicLights " << m_allowInsideDynamicLights << std::endl;
+    out << "ObjectTemplate.allowInsideStaticSun " << m_allowInsideStaticSun << std::endl;
+    out << "ObjectTemplate.insideStaticSunDirection " << m_insideStaticSunDirection << std::endl;
+    out << "ObjectTemplate.insideStaticSunColor " << m_insideStaticSunColor << std::endl;
+    out << "ObjectTemplate.insideStaticSunDamageColor " << m_insideStaticSunDamageColor << std::endl;
+    out << "ObjectTemplate.insideDamageFrequency " << m_insideDamageFrequency << std::endl;
+    out << "ObjectTemplate.insideDamageThreshold " << m_insideDamageThreshold << std::endl;
+    out << "ObjectTemplate.insideStaticSunAmbientColor " << m_insideStaticSunAmbientColor << std::endl;
+    if (m_cockpitLod != -1) out << "ObjectTemplate.cockpitLod " << m_cockpitLod << std::endl;
+    if (m_cockpitSubGeom != -1) out << "ObjectTemplate.cockpitSubGeom " << m_cockpitSubGeom << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
 }
 
 } // namespace world
