@@ -119,9 +119,6 @@
 // [CHOSEN, not recovered] macOS: the cursor, minimize, URL and relaunch counterparts.
 #include "../../Platform/Host/ClientHost.h"
 #include "../../Platform/macOS/MacSystem.h"
-#if defined(__APPLE__)
-#include "../../Platform/macOS/RestartInFront.h"   // [CHOSEN] restartBF2: the restart marker
-#endif
 #include "../../Platform/macOS/ClientPaths.h"
 #include <unistd.h>
 #endif
@@ -3364,14 +3361,9 @@ void BF2Engine::restartBF2()
 #if !DEDICATED
 #if (defined(__APPLE__) || defined(BF2_LINUX_CLIENT))
     // [CHOSEN, not recovered] GetModuleFileNameA + ShellExecuteA(exe, commandLine).
-    // [CHOSEN, not recovered] macOS: a game that restarts itself while it is the active
-    // application hands its place in front to the new instance; one that restarts in the
-    // background does not (Platform/macOS/RestartInFront.h).
-    bool inFront = false;
-#if defined(__APPLE__)
-    inFront = macos::clientHoldsFront();
-#endif
-    if (!macos::relaunchExecutable(commandLine, inFront))
+    // On macOS the running instance hands its place in front to the new one after its last
+    // frame (BF2.cpp); a background restart hands nothing over.
+    if (!macos::relaunchExecutable(commandLine))
         return;
 #else
     char fileName[MAX_PATH];

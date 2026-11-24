@@ -59,6 +59,7 @@ namespace memory { void memory_update_modules(const char*) { } }
 #  include "../../Menu/IMenuLogic.h"                 // menuLogic - the active menu
 #  include "BF2Console.h"                            // IMenuLogic::getConsole()->getConsoleActive()
 #  include "../../Platform/Host/ClientHost.h"
+#  include "../../Platform/macOS/MacSystem.h"
 #endif
 
 namespace dice {
@@ -451,6 +452,13 @@ static int bf2NativeMain(const std::string& commandLine)
         bf2->handleInGameWinMessages();
     }
     while (bf2Engine->mainLoop());
+
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] A game that restarted itself (BF2Engine::restartBF2) hands its place
+    // in front to the instance it started, after its own last frame (Platform/macOS/MacSystem.h).
+    // Nothing happens when no instance was started.
+    macos::handOverActivation(macos::relaunchedProcessId());
+#endif
 
     Vars::enableProfiling(false);
     if (Window* window = bf2Engine->getWindow())

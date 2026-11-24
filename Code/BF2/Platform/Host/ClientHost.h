@@ -37,7 +37,7 @@ struct HostWindowDesc
     int  height;
     int  x;                         // top-left of the window frame from the screen's top-left;
     int  y;                         //   Window::create passes 50/50 when the setting is -1
-    bool fullscreen;                // a borderless window covering the main screen
+    bool fullscreen;                // macOS: the window enters its own full-screen Space
     bool hideCursor;
 };
 
@@ -49,7 +49,8 @@ public:
     // Initializes the native application/event system. Safe to call more than once.
     bool initApplication();
 
-    // Creates and activates the game window. False if one already exists or creation fails.
+    // Creates and shows the game window. A macOS full-screen start returns once the window is
+    // in its own Space, or after three seconds. False if one already exists or creation fails.
     bool createWindow(const HostWindowDesc& desc);
     // Closes and releases the window. Restores the cursor and the presentation options.
     void destroyWindow();
@@ -69,8 +70,8 @@ public:
     void setTitle(const std::string& title);
     // Resizes the windowed client area, keeping the top-left corner.
     void resizeClient(int width, int height);
-    // Switches between the windowed frame and the borderless full-screen window. The back-buffer
-    // size stays width x height in both.
+    // Switches windowed/full screen (macOS: the window's own Space, asynchronously).
+    // The back-buffer size stays width x height in both.
     void setFullscreen(bool fullscreen);
     bool isFullscreen() const;
 
