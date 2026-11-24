@@ -24,6 +24,7 @@
 #include "../Common/GhostManager.h"        // the per-connection ghost update
 #include "../../Core/System.h"             // WorldPref::getTickCount
 #include "../DemoRecorder/DemoRecorder.h"  // a recording connection never sends
+#include "../DemoAvailableInfo.h"
 
 #include <algorithm>                       // std::sort - the fairness queue
 #include "../GameEvents/ChallengeEvent.h"  // the first thing a server ever sends
@@ -1819,16 +1820,25 @@ void GameServer::flushDemoPackets(ServerConnection* conn, int tick)
     }
 }
 
-// [FRONTIER] [RETIRE-WHEN: demo-available-info] Requires DemoAvailableInfo's wire format
-// before constructing the URL/map data block for clients. Reached only after a configured
-// auto-demo hook completes; recording without a hook does not enter this boundary.
-void GameServer::onAutoRecordingAvailable(const std::string& /*fileName*/,
-                                          const std::string& /*mapName*/)
+// BF2.exe 0x4CD2B0 / dedicated PE 0x448840 / ELF 0x80B5C00: replace the first token,
+// or append the filename when absent. The broadcast receiver is the global game, not this.
+void GameServer::onAutoRecordingAvailable(const std::string& fileName,
+                                          const std::string& mapName)
 {
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::GameServer::onAutoRecordingAvailable reached "
-                         "(DemoAvailableInfo is unrecovered)\n");
-    std::fflush(stderr);
-    std::abort();
+    const std::string token("{file}");
+    std::string url(serverSettings->m_demoDownloadURL);
+    const std::string::size_type position = url.find(token);
+    if (position != std::string::npos)
+        url.replace(position, token.size(), fileName);
+    else
+        url.append(fileName);
+
+    DemoAvailableInfo info;
+    info.setUrl(url);
+    info.setMapName(mapName);
+    const unsigned int size = info.getNetBufferSize();
+    const void* const data = info.getNetBuffer();
+    static_cast<GameServer*>(game)->sendDataBlockToAll(9, data, size, true);
 }
 
 void GameServer::recordDemo(DemoRecorder* recorder)

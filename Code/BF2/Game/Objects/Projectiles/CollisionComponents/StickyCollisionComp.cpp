@@ -92,7 +92,14 @@ StickyCollisionComp::StickyCollisionComp(StickyCollisionCompTemplate* objectTemp
     m_stickTransform = Mat4::getIdentity();
 }
 
-StickyCollisionComp::~StickyCollisionComp() {}
+// BF2.exe 0x617210 / dedicated PE 0x5B66F0 / ELF 0x828BA70: unregister before
+// releasing the host handle, including destruction that did not pass through resetProjectile.
+StickyCollisionComp::~StickyCollisionComp()
+{
+    if (m_initObject && stickyProjectileManager)
+        stickyProjectileManager->removeStickyProjectile(
+            static_cast<GenericProjectile*>(m_initObject));
+}
 
 void StickyCollisionComp::addRef() { ++m_refCount; }
 int  StickyCollisionComp::getRef() { return m_refCount; }

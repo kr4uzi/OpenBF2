@@ -18,6 +18,7 @@
 #include "../BF2/Game/Objects/Projectiles/GenericProjectileTemplate.h"
 #include "../BF2/Game/Objects/Projectiles/ProjectileCompTemplates.h"
 #include "../BF2/Game/Objects/Projectiles/CollisionComponents/StickyCollisionComp.h"
+#include "../BF2/Game/Objects/Game/StickyProjectileManager.h"
 #include "../BF2/IO/BitStream.h"
 #include "../BF2/IO/Input/PlayerInput.h"
 #include "../BF2/IO/Network/NetworkManager.h"
@@ -226,6 +227,45 @@ void collisionCase(Logic& logic,int sourceMaterial,int targetMaterial,bool destr
         check(same(projectile->getAbsoluteTransformation(),expected),"destroy-list suppression retains pending attachment");
     }
 }
+void destructionCases() {
+    StickyProjectileManager manager;
+    auto* owner = new Projectile();
+    auto* other = new Projectile();
+    manager.addStickyProjectile(other);
+    auto* component = new StickyCollisionComp(new StickyCollisionCompTemplate());
+    component->init(owner);
+    component->setObject(other);
+    component->activate();
+    check(manager.getAllStickyProjectiles().count(owner)==1,"activation registers init object");
+    component->release();
+    check(manager.getAllStickyProjectiles().count(owner)==0 &&
+          manager.getAllStickyProjectiles().count(other)==1,
+          "direct component release unregisters init object, preserving setObject target");
+
+    owner->collision->activate();
+    owner->collision->release(); // drop fixture's reference; the object map owns the last one
+    check(owner->setComponent(IID_IProjectileCollisionComp,0),"remove actual collision component attachment");
+    check(manager.getAllStickyProjectiles().count(owner)==0,
+          "component map removal unregisters without projectile reset");
+
+    component = new StickyCollisionComp(new StickyCollisionCompTemplate());
+    component->init(owner); component->setObject(owner); component->activate();
+    component->preResetProjectile(false);
+    component->release();
+    check(manager.getAllStickyProjectiles().count(owner)==0,"destruction after pre-reset is harmless");
+
+    // A null init object must not remove a null entry the manager already contains.
+    manager.addStickyProjectile(0);
+    component = new StickyCollisionComp(new StickyCollisionCompTemplate());
+    component->release();
+    check(manager.getAllStickyProjectiles().count(0)==1,"uninitialized component keeps null-owner guard");
+    manager.reset();
+    stickyProjectileManager=0;
+    component = new StickyCollisionComp(new StickyCollisionCompTemplate());
+    component->init(owner); component->release();
+    check(manager.getAllStickyProjectiles().empty(),"component can outlive manager publication");
+    stickyProjectileManager=&manager;
+}
 }
 int main() {
     g_system=new System(); eventManager=new EventManager(); classManager=new Classes();
@@ -246,6 +286,7 @@ int main() {
     collisionCase(*logic,1,2,false,false);
     collisionCase(*logic,1,1,true,false);
     collisionCase(*logic,1,1,false,true,true);
+    destructionCases();
     std::printf("Sticky projectile: %d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;
 }
