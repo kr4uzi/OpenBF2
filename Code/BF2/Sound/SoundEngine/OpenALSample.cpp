@@ -590,7 +590,16 @@ int OpenALSample::start(int startSample, int loops)
     if (!m_source)
         return 1;
     al_Sourcef(m_source, AL_PITCH, 1.0f);
+#if !defined(__APPLE__)
     al_Sourcef(m_source, AL_GAIN, 0.0f);
+#else
+    // [CHOSEN, not recovered] BF2Audio.dll 0x100142A1 zeroes the gain here; update(0) below
+    // writes the real gain before alSourcePlay (0x1001435B..0x1001436F). Apple's OpenAL appears
+    // to ramp a source's gain from the last value it held, so a 0 written right before play
+    // swallowed the 66 ms shot block of a single first-person fire sound (burst and automatic
+    // fire repeat the block and stayed loud). On macOS the first gain the source sees before
+    // play is the real one from update(0), also for a reused pooled source.
+#endif
     al_Sourcei(m_source, AL_LOOPING, 0);
     if (startBuffers(startSample, loops))
     {
