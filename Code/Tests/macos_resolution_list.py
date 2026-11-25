@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""[TEMP] Run real renderer mode/option code without engine startup or a window.
+"""[TEMP] Run real renderer options and full-screen toggles without engine startup or a window.
 
 Usage: python3 Code/Tests/macos_resolution_list.py out/build/client-effects
 Requires a completed bf2_client build. Reuses its compiler/link settings and copies its renderer
 archive, substituting a TU that includes production VideoOptions.cpp and the headless entry point.
-Only the adapter metadata and capabilities are fixtures; no Metal device is required.
+A second TU includes the production BF2Render toggle. Adapter metadata/capabilities, window calls,
+GPU Reset and event consumers are fixtures; no Metal device is required.
 All temporary objects stay in the given build directory; production artifacts are read-only.
 """
 import json
@@ -26,6 +27,13 @@ command[command.index("-o") + 1] = str(output / "VideoOptions.cpp.o")
 command[command.index("-c") + 1] = str(root / "Code/Tests/macos_resolution_list.cpp")
 subprocess.run(command, cwd=entry["directory"], check=True)
 
+entry = next(c for c in commands if c["file"].endswith("/Game/Main/BF2Render.cpp"))
+command = shlex.split(entry["command"])
+toggle_object = output / "fullscreen-toggle.o"
+command[command.index("-o") + 1] = str(toggle_object)
+command[command.index("-c") + 1] = str(root / "Code/Tests/macos_fullscreen_toggle.cpp")
+subprocess.run(command, cwd=entry["directory"], check=True)
+
 archive = output / "renderer.a"
 archive.write_bytes((build / "libbf2_renddx9_static.a").read_bytes())
 subprocess.run(["ar", "-r", str(archive), str(output / "VideoOptions.cpp.o")], check=True)
@@ -42,6 +50,8 @@ subprocess.run(command, cwd=build, check=True)
 
 command = shlex.split((build / "CMakeFiles/bf2_client.dir/link.txt").read_text())
 command[command.index("StaticPlugins/bf2_renddx9_static_prelinked.o")] = str(output / "renderer.o")
+host_object = next(i for i, arg in enumerate(command) if arg.endswith("/Game/Main/BF2Render.cpp.o"))
+command[host_object] = str(toggle_object)
 command[command.index("-o") + 1] = str(output / "resolution-check")
 command = [arg for arg in command if not arg.startswith("-Wl,-map,")]
 command.append("-Wl,-e,_resolutionListCheck")

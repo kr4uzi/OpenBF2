@@ -1,8 +1,21 @@
 // [TEMP] Headless renderer/options regression fixture. Included instead of VideoOptions.cpp in
 // a private test copy of the renderer archive so its real list builder needs no public test API.
-// No engine initialization, window, device creation, content, or audio. Run via macos_resolution_list.py.
+// No engine initialization, window, device creation, content, or audio. Also checks the production
+// full-screen toggle with macos_fullscreen_toggle.cpp. Run via macos_resolution_list.py.
 #include "../BF2/RendDX9/VideoOptions.cpp"
 #include <cstdlib>
+
+extern "C" bool fullscreenResetFixture(void*, const renddx9abi::HostDisplayMode*);
+extern "C" void fullscreenToggleCheck(void*, bool, unsigned, unsigned, unsigned);
+extern "C" void fullscreenHeadlessReset(void* renderer, const renddx9abi::HostDisplayMode& mode)
+{
+    dice::hfe::dx9rend::copyDisplayModeFrom(renderer, &mode);
+    dice::hfe::dx9rend::buildPresentParameters(renderer);
+    const auto& pp = static_cast<dice::hfe::dx9rend::RendDX9Base*>(renderer)->pp;
+    if (pp.Windowed != !mode.fullscreen || (mode.fullscreen &&
+        (pp.BackBufferWidth != mode.width || pp.BackBufferHeight != mode.height)))
+        std::abort();
+}
 
 namespace {
 void require(bool value, const char* message)
@@ -14,6 +27,7 @@ void require(bool value, const char* message)
 // formatting, selection and preset bodies are production code. Unused adapter calls abort.
 struct MetadataAdapter : IDirect3D9
 {
+    bool supportsMSAA = true;
     std::vector<dice::hfe::host::HostDisplayModeInfo> modes;
     dice::hfe::host::HostDisplayModeInfo desktop = {1680, 1050, 60, 32};
     MetadataAdapter()
@@ -38,7 +52,9 @@ struct MetadataAdapter : IDirect3D9
     HRESULT CheckDeviceFormat(UINT, D3DDEVTYPE, D3DFORMAT, DWORD, D3DRESOURCETYPE, D3DFORMAT) override
     { return D3D_OK; }
     HRESULT CheckDeviceMultiSampleType(UINT, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE sample, DWORD* quality) override
-    { *quality = 1; return sample == D3DMULTISAMPLE_NONE ? D3D_OK : D3DERR_NOTAVAILABLE; }
+    { *quality = 1; return sample == D3DMULTISAMPLE_NONE ||
+        (supportsMSAA && (sample == D3DMULTISAMPLE_4_SAMPLES || sample == D3DMULTISAMPLE_8_SAMPLES))
+        ? D3D_OK : D3DERR_NOTAVAILABLE; }
     HRESULT QueryInterface(REFIID, void**) override { std::abort(); }
     ULONG AddRef() override { std::abort(); }
     ULONG Release() override { std::abort(); }
@@ -91,7 +107,31 @@ extern "C" int resolutionListCheck(int, const char**)
             "Medium stages level 2 and view distance 0.9");
     videoOptions_setDynamicOption(&vo, 1, &desktop);
     require(vo.resList[vo.minusOneDC] == desktop, "desktop can be selected after Medium");
+
+    // [TEMP] The real toggle, mode-selection helper, carrier copy and presentation builder run.
+    // The fixture replaces only native-window calls, GPU Reset and event consumers.
+    void* slots[] = {nullptr, nullptr, nullptr, nullptr,
+        BF2_NATIVE_SLOT(IRenderer, setDisplayMode, fullscreenResetFixture)};
+    base.vptr = slots;
+    base.windows.push_back(nullptr);
+    const auto toggle = [&](unsigned w, unsigned h, unsigned hz, bool fullscreen = false,
+                            unsigned expectedW = 0, unsigned expectedH = 0) {
+        base.modeWidth = w; base.modeHeight = h; base.modeRefresh = hz; base.modeBpp = 32;
+        base.fullscreen = fullscreen;
+        base.multiSamples = {{8, 0}};
+        fullscreenToggleCheck(&base, fullscreen, expectedW ? expectedW : w,
+                              expectedH ? expectedH : h, adapter.supportsMSAA ? 8 : 0);
+        require(base.pp.MultiSampleType == (adapter.supportsMSAA ? 8 : 0), "MSAA reaches presentation parameters");
+    };
+    toggle(1680, 1050, 60);                  // desktop windowed profile, stale 800x600@85 carrier
+    toggle(1280, 800, 60);                   // listed profile smaller than the desktop
+    toggle(800, 600, 85, false, 1680, 1050); // size listed but refresh unlisted: preferred mode
+    toggle(1234, 777, 60, false, 1680, 1050);// injected window size cannot become a full-screen default
+    toggle(800, 600, 60);                    // a listed small profile gets a complete small menu
+    toggle(1024, 768, 60, true);             // options changed while full screen, then exit/re-enter
+    adapter.supportsMSAA = false;
+    toggle(1680, 1050, 60);                  // unsupported MSAA selects Off
     g_deviceCaps = nullptr;
-    std::puts("PASS: renderer mode list -> VideoOptions list/selection, Medium preset, desktop reselection");
+    std::puts("PASS: renderer/options modes and presets; full-screen toggles, MSAA, host resize and layout events");
     return 0;
 }
