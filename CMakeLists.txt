@@ -283,6 +283,11 @@ set(bf2_client_only_sources
     "${BF2_ROOT}/Game/VoipClient/VoipFakeDevice.cpp"    # [CHOSEN] BF2_VOIP_CAPTURE=fake test device
     "${BF2_ROOT}/Game/LocalProfileManagerSuffix.cpp"
     "${BF2_ROOT}/Game/ProfileManager.cpp" # native online-profile lifetime/status owner
+    "${BF2_ROOT}/Game/Persistence/RankManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/ClanManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/NewsManager.cpp"
+    "${BF2_ROOT}/Game/AutoPatch/AutoPatch.cpp"
+    "${BF2_ROOT}/Game/Persistence/Persistence.cpp"
     "${BF2_ROOT}/Game/PasswordCodec.cpp" # inferred path; the profile password's CryptProtectData wrapper
     "${BF2_ROOT}/Game/AudioSettings.cpp"
     "${BF2_ROOT}/Menu/BF2HudManagerGameLogicEvents.cpp"
@@ -3010,6 +3015,34 @@ if(APPLE)
     target_link_options(bf2_voip_debug_check PRIVATE "-Wl,-undefined,dynamic_lookup")
     if(BUILD_TESTING)
         add_test(NAME bf2_voip_debug_check COMMAND bf2_voip_debug_check)
+    endif()
+endif()
+
+# [TEMP] [CHOSEN, not recovered] Offline lifetime, patch forwarding and profile-presence checks; no SDK is linked.
+add_executable(bf2_online_services_check EXCLUDE_FROM_ALL
+    Code/Tests/online_services_runtime.cpp
+    "${BF2_ROOT}/Game/Persistence/RankManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/ClanManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/NewsManager.cpp"
+    "${BF2_ROOT}/Game/AutoPatch/AutoPatch.cpp"
+    "${BF2_ROOT}/Game/Persistence/Persistence.cpp"
+    "${BF2_ROOT}/Core/ClassManager.cpp"
+    "${BF2_ROOT}/Core/Debug.cpp"
+    "${BF2_ROOT}/Core/StringUtil.cpp")
+bf2_configure_cpp_target(bf2_online_services_check)
+bf2_set_platform_compat(bf2_online_services_check)
+bf2_set_image(bf2_online_services_check 0)
+if(APPLE)
+    target_compile_definitions(bf2_online_services_check PRIVATE BF2_PLATFORM_POSIX _MACOSX)
+elseif(BF2_BUILD_LINUX)
+    target_compile_definitions(bf2_online_services_check PRIVATE BF2_PLATFORM_POSIX _LINUX)
+endif()
+if(BUILD_TESTING)
+    add_test(NAME bf2_online_services_check COMMAND bf2_online_services_check)
+    if(TARGET bf2 AND Python3_EXECUTABLE)
+        add_test(NAME bf2_online_services_registration_check
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Code/Tests/online_services_registration.py"
+                --build-dir "${CMAKE_BINARY_DIR}" --server "$<TARGET_FILE:bf2>")
     endif()
 endif()
 

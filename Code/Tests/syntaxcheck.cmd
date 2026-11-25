@@ -1218,6 +1218,16 @@ cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManager.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\ProfileManager.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\RankManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\ClanManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\NewsManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\AutoPatch\AutoPatch.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\Persistence.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManagerInit.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManagerOperations.cpp"
