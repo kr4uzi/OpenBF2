@@ -119,6 +119,9 @@ BF2_CONSOLE_PROPERTY(alphaCull, float, activeParticleSpriteBase(), setAlphaCull,
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 21)
 BF2_CONSOLE_PROPERTY(isStaticSystem, bool, activeParticleSpriteBase(), setIsStaticSystem, getIsStaticSystem, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(nearCullingEnable, bool, activeSpriteParticle(), setNearCullingEnable, getNearCullingEnable, kParticleConsoleTag)
+// BF2.exe constructor/converter/executor 0x56D208/0x56D279/0x56D2C6; shared four-class receiver.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 19)
+BF2_CONSOLE_PROPERTY(LightAffectionFactor, float, activeParticleSpriteBase(), setLightAffectionFactor, getLightAffectionFactor, kParticleConsoleTag)
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
 // Ordinary sprites have their own retail overloads and descriptor-tail slots.

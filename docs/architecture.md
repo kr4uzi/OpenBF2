@@ -311,6 +311,27 @@ The shared console catalogue includes these settings and inspection commands in 
 | `ObjectTemplate` | Particle `nearCullingEnable` (ordinary sprites only) and `isStaticSystem` (sprite, mesh, trail and NSA systems), access 2/category Emitter. `setToolTipType <name>` uses full `TT*` or short case-sensitive names; unknown tokens, including numeric tokens, select 22. `vehicleCameraShake` accepts `CstNoShake`, `CstExplosion`, `CstMachinegun`, `CstHitShake`, `CstDieShake` and decimal -1..3. `grip` accepts eight `PGF*` bit names, their `c_` forms and numeric normalization; its published range remains 0..7 without clamping. `zoom.changeCameraViewMode` and `zoom.startCameraViewMode` accept `CVMFirstPerson`, `CVMInside`, `CVMNose`, `CVMChase`, `CVMFrontChase`, `CVMFlyBy`, `CVMTrace`, `CVMExternTrace` and single-digit numeric normalization. `listTemplateClasses` lists registered classes. |
 | Inspection | `physics.listProperties`; `CollisionManager.getNameOfObjectInFocus`, `identityRotateObjectInFocus`, `buildDebugCollisionMeshes`; `Object.setAsSkyLight` (lights only), `Object.getLightSourceMask`; `Player.listPlayerClasses`; `Terrain.refreshTerrainSampling`; `Editor.getActiveObjectTemplate` and `Editor.getActiveObject` return borrowed name/pointer proxies. |
 
+Special Forces templates also expose `ObjectTemplate.MaxZiplineLength`, `EntryRadius`,
+`collisionStartRadius`, `heightOffset` and `distanceCannotEnter` on zipline templates;
+`ropeScaleFactor` on zipline-rope templates; and `MaxRopeLength` plus integer `NumberOfLinks`
+on grappling-rope templates. These shared properties feed the existing placement, entry,
+link scaling and rope initialization paths. Content's `setMaxZiplineLength`, `setEntryRadius`,
+`setMaxRopeLength` and `setNumberOfLinks` spellings use the console's existing `set` aliases.
+`ObjectTemplate.shakeFactor` writes the player-control template value read by
+`PlayerControlObject::getShakeFactor`. These properties have access 2/category 15.
+
+`ObjectTemplate.respawnDelay` has separate receivers for destroyable objects, dynamic bundles
+and destroyable-window bundles. `GameLogic` copies their values into spawners; the dynamic
+bundle's default `-1` selects no respawn. Window state updates also read their template delay.
+The dynamic-bundle binding has category 14; the window binding has category 0.
+
+`ObjectTemplate.LightAffectionFactor` accepts sprite, mesh, trail and non-screen-aligned
+particle templates, excluding emitters. It forwards to the renderer descriptor and then
+refreshes derived state, which selects the authored factor or the light manager's default
+for negative values. Its access is 2/category 19. Special Forces tear-gas effects
+author `0.2`; underwater effects author `0`. The setter tolerates an absent renderer
+descriptor; the getter requires one, including in a dedicated image.
+
 `Console.run` returns the script-open status as text (`0`/`1`); script output is discarded.
 The particle flags forward to renderer descriptors: near culling drives the sorted sprite
 collector's distance/age fade and alpha rejection; static systems enable initial simulation
@@ -319,8 +340,10 @@ renderer descriptors in a dedicated image. `HeightmapCluster.compileWaterMeshesI
 remains unpublished while its absorbed-water-object state update is unresolved.
 
 `Code/Tests/console_bindings_runtime.py` exercises the registry, real console, loose-file
-operations, enum conversions, template selectors and forwarding into typed descriptor observers
-without a window or game startup. It requires a completed macOS renderer-enabled client build;
+operations, enum conversions, template selectors and forwarding into typed descriptor observers.
+It covers rope content aliases, vehicle shake reads, independent respawn receivers, and particle
+light write/refresh ordering across all four accepted classes without a window or game startup.
+It requires a completed macOS renderer-enabled client build;
 particle-manager construction, particle collection, rendered pixels and a joined player are untested.
 
 ### The `openbf2` console extension
