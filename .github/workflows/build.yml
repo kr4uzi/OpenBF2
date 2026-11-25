@@ -7,6 +7,10 @@ on:
         description: Skip Windows and macOS for a focused manual Linux validation
         type: boolean
         default: false
+      windows_only:
+        description: Skip Linux and macOS for a focused manual Windows validation
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -458,6 +462,7 @@ jobs:
           retention-days: 7
 
   linux:
+    if: ${{ !inputs.windows_only }}
     name: Linux x64 ${{ matrix.role }}
     runs-on: ubuntu-22.04
     timeout-minutes: ${{ matrix.timeout }}
@@ -703,7 +708,7 @@ jobs:
   # stays ad-hoc and uses no secrets (docs/ci-releases.md). The per-architecture ZIPs are CI
   # artifacts only and not notarized: releases ship the notarized disk image (macos-app).
   macos:
-    if: ${{ !inputs.linux_only }}
+    if: ${{ !inputs.linux_only && !inputs.windows_only }}
     name: macOS ${{ matrix.arch }}
     runs-on: macos-15
     timeout-minutes: 150

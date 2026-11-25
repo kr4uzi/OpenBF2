@@ -15,6 +15,10 @@ on:
         description: Build only Linux server/client packages
         type: boolean
         default: false
+      windows_only:
+        description: Build only the Windows packages and installer
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,6 +32,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       linux_only: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_only }}
+      windows_only: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_only }}
     # A reusable workflow only receives the `release` environment's secrets when the caller
     # passes secrets on; without this they resolve to empty strings.
     secrets: inherit
