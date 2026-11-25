@@ -52,14 +52,51 @@ static int opaqueAlphaChecks(IDirect3DDevice9* d) {
     CHECK(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,opaque_alpha::kQuadPrimitives,opaque_alpha::kQuad,opaque_alpha::kQuadStride) == D3D_OK);
     CHECK(d->EndScene() == D3D_OK);
     CHECK(opaqueCapture(d,target,w,h,alphaMin,alphaMax,rgbKept,rgb) && alphaMin == 255 && rgbKept);
-    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(168),0xf); d->SetVertexShader(nullptr);   // all channels
-    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(22),3);                                  // D3DCULL_CCW
-    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(7),1);                                   // ZENABLE, device default
-    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(14),1);                                  // ZWRITEENABLE d->SetPixelShader(nullptr);
-    d->SetVertexDeclaration(nullptr);
-    CHECK(d->SetRenderTarget(0,oldTarget) == D3D_OK);
-    oldTarget->Release(); decl->Release(); ps->Release(); vs->Release();
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(168),0xf);                               // all channels
     CHECK(target->Release() == 0);
-    std::puts("PASS: alpha-only present draw: alpha-0 A8R8G8B8 frame captures alpha 255, RGB unchanged");
+
+    // An X8R8G8B8 target (the windowed back buffer) has no alpha: a draw that outputs alpha 0
+    // must not store it. Observable as D3D9 defines it: a DESTALPHA blend reads 1 afterwards.
+    unsigned zeroAlphaTokens[sizeof(opaque_alpha::kPixelShader)/sizeof(unsigned)];
+    std::memcpy(zeroAlphaTokens,opaque_alpha::kPixelShader,sizeof(zeroAlphaTokens));
+    zeroAlphaTokens[6] = 0;                                                    // def c0, 1, 1, 1, 0
+    IDirect3DPixelShader9* zeroAlpha = nullptr; IDirect3DSurface9 *xrgb = nullptr, *sys = nullptr;
+    CHECK(d->CreatePixelShader(reinterpret_cast<const DWORD*>(zeroAlphaTokens),&zeroAlpha) == D3D_OK);
+    CHECK(d->CreateRenderTarget(w,h,D3DFMT_X8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&xrgb,nullptr) == D3D_OK);
+    CHECK(d->SetRenderTarget(0,xrgb) == D3D_OK && d->SetViewport(&full) == D3D_OK);
+    CHECK(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1.0f,0) == D3D_OK);
+    CHECK(d->BeginScene() == D3D_OK);
+    CHECK(d->SetPixelShader(zeroAlpha) == D3D_OK);                             // RGB 1, alpha 0, all channels
+    CHECK(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,opaque_alpha::kQuadPrimitives,opaque_alpha::kQuad,opaque_alpha::kQuadStride) == D3D_OK);
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(27),TRUE) == D3D_OK);   // ALPHABLENDENABLE
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(19),7) == D3D_OK);      // SRCBLEND = DESTALPHA
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(20),1) == D3D_OK);      // DESTBLEND = ZERO
+    // A depth-writing draw is never skipped while its pipeline builds (DrawBridge.inc).
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(7),1) == D3D_OK);       // ZENABLE
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(23),8) == D3D_OK);      // ZFUNC = ALWAYS
+    CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(14),1) == D3D_OK);      // ZWRITEENABLE
+    CHECK(d->SetPixelShader(ps) == D3D_OK);                                    // RGB 1 * dest alpha
+    CHECK(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,opaque_alpha::kQuadPrimitives,opaque_alpha::kQuad,opaque_alpha::kQuadStride) == D3D_OK);
+    CHECK(d->EndScene() == D3D_OK);
+    D3DLOCKED_RECT lr = {};
+    CHECK(d->CreateOffscreenPlainSurface(w,h,D3DFMT_X8R8G8B8,D3DPOOL_SYSTEMMEM,&sys,nullptr) == D3D_OK);
+    CHECK(d->GetRenderTargetData(xrgb,sys) == D3D_OK && sys->LockRect(&lr,nullptr,D3DLOCK_READONLY) == D3D_OK);
+    bool white = true;
+    for (unsigned y = 0; y < h; ++y) for (unsigned x = 0; x < w; ++x) {
+        unsigned v; std::memcpy(&v,static_cast<const unsigned char*>(lr.pBits)+y*lr.Pitch+x*4,4);
+        white = white && (v & 0x00ffffffu) == 0x00ffffffu;
+    }
+    CHECK(sys->UnlockRect() == D3D_OK);
+    CHECK(white);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(27),FALSE);   // device defaults
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(19),2); d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(20),1);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(22),3); d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(7),1);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(14),1); d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(23),4);
+    d->SetVertexShader(nullptr); d->SetPixelShader(nullptr); d->SetVertexDeclaration(nullptr);
+    CHECK(d->SetRenderTarget(0,oldTarget) == D3D_OK);
+    sys->Release(); zeroAlpha->Release(); oldTarget->Release(); decl->Release(); ps->Release(); vs->Release();
+    CHECK(xrgb->Release() == 0);
+    std::puts("PASS: alpha-only present draw: alpha-0 A8R8G8B8 frame captures alpha 255, RGB unchanged; "
+              "an X8R8G8B8 target keeps no shader alpha (DESTALPHA reads 1)");
     return 0;
 }
