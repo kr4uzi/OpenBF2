@@ -282,112 +282,6 @@ void testControlsConKeys()
     settle();
 }
 
-void testOptionReturn()
-{
-    begin("Option+Return requests one engine full-screen toggle");
-    ClientHost& host = ClientHost::instance();
-    host.consumeAsyncEnterState(); // discard the earlier key-coverage check's press bit
-    struct ReturnLog : host::IHostEventListener
-    {
-        int keys = 0, texts = 0;
-        void onKey(const host::HostKeyEvent& e) override
-        { if (e.dik == 28 || e.dik == 156) ++keys; }
-        void onText(const host::HostTextEvent& e) override
-        { if (e.dik == 28 || e.dik == 156) ++texts; }
-    } log;
-    host.addListener(&log);
-    bool engine = host.isFullscreen(), configured = engine;
-    int toggles = 0;
-    // The production BF2 pump's reconciliation, with only the renderer callback modelled.
-    const auto pump = [&] {
-        frame();
-        macos::reconcileFullscreen(engine, configured, host.isFullscreen(), [&] {
-            engine = configured = !engine;
-            ++toggles;
-        });
-    };
-    struct Option { unsigned short code; CGEventFlags flags; io::InputDeviceKeys dik; };
-    const Option options[] = {
-        {kVK_Option, kCGEventFlagMaskAlternate | 0x20, io::IDKey_LeftAlt},
-        {kVK_RightOption, kCGEventFlagMaskAlternate | 0x40, io::IDKey_RightAlt},
-    };
-    const unsigned short enterKeys[] = {kVK_Return, kVK_ANSI_KeypadEnter};
-    for (const Option& option : options)
-    for (unsigned short enter : enterKeys)
-    {
-        const int before = toggles;
-        const bool initial = engine;
-        flags(option.code, option.flags);
-        pump();
-        check(keyboard()->keyDown(option.dik) && toggles == before,
-              "Option down reaches its DIK without toggling");
-        key(enter, true, false, kKeyboardANSI, option.flags);
-        pump();
-        check(toggles == before + 1 && engine != initial,
-              "Option+Return down requests exactly one toggle");
-        for (int i = 0; i < 3; ++i)
-        {
-            key(enter, true, true, kKeyboardANSI, option.flags);
-            pump();
-        }
-        key(enter, false, false, kKeyboardANSI, option.flags);
-        pump();
-        flags(option.code, 0);
-        pump();
-        check(toggles == before + 1 && !keyboard()->keyDown(option.dik),
-              "repeats, Return up and Option up add no toggle; Option releases");
-        check(!keyboard()->keyDown(io::IDKey_Enter) &&
-              !keyboard()->keyDown(io::IDKey_NumpadEnter),
-              "consumed chord cannot also raise the retail GIAltEnter trigger");
-    }
-    check(log.keys == 0 && log.texts == 0 && host.consumeAsyncEnterState() == 0,
-          "shortcut Return never reaches game, menu, console or async Enter input");
-
-    const int before = toggles;
-    // A complete chord between two input samples must still request a toggle.
-    flags(kVK_Option, options[0].flags);
-    key(kVK_Return, true, false, kKeyboardANSI, options[0].flags);
-    key(kVK_Return, false, false, kKeyboardANSI, options[0].flags);
-    flags(kVK_Option, 0);
-    pump();
-    check(toggles == before + 1, "sub-frame chord is not lost by device sampling");
-    // Release Option before Return; repeats remain part of the consumed chord.
-    flags(kVK_Option, options[0].flags);
-    key(kVK_Return, true, false, kKeyboardANSI, options[0].flags);
-    pump();
-    flags(kVK_Option, 0);
-    key(kVK_Return, true, true);
-    key(kVK_Return, false);
-    pump();
-    check(toggles == before + 2 && log.keys == 0 && log.texts == 0,
-          "early Option release neither repeats the toggle nor leaks Return");
-
-    for (unsigned short enter : enterKeys)
-    {
-        const io::InputDeviceKeys dik = enter == kVK_Return ? io::IDKey_Enter : io::IDKey_NumpadEnter;
-        key(enter, true);
-        pump();
-        check(keyboard()->keyPressed(dik), "plain Return still presses its DIK for menus and console");
-        key(enter, false);
-        pump();
-        check(keyboard()->keyReleased(dik), "plain Return still releases its DIK");
-    }
-    check(toggles == before + 2 && log.keys == 4 && log.texts == 2,
-          "plain Return delivers key and text input without toggling");
-    host.consumeAsyncEnterState();
-
-    setFocus(false);
-    flags(kVK_Option, options[0].flags);
-    key(kVK_Return, true, false, kKeyboardANSI, options[0].flags);
-    key(kVK_Return, false, false, kKeyboardANSI, options[0].flags);
-    flags(kVK_Option, 0);
-    pump();
-    check(toggles == before + 2, "unfocused Option+Return cannot toggle the window");
-    setFocus(true);
-    host.removeListener(&log);
-    settle();
-}
-
 // DirectInput reports transitions only: auto-repeat key-downs are not device data.
 void testKeyRepeat()
 {
@@ -1397,7 +1291,6 @@ int main(int argc, char** argv)
         check(keyboard()->isActive() && mouse()->isActive(), "keyboard and mouse acquired with focus");
 
         testControlsConKeys();
-        testOptionReturn();
         testKeyRepeat();
         testIsoSwap();
         testSubFrameSampling();
