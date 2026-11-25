@@ -2,6 +2,8 @@
 
 #if defined(__APPLE__) && !DEDICATED
 #include "../../Platform/macOS/Warmup.h"   // [CHOSEN] +warmupLevel (port addition)
+#include "../../Platform/macOS/NativeFullscreen.h"
+#include "BF2ClientSeams.h"
 #endif
 #include "BF2.h"
 
@@ -256,6 +258,18 @@ void BF2::handleInGameWinMessages()
         restoreDesktopSettings();
         exit(0);                                    // no engine shutdown, as on Win32
     }
+
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Native full-screen controls and live GSFullScreen changes use
+    // the same renderer reset, settings update and event as Alt+Enter. Startup pumps can run
+    // before the renderer exists; synchronize only after its initialization.
+    if (m_engine && m_engine->getWindow() && m_engine->getBF2Render()
+        && m_engine->getBF2Render()->getRenderer())
+        macos::reconcileFullscreen(m_engine->getWindow()->getFullscreen(),
+                                  settings->boolGet("GSFullScreen", false),
+                                  host::ClientHost::instance().isFullscreen(),
+                                  [this] { m_engine->getBF2Render()->toggleFullscreen(); });
+#endif
 
     unsigned int deviceMask = static_cast<unsigned int>(-1);
     if (menuLogic)

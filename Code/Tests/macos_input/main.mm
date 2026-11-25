@@ -1004,6 +1004,62 @@ void testNativeFullscreen()
     begin("native full screen: one transition at a time, after the activation, the user's exit kept");
     typedef macos::NativeFullscreen F;
     {
+        // [TEMP] Engine-side fixture for the pump's reconciliation. Model only the toggle's
+        // flag/settings/host request; the production renderer reset and input event need a game.
+        F f;
+        bool engine = false, configured = false;
+        int toggles = 0;
+        const auto toggle = [&] {
+            if (!engine != f.wanted())
+                f.request(!engine, true);        // ClientHost ignores a mode it already reports
+            engine = !engine;
+            configured = engine;
+            ++toggles;
+        };
+        const auto pump = [&] {
+            macos::reconcileFullscreen(engine, configured, f.wanted(), toggle);
+        };
+        toggle();                               // Alt+Enter into full screen
+        f.willEnter();
+        f.didEnter();
+        pump();
+        check(engine && configured && f.inSpace() && toggles == 1, "Alt+Enter enters with flags in agreement");
+        f.willExit();                           // AppKit's native exit, without a host request
+        f.didExit();
+        pump();
+        check(!engine && !configured && f.windowed() && toggles == 2,
+              "AppKit exit runs the engine toggle once and agrees with the host");
+        toggle();                               // one Alt+Enter after AppKit exit
+        check(engine && configured && f.entering(), "one Alt+Enter after AppKit exit enters again");
+        f.didEnter();
+        toggle();                               // Alt+Enter back to windowed
+        f.didExit();
+        pump();
+        check(!engine && !configured && f.windowed() && toggles == 4, "Alt+Enter exits without a second engine toggle");
+        f.request(true, true);                  // green button / View command
+        pump();
+        check(engine && configured && f.entering() && toggles == 5,
+              "green-button entry switches the engine through its toggle");
+        f.didEnter();
+        pump();
+        check(toggles == 5 && f.inSpace(), "completion of native entry does not toggle back");
+        f.request(false, true);                 // green button / Ctrl+Cmd+F exit
+        pump();
+        f.didExit();
+        check(!engine && !configured && f.windowed(), "native command exits through the engine too");
+        f.willEnter();                          // entry AppKit initiated outside the host
+        check(f.didEnter() == F::None && f.wanted(), "AppKit entry is adopted without an immediate exit");
+        pump();
+        check(engine && configured && f.inSpace(), "AppKit entry synchronizes the engine flag");
+        configured = false;                    // SettingsManager.boolSet GSFullScreen 0
+        pump();
+        check(!engine && !f.wanted(), "a live GSFullScreen write runs the same toggle");
+        f.didExit();
+        configured = true;
+        pump();
+        check(engine && f.entering(), "a live GSFullScreen write enters again");
+    }
+    {
         F f;
         check(!f.wanted() && f.windowed() && !f.inSpace() && !f.transitioning(), "a new window is windowed");
         check(f.request(true, true) == F::Enter, "active: a full-screen request enters the Space at once");

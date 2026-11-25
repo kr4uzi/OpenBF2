@@ -74,12 +74,22 @@ void refreshViewMagnification();
 } // namespace
 
 @interface OpenBF2HostWindow : NSWindow
+- (void)performNativeFullscreenToggle;
 @end
 
 // [CHOSEN, not recovered] The game window keeps its title bar in full screen too (native full
 // screen, NativeFullscreen.h), so it becomes key and main as any titled window does. The borderless
 // full-screen window it replaces needed overrides for that.
 @implementation OpenBF2HostWindow
+// [CHOSEN, not recovered] System full-screen actions request the engine mode too. Keep the
+// actual AppKit toggle separate so only the host's serialized transition can start an animation.
+- (void)toggleFullScreen:(id)sender
+{
+    (void)sender;
+    auto& host = dice::hfe::host::ClientHost::instance();
+    host.setFullscreen(!host.isFullscreen());
+}
+- (void)performNativeFullscreenToggle { [super toggleFullScreen:nil]; }
 @end
 
 @interface OpenBF2HostView : NSView
@@ -140,6 +150,7 @@ void refreshViewMagnification();
 
 @interface OpenBF2HostDelegate : NSObject <NSWindowDelegate, NSApplicationDelegate>
 - (void)toggleGameWindowFullScreen;
+- (void)requestGameFullscreen:(id)sender;
 - (void)launchTimedOut;
 - (void)activeSpaceDidChange:(NSNotification*)note;
 @end
@@ -943,11 +954,10 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     bool activeForFullscreen() const { return scriptedFocus || nsAppActive(); }
 
     // [CHOSEN, not recovered] Native full screen (NativeFullscreen.h). Starts the transition the
-    // state answered. A windowed game window is NSWindowCollectionBehaviorFullScreenNone, so the
-    // green button and the system's full-screen shortcut do not take it into a Space behind the
-    // engine's back; entering makes it a full-screen primary window and resizable, as AppKit
-    // expects of a window it fills the screen with, and both are undone once it is windowed again
-    // (restoreWindowed). The toggle is queued for the run loop - the next pump, or the host's own
+    // state answered. The window remains a full-screen primary while windowed, with a green
+    // button and menu command that request a mode through the host. The engine reconciles it
+    // through BF2Render::toggleFullscreen at the pump. Only the Space is resizable; restoreWindowed
+    // removes that style. The toggle is queued for the run loop - the next pump, or the host's own
     // wait in createWindow - rather than made inside the delegate callback or engine call that
     // asked for it; `delay` is the pause before a refused entry is tried again.
     void startFullscreenTransition(macos::NativeFullscreen::Action action, double delay = 0.0)
@@ -1003,17 +1013,21 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
             return;
         }
         fullscreen.toggled();
-        [window toggleFullScreen:nil];
+        [window performNativeFullscreenToggle];
     }
 
-    // The window is windowed again: no full-screen behaviour, not resizable, and sized for the
+    // The window is windowed again: full-screen entry stays available, not resizable, sized for the
     // back buffer (a resolution change made in full screen applies to the restored window too).
     void restoreWindowed()
     {
         if (!window)
             return;
         window.styleMask &= ~NSWindowStyleMaskResizable;
-        window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+        window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+        NSButton* fullscreenButton = [window standardWindowButton:NSWindowZoomButton];
+        fullscreenButton.target = delegate;
+        fullscreenButton.action = @selector(requestGameFullscreen:);
+        fullscreenButton.enabled = YES;
         const NSPoint topLeft = NSMakePoint(NSMinX(window.frame), NSMaxY(window.frame));
         [window setContentSize:windowedContentSize(backWidth, backHeight, window.screen ?: [NSScreen mainScreen],
                                                    window.styleMask)];
@@ -1735,6 +1749,12 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
 - (void)applicationDidFinishLaunching:(NSNotification*)note { (void)note; if (impl) impl->endLaunchRun(false); }
 - (void)launchTimedOut { if (impl) impl->endLaunchRun(true); }
 - (void)toggleGameWindowFullScreen { if (impl) impl->toggleFullscreenNow(); }
+- (void)requestGameFullscreen:(id)sender
+{
+    (void)sender;
+    auto& host = dice::hfe::host::ClientHost::instance();
+    host.setFullscreen(!host.isFullscreen());
+}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
 {
     (void)sender;
@@ -1809,6 +1829,16 @@ bool ClientHost::initApplication()
                                            keyEquivalent:@"q"];
         quitItem.target = m_impl->delegate;
         appItem.submenu = appMenu;
+        // [CHOSEN, not recovered] Explicit shortcut for the fixed-size game window. Both this
+        // command and its green button request the mode that the engine applies at its pump.
+        NSMenuItem* viewItem = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
+        NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+        NSMenuItem* fullscreenItem = [viewMenu addItemWithTitle:@"Toggle Full Screen"
+                                                       action:@selector(requestGameFullscreen:) keyEquivalent:@"f"];
+        fullscreenItem.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+        fullscreenItem.target = m_impl->delegate;
+        viewItem.submenu = viewMenu;
+        [menuBar addItem:viewItem];
         [NSApp setMainMenu:menuBar];
 
         m_impl->scripted = inputscript::inputScript().loadFromEnvironment();   // [TEMP] BF2_INPUT_SCRIPT
@@ -1885,7 +1915,11 @@ bool ClientHost::createWindow(const HostWindowDesc& desc)
         window.title = [NSString stringWithUTF8String:desc.title.c_str()] ?: @"BF2";
         window.backgroundColor = [NSColor blackColor];
         window.acceptsMouseMovedEvents = YES;
-        window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+        window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+        NSButton* fullscreenButton = [window standardWindowButton:NSWindowZoomButton];
+        fullscreenButton.target = m_impl->delegate;
+        fullscreenButton.action = @selector(requestGameFullscreen:);
+        fullscreenButton.enabled = YES;
         window.delegate = m_impl->delegate;
         window.animationBehavior = NSWindowAnimationBehaviorNone;   // shown at once, no order-in animation
         // Win32 positions are the frame's top left from the screen's top left.

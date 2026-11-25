@@ -25,10 +25,9 @@
 //   application is made active at launch, before the window exists (CocoaHost.mm, activateAtLaunch),
 //   so a player's start never waits here; the wait remains for a client started behind another app.
 // - One transition at a time. A request made during a transition is applied when it ends.
-// - A transition the host did not start is the user's: macOS lets the user leave a full-screen
-//   Space through the window's title bar (revealed at the top of the screen) or the system's
-//   full-screen shortcut. The host then stays windowed and reports not full screen until the
-//   engine asks again; it does not take the user back into the Space.
+// - The green button and full-screen menu shortcut request the opposite mode. Completed AppKit
+//   transitions started outside the host also become requests. At the next engine pump these
+//   requests run through BF2Render::toggleFullscreen, including its renderer reset and event.
 // - An entry AppKit refused (it does during another animation or a gesture) is tried again while
 //   the application is active: three attempts in all, a pause between them (CocoaHost.mm). When
 //   the application is inactive at the refusal, or has become inactive before the host makes a
@@ -91,6 +90,8 @@ public:
     // windowDidEnterFullScreen.
     Action didEnter()
     {
+        if (!m_own)
+            m_wanted = true;
         endTransition();
         m_inSpace = true;
         m_attempts = 0;
@@ -99,8 +100,8 @@ public:
     }
 
     // windowDidExitFullScreen when no entry runs (an exit during entry is enterRefused instead).
-    // The user left the Space while the engine wants full screen: the
-    // host stays windowed (wanted() false) until the engine asks again.
+    // The user left the Space: the host reports windowed and the engine pump follows through
+    // its ordinary toggle path. A request made during the transition still takes precedence.
     Action didExit()
     {
         const bool own = m_own;
@@ -197,6 +198,17 @@ private:
     bool   m_own = false;           // the running transition was started by an answer of this class
     Action m_transition = None;     // Enter or Exit while one runs
 };
+
+// [CHOSEN, not recovered] Reconcile native UI and console requests at the engine pump, outside
+// AppKit delegate callbacks. A changed GSFullScreen takes precedence; otherwise follow the host.
+// The callback must use the engine's ordinary toggle path, which also updates GSFullScreen.
+template<class Toggle>
+void reconcileFullscreen(bool engineFullscreen, bool configuredFullscreen, bool hostFullscreen, Toggle toggle)
+{
+    const bool target = configuredFullscreen != engineFullscreen ? configuredFullscreen : hostFullscreen;
+    if (target != engineFullscreen)
+        toggle();
+}
 
 } } }
 #endif
