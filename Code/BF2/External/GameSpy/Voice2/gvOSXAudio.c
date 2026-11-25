@@ -721,9 +721,10 @@ static GVBool gviHardwareStartDevice(GVDevice device, GVDeviceType type)
 		result = gviHardwareStartPlayback(device);
 		if(!result)
 		{
+			// [CHOSEN, not recovered] Unlock before capture rollback because stop takes the same non-recursive mutex.
+			gviUnlockDevice(data);
 			if(type & GV_CAPTURE)
 				device->m_methods.m_stopDevice(device, GV_CAPTURE);
-			gviUnlockDevice(data);
 			return GVFalse;
 		}
 	}
