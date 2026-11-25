@@ -495,9 +495,13 @@ IObject* ZiplineTemplate::createObject() const
     return new Zipline(this);
 }
 
-// (25 B); PE counterpart is the same single member store.
+extern float* const ziplineSoldierHeight; // registered by ZiplineContainer's TU initializer
+
+// BF2.exe 0x5DA080; dedicated PE 0x57B140; ELF 0x81D2840.
+// Update the riders' shared height before the template member.
 void ZiplineTemplate::setZiplineSoldierHeight(float height)
 {
+    *ziplineSoldierHeight = height;
     m_ziplineSoldierHeight = height;
 }
 

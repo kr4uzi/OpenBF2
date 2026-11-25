@@ -5,6 +5,7 @@
 #include "../BF2/Core/ClassManager.h"
 #include "../BF2/Core/EventManager.h"
 #include "../BF2/Core/Ids.h"
+#include "../BF2/Core/SettingsRepostitory.h"
 #include "../BF2/Core/Modules.h"
 #include "../BF2/IO/Console/Console.h"
 #include "../BF2/IO/File/FileManager.h"
@@ -20,6 +21,16 @@
 #include "../BF2/Game/Objects/GrapplingHookRopeTemplate.h"
 #include "../BF2/Game/Objects/DestroyableObjectTemplate.h"
 #include "../BF2/Game/Objects/Game/PlayerControlObject.h"
+#include "../BF2/Game/Objects/Game/GroundContactSound.h"
+#include "../BF2/Game/Objects/Game/ObjectSpawner.h"
+#include "../BF2/Game/Objects/ObjectSpawnerTemplate.h"
+#include "../BF2/Game/Objects/ObjectLayoutAccess.h"
+#include "../BF2/Game/GameLogic/SquadManager/SquadManager.h"
+#include "../BF2/Game/GameLogic/SpawnSystem/SpawnManager.h"
+#include "../BF2/Game/Main/Game.h"
+#include "../BF2/Game/Utility/Vars.h"
+#include "../BF2/Physics/PhysicsUtil.h"
+#include "../BF2/Sound/NullSound.h"
 #include "../BF2/Game/Objects/Fx/ParticleSystemTemplates.h"
 #include "../BF2/Game/Objects/Base/BundleTemplate.h"
 #include "../BF2/Game/Objects/EngineTemplate.h"
@@ -33,10 +44,16 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <cfloat>
+#include <cmath>
+#include <limits>
 #include <initializer_list>
 #include <sys/stat.h>
+#include <console_game_probe.h>
 
 namespace dice { namespace hfe { extern ClassManager* classManager;
+extern IBase* squadManager;
+extern IBase* spawnManager;
 namespace io { extern IBase* inputDeviceManager; }
 } }
 using namespace dice::hfe;
@@ -99,6 +116,35 @@ struct Grappling : GrapplingHookRopeTemplate
 {
     float length() const { return _float174; }
     int links() const { return _dword178; }
+};
+struct Pco : PlayerControlObjectTemplate
+{
+    using PlayerControlObjectTemplate::m_groundContactVolume;
+    using PlayerControlObjectTemplate::m_damagedAmbientSoundLimit;
+};
+struct Vehicle : PlayerControlObject
+{
+    explicit Vehicle(PlayerControlObjectTemplate* value) : PlayerControlObject(value) {}
+    void initGroundContact()
+    {
+        // The copied member reads use this same template with fixture-visible fields.
+        const Pco* const m_template = static_cast<const Pco*>(PlayerControlObject::m_template);
+#include <console_ground_contact_init.h>
+    }
+    GroundContactSound* groundContact() const { return m_groundContactSound; }
+    void attachTo(IObject* parent) { m_parent = parent; }
+};
+struct RetainedSound : NullSound
+{
+    int retains = 0;
+    int addRef() override { return ++retains; }
+    int release() override { return --retains; }
+};
+struct Spawner : ObjectSpawner
+{
+    explicit Spawner(ObjectSpawnerTemplate* value) : ObjectSpawner(value) {}
+    int writes = 0, liveTeam = 0;
+    void setTeam(int value) override { ++writes; liveTeam = value; }
 };
 template<class Template> struct Particle : Template
 { void attach(geom::IParticleSystemTemplate* value) { this->m_impl = value; } };
@@ -188,6 +234,7 @@ struct Devices : io::NullInputDeviceManager
 int main()
 {
     eventManager = new EventManager;
+    settings = new SettingsRepostitory;
     classManager = new ClassManager;
     classManager->registerServer(new ObjectModule);
     auto* templates = new Templates;
@@ -200,7 +247,7 @@ int main()
     io::fileManager->setBaseSystem(new io::UnixFileSystem);
     for (const char* tag : {"io.FileManager", "io.ControlMap", "world.objTemplBase", "world.objTemplGame", "world.objTemplVehicle",
                             "world.objTemplFx", "world.objectManager", "tool.moduleToolObject",
-                            "world.physics", "world.physics.collisionManager", "world.physics.heightmap"})
+                            "world.physics", "world.physics.collisionManager", "world.physics.heightmap", "hfe.gameLogic"})
         mainConsoleObjects->registerConsoleObjects(consoleBindingList(tag));
 
     for (const char* name : {"workingPath", "echo", "echoErrors", "maxLineSize", "maxHistorySize",
@@ -281,7 +328,7 @@ int main()
           && simple->grip() == 128, "enum reflection restores the original grip");
     call("ObjectTemplate", "grip", {""}); check(simple->grip() == 1, "empty grip uses the reader fallback");
 
-    auto* pco = new PlayerControlObjectTemplate; pco->setName("pco"); objectTemplateManager->setActiveObjectTemplate(pco);
+    auto* pco = new Pco; pco->setName("pco"); objectTemplateManager->setActiveObjectTemplate(pco);
     call("ObjectTemplate", "setToolTipType", {"TTHeavyTank"}); check(pco->getToolTipType() == 0, "tooltip full name");
     call("ObjectTemplate", "setToolTipType", {"M3GMC"}); check(pco->getToolTipType() == 21, "tooltip short name");
     call("ObjectTemplate", "setToolTipType", {""}); check(pco->getToolTipType() == 22, "empty tooltip uses the reader fallback");
@@ -306,6 +353,58 @@ int main()
               "shake factor reaches live vehicle reader");
     }
 
+    propertyMetadata("seatPosition", 15, "Vec3"); propertyMetadata("seatRotation", 15, "Vec3");
+    call("ObjectTemplate", "seatPosition", {"1/2/3"});
+    check(call("ObjectTemplate", "seatPosition") == "1/2/3", "seat position round trip");
+    call("ObjectTemplate", "seatRotation", {"10/20/30"});
+    check(call("ObjectTemplate", "seatPosition") == "1/2/3", "seat rotation retains translation");
+    const std::string firstRotation = call("ObjectTemplate", "seatRotation");
+    call("ObjectTemplate", "seatRotation", {"40/50/60"});
+    check(call("ObjectTemplate", "seatRotation") == firstRotation, "seat rotation retains shipped first-call cache");
+    auto* secondSeat = new Pco; secondSeat->setSeatRotation(Vec3{0, 0, 0});
+    objectTemplateManager->setActiveObjectTemplate(secondSeat);
+    check(call("ObjectTemplate", "seatRotation") == firstRotation, "seat rotation cache is shared across templates");
+    objectTemplateManager->setActiveObjectTemplate(pco);
+    call("ObjectTemplate", "seatPosition", {"-4/5/-6"});
+    check(pco->getSeatPosition().x == -4 && pco->getSeatPosition().z == -6, "seat position reaches matrix");
+    for (const char* name : {"listenerObstruction", "groundContactVolume", "damagedAmbientSoundLimit"})
+    {
+        propertyMetadata(name, 15, "float");
+        for (const char* value : {"-1", "0", "0.45", "1", "2", "-0"})
+        {
+            check(call("ObjectTemplate", name, {value}).empty(), "sound setter has no return");
+            const float input = std::stof(value);
+            const float expected = input < 0 ? 0 : (input > 1 ? 1 : input);
+            check(std::stof(call("ObjectTemplate", name)) == expected, "sound property clamps to unit interval");
+        }
+    }
+    check(std::signbit(pco->m_groundContactVolume) && std::signbit(pco->m_damagedAmbientSoundLimit)
+          && std::signbit(pco->getListenerObstruction()), "sound setters preserve negative zero");
+    auto* rootVehicle = new Vehicle(pco);
+    auto* retainedSound = new RetainedSound;
+    ISound* savedNullSound = g_nullSound; g_nullSound = retainedSound;
+    rootVehicle->initGroundContact();
+    check(!rootVehicle->groundContact(), "zero ground volume does not allocate");
+    pco->m_groundContactVolume = FLT_EPSILON;
+    rootVehicle->initGroundContact();
+    check(!rootVehicle->groundContact(), "epsilon ground volume does not allocate");
+    pco->m_groundContactVolume = std::numeric_limits<float>::quiet_NaN();
+    rootVehicle->initGroundContact();
+    check(!rootVehicle->groundContact(), "unordered ground volume does not allocate");
+    call("ObjectTemplate", "groundContactVolume", {"1"});
+    setDedicated(true); rootVehicle->initGroundContact(); setDedicated(false);
+    check(!rootVehicle->groundContact(), "runtime dedicated mode does not allocate");
+    rootVehicle->attachTo(vehicle); rootVehicle->initGroundContact(); rootVehicle->attachTo(0);
+    check(!rootVehicle->groundContact(), "child vehicle does not allocate ground sound");
+    rootVehicle->initGroundContact();
+    check(rootVehicle->groundContact() && retainedSound->retains == 1,
+          "authored positive volume constructs ground carrier and retains null sound");
+    g_nullSound = savedNullSound;
+    call("ObjectTemplate", "listenerObstruction", {"0.45"});
+    call("ObjectTemplate", "damagedAmbientSoundLimit", {"0.15"});
+    check(pco->getListenerObstruction() == 0.45f && pco->m_damagedAmbientSoundLimit == 0.15f,
+          "vehicle sound reader inputs receive authored settings");
+
     auto* zipline = new ZiplineTemplate; objectTemplateManager->setActiveObjectTemplate(zipline);
     for (const char* name : {"MaxZiplineLength", "EntryRadius", "collisionStartRadius", "heightOffset", "distanceCannotEnter"})
         propertyMetadata(name, 15, "float");
@@ -321,6 +420,14 @@ int main()
           && call("ObjectTemplate", "heightOffset") == "-1", "zipline getters read authored values");
     call("ObjectTemplate", "EntryRadius", {"2.25"});
     check(zipline->m_entryRadius == 2.25f && call("ObjectTemplate", "EntryRadius") == "2.25", "entry radius changes from its default");
+    float* const riderHeight = Vars::getFloat("zipline-soldier-height", 1.49f);
+    zipline->setZiplineSoldierHeight(2.5f);
+    check(*riderHeight == 2.5f && zipline->m_ziplineSoldierHeight == 2.5f,
+          "zipline height setter updates shared rider handle and template");
+    auto* secondZipline = new ZiplineTemplate;
+    secondZipline->setZiplineSoldierHeight(-1.0f);
+    check(*riderHeight == -1 && secondZipline->m_ziplineSoldierHeight == -1
+          && zipline->m_ziplineSoldierHeight == 2.5f, "height Vars is shared while template heights remain independent");
     auto* ziplineRope = new ZiplineRopeTemplate; objectTemplateManager->setActiveObjectTemplate(ziplineRope);
     propertyMetadata("ropeScaleFactor", 15, "float");
     call("ObjectTemplate", "ropeScaleFactor", {"0.985"});
@@ -350,7 +457,8 @@ int main()
           "respawn overloads select distinct template storage");
     objectTemplateManager->setActiveObjectTemplate(simple);
     for (const char* name : {"MaxZiplineLength", "EntryRadius", "collisionStartRadius", "heightOffset",
-                             "distanceCannotEnter", "ropeScaleFactor", "MaxRopeLength", "NumberOfLinks", "shakeFactor", "respawnDelay"})
+                             "distanceCannotEnter", "ropeScaleFactor", "MaxRopeLength", "NumberOfLinks", "shakeFactor", "respawnDelay",
+                             "seatPosition", "seatRotation", "listenerObstruction", "groundContactVolume", "damagedAmbientSoundLimit"})
         check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", name), "gameplay bindings reject unrelated templates");
 
     auto* zoom = new ToggleCameraCompTemplate;
@@ -470,6 +578,49 @@ int main()
           && arrowTemplate->arrow->position.z == 21, "area marker resamples position after init");
     objectManager->setActiveObject(0);
     check(!mainConsoleObjects->getConsoleObject("HeightmapCluster", "compileWaterMeshesIntoHeightmap"), "unfinished water bake stays unpublished");
+
+    game = new ConsoleGameProbe;
+    spawnManager = new SpawnManager;
+    auto* squads = new SquadManager; squadManager = squads;
+    for (const char* name : {"firstCommanderSelectDelay", "commanderSelectDelay"})
+        check(!mainConsoleObjects->getConsoleObject("LocalPlayer", name), "election delays unavailable with absent server setting");
+    settings->boolSet("GSIsServer", true);
+    check(call("LocalPlayer", "firstCommanderSelectDelay") == "15"
+          && call("LocalPlayer", "commanderSelectDelay") == "10", "election delay defaults");
+    for (const char* name : {"firstCommanderSelectDelay", "commanderSelectDelay"})
+    {
+        auto* binding = row("LocalPlayer", name);
+        check(binding->getAccess() == 2 && binding->getCategory() == 0 && binding->isDynamic()
+              && binding->isSetGet() && !binding->hasRange() && binding->getMinNoArgs() == 0
+              && binding->getMaxNoArgs() == 1 && std::string(binding->getReturnType()) == "float", "election delay metadata");
+        for (const char* value : {"-2", "0", "3.5", "80"})
+        {
+            check(call("LocalPlayer", name, {value}).empty(), "election setter has no return");
+            check(std::stof(call("LocalPlayer", name)) == std::stof(value), "election delay raw round trip");
+        }
+    }
+    check(squads->getFirstCommanderSelectDelay() == 80 && squads->getCommanderSelectDelay() == 80,
+          "election readers see authored settings");
+    settings->boolSet("GSIsServer", false);
+    check(!mainConsoleObjects->getConsoleObject("LocalPlayer", "firstCommanderSelectDelay"), "client setting hides election delays");
+    settings->boolSet("GSIsServer", true); squadManager = 0;
+    check(!mainConsoleObjects->getConsoleObject("LocalPlayer", "commanderSelectDelay"), "missing squad manager hides election delays");
+
+    auto* spawnerTemplate = new ObjectSpawnerTemplate;
+    auto* spawner = new Spawner(spawnerTemplate);
+    objectManager->setActiveObject(spawner);
+    auto* teamBinding = row("Object", "setTeam");
+    check(teamBinding->getAccess() == 2 && teamBinding->getCategory() == 0 && !teamBinding->isDynamic()
+          && !teamBinding->isSetGet() && teamBinding->getMinNoArgs() == 1 && teamBinding->getMaxNoArgs() == 1
+          && std::string(teamBinding->getReturnType()) == "void", "live spawner team method metadata");
+    call("Object", "team", {"1"});
+    check(call("Object", "setTeam", {"2"}).empty() && spawner->writes == 1 && spawner->liveTeam == 2,
+          "spawner method dispatches through typed secondary interface");
+    check(call("Object", "team") == "1", "setTeam and team select distinct operations");
+    objectManager->setActiveObject(vehicle);
+    check(!mainConsoleObjects->getConsoleObject("Object", "setTeam"), "setTeam rejects non-spawner active object");
+    objectManager->setActiveObject(0);
+    check(!mainConsoleObjects->getConsoleObject("Object", "setTeam"), "setTeam rejects missing active object");
 
     std::remove("files/script.con"); std::remove("files/source.txt"); std::remove("files/rope.con");
     std::printf("console bindings: %d checks, %d failures\n", checks, failures);
