@@ -4155,7 +4155,10 @@ void GameServer::playerMessageEvent(IEventWrapper& wrapper)
     {
         if (!sender)
             return;
-        if (sender->getIsThisASpam(sender->getId() != -1))                   // +0x30C
+        // BF2.exe 0x4C8E8B..0x4C8E9D / dedicated PE 0x445F2B..0x445F3D /
+        // ELF 0x080AEBCB..0x080AEBE4 compare the low byte with 0xFF.
+        // The hosted human has ID 255 and was already counted at submission.
+        if (sender->getIsThisASpam(static_cast<unsigned char>(sender->getId()) != 0xFF))
             return;
     }
 
