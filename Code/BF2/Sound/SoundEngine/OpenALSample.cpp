@@ -515,11 +515,20 @@ int OpenALSample::releaseBuffers()
     al_Sourcei(m_source, AL_LOOPING, 0);
     ALint processed = 0;
     al_GetSourcei(m_source, AL_BUFFERS_PROCESSED, &processed);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Apple's OpenAL defers stops and queue edits until post-render.
+    // Unqueueing every buffer makes its old logical queue empty while replacement buffers
+    // still sit in a temporary queue; OALSource::Play then ignores the new play. Detach the
+    // stopped queue as a whole so a pooled restart or immediate outro survives that window.
+    // See Apple's OpenAL OALSource::{Play,SetBuffer,RemoveBuffersFromQueue} and SetQueueLength.
+    al_Sourcei(m_source, AL_BUFFER, 0);
+#else
     for (ALint n = processed; n > 0; --n)
     {
         ALuint b;
         al_SourceUnqueueBuffers(m_source, 1, &b);
     }
+#endif
     return processed;
 }
 

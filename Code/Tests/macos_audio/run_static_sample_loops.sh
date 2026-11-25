@@ -3,9 +3,11 @@
 # `cmake --build <dir> --target bf2_bf2audio_static bf2_vorbis_static bf2_plugin_kit_static`, which
 # bf2_client builds). The M16 first-person fire WAV is read from the game's Objects_client.zip into a
 # temporary directory; nothing from the game is kept. No audio device is opened.
-# Usage: run_static_sample_loops.sh <build dir> <game mods/bf2 dir> [-v] [-q<quality>] [--real]
+# Usage: run_static_sample_loops.sh <build dir> <game mods/bf2 dir> [-v] [-q<quality>] [-p0|2] [--real]
+# Quality: 0 High, 1 Medium, 2 Low. Provider: 0 software+EAX, 2 hardware+EAX.
 # --real links no fake: the real OpenAL.framework plays with every gain forced to 0 (opens the
 # default output device, silently) and the framework's source counters are printed. Opt-in only.
+# Fake mode runs both synchronous OpenAL and Apple's deferred stop/queue model.
 set -e
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 B=${1:?build directory}
@@ -13,8 +15,10 @@ MOD=${2:?game mods/bf2 directory}
 shift 2
 REAL=""
 ARGS=""
+DEFERRED=0
 for a in "$@"; do
     if [ "$a" = "--real" ]; then REAL="-DBF2_TEST_REAL_OPENAL=1"; else ARGS="$ARGS $a"; fi
+    if [ "$a" = "--apple-deferred" ]; then DEFERRED=1; fi
 done
 mkdir -p "$B/macos_audio"
 c++ $REAL -arch x86_64 -std=gnu++14 -DDEDICATED=0 -include "$ROOT/Code/BF2/Core/BuildConfig.h" \
@@ -27,3 +31,6 @@ trap 'rm -rf "$TMP"' EXIT
 unzip -p "$MOD/Objects_client.zip" Weapons/Handheld/USRIF_M203/Sounds/M16_fire_1p_outdoor.wav \
     > "$TMP/M16_fire_1p_outdoor.wav"
 "$B/macos_audio/static_sample_loops" "$TMP/M16_fire_1p_outdoor.wav" $ARGS
+if [ -z "$REAL" ] && [ "$DEFERRED" = 0 ]; then
+    "$B/macos_audio/static_sample_loops" "$TMP/M16_fire_1p_outdoor.wav" $ARGS --apple-deferred
+fi

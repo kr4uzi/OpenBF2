@@ -2,14 +2,20 @@
 // first-person fire sound: BfSoundEngine scheduling and startWaiting, StaticSample's buffer queue,
 // endLoop and the per-update gain, driven through a fake OpenAL. No audio device is opened: the
 // image's dlopen/dlsym of OpenAL.framework bind to the fakes below, which record every queue, loop,
-// play, stop and gain call and simulate playback at the engine's 30 updates per second.
+// play, stop, rewind, gain and pitch call and simulate playback at 30 updates per second.
 // It plays a stock M16 Fire1P WAV (loop region = one shot, then the tail; stopType 1) the way
 // DefaultSoundComp::postFire does for single (play(1)), burst (play(3)) and automatic fire
-// (play(0) and a later stop). Each mode must play the shot region at a non-zero gain.
+// (play(0) and a later stop). Repeated single shots also compete with quiet 3D loops at the
+// selected quality's voice limit. Each attack must be submitted at non-zero gain. Optional
+// --apple-deferred models the published Apple stop/queue transition that can discard a play;
+// neither fake measures a real mixer's output.
+// The retail dispatch is BF2.exe 0x608260; source cleanup is BF2Audio.dll 0x10012B50 followed
+// by the pool's rewind/detach at 0x10013DD0. The source start is 0x10014260.
 // Build and run: run_static_sample_loops.sh. [RETIRE-WHEN: native-audio-test-harness] Replace with
 // a CMake test once the native audio image has a shared fixture host.
 #include "../../BF2/Sound/NullSound.h"
 #include "../../BF2/Sound/SoundEngine/BfOpenAL.h"
+#include "../../BF2/Sound/SoundEngine/BfSoundEngine.h"
 
 #include <cmath>
 #include <cstdio>
@@ -19,6 +25,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#if !defined(BF2_TEST_REAL_OPENAL)
+#include <CoreAudio/CoreAudio.h>
+#endif
 
 namespace dice { namespace hfe {
 struct SoundEnvelopePoint { float time; float value; float tangent; };
@@ -49,6 +58,9 @@ struct FakeSource
     int processed = 0;
     float gain = 1.0f;
     float pitch = 1.0f;
+    bool stopping = false, flushing = false, playPending = false;
+    unsigned int unqueued = 0;
+    std::deque<ALuint> nextQueue;
 };
 
 std::map<ALuint, FakeBuffer> g_buffers;
@@ -57,11 +69,16 @@ ALuint g_nextBuffer = 1, g_nextSource = 1;
 ALenum g_error = 0;
 const char* g_dataBase = 0;    // first byte of the PCM block the current file's buffers share
 bool g_log = false;
+// [TEMP] Model only Apple's deferred stop/rewind/flush interaction, not its mixer.
+// OALSource::{Stop,Rewind,SetBuffer,GetQLengthPriv,Play}, SetQueueLength and
+// alSourceQueueBuffers in https://github.com/apple-oss-distributions/OpenAL/tree/main/Source/OpenAL.
+bool g_appleDeferred = false;
+int g_ignoredPlays = 0;
 std::string g_trace;           // the recorded calls of the current scenario
 int g_update = 0;              // engine updates since the scenario started
 
 // What the listener heard of each file region: frames played, and frames played at gain > 0.01.
-struct Heard { double frames = 0, audible = 0, gainSum = 0; };
+struct Heard { double frames = 0, audible = 0, gainSum = 0, shotGainFrames = 0; };
 std::map<long, Heard> g_heard;  // keyed by buffer offset
 
 void record(const char* text)
@@ -101,7 +118,7 @@ void fGenSources(ALsizei n, ALuint* out)
 {
     for (ALsizei i = 0; i < n; ++i)
     {
-        if (g_nextSource > 64) { g_error = 0xA003; out[i] = 0; continue; }   // AL_INVALID_VALUE
+        if (g_sources.size() >= 64) { g_error = 0xA005; out[i] = 0; continue; } // AL_OUT_OF_MEMORY
         out[i] = g_nextSource++;
         g_sources[out[i]] = FakeSource();
     }
@@ -126,6 +143,14 @@ void fSourcei(ALuint s, ALenum p, ALint v)
     }
     else if (p == AL_BUFFER)
     {
+        if (g_appleDeferred && src.stopping && v == 0)
+        {
+            src.flushing = true;
+            src.nextQueue.clear();
+            std::snprintf(text, sizeof(text), "src%u BUFFER=0 (deferred)", s);
+            record(text);
+            return;
+        }
         src.queue.clear();
         if (v)
             src.queue.push_back((ALuint) v);
@@ -138,6 +163,10 @@ void fSourcef(ALuint s, ALenum p, ALfloat v)
 {
     if (p == AL_GAIN) g_sources[s].gain = v;
     else if (p == AL_PITCH) g_sources[s].pitch = v;
+    else return;
+    char text[96];
+    std::snprintf(text, sizeof(text), "src%u %s=%.3f", s, p == AL_GAIN ? "GAIN" : "PITCH", v);
+    record(text);
 }
 void fSourcefv(ALuint, ALenum, const ALfloat*) {}
 void fGetSourcei(ALuint s, ALenum p, ALint* v)
@@ -146,8 +175,10 @@ void fGetSourcei(ALuint s, ALenum p, ALint* v)
     switch (p)
     {
     case AL_SOURCE_STATE:      *v = src.state; break;
-    case AL_BUFFERS_QUEUED:    *v = (ALint) src.queue.size(); break;
-    case AL_BUFFERS_PROCESSED: *v = src.looping ? 0 : src.processed; break;   // OpenAL Soft rule
+    case AL_BUFFERS_QUEUED:    *v = src.flushing ? src.nextQueue.size() : src.queue.size() - src.unqueued; break;
+    case AL_BUFFERS_PROCESSED:
+        *v = src.flushing ? 0 : src.stopping ? src.queue.size() - src.unqueued : src.looping ? 0 : src.processed;
+        break;
     case AL_LOOPING:           *v = src.looping; break;
     default:                   *v = 0; break;
     }
@@ -157,6 +188,21 @@ void fGetSourcefv(ALuint, ALenum, ALfloat* v) { v[0] = v[1] = v[2] = 0.0f; }
 void fSourcePlay(ALuint s)
 {
     FakeSource& src = g_sources[s];
+    if (g_appleDeferred && src.stopping)
+    {
+        // Apple's Play tests the old queue (minus deferred unqueues), even though the new
+        // buffers are already visible through AL_BUFFERS_QUEUED in the temporary queue.
+        if (src.queue.size() == src.unqueued)
+        {
+            ++g_ignoredPlays;
+            record("PLAY ignored: old queue empty, new buffers still deferred");
+            return;
+        }
+        src.playPending = true;
+        src.state = AL_PLAYING;
+        record("PLAY deferred until stop/rewind/flush completes");
+        return;
+    }
     src.state = src.queue.empty() ? AL_STOPPED : AL_PLAYING;
     // A stopped or initial source restarts at its first unprocessed buffer.
     src.current = (unsigned int) src.processed;
@@ -170,6 +216,8 @@ void fSourcePlay(ALuint s)
 void fSourceStop(ALuint s)
 {
     FakeSource& src = g_sources[s];
+    if (g_appleDeferred && src.state == AL_PLAYING)
+        src.stopping = true;
     src.state = AL_STOPPED;
     src.processed = (int) src.queue.size();
     src.current = (unsigned int) src.queue.size();
@@ -177,7 +225,22 @@ void fSourceStop(ALuint s)
     std::snprintf(text, sizeof(text), "src%u STOP", s);
     record(text);
 }
-void fSourceRewind(ALuint) {}
+void fSourceRewind(ALuint s)
+{
+    FakeSource& src = g_sources[s];
+    src.state = AL_INITIAL;
+    if (src.stopping)
+    {
+        record("REWIND deferred");
+        return;
+    }
+    src.current = 0;
+    src.position = 0.0;
+    src.processed = 0;
+    char text[64];
+    std::snprintf(text, sizeof(text), "src%u REWIND", s);
+    record(text);
+}
 void fGenBuffers(ALsizei n, ALuint* out)
 {
     for (ALsizei i = 0; i < n; ++i) { out[i] = g_nextBuffer++; g_buffers[out[i]] = FakeBuffer(); }
@@ -214,6 +277,13 @@ void fSourceUnqueueBuffers(ALuint s, ALsizei n, ALuint* out)
 {
     FakeSource& src = g_sources[s];
     char text[96];
+    if (g_appleDeferred && src.stopping && !src.flushing)
+    {
+        for (int i = 0; i < n; ++i)
+            out[i] = src.queue[src.unqueued++];
+        record("UNQUEUE deferred; old logical queue length reduced");
+        return;
+    }
     if (src.looping || src.processed < n)
     {
         g_error = 0xA003;
@@ -237,7 +307,8 @@ void fSourceQueueBuffers(ALuint s, ALsizei n, const ALuint* b)
     char text[96];
     for (ALsizei i = 0; i < n; ++i)
     {
-        src.queue.push_back(b[i]);
+        if (src.flushing) src.nextQueue.push_back(b[i]);
+        else src.queue.push_back(b[i]);
         std::snprintf(text, sizeof(text), "src%u QUEUE %s", s, label(b[i]));
         record(text);
     }
@@ -245,11 +316,22 @@ void fSourceQueueBuffers(ALuint s, ALsizei n, const ALuint* b)
 void fDopplerFactor(ALfloat) {}
 void fDistanceModel(ALenum) {}
 int g_deviceToken, g_contextToken;
-ALCcontext* fcCreateContext(ALCdevice*, const ALint*) { return (ALCcontext*) &g_contextToken; }
+int g_contextRate = 0;
+std::string g_deviceName, g_libraryName;
+ALCcontext* fcCreateContext(ALCdevice*, const ALint* attrs)
+{
+    for (; attrs && *attrs; attrs += 2)
+        if (*attrs == ALC_FREQUENCY) g_contextRate = attrs[1];
+    return (ALCcontext*) &g_contextToken;
+}
 ALboolean fcMakeContextCurrent(ALCcontext*) { return 1; }
 void fcDestroyContext(ALCcontext*) {}
 ALenum fcGetError(ALCdevice*) { return 0; }
-ALCdevice* fcOpenDevice(const ALchar*) { return (ALCdevice*) &g_deviceToken; }
+ALCdevice* fcOpenDevice(const ALchar* name)
+{
+    g_deviceName = name ? name : "<default>";
+    return (ALCdevice*) &g_deviceToken;
+}
 ALboolean fcCloseDevice(ALCdevice*) { return 1; }
 ALboolean fcIsExtensionPresent(ALCdevice*, const ALchar*) { return 0; }
 const ALchar* fcGetString(ALCdevice*, ALenum) { return "Fake Device"; }
@@ -285,6 +367,15 @@ void advance(double seconds)
     for (std::map<ALuint, FakeSource>::iterator it = g_sources.begin(); it != g_sources.end(); ++it)
     {
         FakeSource& src = it->second;
+        if (src.stopping)
+        {
+            if (src.flushing) src.queue.swap(src.nextQueue);
+            else for (unsigned int n = 0; n < src.unqueued; ++n) src.queue.pop_front();
+            src.nextQueue.clear();
+            src.current = 0; src.position = 0; src.processed = 0; src.unqueued = 0;
+            src.state = src.playPending ? AL_PLAYING : AL_INITIAL;
+            src.stopping = src.flushing = src.playPending = false;
+        }
         if (src.state != AL_PLAYING)
             continue;
         double remaining = seconds * src.pitch;   // in seconds; converted per buffer
@@ -300,6 +391,8 @@ void advance(double seconds)
             heard.gainSum += step * src.gain;
             if (src.gain > 0.01f)
                 heard.audible += step;
+            if (src.gain > 0.5f)
+                heard.shotGainFrames += step;
             src.position += step;
             remaining -= step / buffer.rate;
             if (src.position >= buffer.frames)
@@ -339,6 +432,7 @@ PFN_alSourcei              r_Sourcei;
 PFN_alSourcef              r_Sourcef;
 PFN_alSourcePlay           r_SourcePlay;
 PFN_alSourceStop           r_SourceStop;
+PFN_alSourceRewind         r_SourceRewind;
 PFN_alSourceQueueBuffers   r_SourceQueueBuffers;
 PFN_alSourceUnqueueBuffers r_SourceUnqueueBuffers;
 PFN_alBufferData           r_BufferData;
@@ -380,6 +474,13 @@ void wSourceStop(ALuint s)
     record(text);
     r_SourceStop(s);
 }
+void wSourceRewind(ALuint s)
+{
+    char text[64];
+    std::snprintf(text, sizeof(text), "src%u REWIND", s);
+    record(text);
+    r_SourceRewind(s);
+}
 void wSourceQueueBuffers(ALuint s, ALsizei n, const ALuint* b)
 {
     g_watched = s;
@@ -417,6 +518,7 @@ void installWrappers()
     r_Sourcef = al_Sourcef;                       al_Sourcef = &wSourcef;
     r_SourcePlay = al_SourcePlay;                 al_SourcePlay = &wSourcePlay;
     r_SourceStop = al_SourceStop;                 al_SourceStop = &wSourceStop;
+    r_SourceRewind = al_SourceRewind;             al_SourceRewind = &wSourceRewind;
     r_SourceQueueBuffers = al_SourceQueueBuffers; al_SourceQueueBuffers = &wSourceQueueBuffers;
     r_SourceUnqueueBuffers = al_SourceUnqueueBuffers; al_SourceUnqueueBuffers = &wSourceUnqueueBuffers;
     r_BufferData = al_BufferData;                 al_BufferData = &wBufferData;
@@ -465,9 +567,22 @@ void pollRealtime(double seconds)
 }
 } // namespace
 #else
+// [TEMP] The fake backend needs no physical output device, including in a sandbox.
+extern "C" OSStatus AudioObjectGetPropertyData(AudioObjectID,
+    const AudioObjectPropertyAddress* address, UInt32, const void*, UInt32* size, void* data)
+{
+    if (address->mSelector == kAudioHardwarePropertyDefaultOutputDevice && *size == sizeof(AudioObjectID))
+    {
+        *static_cast<AudioObjectID*>(data) = 1;
+        return noErr;
+    }
+    return kAudioHardwareUnknownPropertyError;
+}
+
 // The audio image's OpenAL loader (Win32System's POSIX arm) binds to these in this executable.
 extern "C" void* dlopen(const char* path, int)
 {
+    g_libraryName = path ? path : "";
     return path && std::strstr(path, "OpenAL") ? &g_moduleToken : 0;
 }
 extern "C" void* dlsym(void* module, const char* name)
@@ -486,26 +601,45 @@ int main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s <M16_fire_1p_outdoor.wav> [-v]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <M16_fire_1p_outdoor.wav> [-v] [-q0|1|2] [-p0|2] [--apple-deferred]\n", argv[0]);
         return 2;
     }
     int quality = 1;                   // medium, the client's default
+    const char* provider = "0";
     for (int a = 2; a < argc; ++a)
     {
         if (!std::strcmp(argv[a], "-v"))
             g_log = true;
         else if (!std::strncmp(argv[a], "-q", 2))
             quality = std::atoi(argv[a] + 2);
+        else if (!std::strncmp(argv[a], "-p", 2))
+            provider = argv[a] + 2;
+        else if (!std::strcmp(argv[a], "--apple-deferred"))
+            g_appleDeferred = true;
     }
+    if (quality < 0 || quality > 2 || (std::strcmp(provider, "0") && std::strcmp(provider, "2")))
+        return 2;
+#if defined(BF2_TEST_REAL_OPENAL)
+    if (g_appleDeferred) return 2;
+#endif
     ISoundEngine* engine = getSoundEngine();
-    // "Software Audio" with 32 voices, as the client.
-    const int err = engine->initialize(static_cast<SoundQuality>(quality), "Software Audio", 32);
-    std::printf("[test] initialize quality %d -> %d\n", quality, err);
+    const int voices = quality == 2 ? 16 : 32;
+    const int err = engine->initialize(static_cast<SoundQuality>(quality), provider, voices);
+    std::printf("[test] initialize provider %s quality %d voices %d -> %d\n", provider, quality, voices, err);
     if (err)
         return 1;
 #if defined(BF2_TEST_REAL_OPENAL)
     installWrappers();
     std::printf("[test] real OpenAL.framework, listener and source gains forced to 0\n");
+#else
+    std::printf("[test] %s OpenAL model\n", g_appleDeferred ? "Apple deferred" : "synchronous");
+    check(g_libraryName == "/System/Library/Frameworks/OpenAL.framework/OpenAL", "loads Apple OpenAL.framework");
+    check(g_deviceName == (!std::strcmp(provider, "0") ? "DirectSound" : "DirectSound3D"), "opens the selected retail device name");
+    check(g_contextRate == 44100, "context mixes at 44100 Hz for either provider");
+    const SoundStats* stats = static_cast<const SoundStats*>(engine->getStats());
+    check(stats->maxVoices == voices + 4, "voice limit includes four reserved pool sources");
+    check(engine->getProperty("use-source-pool") == 1.0f, "either provider uses the source pool");
+    check(engine->getProperty("use-2d-occlusion") == 0.0f, "either provider disables 2D occlusion");
 #endif
 
     // S_usrif_m16a2_Fire1P as DefaultSoundCompTemplate::initTemplates and the stock tweak set it up.
@@ -531,7 +665,7 @@ int main(int argc, char** argv)
                 g_buffers.empty() ? 0 : g_buffers.begin()->second.rate);
 
     // stopAfter < 0: never stopped. replays: further play() calls on the following updates.
-    struct Scenario { const char* name; int loops; int stopAfter; int replays; };
+    struct Scenario { const char* name; int loops; int stopAfter; int replays; int interval = 1; int stopType = 1; };
     const Scenario scenarios[] = {
         { "single play(1)", 1, -1, 0 },
         { "single play(1), stopped in the same update", 1, 0, 0 },
@@ -539,10 +673,17 @@ int main(int argc, char** argv)
         { "burst play(3)", 3, -1, 0 },
         { "automatic play(0), stop after 4 updates", 0, 4, 0 },
         { "automatic play(0), stop after 1 update", 0, 1, 0 },
+        { "single shots every 100 ms", 1, -1, 9, 3 },
+        { "single shots every 200 ms", 1, -1, 7, 6 },
+        { "single shots after each tail finishes", 1, -1, 2, 35 },
+        { "automatic play(0), immediate outro after 4 updates", 0, 4, 0, 1, 2 },
     };
     for (unsigned int i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); ++i)
     {
         const Scenario& s = scenarios[i];
+        sound->forceStop();
+        engine->update(1);
+        t->setStopType(s.stopType);
         g_heard.clear();
         g_trace.clear();
         g_update = 0;
@@ -552,9 +693,9 @@ int main(int argc, char** argv)
 #endif
         std::printf("[test] %s\n", s.name);
         sound->play(s.loops);
-        for (int u = 0; u < 60; ++u)
+        for (int u = 0; u < 60 + s.replays * s.interval; ++u)
         {
-            if (u > 0 && u <= s.replays)
+            if (u > 0 && u % s.interval == 0 && u / s.interval <= s.replays)
                 sound->play(s.loops);
             if (u == s.stopAfter)
                 sound->stop();
@@ -581,11 +722,87 @@ int main(int argc, char** argv)
                     shot.frames, shot.audible, shot.frames > 0 ? shot.gainSum / shot.frames : 0.0, tail);
         char what[160];
         std::snprintf(what, sizeof(what), "%s plays the shot region audibly", s.name);
-        const bool ok = shotFrames > 0 && shot.audible >= 0.99 * shotFrames;
+        const int expectedShots = s.replays ? s.replays + 1 : s.loops > 0 ? s.loops : 1;
+        const bool ok = shotFrames > 0 && shot.audible >= 0.99 * shotFrames * expectedShots;
         check(ok, what);
+        if (s.stopType == 2)
+            check(tail > 0, "immediate outro survives the deferred stop and buffer replacement");
         if (!g_log && !ok)
             std::printf("%s", g_trace.c_str());
     }
+
+#if !defined(BF2_TEST_REAL_OPENAL)
+    // [TEMP] Saturate the real engine scheduler with quiet 3D loops. A first-person shot
+    // must steal a source and play its attack, including when the previous shot has a tail.
+    sound->forceStop();
+    t->setStopType(1);
+    ISoundTemplate* ambientTemplate = engine->createTemplate();
+    ambientTemplate->setFilename(argv[1]);
+    ambientTemplate->setIs3dSound(true);
+    ambientTemplate->setLoopCount(0);
+    ambientTemplate->setVolume(0.1f);
+    ambientTemplate->setIsUsed();
+    engine->loadSoundFiles();
+    std::vector<ISound*> ambients;
+    for (int i = 0; i < voices; ++i)
+    {
+        ISound* ambient = ambientTemplate->createSound();
+        ambients.push_back(ambient);
+        ambient->play(0);
+    }
+    engine->update(1);
+    check(static_cast<const SoundStats*>(engine->getStats())->playing == voices,
+          "looping voices fill the requested voice budget");
+    for (int shot = 0; shot < 40; ++shot)
+    {
+        g_heard.clear();
+        g_trace.clear();
+        sound->play(1);
+        for (int u = 0; u < 6; ++u)
+        {
+            engine->update(1);
+            advance(kUpdateSeconds);
+            ++g_update;
+        }
+        char what[128];
+        std::snprintf(what, sizeof(what), "shot %d under voice pressure plays the complete attack", shot + 1);
+        const bool ok = g_heard[0].shotGainFrames >= 0.99 * shotFrames;
+        check(ok, what);
+        if (!ok && !g_log) std::printf("%s", g_trace.c_str());
+    }
+    sound->forceStop();
+    engine->update(1);
+    advance(kUpdateSeconds);
+    // More new one-shots than the four spare sources can arrive in one engine update.
+    // Each uses its own Sound, just as independent weapons/effects do in a busy scene.
+    std::vector<ISound*> simultaneous;
+    g_heard.clear();
+    g_trace.clear();
+    const int ignoredBefore = g_ignoredPlays;
+    for (int i = 0; i < 8; ++i)
+    {
+        ISound* shot = t->createSound();
+        simultaneous.push_back(shot);
+        shot->play(1);
+    }
+    for (int u = 0; u < 6; ++u)
+    {
+        engine->update(1);
+        advance(kUpdateSeconds);
+    }
+    const bool allAttacks = g_heard[0].shotGainFrames >= 0.99 * shotFrames * simultaneous.size();
+    check(allAttacks, "eight simultaneous shots under voice pressure keep every attack");
+    check(g_ignoredPlays == ignoredBefore, "no play is lost during a deferred source reset");
+    if ((!allAttacks || g_ignoredPlays != ignoredBefore) && !g_log)
+        std::printf("%s", g_trace.c_str());
+    for (ISound* shot : simultaneous) { shot->forceStop(); shot->release(); }
+    for (ISound* ambient : ambients)
+    {
+        ambient->forceStop();
+        ambient->release();
+    }
+    ambientTemplate->release();
+#endif
 
     sound->release();
     t->release();
