@@ -319,6 +319,29 @@ link scaling and rope initialization paths. Content's `setMaxZiplineLength`, `se
 `setMaxRopeLength` and `setNumberOfLinks` spellings use the console's existing `set` aliases.
 `ObjectTemplate.shakeFactor` writes the player-control template value read by
 `PlayerControlObject::getShakeFactor`. These properties have access 2/category 15.
+`ZiplineTemplate::setZiplineSoldierHeight` also updates the shared Vars handle
+`zipline-soldier-height` before its own member, so existing riders see the new height.
+
+Player-control templates expose `ObjectTemplate.seatPosition` and `seatRotation` as
+Vec3 properties (access 2/category 15). Rotation writes preserve translation; the rotation
+getter retains the shipped cache initialized by its first call, even across templates.
+The same category exposes `listenerObstruction`, `groundContactVolume` and
+`damagedAmbientSoundLimit`. All three clamp writes to 0..1; PE maps NaN to zero,
+while ELF retains it, and both preserve signed zero. Listener obstruction is read by
+the local occupant's environment and soldier sound; the damaged limit selects the
+damaged ambient sample by the root object's health fraction. In the client image,
+a root vehicle outside runtime dedicated mode allocates its ground-contact sound
+carrier only above `FLT_EPSILON`, then discovers its drive wheels. The dedicated image
+does not allocate that carrier. Stock HMMWV and Vodnik templates author ground volume
+1 and obstruction 0.45/0.4; the AH1Z authors obstruction 0.5 and damaged limit 0.15.
+
+`Object.setTeam <int>` is an access-2/category-0 static method for the active object
+only when its template is an object-spawner template. It dispatches the live spawner's
+`setTeam`; the separate `Object.team` property initializes both its start and live team.
+`LocalPlayer.firstCommanderSelectDelay` and `commanderSelectDelay` are access-2/category-0
+dynamic float properties, available only with `GSIsServer` true and a published squad
+manager. They keep the first/subsequent election defaults 15/10 and accept raw values
+without clamping. These bindings are shared by both game images.
 
 `ObjectTemplate.respawnDelay` has separate receivers for destroyable objects, dynamic bundles
 and destroyable-window bundles. `GameLogic` copies their values into spawners; the dynamic
@@ -341,8 +364,12 @@ remains unpublished while its absorbed-water-object state update is unresolved.
 
 `Code/Tests/console_bindings_runtime.py` exercises the registry, real console, loose-file
 operations, enum conversions, template selectors and forwarding into typed descriptor observers.
-It covers rope content aliases, vehicle shake reads, independent respawn receivers, and particle
-light write/refresh ordering across all four accepted classes without a window or game startup.
+It covers rope content aliases, shared rider height, seat transforms and their cached getter,
+sound property clamps, vehicle shake reads, independent respawn receivers, spawner team dispatch,
+election-delay availability and particle light write/refresh ordering across all four accepted
+classes without a window or game startup. The ground-contact check copies the production
+allocation tail verbatim and uses a retained null-sound observer; it exercises the guards and
+real carrier constructor, not the preceding world initialization or audible output.
 It requires a completed macOS renderer-enabled client build;
 particle-manager construction, particle collection, rendered pixels and a joined player are untested.
 

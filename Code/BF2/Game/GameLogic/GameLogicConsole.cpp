@@ -7,6 +7,7 @@
 #include "GameLogic.h"            // the messages.* bindings reach the concrete class
 #include "ServerGameLogic.h"      // ServerGameLogic::createObject - the gameLogic.createObject receiver
 #include "VoiceMessages.h"
+#include "SquadManager/SquadManager.h"
 #include "../../Scene/Object/PlayerManager.h"   // world::playerManager - player.kit's receiver
 #include "../Objects/IPlayer.h"                 // world::IPlayer - player.kit's active player
 #include "../../Math/Vec3.h"      // Vec4 - the fogStartEndAndBase property's complete type
@@ -14,6 +15,8 @@
 
 namespace dice {
 namespace hfe {
+
+extern IBase* squadManager;
 
 namespace {
 
@@ -82,6 +85,14 @@ GameLogic* serverGameLogic()
     if (!settings->boolGet(std::string("GSIsServer"), false))
         return 0;
     return static_cast<GameLogic*>(gameLogic);
+}
+
+// BF2.exe 0x437460; dedicated PE 0x413A10. A missing setting defaults to false.
+SquadManager* serverSquadManager()
+{
+    if (!settings->boolGet(std::string("GSIsServer"), false))
+        return 0;
+    return static_cast<SquadManager*>(static_cast<ISquadManager*>(squadManager));
 }
 
 Vec3 gameLogicGetBeforeSpawnCameraPosition()
@@ -326,6 +337,14 @@ void gameLogicSetActivePlayerKit(int kit)
 } // namespace
 BF2_CONSOLE_PROPERTY_FN(kit, int, activeGamePlayer() != 0, activeGamePlayer()->getKit(),
                         gameLogicSetActivePlayerKit, kGameLogicConsoleTag)
+
+// BF2.exe 0x43CEAC/0x43CFB5; dedicated PE 0x41CE40/0x41D000;
+// ELF accessors 0x811EF20..0x811EF5D. Both delays are raw, unranged floats.
+BF2_CONSOLE_OBJECT("LocalPlayer", 2, 0)
+BF2_CONSOLE_PROPERTY(firstCommanderSelectDelay, float, serverSquadManager(),
+                     setFirstCommanderSelectDelay, getFirstCommanderSelectDelay, kGameLogicConsoleTag)
+BF2_CONSOLE_PROPERTY(commanderSelectDelay, float, serverSquadManager(),
+                     setCommanderSelectDelay, getCommanderSelectDelay, kGameLogicConsoleTag)
 
 } // namespace hfe
 } // namespace dice

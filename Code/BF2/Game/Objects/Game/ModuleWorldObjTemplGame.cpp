@@ -456,6 +456,29 @@ struct GameTemplateConsoleAccess
     }
     static float getShakeFactor() { return playerControlObject()->m_shakeFactor; }
     static void setShakeFactor(float value) { playerControlObject()->m_shakeFactor = value; }
+    // BF2.exe 0x52C60A/0x52C740 -> 0x402EE0; ELF 0x863BDA0/0x863C220.
+    // [PLATFORM] PE selects zero for NaN; ELF retains it. Both preserve signed zero.
+    static float clampSoundLevel(float value)
+    {
+#if defined(_WIN32)
+        const float capped = value >= 1.0f ? 1.0f : value;
+        return capped >= 0.0f ? capped : 0.0f;
+#else
+        return value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+#endif
+    }
+    static float getGroundContactVolume() { return playerControlObject()->m_groundContactVolume; }
+    static void setGroundContactVolume(float value)
+    {
+        PlayerControlObjectTemplate* const pco = playerControlObject();
+        pco->m_groundContactVolume = clampSoundLevel(value);
+    }
+    static float getDamagedAmbientSoundLimit() { return playerControlObject()->m_damagedAmbientSoundLimit; }
+    static void setDamagedAmbientSoundLimit(float value)
+    {
+        PlayerControlObjectTemplate* const pco = playerControlObject();
+        pco->m_damagedAmbientSoundLimit = clampSoundLevel(value);
+    }
     static io::PlayerInputMap getSpecialToggleWeaponInput()
     {
         return static_cast<io::PlayerInputMap>(playerControlObject()->m_specialToggleWeaponInput);
@@ -1268,6 +1291,23 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setNumWindows, objectTemplateSetNumWindows,
 
 // Stock parachutes preserve the soldier's camera pitch when entering and leaving the seat.
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 15)
+// BF2.exe 0x528C0C/0x528D90; dedicated PE 0x4B2A60/0x4B2C80.
+// Preserve the typed seat accessors, including getSeatRotation's first-call cache.
+BF2_CONSOLE_PROPERTY(seatPosition, Vec3, GameTemplateConsoleAccess::playerControlObject(),
+                     setSeatPosition, getSeatPosition, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY(seatRotation, Vec3, GameTemplateConsoleAccess::playerControlObject(),
+                     setSeatRotation, getSeatRotation, kObjTemplGameConsoleTag)
+// BF2.exe 0x52C471/0x52C5A2/0x52C6D8; dedicated PE 0x4B7E30/0x4B8000/0x4B81D0.
+BF2_CONSOLE_PROPERTY(listenerObstruction, float, GameTemplateConsoleAccess::playerControlObject(),
+                     setListenerObstruction, getListenerObstruction, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(groundContactVolume, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getGroundContactVolume(),
+                        GameTemplateConsoleAccess::setGroundContactVolume, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(damagedAmbientSoundLimit, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getDamagedAmbientSoundLimit(),
+                        GameTemplateConsoleAccess::setDamagedAmbientSoundLimit, kObjTemplGameConsoleTag)
 // BF2.exe 0x529E5A/0x529EFE: player-control secondary interface, ranged -1..3.
 namespace {
 CameraShakeTriggers getVehicleShake()
@@ -1680,6 +1720,7 @@ ObjectSpawner* activeSpawnerObject()
 void objSpawnerSetControlPointId(int id) { activeSpawnerObject()->setControlPointId(id); }
 void objSpawnerSetVisibleTeam(int team)  { activeSpawnerObject()->setVisibleTeam(team); }
 void objSpawnerSetActive(bool active)    { activeSpawnerObject()->setActive(active); }
+void objSpawnerSetTeam(int team)        { activeSpawnerObject()->setTeam(team); }
 int  objSpawnerGetVisibleTeam()          { return activeSpawnerObject()->getVisibleTeam(); }
 int  objSpawnerGetControlPointId()       { return activeSpawnerObject()->getControlPointId(); }
 } // namespace
@@ -1689,6 +1730,8 @@ BF2_CONSOLE_METHOD_0_RET_ACTIVE(getControlPointId, objSpawnerGetControlPointId, 
 BF2_CONSOLE_METHOD_1_ACTIVE(setVisibleTeam, objSpawnerSetVisibleTeam, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_METHOD_1_ACTIVE(setControlPointId, objSpawnerSetControlPointId, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_METHOD_1_ACTIVE(setActive, objSpawnerSetActive, activeSpawnerObject() != 0, bool, kObjTemplGameConsoleTag)
+// BF2.exe 0x50A47D; dedicated PE 0x483FA0: set the live spawner team through its typed interface.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setTeam, objSpawnerSetTeam, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(team, int, activeSpawnerObject(), setTeamOnStart, getTeamOnStart, kObjTemplGameConsoleTag)
 
 // Restore the console object before registering ObjectTemplate properties.

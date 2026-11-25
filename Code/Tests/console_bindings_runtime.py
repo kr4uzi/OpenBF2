@@ -8,9 +8,30 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 from template_save_runtime import descriptors
+
+
+def vehicle_scaffolding(root, output):
+    """Copy the production allocation boundary and model game queries without server state."""
+    source = (root / "Code/BF2/Game/Objects/Game/PlayerControlObject.cpp").read_text()
+    start = source.index("#if !DEDICATED", source.index("gameLogic->addPco(this);"))
+    end = source.index("    setSleepTimeoutRecursive(this, 90);", start)
+    (output / "console_ground_contact_init.h").write_text(
+        "// [TEMP] Production init tail copied verbatim; preceding world setup is untested.\n"
+        + source[start:end])
+    header = (root / "Code/BF2/Game/IGame.h").read_text()
+    header = re.sub(r"//[^\n]*", "", header)
+    methods = re.findall(r"virtual\s+([^;{}]+?)\s+(\w+)\(([^()]*)\)\s*(const)?\s*= 0;", header)
+    code = ["// [TEMP] Spawner/squad construction queries a game without server state.",
+            "namespace dice { namespace hfe { struct ConsoleGameProbe : IGame {"]
+    for result, method, params, const in methods:
+        body = "return 0;" if method == "queryInterface" else "std::abort();"
+        code.append(f"{result} {method}({params}) {const} override {{ {body} }}")
+    code.append("}; } }")
+    (output / "console_game_probe.h").write_text("\n".join(code) + "\n")
 
 
 def main():
@@ -21,6 +42,7 @@ def main():
     build, output = args.engine_build.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     descriptors(Path(__file__).resolve().parents[2], output)
+    vehicle_scaffolding(Path(__file__).resolve().parents[2], output)
     entries = json.loads((build / "compile_commands.json").read_text())
     row = next(row for row in entries if row["file"].endswith("/Game/Main/BF2.cpp")
                and "bf2_client_objects.dir" in row["command"])

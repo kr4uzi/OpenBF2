@@ -37,11 +37,11 @@ namespace world {
 
 extern IBase* heightmapCluster;                    // ds:0x8ABAF24, Core/Globals.cpp
 
-namespace {
-
 // TU static initialization in both ports registers this one Vars value. The ELF stores the
 // returned pointer at 0x8AADFAC; the PE stores it at 0x88723C.
-float* const ziplineSoldierHeight = Vars::getFloat("zipline-soldier-height", 1.49f);
+extern float* const ziplineSoldierHeight = Vars::getFloat("zipline-soldier-height", 1.49f);
+
+namespace {
 
 template <class T>
 T* weakTarget(int* control)
