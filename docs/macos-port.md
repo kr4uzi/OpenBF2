@@ -311,6 +311,19 @@ compiled entries. It uses real compilation; a held completion callback makes the
 deterministic. On-screen loading, cursor animation and the absence of the spinning wait cursor
 still need a client run.
 
+### Shader compilation while the window is in the background
+
+`[CHOSEN, not recovered]` Native effect compilation and the Metal library and pipeline builds
+run on worker threads; they do not advance once per frame and need no drawable. Deactivating a
+full-screen window closes the engine's frame gate: it sleeps 100 ms and skips menu and world
+rendering. Completed effects used to create their device shader objects only at `Present`, so
+an inactive client could finish its effect cache but leave those effects out of the Metal
+prebuild queue until it rendered again, and the build stood still. The message pump now also
+publishes completed effects (`bf2metal::createFinishedEffectShaders`, a few per call), without
+drawing or changing focus. The workers' priorities are unchanged and the client declares no
+activity to the system for these builds; whether background throughput needs either has not
+been measured.
+
 ## G2 graphics subset
 
 The owner-requested G2 package compiles all 122
