@@ -37,11 +37,6 @@ void shaderManagerCommitCurrentEffects();
 // dword_1023B984. Everything below publishes and consumes it through this name.
 void* g_stateManager = 0;
 
-// [TEMP] [CHOSEN, not recovered] BF2_TERRAIN_TRACE (Geom/TerrainDraw.cpp): called at the end of
-// every pre-draw apply while a traced frame is armed; null otherwise.
-// [RETIRE-WHEN: terrain-black-hexagons]
-void (*g_terrainTraceDrawHook)(IDirect3DDevice9* device) = 0;
-
 // dword_1023D08C, char[4] at 0x1023D090, char[4] at all zero until the vendor probe
 // runs (see the header note). The on/off buffers are adjacent in the shipped image. Declared in
 // RendDX9Base.h: the probe writes them, the ShaderManager and the Ra
@@ -1027,8 +1022,6 @@ void preDrawApply(StateManager* self)
     regs = 0; calls = 0;
     constFileFlush(self, self->psConst, self->psConstDirty, &self->psConstMin, &self->psConstMax,
                    true, &regs, &calls);
-    if (g_terrainTraceDrawHook)                       // [TEMP] BF2_TERRAIN_TRACE
-        g_terrainTraceDrawHook(static_cast<IDirect3DDevice9*>(self->device));
 }
 
 
@@ -1472,30 +1465,6 @@ void rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, int
     if (!primCount)
         return;
     preDrawApply(sm());
-    rendererDevice()->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(type), baseVertex,
-                                           minIndex, numVertices, startIndex, primCount);
-    unsigned char* stats = static_cast<RendDX9Base*>(g_rendererBase)->renderStats;
-    if (stats[644])
-    {
-        ++*reinterpret_cast<unsigned int*>(stats + 452);
-        *reinterpret_cast<unsigned int*>(stats + 456) += primCount;
-        *reinterpret_cast<unsigned int*>(stats + 448) += primCount;
-    }
-}
-
-// [TEMP] BF2_UG_TRACE [CHOSEN, not recovered]
-// [RETIRE-WHEN: undergrowth-black-patches] Remove after runtime state identifies the black cells.
-// Diagnostic-only variant: observe the device after the normal commit/flush, without a second
-// CommitChanges or any extra state setters. The ordinary draw path remains untouched.
-void rendererDrawIndexedPrimitiveWithTrace(unsigned int primCount, unsigned int type, int baseVertex,
-                                           unsigned int minIndex, unsigned int numVertices,
-                                           unsigned int startIndex,
-                                           void (*trace)(IDirect3DDevice9*, void*), void* context)
-{
-    if (!primCount)
-        return;
-    preDrawApply(sm());
-    trace(rendererDevice(), context);
     rendererDevice()->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(type), baseVertex,
                                            minIndex, numVertices, startIndex, primCount);
     unsigned char* stats = static_cast<RendDX9Base*>(g_rendererBase)->renderStats;
