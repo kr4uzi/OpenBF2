@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] sound.showSoundSources: BfSound::drawSoundSources draws each playing sample (text, cross,
 # circles, velocity line). The shipped BF2Audio.dll reports no samples, so this shows nothing
 # unless the engine is patched to report some; open the console, enable, close it, capture.
