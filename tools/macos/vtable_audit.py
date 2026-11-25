@@ -30,6 +30,11 @@ def side(header, cls, image="host", source=None, probe="getRef", subobject=None,
 # A pair is a consumer declaration and the actual provider declaration, compiled
 # independently: several images deliberately declare the same qualified name.
 PAIRS = [
+    # BF2.exe 0x8A2AF8 / 0x8A2C08: the same 24-slot IMenuLogic face.
+    ("end-of-round-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/EndOfRoundLogic.h", "EndOfRoundLogic")),
+    ("load-game-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/LoadGameLogic.h", "LoadGameLogic")),
     ("debug-text-writer", side("Code/BF2/GeomMisc/DebugTextWriter.h", "geom::IDebugTextWriter"),
      side("Code/BF2/GeomMisc/DebugTextWriter.cpp", "geom::DebugTextWriter", "renderer")),
     ("pov-native-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),

@@ -248,6 +248,8 @@ set(bf2_client_only_sources
     "${BF2_ROOT}/Game/Main/BF2RenderConsole.cpp"    # [CHOSEN] file: BF2.exe's two renderer.* console bindings (2026-09-27)
     "${BF2_ROOT}/Game/SettingsConsole.cpp"    # [CHOSEN] file: the five profile-file console objects (2026-09-27)
     "${BF2_ROOT}/Menu/BetweenRoundsLogic.cpp" # attested client-only loading-screen menu logic
+    "${BF2_ROOT}/Menu/EndOfRoundLogic.cpp"
+    "${BF2_ROOT}/Menu/LoadGameLogic.cpp"
     "${BF2_ROOT}/Menu/BF2HudManager.cpp"    # attested client-only HUD construction; publication still gated
     "${BF2_ROOT}/Menu/BF2HudManagerConfiguration.cpp" # inferred split, recovered pointer/menu configuration
     "${BF2_ROOT}/Menu/BF2HudManagerState.cpp" # inferred split, recovered typed widget/state accessors

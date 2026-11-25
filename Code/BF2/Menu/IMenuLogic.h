@@ -27,7 +27,9 @@ public:                                 // queryInterface 36 B)
     virtual bool         beginFrame() = 0;                  // +0x2C  0x4A2C00 - renderMenu tests its result before display()
     virtual void         display() = 0;                     // +0x30
     virtual void         endFrame() = 0;                    // +0x34
-    virtual bool         handleInput(io::GameInput& input) = 0;   // +0x38  0x4A3540, 354 B   [INFERRED] name and the bool
+    // BF2.exe 0x4A3540 / 0x4A3BB0 / 0x4A4140 / 0x4A4640 return no value;
+    // filterGameInput 0x404650 discards the slot's result.
+    virtual void         handleInput(io::GameInput& input) = 0;   // +0x38; [INFERRED] name
     virtual void         setConsole(BF2Console* console) = 0;     // +0x3C  0x4A2C60 - stores +0x18, sub_446B90(0) when non-null
     virtual BF2Console*  getConsole() const = 0;            // +0x40  returns +0x18
     virtual void         onResize(unsigned int width, unsigned int height) = 0;   // +0x44  0x4A2C80, 176 B - BF2Engine::handleEvent(11, 2)'s packed (width, height): the player rescaled, the scales cached, the host's +0x2C8 flag raised [INFERRED] name
