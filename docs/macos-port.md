@@ -43,7 +43,10 @@ These rules apply to every native (non-MSVC-x86) arm; source comments cite them.
 `[CHOSEN, not recovered]` Retail is Windows-only: a full-screen start creates a `WS_POPUP`
 window and the renderer switches the display mode. The Cocoa host instead uses AppKit's native
 full screen (`-[NSWindow toggleFullScreen:]`): with `+fullscreen 1` (retail's default,
-`GSFullScreen`) or after Alt+Enter the game window moves into its own Space. It covers the
+`GSFullScreen`) or after the system's full-screen command (Ctrl+Cmd+F, the window's green button
+or View > Toggle Full Screen) the game window moves into its own Space. Retail's Alt+Enter toggle
+(`GIAltEnter`) stays behind `game.allowToggleFullscreen`, which is off by default as in retail;
+the host adds no Option+Return shortcut. It covers the
 display, the menu bar and the Dock hide and reappear at the screen edges as for any full-screen
 Mac application, the Space can be left and re-entered with a swipe, Mission Control or Cmd-Tab,
 and the title bar shows when the pointer reaches the top of the screen. It replaces a borderless
@@ -60,8 +63,8 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
 - **Asynchronous.** `setFullscreen` sets what `isFullscreen()` reports at once (the engine's
   window code reads it back) and the window follows: the toggle is queued for the run loop, the
   animation takes about half a second, and AppKit reports its end to the window delegate. One
-  transition at a time; a switch made during one is applied when it ends. Alt+Enter does not
-  wait for the transition, the frame loop keeps pumping. `createWindow` does wait for a
+  transition at a time; a switch made during one is applied when it ends. A switch at run time
+  does not wait for the transition, the frame loop keeps pumping. `createWindow` does wait for a
   full-screen start's transition, three seconds at most (next item).
 - **The start.** The engine owns the main loop and does not read AppKit's event queue while it
   initialises, for seconds before and after the window is created. The host therefore does
@@ -182,10 +185,10 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   contract checks; AppKit animation and rendered menu appearance still need an on-screen check.
 - **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
   can take the window out of its Space. At the next engine message pump, native requests and
-  completed AppKit transitions run through `BF2Render::toggleFullscreen`, the same path as
-  Alt+Enter: window flag, renderer reset, `GSFullScreen` and renderer event all follow. One
-  Alt+Enter then returns to full screen. Entry through the green button or shortcut follows the
-  same rules. A live `SettingsManager.boolSet GSFullScreen 0` or `1` also uses this path; an
+  completed AppKit transitions run through `BF2Render::toggleFullscreen`, the path of retail's
+  Alt+Enter toggle: window flag, renderer reset, `GSFullScreen` and renderer event all follow.
+  One more full-screen command then returns to full screen. Entry through the green button or
+  shortcut follows the same rules. A live `SettingsManager.boolSet GSFullScreen 0` or `1` also uses this path; an
   explicit settings change takes precedence over the host when both differ from the engine.
   Video options expose resolution and quality rather than a separate full-screen setting.
   `+fullscreen` still selects the startup mode. Synchronization waits for the renderer to exist
