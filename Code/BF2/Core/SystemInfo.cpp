@@ -49,7 +49,8 @@ const std::string& PosixSystemInfo::getComputerName() const
         char name[255];
 
 #if defined(_WIN32)
-        // [CHOSEN, not recovered] Windows hostname query with the same cached "unknown" fallback.
+        // [CHOSEN, not recovered] Retail fix "Windows computer names keep all 15 characters".
+        // Retail passes capacity 15 and caches "unknown" for a 15-character name; use the full buffer.
         DWORD size = sizeof(name);
         if (GetComputerNameA(name, &size) != 0)
         {
@@ -117,6 +118,10 @@ void PosixSystemInfo::getMemoryInfo(unsigned int& totalPhysical,
 }
 
 // Returns false; this implementation does not detect a debugger.
+// [CHOSEN, not recovered] Windows keeps the POSIX answer. Retail checks forceNoDebugger,
+// Visual Studio 7.0/7.1 and AeDebug (excluding drwtsn32/drwatson). Even with a registered
+// debugger, non-dedicated clients clear hack-ignore-asserts; Windows keeps SEH unless +seh 0 is given.
+// See docs/architecture.md, "Debugger detection at startup".
 bool PosixSystemInfo::getIsDebuggerInstalled() const
 {
     return false;
