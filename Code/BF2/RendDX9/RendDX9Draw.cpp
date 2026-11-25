@@ -16,7 +16,6 @@
 #include "../Platform/Linux/FrameCapture.h"
 #endif
 #include "../Core/LoadStat.h"           // loadStat - rendererPresent's level-load present policy
-#include "OpaqueBackBufferAlpha.h"      // [CHOSEN, not recovered] the alpha-only draw before Present
 #if defined(_WIN32)
 #include <dxerr9.h>
 #pragma comment(lib, "dxerr9.lib")
@@ -234,130 +233,6 @@ unsigned char statsSwapEnabled(unsigned char value)
 }
 
 
-// [CHOSEN, not recovered] Retail fix "The back buffer is presented opaque" (docs/retail-fixes.md).
-// The 32-bit fullscreen back buffer is A8R8G8B8 and its alpha holds render-pass data: the High
-// terrain's low-detail pass leaves the dynamic-shadow term there (alpha 0 in shadow). Retail
-// presents it as is. A presenter that honours alpha (Parallels' D3D9) then shows the shadowed
-// terrain as black holes. One alpha-only draw before each Present writes alpha 1 and keeps RGB.
-namespace {
-
-struct OpaqueAlphaResources
-{
-    IDirect3DDevice9*            device;
-    IDirect3DVertexShader9*      vertexShader;
-    IDirect3DPixelShader9*       pixelShader;
-    IDirect3DVertexDeclaration9* declaration;
-    bool                         failed;        // creation failed on this device; not retried
-};
-OpaqueAlphaResources g_opaqueAlpha = { 0, 0, 0, 0, false };
-
-const D3DVERTEXELEMENT9 kOpaqueAlphaDeclaration[2] =
-{
-    { 0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
-    D3DDECL_END()
-};
-
-void releaseOpaqueAlpha()
-{
-    if (g_opaqueAlpha.vertexShader)
-        g_opaqueAlpha.vertexShader->Release();
-    if (g_opaqueAlpha.pixelShader)
-        g_opaqueAlpha.pixelShader->Release();
-    if (g_opaqueAlpha.declaration)
-        g_opaqueAlpha.declaration->Release();
-    g_opaqueAlpha = OpaqueAlphaResources{ 0, 0, 0, 0, false };
-}
-
-// Creates the shaders and declaration once per device. They are not pool resources and survive
-// Reset; rendererReleaseD3DDevice releases them with the device.
-bool ensureOpaqueAlpha(IDirect3DDevice9* d)
-{
-    static_assert(sizeof(DWORD) == sizeof(unsigned int), "shader tokens are 32-bit");
-    if (g_opaqueAlpha.device != d)
-    {
-        releaseOpaqueAlpha();
-        g_opaqueAlpha.device = d;
-        const bool created =
-            d->CreateVertexShader(reinterpret_cast<const DWORD*>(opaque_alpha::kVertexShader),
-                                  &g_opaqueAlpha.vertexShader) >= 0
-            && d->CreatePixelShader(reinterpret_cast<const DWORD*>(opaque_alpha::kPixelShader),
-                                    &g_opaqueAlpha.pixelShader) >= 0
-            && d->CreateVertexDeclaration(kOpaqueAlphaDeclaration, &g_opaqueAlpha.declaration) >= 0;
-        if (!created)
-        {
-            ::renddx9abi::logf("rendererPresent: the opaque back-buffer alpha draw is unavailable");
-            g_opaqueAlpha.failed = true;
-        }
-    }
-    return !g_opaqueAlpha.failed;
-}
-
-// Writes alpha 1 over the whole back buffer of the swap chain being presented; RGB, depth and
-// stencil are untouched. The back buffer is bound for this one draw, whatever the frame's last
-// render target was (with post-production and multisampling it can be the scene target), with no
-// depth-stencil surface (a bound one could differ in size or sample count). The render target,
-// depth-stencil surface and viewport are put back on the device after the draw, so the state
-// manager's mirror stays true. Runs only for an A8R8G8B8 back buffer, outside the frame's scene.
-void forceBackBufferAlphaOpaque(RendDX9Base* b, IDirect3DSwapChain9* chain)
-{
-    if (b->pp.BackBufferFormat != D3DFMT_A8R8G8B8 || b->inScene || !chain)
-        return;
-    IDirect3DDevice9* const d = device();
-    if (!ensureOpaqueAlpha(d))
-        return;
-    IDirect3DSurface9* backBuffer = 0;
-    if (chain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer) < 0 || !backBuffer)
-        return;
-    D3DSURFACE_DESC desc;
-    D3DVIEWPORT9 saved;
-    if (backBuffer->GetDesc(&desc) < 0 || d->GetViewport(&saved) < 0 || d->BeginScene() < 0)
-    {
-        backBuffer->Release();
-        return;
-    }
-
-    stateManagerPush();
-    for (unsigned int i = 0; i < opaque_alpha::kRenderStateCount; ++i)
-        stateManagerSetRenderState(opaque_alpha::kRenderStates[i][0], opaque_alpha::kRenderStates[i][1]);
-    stateManagerSetVertexShader(g_opaqueAlpha.vertexShader);
-    stateManagerSetPixelShader(g_opaqueAlpha.pixelShader);
-    stateManagerSetVertexDeclaration(g_opaqueAlpha.declaration);
-    stateManagerSetStreamSource(0, 0, 0, 0);                  // a UP draw requires no bound stream
-    stateManagerPreDrawApply();                               // also issues the mirror's render target
-
-    IDirect3DSurface9* oldTarget = 0;
-    IDirect3DSurface9* oldDepth = 0;
-    d->GetRenderTarget(0, &oldTarget);
-    if (d->GetDepthStencilSurface(&oldDepth) < 0)             // D3DERR_NOTFOUND: none bound
-        oldDepth = 0;
-    d->SetRenderTarget(0, backBuffer);
-    d->SetDepthStencilSurface(0);
-    D3DVIEWPORT9 full = { 0, 0, desc.Width, desc.Height, 0.0f, 1.0f };
-    d->SetViewport(&full);
-    d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, opaque_alpha::kQuadPrimitives, opaque_alpha::kQuad,
-                       opaque_alpha::kQuadStride);
-    d->SetDepthStencilSurface(oldDepth);
-    if (oldTarget)
-        d->SetRenderTarget(0, oldTarget);
-    d->SetViewport(&saved);                                   // after SetRenderTarget, which resets it
-    if (oldDepth)
-        oldDepth->Release();
-    if (oldTarget)
-        oldTarget->Release();
-    stateManagerPop();
-    d->EndScene();
-    backBuffer->Release();
-}
-
-} // anonymous namespace
-
-// Releases the opaque-alpha draw's shaders and declaration; called before the device is released.
-void rendererReleaseOpaqueAlphaResources()
-{
-    releaseOpaqueAlpha();
-}
-
-
 // Presents the active swap chain. Mode 3 only marks it presented; mode 2 uses default flags.
 // Device loss and driver errors attempt restoration but still fail this frame; only
 // device loss clears in-scene state. Retry policy depends on the HRESULT and spin flag.
@@ -393,7 +268,6 @@ bool rendererPresent(unsigned int mode)
 
     IDirect3DSwapChain9* chain = b->swapChains[b->currentSwapChain];   // +0xE4[+0xF0]
 
-    forceBackBufferAlphaOpaque(b, chain);   // [CHOSEN, not recovered] Retail fix, see above
 #if defined(BF2_LINUX_CLIENT)
     bf2LinuxCaptureBeforePresent(chain);
 #endif

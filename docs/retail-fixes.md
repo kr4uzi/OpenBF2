@@ -101,24 +101,6 @@ Each entry is a heading that names the fix, followed by these fields:
   [#36](https://github.com/kr4uzi/OpenBF2/issues/36)).
 - **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`
 
-### The back buffer is presented opaque
-
-- **Retail:** `rendererPresent` (`RendDX9.dll` `0x10005AE0`) presents the A8R8G8B8 fullscreen
-  back buffer with the render-pass alpha described in the entry above. D3D9 on Windows ignores
-  that alpha. A presenter that honours it shows the shadowed High terrain as black holes in the
-  middle distance; retail shows this under Parallels' D3D9.
-- **OpenBF2:** Before each Present of an A8R8G8B8 back buffer, one full-screen draw into that
-  swap chain's back buffer writes alpha 1, whatever render target the frame left current (with
-  post-production and multisampling it can be the scene target): alpha-only colour writes, no
-  depth-stencil surface, no depth, stencil, alpha test, blending, fog or scissor, and a pixel
-  shader that outputs 1. The quad overshoots the clip space, so multisampled edge pixels are fully
-  covered. The render target, depth-stencil surface, viewport, states and shaders are restored. RGB, depth, stencil and every pass's output before Present are
-  unchanged. X8R8G8B8 and 16-bit back buffers are skipped. If the shaders cannot be created on a
-  device, a log line says so once and Present continues as in retail.
-- **Applies to:** Client; all platforms.
-- **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`, `Code/BF2/RendDX9/OpaqueBackBufferAlpha.h`,
-  `Code/BF2/RendDX9/RendDX9Init.cpp`, `Code/Tests/macos_metal_device/opaque.inc`
-
 ### The effect parameter snapshot zeroes its description before the query
 
 - **Retail:** `Effect::snapshotParameterValues` calls `GetParameterDesc` into an uninitialized

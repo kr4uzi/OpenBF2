@@ -57,40 +57,6 @@ static id<MTLRenderPipelineState> menuPipeline(Frame* f,MTLPixelFormat color,MTL
     }
     return pipeline;
 }
-// [CHOSEN, not recovered] Present seam: Core Animation composites a CAMetalLayer drawable's alpha
-// over the layer's background even with opaque = YES (CALayer.opaque covers only the backing store
-// Core Animation manages, not the contents a drawable supplies), and the back buffer's alpha is
-// render-pass data. After the copy into the drawable, one alpha-only pass writes alpha 1 over the
-// whole drawable; RGB is untouched. This keeps every presented frame opaque, whatever its path.
-static bool presentOpaqueAlpha(Frame* f,id<MTLTexture> drawable) {
-    id<MTLLibrary> library=menuLibrary(f);
-    std::string key="presentAlpha"; keyAppend(key,drawable.pixelFormat);
-    auto& pipeline=f->draws->pipelines[key];
-    if(!pipeline) {
-        auto* p=[MTLRenderPipelineDescriptor new];
-        p.vertexFunction=[library newFunctionWithName:@"menuVertex"];
-        p.fragmentFunction=[library newFunctionWithName:@"menuClear"];
-        p.colorAttachments[0].pixelFormat=drawable.pixelFormat;
-        p.colorAttachments[0].writeMask=MTLColorWriteMaskAlpha;
-        NSError* error=nil;
-        pipeline=[f->device newRenderPipelineStateWithDescriptor:p error:&error];
-        if(!pipeline) {
-            std::fprintf(stderr,"[FRONTIER] IDirect3DDevice9::Present opaque-alpha pipeline: %s\n",error.localizedDescription.UTF8String);
-            std::fflush(stderr); std::abort();
-        }
-    }
-    auto* pass=[MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture=drawable;
-    pass.colorAttachments[0].loadAction=MTLLoadActionLoad; pass.colorAttachments[0].storeAction=MTLStoreActionStore;
-    auto e=[f->commands renderCommandEncoderWithDescriptor:pass];
-    if(!e) return false;
-    const float z=0; const float one[4]={0,0,0,1};
-    [e setRenderPipelineState:pipeline]; [e setVertexBytes:&z length:sizeof(z) atIndex:0];
-    [e setFragmentBytes:one length:sizeof(one) atIndex:0];
-    [e setViewport:(MTLViewport){0,0,double(drawable.width),double(drawable.height),0,1}];
-    [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4]; [e endEncoding];
-    return true;
-}
 // [CHOSEN, not recovered] Copies the single-sample back buffer into every sample of its
 // multisampled twin, after a CPU or blit write into the back buffer (ResourceBridge.inc).
 static bool seedBackBufferSamples(Frame* f) {
