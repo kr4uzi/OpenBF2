@@ -372,7 +372,7 @@ int main()
     UAVEvent uav(123, 678, 2, false);
     trace.clear();
     uav.executeServer(-1);
-    check(trace == (DEDICATED ? "" : "U"), "only single player accepts the local AI UAV grant");
+    check(trace == "U", "single-player mode accepts the local AI UAV grant in either image");
     manager.commander = 11;
     trace.clear();
     uav.executeServer(11);
@@ -390,8 +390,9 @@ int main()
         {"sp1", 1, false, true}, {"sp2", 1, false, true}, {"sp3", 1, false, true},
         {"SP1", 1, false, true}, {"Sp2", 1, false, true}, {"sP3", 1, false, true},
         {"gpm_coop", 1, false, false}, {"GPM_COOP", 2, false, false},
-        {"gpm_cq", 1, false, false}, {"sp1", 2, false, false}, {"sp1", 0, false, false},
-        {"sp1", 1, true, false}, {"sp2", 1, true, false}, {"sp3", 1, true, false},
+        {"gpm_cq", 1, false, false}, {"sp1", 2, false, true}, {"sp1", 0, false, true},
+        {"sp1", 1, true, true}, {"sp2", 1, true, true}, {"sp3", 1, true, true},
+        {"sp1", 2, true, true}, {"gpm_cq", 2, true, false},
         {"gpm_coop", 1, true, false}, {"sp10", 1, false, false}, {"", 1, false, false},
     };
     for (const auto& session : sessions) {
@@ -405,7 +406,7 @@ int main()
                     const int before = authorized[type];
                     requests[type]->executeServer(sender);
                     const bool expected = commander == static_cast<unsigned char>(sender)
-                        || (!DEDICATED && session.singlePlayer && commander == -1 && sender == -1
+                        || (session.singlePlayer && commander == -1 && sender == -1
                             && type != 2);
                     check(authorized[type] - before == (expected ? 1 : 0),
                           "retail authority except local single-player grants for three assets");
@@ -431,12 +432,14 @@ int main()
           "missing game refuses the local AI grant");
     game = &transport;
     world::playerManager = nullptr;
-    const int beforeMissingPlayers = authorized[0] + authorized[1] + authorized[3];
+    const int beforeMissingPlayers[3] = {authorized[0], authorized[1], authorized[3]};
     uav.executeServer(-1);
     fire.executeServer(-1);
     supply.executeServer(-1);
-    check(authorized[0] + authorized[1] + authorized[3] == beforeMissingPlayers,
-          "missing player manager refuses the local AI grant");
+    check(authorized[0] == beforeMissingPlayers[0] + 1 &&
+          authorized[1] == beforeMissingPlayers[1] + 1 &&
+          authorized[3] == beforeMissingPlayers[2] + 1,
+          "single-player grants do not depend on the player manager");
     world::playerManager = &players;
     strategy.m_flag1D1 = false;
     strategy.m_time68 = strategy.m_time70 = strategy.m_time78 = strategy.m_time80 = 500;
@@ -488,7 +491,7 @@ int main()
             check(assetCalls == callsBefore + 1 && authorized[type] == authorityBefore,
                   "ready AI grant queues before asset dispatch");
             dispatchGrants();
-            const bool delivered = !DEDICATED && session.singlePlayer && type != 2;
+            const bool delivered = session.singlePlayer && type != 2;
             check(authorized[type] == authorityBefore + (delivered ? 1 : 0),
                   "ready grants reach three asset managers only in single player");
             manager.issueRequest(2, 3, request, false);
@@ -507,6 +510,6 @@ int main()
         check(assetCalls == callsBefore && pendingGrants.empty(),
               "human commander disables every automatic asset in every session");
     }
-    std::printf("PASS %d checks: requests, waits, single-player grants, dedicated/co-op refusal, human commander\n",
+    std::printf("PASS %d checks: requests, waits, single-player grants on any host, co-op/conquest refusal, human commander\n",
                 checks);
 }

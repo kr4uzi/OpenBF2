@@ -199,9 +199,9 @@ The retail asset-authorization rule compares the sender's low byte with the full
 ID. The AI's local sender -1 becomes 255 and fails against an empty commander slot (-1).
 The retail fix [AI asset grants work in single player](retail-fixes.md#ai-asset-grants-work-in-single-player)
 also accepts the local sender -1 for UAV, artillery and supplies while that slot is empty,
-only on a non-dedicated host with exactly one human and current map mode `sp1`, `sp2` or
-`sp3` (case-insensitive). Dedicated servers, multiplayer co-op and sessions with additional
-humans keep retail authorization. Vehicle drops and scans retain retail authorization.
+when the current map mode is `sp1`, `sp2` or `sp3` (case-insensitive), on any host and
+regardless of human count. Co-op and conquest modes keep retail authorization.
+Vehicle drops and scans retain retail authorization.
 The AI rearms UAV requests for 30 seconds and other requests for 60 seconds,
 queues cooldown refusals for 2–5 seconds later, requires
 surviving artillery, and suspends automatic handling while a human commands the team.
@@ -211,7 +211,8 @@ After configuring a macOS build, run
 with both image defines. The fixture executes production request, listener, courier, policy,
 commander-state and asset-event code with synthetic squads, transport, player counts, clock
 and asset observers. It checks grants after the initial/resumed waits, cooldowns, surviving
-guns, human commanders, and dedicated/co-op/multiple-human refusal. It does not start a game
+guns, human commanders, single-player grants on dedicated hosts and with multiple humans,
+and co-op/conquest refusal. It does not start a game
 or validate asset creation in a level.
 
 ## Client audio defaults
