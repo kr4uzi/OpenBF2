@@ -302,6 +302,7 @@ struct BaseTemplateConsoleAccess
     {
         return static_cast<BundleTemplate*>(getActiveTemplate(CID_BundleTemplate));
     }
+    static int activeMemberId() { return BundleTemplate::mActiveMemberId; }
     static void setPosition(const Math::Vec3& value, int index = BundleTemplate::mActiveMemberId)
     {
         bundle()->setPosition(value, index);
@@ -837,8 +838,49 @@ BF2_CONSOLE_METHOD_1_ACTIVE(addTemplate, objTemplBundleAddTemplate, getActiveTem
 BF2_CONSOLE_METHOD_1_2_STATIC_ACTIVE(setPosition, BaseTemplateConsoleAccess::setPosition, getActiveTemplate(CID_BundleTemplate) != 0, Math::Vec3, int, kObjTemplBaseConsoleTag)
 BF2_CONSOLE_METHOD_1_2_STATIC_ACTIVE(setRotation, BaseTemplateConsoleAccess::setRotation, getActiveTemplate(CID_BundleTemplate) != 0, Math::Vec3, int, kObjTemplBaseConsoleTag)
 
+// BF2.exe 0x554A6E/0x554AEF/0x554B3C; dedicated PE 0x4E7090/0x4E7180/0x4E71E0.
+// The omitted index reads the shared child selection.
+namespace {
+class ConsoleClassBundleGetTemplate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassBundleGetTemplate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "getTemplate";
+        m_type = 0;
+        m_minNoArgs = 0;
+        m_maxNoArgs = 1;
+        m_returnType = "std::string";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        m_argTypes[0] = "int";
+        m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return getActiveTemplate(CID_BundleTemplate) != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount == 0 || m_argCount == 1)
+        {
+            const int suppliedIndex = m_argCount == 1 ? BF2_CC_ARG(int, 0) : 0;
+            m_hasReturnValue = true;
+            BundleTemplate* bundle = static_cast<BundleTemplate*>(getActiveTemplate(CID_BundleTemplate));
+            m_returnValue = bundle->getTemplate(m_argCount == 0 ? BaseTemplateConsoleAccess::activeMemberId() : suppliedIndex);
+        }
+    }
+    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(int, 1) }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    std::string m_returnValue;
+};
+static ConsoleClassBundleGetTemplate s_consoleBundleGetTemplate;
+}
+
 // Bundle member-list and destruction settings.
-// Unimplemented optional-index getters require their original argument and return behavior before binding.
 namespace {
 void objTemplBundleClearTemplateList()
 {

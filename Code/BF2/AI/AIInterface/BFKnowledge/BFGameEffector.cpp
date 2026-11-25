@@ -15,6 +15,7 @@
 #include "../../../Physics/MaterialManager.h"
 #include "AIPlayer.h"
 #include "IAIObject.h"
+#include "BFTimer.h"
 
 namespace dice {
 namespace hfe {
@@ -170,14 +171,44 @@ void BFGameEffector::playEffect(const Vec3& position, int a, int b)
     gameLogic->playEffect(point, effect, up);
 }
 
-// ELF 0x8400920. The dedicated ELF ships an empty body.
-void BFGameEffector::playSoundEffects(double)
+// BF2.exe 0x81FC40. Both dedicated images ship an empty body (PE 0x74AC90,
+// ELF 0x8400920). The budget is tested after dispatch; the unvisited suffix is discarded.
+// [FRONTIER] Frame scheduling is unverified in the game images and AIDLL.dll.
+// Recover the caller before wiring this consumer into the AI tick.
+void BFGameEffector::playSoundEffects(double budget)
 {
+#if !DEDICATED
+    IBFTimer* const timer = static_cast<IBFTimer*>(CommonSingletonServer::m_iBFTimer);
+    // BFTimer's PE table 0x947D18 +0x0C is 0x81FE20 -> 0x81FD80, getUpdateTime.
+    const double deadline = timer->getUpdateTime() + budget;
+    for (std::vector<SoundEffect>::const_iterator it = m_soundEffects.begin();
+         it != m_soundEffects.end(); ++it)
+    {
+        const Vec3 up = { 0.0f, 1.0f, 0.0f };
+        const world::IObjectTemplate* const effect = static_cast<const world::IObjectTemplate*>(
+            static_cast<world::MaterialManager*>(world::materialManager)
+                ->getEffectTemplate(static_cast<unsigned int>(it->materialA),
+                                    static_cast<unsigned int>(it->materialB), 0));
+        const Vec3 point = it->position;
+        gameLogic->playEffect(point, effect, up);
+        if (timer->getUpdateTime() > deadline)
+            break;
+    }
+    m_soundEffects.clear();
+#endif
 }
 
-// ELF 0x8400930. The dedicated ELF ships an empty body.
-void BFGameEffector::queueSoundEffect(const Vec3&, int, int)
+// BF2.exe 0x81FCF6..0x81FD25 appends before the immediate effect dispatch.
+// The dedicated ELF 0x8400930 and PE 0x74ACA0 ship empty bodies.
+void BFGameEffector::queueSoundEffect(const Vec3& /*position*/, int /*materialA*/, int /*materialB*/)
 {
+    // [FRONTIER] [CHOSEN, not recovered] Withhold the client append of a copied
+    // position and two material IDs until playSoundEffects' frame caller is recovered;
+    // storing records without its drain would grow the queue for the entire session.
+    // playEffect still dispatches its immediate effect.
+    // [RETIRE-WHEN: ai-material-effect-drain-caller] Recover and wire the caller,
+    // validate its frame lifecycle, then restore the PE 0x81FCF6..0x81FD25 append:
+    // m_soundEffects.push_back(SoundEffect{position, materialA, materialB});
 }
 
 // bf2 0x8400940: this effector's own giveDamage (+0x24) of 1e8f on the player's soldier, from

@@ -51,6 +51,7 @@ LightSource* activeSkyLight()
     IObject* object = objectManager->getActiveObject();
     return object && object->getClassID() == CID_LightSource ? static_cast<LightSource*>(object) : 0;
 }
+// BF2.exe LightSource table 0x9096E8 +0x1E4 -> 0x67D990; ELF 0x82B18D0.
 void consoleSetAsSkyLight() { activeSkyLight()->setAsSkyLight(); }
 int consoleGetLightSourceMask() { return objectManager->getActiveObject()->getLightSourceMask(); }
 void consoleRefreshTerrainSampling() { objectManager->refreshTerrainSampling(); }

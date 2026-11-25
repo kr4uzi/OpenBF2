@@ -17,6 +17,12 @@
 #include "../BF2/Game/Objects/PlayerControlObjectTemplate.h"
 #include "../BF2/Game/Objects/ToggleCameraCompTemplate.h"
 #include "../BF2/Game/Objects/Fx/ParticleSystemTemplates.h"
+#include "../BF2/Game/Objects/Base/BundleTemplate.h"
+#include "../BF2/Game/Objects/EngineTemplate.h"
+#include "../BF2/Game/Objects/TemplateLeaves.h"
+#include "../BF2/Game/Objects/Game/AreaObject.h"
+#include "../BF2/Game/Objects/Visual/LightSource.h"
+#include "../BF2/Game/Objects/Visual/LightSourceTemplate.h"
 #include "../BF2/Geom/ParticleSystem/ParticleSystemManager.h"
 #include <template_save_descriptors.h>
 #include <cstdio>
@@ -55,6 +61,35 @@ static std::string call(const char* object, const char* method, std::initializer
 struct Simple : SimpleObjectTemplate { unsigned int grip() const { return m_grip; } };
 struct Sprite : SpriteParticleSystemTemplate
 { void attach(geom::IParticleSystemTemplate* value) { m_impl = value; } };
+struct SkyLight : LightSource
+{
+    explicit SkyLight(const LightSourceTemplate* value) : LightSource(value) {}
+    int selections = 0;
+    void setAsSkyLight() override { ++selections; }
+};
+static std::vector<int> arrowCalls;
+struct Arrow : Bundle
+{
+    Arrow(const BundleTemplate* value, AreaObject* owner) : Bundle(value), area(owner) {}
+    AreaObject* area;
+    Vec3 position;
+    void init() override { arrowCalls.push_back(1); area->setAbsolutePosition(Vec3{10, 11, 12}); }
+    void setAbsolutePosition(const Vec3& value) override { arrowCalls.push_back(2); position = value; }
+};
+struct ArrowTemplate : BundleTemplate
+{
+    AreaObject* area = 0;
+    mutable Arrow* arrow = 0;
+    IObject* createObject() const override
+    { arrowCalls.push_back(0); arrow = new Arrow(this, area); return arrow; }
+};
+struct Templates : ObjectTemplateManager
+{
+    using ObjectTemplateManager::getTemplate;
+    IObjectTemplate* directionArrow = 0;
+    IObjectTemplate* getTemplate(const std::string& name) const override
+    { return name == "DirectionArrow" ? directionArrow : ObjectTemplateManager::getTemplate(name); }
+};
 struct Device : io::IAdvancedInputDevice
 {
     io::InputDeviceAxes axis = io::IDAxis_None; bool inverted = false; unsigned int writes = 0;
@@ -96,14 +131,15 @@ int main()
     eventManager = new EventManager;
     classManager = new ClassManager;
     classManager->registerServer(new ObjectModule);
-    objectTemplateManager = new ObjectTemplateManager;
+    auto* templates = new Templates;
+    objectTemplateManager = templates;
     objectManager = new ObjectManager;
     playerManager = new PlayerManager;
     auto* console = new io::OldConsole;
     io::mainConsole = console;
     io::fileManager = new io::FileManager;
     io::fileManager->setBaseSystem(new io::UnixFileSystem);
-    for (const char* tag : {"io.FileManager", "io.ControlMap", "world.objTemplBase", "world.objTemplGame",
+    for (const char* tag : {"io.FileManager", "io.ControlMap", "world.objTemplBase", "world.objTemplGame", "world.objTemplVehicle",
                             "world.objTemplFx", "world.objectManager", "tool.moduleToolObject",
                             "world.physics", "world.physics.collisionManager", "world.physics.heightmap"})
         mainConsoleObjects->registerConsoleObjects(consoleBindingList(tag));
@@ -248,6 +284,64 @@ int main()
           && !physics->isActive(), "physics listing metadata and singleton guard");
     check(!mainConsoleObjects->getConsoleObject("Object", "setAsSkyLight")
           && !mainConsoleObjects->getConsoleObject("Object", "getLightSourceMask"), "object inspection requires an active object");
+    check(!mainConsoleObjects->getConsoleObject("Object", "addAbsolutePoint"), "area editing needs an active object");
+    auto* bundle = new BundleTemplate;
+    bundle->setName("bundle"); objectTemplateManager->setActiveObjectTemplate(bundle);
+    auto* childQuery = row("ObjectTemplate", "getTemplate");
+    check(childQuery->getAccess() == 2 && childQuery->getCategory() == 1 && childQuery->isDynamic()
+          && childQuery->getMinNoArgs() == 0 && childQuery->getMaxNoArgs() == 1
+          && std::string(childQuery->getReturnType()) == "std::string", "child query metadata");
+    check(call("ObjectTemplate", "getTemplate").empty(), "empty bundle child query");
+    bundle->addTemplate("first"); bundle->addTemplate("second");
+    check(call("ObjectTemplate", "getTemplate") == "second", "child query follows addTemplate selection");
+    check(call("ObjectTemplate", "getTemplate", {"0"}) == "first", "explicit child index");
+    check(call("ObjectTemplate", "getTemplate") == "second", "explicit query does not change selection");
+    bundle->setActiveTemplate(0);
+    check(call("ObjectTemplate", "getTemplate") == "first", "child query follows setActiveTemplate selection");
+    check(call("ObjectTemplate", "getTemplate", {"-1"}).empty()
+          && call("ObjectTemplate", "getTemplate", {"2"}).empty(), "invalid child indices return empty text");
+    objectTemplateManager->setActiveObjectTemplate(simple);
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "getTemplate"), "child query rejects simple template");
+    auto* engine = new EngineTemplate;
+    engine->setName("engine"); objectTemplateManager->setActiveObjectTemplate(engine);
+    auto* heat = row("ObjectTemplate", "getHeatBarType");
+    check(heat->getAccess() == 2 && heat->getCategory() == 1 && !heat->isDynamic()
+          && heat->getMinNoArgs() == 0 && heat->getMaxNoArgs() == 0
+          && std::string(heat->getReturnType()) == "int", "heat command metadata");
+    check(call("ObjectTemplate", "getHeatBarType").empty() && !heat->hasReturnValue(), "retail heat command publishes no result");
+    objectTemplateManager->setActiveObjectTemplate(simple);
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "getHeatBarType"), "heat command rejects non-engine template");
+
+    auto* lightTemplate = new LightSourceTemplate;
+    auto* light = new SkyLight(lightTemplate);
+    objectManager->setActiveObject(light);
+    auto* sky = row("Object", "setAsSkyLight");
+    check(sky->getAccess() == 2 && sky->getCategory() == 0 && !sky->isDynamic()
+          && sky->getMinNoArgs() == 0 && sky->getMaxNoArgs() == 0
+          && std::string(sky->getReturnType()) == "void", "sky command metadata");
+    check(call("Object", "setAsSkyLight").empty() && light->selections == 1, "sky command dispatches typed light virtual");
+    check(!mainConsoleObjects->getConsoleObject("Object", "addAbsolutePoint"), "area command rejects light template");
+    auto* areaTemplate = new AreaObjectTemplate;
+    areaTemplate->setTriggerRadius(2);
+    auto* area = new AreaObject(areaTemplate);
+    area->setAbsolutePosition(Vec3{4, 7, -9});
+    objectManager->setActiveObject(area);
+    check(!mainConsoleObjects->getConsoleObject("Object", "setAsSkyLight"), "sky command rejects non-light runtime class");
+    auto* areaCommand = row("Object", "addAbsolutePoint");
+    check(areaCommand->getAccess() == 2 && areaCommand->getCategory() == 0 && !areaCommand->isDynamic()
+          && areaCommand->getMinNoArgs() == 0 && areaCommand->getMaxNoArgs() == 0
+          && std::string(areaCommand->getReturnType()) == "void", "area command metadata");
+    call("Object", "addAbsolutePoint");
+    check(areaTemplate->m_linePoints.size() == 1 && areaTemplate->m_linePoints[0].x == -4
+          && areaTemplate->m_linePoints[0].y == 9, "area command appends negative absolute x/z");
+    auto* arrowTemplate = new ArrowTemplate;
+    arrowTemplate->area = area; templates->directionArrow = arrowTemplate;
+    call("Object", "addAbsolutePoint");
+    check(areaTemplate->m_linePoints.size() == 2 && arrowCalls == std::vector<int>({0, 1, 2}),
+          "area marker creation, initialization and position order");
+    check(arrowTemplate->arrow->position.x == 6 && arrowTemplate->arrow->position.y == 11
+          && arrowTemplate->arrow->position.z == 21, "area marker resamples position after init");
+    objectManager->setActiveObject(0);
     check(!mainConsoleObjects->getConsoleObject("HeightmapCluster", "compileWaterMeshesIntoHeightmap"), "unfinished water bake stays unpublished");
 
     std::remove("files/script.con"); std::remove("files/source.txt");

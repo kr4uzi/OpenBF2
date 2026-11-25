@@ -14,6 +14,7 @@
 #include <cfloat>
 
 #include "../IGame.h"                             // game - createObjectOnAllClients (+0x78), the event sends
+#include "../Main/Game.h"
 #include "../IGameServer.h"                       // resetConnections (+0x4C) through game->queryInterface
 #include "../../Core/EventManager.h"              // eventManager->postEvent(cat, id, void*, float)
 #include "../../Core/Ids.h"                       // IID_IGameServer
@@ -546,6 +547,11 @@ void ServerGameLogic::uPlaying(float deltaTime)
     world::GameLogicExplosion::serverUpdateExplosionDamage();
     uPlayingInsideGameArea(deltaTime);
 
+#if !DEDICATED
+    // BF2.exe 0x4E0A24..0x4E0A4E: rendering workers skip the entire ticket gate.
+    // The dedicated PE 0x45983C and ELF 0x80FE962 start directly at the state test.
+    if (!isLightmapRenderingNode())
+#endif
     if (getBeginRoundState() == 3 && m_shouldUpdateTicketSystem)                     // +0x28C
         uPlayingTicketSystem(deltaTime);
 
