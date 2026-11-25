@@ -134,6 +134,8 @@ public:
     friend class GameServer;
     friend class MainMenuLogic;
     friend class BetweenRoundsLogic;
+    friend class EndOfRoundLogic;
+    friend class LoadGameLogic;
     friend class SwiffHost;
     friend class AutoRecorder;
     friend class BF2FrameInterpolator;

@@ -98,6 +98,8 @@ std::list<ConsoleObject*>& toolObjectConsoleObjects();      // Scene/Object/Tool
 #include "../Menu/ServerLogoManager.h"   // client factory410784, the server-browser logo cache
 #include "../Menu/SwiffHost.h"           // client factory410244, the front-end host
 #include "../Menu/BetweenRoundsLogic.h"   // ModuleGame::handleEvent builds it on ECMenu 3 / 9
+#include "../Menu/EndOfRoundLogic.h"
+#include "../Menu/LoadGameLogic.h"
 #include "LoadStat.h"                      // loadStat->executeLoadCallback - the ECMenu 6 arm
 #include "../Game/Main/BF2Engine.h"        // menuLogic, the live IMenuLogic global (ds:0x987358)
 #include "../Menu/MainMenuLogic.h"       // client factory410286, the Flash menu bridge
@@ -401,7 +403,10 @@ void ModuleGame::getClassList(std::vector<ClassRegInfo>& out)
         out.push_back(ClassRegInfo{CID_MainMenuLogic, "dice.hfe.MainMenuLogic", &MainMenuLogic::create});
         // Loading-screen logic created by the InitLoadingScreen menu event.
         out.push_back(ClassRegInfo{CID_BetweenRoundsLogic, "dice.hfe.BetweenRoundsLogic", &BetweenRoundsLogic::create});
-        // EndOfRoundLogic and LoadGameLogic remain unregistered until their classes are implemented.
+        // BF2.exe 0x430BDA / 0x430C19: between BetweenRoundsLogic and LocalProfileManager.
+        // Neither row exists in the dedicated ELF getClassList at 0x87AB2B0.
+        out.push_back(ClassRegInfo{CID_EndOfRoundLogic, "dice.hfe.EndOfRoundLogic", &EndOfRoundLogic::create});
+        out.push_back(ClassRegInfo{CID_LoadGameLogic, "dice.hfe.LoadGameLogic", &LoadGameLogic::create});
         out.push_back(ClassRegInfo{CID_LocalProfileManager, "dice.hfe.LocalProfileManager", &LocalProfileManager::create});
         // PE430C97..430CCF: the online owner immediately follows the local manager.
         out.push_back(ClassRegInfo{CID_ProfileManager, "dice.hfe.ProfileManager", &ProfileManager::create});

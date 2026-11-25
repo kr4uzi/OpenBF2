@@ -28,7 +28,7 @@ public:
     bool         beginFrame() override;
     void         display() override;
     void         endFrame() override;
-    bool         handleInput(io::GameInput& input) override;
+    void         handleInput(io::GameInput& input) override;
     void         setConsole(BF2Console* console) override;
     BF2Console*  getConsole() const override;
     void         onResize(unsigned int width, unsigned int height) override;

@@ -39,6 +39,11 @@ PAIRS = [
         ("AutoPatch", "AutoPatch/AutoPatch.h"),
         ("Persistence", "Persistence/Persistence.h"),
     ]],
+    # BF2.exe 0x8A2AF8 / 0x8A2C08: the same 24-slot IMenuLogic face.
+    ("end-of-round-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/EndOfRoundLogic.h", "EndOfRoundLogic")),
+    ("load-game-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/LoadGameLogic.h", "LoadGameLogic")),
     ("debug-text-writer", side("Code/BF2/GeomMisc/DebugTextWriter.h", "geom::IDebugTextWriter"),
      side("Code/BF2/GeomMisc/DebugTextWriter.cpp", "geom::DebugTextWriter", "renderer")),
     ("pov-native-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),

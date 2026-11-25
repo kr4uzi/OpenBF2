@@ -22,6 +22,8 @@
 #include "../BF2/Menu/SwiffHost.h"
 #include "../BF2/Menu/MainMenuLogic.h"
 #include "../BF2/Menu/BetweenRoundsLogic.h"
+#include "../BF2/Menu/EndOfRoundLogic.h"
+#include "../BF2/Menu/LoadGameLogic.h"
 #include "../BF2/Menu/IServerBrowser.h"
 #include "../BF2/Menu/IServerBrowserManager.h"
 #include "../BF2/Menu/ServerBrowser.h"
@@ -380,6 +382,8 @@ struct MenuClassServer : IClassServer
         row.classId = CID_SwiffHost;           row.name = "dice.hfe.SwiffHost";           row.create = &SwiffHost::create;           out.push_back(row);
         row.classId = CID_MainMenuLogic;       row.name = "dice.hfe.MainMenuLogic";       row.create = &MainMenuLogic::create;       out.push_back(row);
         row.classId = CID_BetweenRoundsLogic;  row.name = "dice.hfe.BetweenRoundsLogic";  row.create = &BetweenRoundsLogic::create;  out.push_back(row);
+        row.classId = CID_EndOfRoundLogic;     row.name = "dice.hfe.EndOfRoundLogic";     row.create = &EndOfRoundLogic::create;     out.push_back(row);
+        row.classId = CID_LoadGameLogic;       row.name = "dice.hfe.LoadGameLogic";       row.create = &LoadGameLogic::create;       out.push_back(row);
         row.classId = CID_ServerBrowser;       row.name = "dice.hfe.ServerBrowser";       row.create = &ServerBrowser::create;       out.push_back(row);
         row.classId = CID_ServerBrowserManager; row.name = "dice.hfe.ServerBrowserManager"; row.create = &ServerBrowserManager::create; out.push_back(row);
         row.classId = CID_LocalProfileManager; row.name = "dice.hfe.LocalProfileManager"; row.create = &LocalProfileManager::create; out.push_back(row);
@@ -715,14 +719,17 @@ int main()
         io::GameInput gameInput;
         menuKeyBuffer[menuKeyWrite++] = 'a'; ++menuKeyCount;
         g_swiffPlayer.chars.clear(); g_swiffPlayer.keyStates.clear(); devices.keyboard.released.push_back(30);
-        check(logic->handleInput(gameInput) && g_swiffPlayer.chars.size() == 1 && g_swiffPlayer.chars[0] == 'a'
+        logic->handleInput(gameInput);
+        check(g_swiffPlayer.chars.size() == 1 && g_swiffPlayer.chars[0] == 'a'
               && g_swiffPlayer.keyStates.size() == 1 && g_swiffPlayer.keyStates[0].first == 30 && g_swiffPlayer.keyStates[0].second == 0,
               "a printable key is a character; the release sweep reports the keyboard's released key");
         menuKeyBuffer[menuKeyWrite++] = 8; ++menuKeyCount; g_swiffPlayer.keyStates.clear(); devices.keyboard.released.clear();
-        check(logic->handleInput(gameInput) && g_swiffPlayer.keyStates.size() == 1 && g_swiffPlayer.keyStates[0].first == 14 && g_swiffPlayer.keyStates[0].second == 1,
+        logic->handleInput(gameInput);
+        check(g_swiffPlayer.keyStates.size() == 1 && g_swiffPlayer.keyStates[0].first == 14 && g_swiffPlayer.keyStates[0].second == 1,
               "backspace becomes DIK_BACK pressed");
         g_swiffPlayer.keyStates.clear(); devices.keyboard.pressed.push_back(200);
-        check(logic->handleInput(gameInput) && g_swiffPlayer.keyStates.size() == 1 && g_swiffPlayer.keyStates[0].first == 200 && g_swiffPlayer.keyStates[0].second == 1,
+        logic->handleInput(gameInput);
+        check(g_swiffPlayer.keyStates.size() == 1 && g_swiffPlayer.keyStates[0].first == 200 && g_swiffPlayer.keyStates[0].second == 1,
               "with no character queued the navigation keys are polled");
         devices.keyboard.pressed.clear();
         logic->deactivate();
@@ -794,12 +801,14 @@ int main()
         devices.keyboard.released.clear();
         between->onMouseMove(37, 49);
         between->onMouseButtonDown();
-        check(between->handleInput(gameInput) && g_swiffPlayer.mouse.size() == 1
+        between->handleInput(gameInput);
+        check(g_swiffPlayer.mouse.size() == 1
               && g_swiffPlayer.mouse[0].x == 37 && g_swiffPlayer.mouse[0].y == 49 && g_swiffPlayer.mouse[0].buttons == 1
               && g_swiffPlayer.legacyOffs == legacyOffsBefore + 1,
               "BetweenRoundsLogic flushes its cached pressed mouse state and lowers the player flag");
         between->onMouseButtonUp();
-        check(between->handleInput(gameInput) && g_swiffPlayer.mouse.size() == 2 && g_swiffPlayer.mouse[1].buttons == 0,
+        between->handleInput(gameInput);
+        check(g_swiffPlayer.mouse.size() == 2 && g_swiffPlayer.mouse[1].buttons == 0,
               "BetweenRoundsLogic flushes the released mouse state");
         between->onMouseDoubleClick();
         check(g_swiffPlayer.legacyOns == legacyOnsBefore + 1,

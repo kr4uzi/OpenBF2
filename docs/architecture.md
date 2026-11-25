@@ -345,6 +345,45 @@ not establish joined-client teardown or reconnect stability. The existing
 `swiff-native-as-host`, `swiff-host-bodies`, and `RW-88` frontiers outside this
 callback remain subject to their existing recovery and validation requirements.
 
+## End-of-round and load-game menus
+
+`EndOfRoundLogic` (class ID 121015) and `LoadGameLogic` (121038) implement only
+`IMenuLogic`. Their factories follow `BetweenRoundsLogic` and precede
+`LocalProfileManager` in the client module list (BF2.exe 1.50 x86
+`0x430BDA` / `0x430C19`). They are absent from dedicated builds and from the
+client's runtime dedicated class list.
+
+The retail allocations are 0x44 and 0x38 bytes, with primary tables at
+`0x8A2AF8` and `0x8A2C08`. Both contain the reference count, enabled/frame flags,
+borrowed player/host/renderer/console pointers and the saved control-map name.
+EndOfRoundLogic additionally stores a mouse-button byte and two coordinates.
+Native pointers and STL members follow the rebuilt host ABI; macOS x86_64 sizes
+are 88 and 72 bytes. These native sizes do not validate the retail x86 layout.
+
+EndOfRoundLogic loads `EndOfRound.swf`, disables the mouse device and forwards its
+cached pointer state. Its Escape-key input queues menu event 15 while a game exists
+and no host request is pending. `BF2Engine::activateMenu` accepts its class ID
+(`0x4033B0`, selection `0x403426`, creation call `0x40344C`). LoadGameLogic loads
+`loadGame.swf`, activates all input devices, samples unscaled mouse axes multiplied
+by 30 with truncation, and forwards console input when the console is open. Its
+Escape-key input queues event 9 while a game exists. No direct creation caller for
+LoadGameLogic was found in the retail executable; publishing its factory does not
+add a new menu transition.
+
+Both logics enable the menu before looking up the movie services, preserve partial
+state when a required service is missing, and disable/unload it during teardown.
+Their resize and window Escape callbacks are shipped empty bodies. Menu input has
+no return value; the engine discards it. The separate `BetweenRoundsLogic` remains
+the loading and between-round screen selected by ModuleGame events 3 and 9
+(`0x410865`); events 7 and 8 do not create either of these classes.
+
+`Code/Tests/menu_logics_runtime.py <build-directory>` checks the production class
+list, factory lookup, native fields, lifecycle and input paths with headless
+collaborators. It opens no window and initializes no game, content or audio device.
+It also checks that the dedicated executable and dedicated compilations of the two
+source files contain neither class. Movie appearance and live menu transitions
+require separate client validation.
+
 ## Object-owned sounds
 
 Weapon components request `Fire1P`, `Fire1P_Outdoor`, `Fire3P`, and their other

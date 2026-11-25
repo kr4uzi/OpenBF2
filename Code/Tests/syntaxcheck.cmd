@@ -1289,6 +1289,10 @@ cl %FLAGS0% "%~dp0..\BF2\Menu\SwiffHostEndOfRound.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\BetweenRoundsLogic.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Menu\EndOfRoundLogic.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Menu\LoadGameLogic.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\MainMenuLogic.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\ServerBrowser.cpp"
