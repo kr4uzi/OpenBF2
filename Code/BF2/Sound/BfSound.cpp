@@ -391,16 +391,18 @@ void BfSound::updateWind(bool active)
     }
 }
 
-// The mute-state table sets four group targets (0 and 2 - the effect groups -
-// go silent under states 1 or 2, to 1/8 under state 3, to 1/4 under state 0; 1 and 3 go silent
-// under state 1, to 1/4 under state 0), every fader chases its target by 1/15 per update, and
-// the engine gets volume x fader for all eight groups. States 0 and 3 are one-shot: cleared here.
+// The mute-state table sets four group targets: group 0 goes silent under states 1 or 2, to 1/8
+// under state 3 (help voice playing), to 1/4 under state 0; group 2 (the help voice itself) goes
+// silent under states 1 or 2 and to 1/4 under state 0, and state 3 leaves it alone; groups 1 and 3
+// go silent under state 1 and to 1/4 under state 0. Every fader chases its target by 1/15 per
+// update, and the engine gets volume x fader for all eight groups. States 0 and 3 are one-shot:
+// cleared here.
 void BfSound::updateGroups()
 {
     const bool s0 = m_muteStates[0], s1 = m_muteStates[1], s2 = m_muteStates[2], s3 = m_muteStates[3];
     m_groups[0].target = (s2 || s1) ? 0.0f : s3 ? 0.125f : s0 ? 0.25f : 1.0f;
     m_groups[1].target = s1 ? 0.0f : s0 ? 0.25f : 1.0f;
-    m_groups[2].target = (s2 || s1) ? 0.0f : s3 ? 0.125f : s0 ? 0.25f : 1.0f;
+    m_groups[2].target = (s2 || s1) ? 0.0f : s0 ? 0.25f : 1.0f;
     m_groups[3].target = s1 ? 0.0f : s0 ? 0.25f : 1.0f;
     for (int g = 0; g < 8; ++g)
     {
