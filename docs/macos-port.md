@@ -80,10 +80,14 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   3. *Window.* `createWindow` first reads the queue once, so an activation that arrived while
      the engine started, or its loss, counts. On macOS 14+ it makes another cooperative request
      when the inactive application's window is ordered in, then one per second while the
-     window remains visible and not minimized, for at most five seconds after order-in.
-     Requests run with the event loop, without another blocking wait; an engine stall does not
-     produce a burst of overdue requests or extend the deadline. Activation ends these requests
-     permanently, so switching away afterwards never restarts them. A full-screen start of an active
+     window remains visible and not minimized, for at most five seconds after order-in. This
+     includes an application that was active at launch and lost the activation before it had
+     a window: a launch activation is not the player's game window yet. Requests run with the
+     event loop, without another blocking wait; an engine stall does not
+     produce a burst of overdue requests or extend the deadline. Activation after order-in ends
+     these requests permanently, so switching away afterwards never restarts them. The
+     activation makes the game window the key window (`makeKeyAndOrderFront:`, as AppKit
+     restores a key window on activation) and starts the waiting Space entry. A full-screen start of an active
      application goes into its Space at once while the host runs the event loop until the
      transition has ended and that Space is the active one. On screen that is one standard
      full-screen animation at window creation instead of a window that sits on the desktop
@@ -95,6 +99,14 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   a permission prompt or after all bounded waits and requests have expired, immediately starts
   the pending Space entry. A queued entry is not made when the application has become inactive
   meanwhile.
+
+  An owner-run Intel macOS 15.7 start of `e976b82b` through the test kit's start application
+  showed the gap this closes: the launch request was answered after 32 ms, the start
+  application's hand-over saw the game active and stopped, and the application was inactive
+  again when `createWindow` ordered the window in, about two seconds later. The host then made
+  no further request (an earlier activation had ended them), and the window waited on the
+  desktop until it was clicked. Which process took the activation is not in that log; the
+  order-in line now names the frontmost application.
 
   Owner-run Intel macOS 15.7 starts of `bfeab3d5` showed why one early request is insufficient:
   the shell start logged an unanswered launch request after 1020 ms and stayed inactive and
@@ -131,7 +143,8 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   cursor is shown and re-associated, and returning restores capture. Leaving it for an empty
   desktop Space can leave the application active with its window key; the host asks
   `window.isOnActiveSpace` and treats a Space that is not the active one as unfocused
-  (`spaceHidden`), so the mouse is released there too. Nothing in the host asks for key status
+  (`spaceHidden`), so the mouse is released there too. Apart from the activation making the
+  game window key (The start, item 3), nothing in the host asks for key status
   or repairs focus; input that the gate drops while the application is in front is reported
   (`[host] input dropped: ...`, once a second at most).
 - **What this replaced.** Until this sequence the host asked for activation when the window was
@@ -149,13 +162,15 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   to AppKit first, before newer queued events, without being routed to game input.
 - **Log.** `[host] launch: finished after N ms (activation policy at the start: ...)`,
   `[host] launch frontmost: ...` and
-  `[host] activation requested at launch (#1, 0 ms since the launch request)`, then
+  `[host] activation requested at launch (#1, 0 ms since the first request)`, then
   `[host] application active after N ms` or `[host] application not activated within N ms ...`
   An inactive start on macOS 14+ continues with
-  `[host] activation requested at window order-in (#2, N ms since the launch request)` and
-  `[host] activation requested at visible window (#3, N ms since the launch request)` (and so
+  `[host] window ordered in while the application is inactive (frontmost: NAME pid N)` when
+  the launch activation was answered and then lost, and with
+  `[host] activation requested at window order-in (#2, N ms since the first request)` and
+  `[host] activation requested at visible window (#3, N ms since the first request)` (and so
   on, at least a second apart, within five seconds of order-in). Activation logs
-  `[host] application active N ms after the launch request (last request #K, M ms ago)` once,
+  `[host] application active N ms after the first request (last request #K, M ms ago)` once,
   including an activation after requests have ended. The last request number and its age show
   which request preceded AppKit's answer; they do not prove that request caused the activation.
   `[host] full screen: ...` lines mark each step: entering, in the Space after N ms, windowed,
@@ -164,7 +179,8 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
 
 The revised requests were compiled and checked headless (`Code/Tests/macos_input`: request
 spacing and deadline, visibility, single requests on 11-13, forced focus, and delayed activation
-starting the pending full-screen entry, alongside focus, dropped input and refusal checks).
+starting the pending full-screen entry, a launch activation lost before the window exists and
+renewed at order-in, alongside focus, dropped input and refusal checks).
 Nothing that opens a window was run for this revision. `Code/Tests/macos_host`, including its
 launch checks and `--fullscreen-start`, was compiled only. Actual cooperative activation after
 a prompt, full-screen animation, restart hand-over and active-Space focus remain unverified for

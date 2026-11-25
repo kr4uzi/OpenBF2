@@ -213,7 +213,8 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // AppKit reports (syncFocus), and what the focus gate drops is reported (inputDropped).
     bool   launching = false;        // initApplication's -run for the launch is under way
     bool   launchTimedOut = false;   // AppKit did not report the end of the launch within kLaunchLimit
-    double activationRequestAt = 0.0;       // first request; 0 after activation was reported
+    double activationFirstRequestAt = 0.0;  // the first request, for the startup log
+    double activationRequestAt = 0.0;       // requests outstanding since; 0 after activation was reported
     double activationLastRequestAt = 0.0;   // spaces cooperative requests by one second
     double activationWindowAt = 0.0;        // window shown; 0 when no more requests are due
     unsigned activationRequests = 0;        // request numbers in the startup log
@@ -348,11 +349,13 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
             return;
         const double now = focusNow();
         if (activationRequests == 0)
+            activationFirstRequestAt = now;
+        if (activationRequestAt == 0.0)
             activationRequestAt = now;
         activationLastRequestAt = now;
         ++activationRequests;
-        std::fprintf(stderr, "[host] activation requested at %s (#%u, %d ms since the launch request)\n",
-                     when, activationRequests, static_cast<int>((now - activationRequestAt) * 1000.0));
+        std::fprintf(stderr, "[host] activation requested at %s (#%u, %d ms since the first request)\n",
+                     when, activationRequests, static_cast<int>((now - activationFirstRequestAt) * 1000.0));
         if (testSystemState() || testHeadless)
             return;                              // [TEMP] count requests without activating a real application
         if (@available(macOS 14.0, *))
@@ -366,13 +369,23 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         }
     }
 
-    // [CHOSEN, not recovered] A second cooperative request when the window is ordered in, then
-    // one per second for five seconds while it remains visible and inactive. The engine's pumps
-    // service these requests; no extra wait delays startup. Activation ends the retries for good.
+    // [CHOSEN, not recovered] A cooperative request when the window is ordered in while the
+    // application is inactive, then one per second for five seconds while it remains visible and
+    // inactive. That includes an application that was active at launch and lost the activation
+    // before it had a window: only the window gives the system something to activate for the
+    // player, and the system still decides (a request made after the user went to another
+    // application is not granted). The engine's pumps service these requests; no extra wait delays
+    // startup. Activation after the window was shown ends the retries for good.
     void windowOrderedIn()
     {
-        if (scriptedFocus || nsAppActive() || !cooperativeActivation() || activationRequestAt == 0.0)
+        if (scriptedFocus || nsAppActive() || !cooperativeActivation())
             return;
+        if (activationRequestAt == 0.0 && !testSystemState())
+        {
+            NSRunningApplication* front = [[NSWorkspace sharedWorkspace] frontmostApplication];
+            std::fprintf(stderr, "[host] window ordered in while the application is inactive (frontmost: %s pid %d)\n",
+                         front.localizedName.UTF8String ?: "none", static_cast<int>(front.processIdentifier));
+        }
         activationWindowAt = focusNow();
         requestActivation("window order-in");
     }
@@ -458,12 +471,17 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     {
         if (activationRequestAt != 0.0)
         {
-            std::fprintf(stderr, "[host] application active %d ms after the launch request (last request #%u, %d ms ago)\n",
-                         static_cast<int>((focusNow() - activationRequestAt) * 1000.0), activationRequests,
+            std::fprintf(stderr, "[host] application active %d ms after the first request (last request #%u, %d ms ago)\n",
+                         static_cast<int>((focusNow() - activationFirstRequestAt) * 1000.0), activationRequests,
                          static_cast<int>((focusNow() - activationLastRequestAt) * 1000.0));
             activationRequestAt = 0.0;
         }
         activationWindowAt = 0.0;
+        // The activated application's window is the key window, as AppKit makes it when the
+        // window was key before; one that was ordered in while the application was inactive
+        // becomes key here.
+        if (window && visible && !minimized && !spaceHidden && !windowIsKey())
+            [window makeKeyAndOrderFront:nil];
         startFullscreenTransition(fullscreen.activated());   // a full-screen request that waited
     }
 
@@ -2471,6 +2489,7 @@ void CocoaHostTestHooks::pumpFocusForTest(host::ClientHost& host)
 void CocoaHostTestHooks::launchActivationForTest(host::ClientHost& host, bool forcedFocus)
 {
     host.m_impl->activationRequests = 0;
+    host.m_impl->activationFirstRequestAt = 0.0;
     host.m_impl->activationRequestAt = 0.0;
     host.m_impl->activationLastRequestAt = 0.0;
     host.m_impl->activationWindowAt = 0.0;
