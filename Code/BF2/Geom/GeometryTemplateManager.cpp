@@ -20,7 +20,6 @@
 #include "StaticMeshTemplate.h"           // ... and its StaticMesh-only fields
 #include "SkinnedMeshTemplate.h"
 #include "GeometryTemplateManager.h"
-#include "../Platform/Host/BusyService.h"
 #include "../Core/StringUtil.h"
 #include "../GeomMisc/Debug.h"
 
@@ -96,12 +95,8 @@ template <class Registry>
 void clearOwnedMap(Registry& map)
 {
     for (typename Registry::reverse_iterator it = map.rbegin(); it != map.rend(); ++it)
-    {
         if (it->second)
             reinterpret_cast<IBase*>(it->second)->release();
-        // [CHOSEN, not recovered] Geometry resources are released synchronously during unload/quit.
-        host::serviceWhileBusy();
-    }
     map.clear();
 }
 

@@ -66,8 +66,6 @@ public:
     // does first.
     static void holdEventForTest(host::ClientHost& host, void* nsEvent);
     static unsigned heldEventsForTest(const host::ClientHost& host);
-    // Observes busy-service calls headlessly; never creates an application or changes the cursor.
-    static void setBusyServiceObserverForTest(void (*observer)());
     static void deliverHeldEventsForTest(host::ClientHost& host);
     // Runs the host's bounded-wait service without creating NSApplication or a window.
     static void serviceAppKitOnlyForTest(host::ClientHost& host);

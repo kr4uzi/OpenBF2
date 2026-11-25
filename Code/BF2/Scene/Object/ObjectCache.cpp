@@ -2,7 +2,6 @@
 // Keep source-level map operations and their iteration order. Source placement is [INFERRED].
 
 #include "ObjectCache.h"
-#include "../../Platform/Host/BusyService.h"
 
 #include <cstdio>                                  // the [TEMP] parented-push diagnostic
 #include <cstdlib>
@@ -145,8 +144,6 @@ void ObjectCache::deleteAll()
             pool.erase(it);
             unmarkObjectAsCached(object);
             object->forceDestroy();                    // IObject slot 14
-            // [CHOSEN, not recovered] Keep servicing while a level's cached objects are released.
-            host::serviceWhileBusy();
         }
         m_pools.erase(poolIt);
     }

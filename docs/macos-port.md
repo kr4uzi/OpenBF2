@@ -289,21 +289,6 @@ them to the engine (see Native full screen above). Stretches of a load that
 neither step the load counter, load an effect nor wait for an effect build (next paragraph) are
 not covered. The SDL host does nothing.
 
-Disconnect and quit use the same held-event service during `BF2Engine::shutdownGame`,
-`GameLogic::unload`, bulk object/cache/template destruction and geometry-resource release.
-These paths cover both a local server and a multiplayer client. The disconnect callback restores
-the arrow immediately after queuing its request, so the macOS shutdown path selects the menu's
-animated busy cursor for the synchronous work and restores the menu's current cursor afterwards.
-The macOS client's `Thread::stop` also services the host every 50 ms while waiting for a worker
-to finish, then joins it normally: a local server's receive thread can still be in its four-second
-socket wait. Worker-thread joins and other images retain their blocking joins. No game input,
-focus notification or quit request is dispatched into partially destroyed game state.
-The shared `Platform/Host/BusyService.h` forwards main-thread macOS client calls to the existing
-service and is a no-op elsewhere. Individual synchronous operations between service points can
-still stall. The headless `Code/Tests/macos_input` check covers a delayed shutdown join, repeated
-servicing, worker-thread exclusion and held input delivered once afterwards; on-screen disconnect
-and quit behavior requires a client run.
-
 The longest stretches of a first load (no cached effects yet) are waits for native effect builds:
 `RaShader::build` begins a pass of every effect it loads, the pass needs the effect's shaders
 (`Effect::ensureShaders`), and one build takes up to seconds. On the macOS main thread the effect

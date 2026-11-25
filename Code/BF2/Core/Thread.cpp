@@ -2,13 +2,6 @@
 // The shared trampoline invokes run(); platform-specific lifecycle behavior stays in each arm.
 
 #include "Thread.h"
-#include "../Platform/Host/BusyService.h"
-
-#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
-#include <chrono>
-#include <condition_variable>
-#include <mutex>
-#endif
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -30,25 +23,6 @@ struct Thread::Impl
 #else
     pthread_t tid;           // +0x00
     bool      running;       // +0x04
-#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
-    // [CHOSEN, not recovered] A main-thread join services the host while waiting, including
-    // the listen server's receive thread (which may be in its four-second socket wait).
-    Thread* owner;
-    std::mutex mutex;
-    std::condition_variable completed;
-    bool finished = false;
-    static void* entry(void* param)
-    {
-        Impl* impl = static_cast<Impl*>(param);
-        impl->owner->run();
-        {
-            std::lock_guard<std::mutex> lock(impl->mutex);
-            impl->finished = true;
-        }
-        impl->completed.notify_one();
-        return 0;
-    }
-#endif
 #endif
 };
 
@@ -62,7 +36,7 @@ DWORD WINAPI threadTrampoline(LPVOID param)
     static_cast<Thread*>(param)->run();
     return 0;
 }
-#elif !(defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR))
+#else
 void* pthreads_thread_trampoline(void* param)
 {
     static_cast<Thread*>(param)->run();
@@ -128,16 +102,7 @@ bool Thread::start(const char* /*name*/, Priority priority)
     // no priority handling at all on this side, and none is missing — the ELF body has none.
     (void)priority;
 
-#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
-    // [CHOSEN, not recovered] Completion is published before joining; thread ownership and
-    // the final pthread_join remain unchanged.
-    m_impl->owner = this;
-    m_impl->finished = false;
-    const int result = pthread_create(&m_impl->tid, 0, Impl::entry, m_impl);
-#else
-    const int result = pthread_create(&m_impl->tid, 0, pthreads_thread_trampoline, this);
-#endif
-    if (result != 0)
+    if (pthread_create(&m_impl->tid, 0, pthreads_thread_trampoline, this) != 0)
     {
         m_impl->running = false;
         return false;
@@ -168,22 +133,6 @@ bool Thread::stop()
 #else
 bool Thread::stop()
 {
-#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
-    // [CHOSEN, not recovered] Never dispatch engine callbacks during teardown. Workers keep
-    // the blocking join; only the AppKit thread uses the loading host's held-event service.
-    if (m_impl->running && pthread_main_np())
-    {
-        std::unique_lock<std::mutex> lock(m_impl->mutex);
-        while (!m_impl->finished)
-        {
-            lock.unlock();
-            host::serviceWhileBusy();
-            lock.lock();
-            m_impl->completed.wait_for(lock, std::chrono::milliseconds(50),
-                                      [this] { return m_impl->finished; });
-        }
-    }
-#endif
     void* threadReturn;                              // read by pthread_join, never used
 
     if (pthread_join(m_impl->tid, &threadReturn) != 0)
