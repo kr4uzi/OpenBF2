@@ -4,6 +4,7 @@
 #include "DrawBridge.h"
 #include "EffectShaders.h"          // drawTraceLabel: the effect pass a compile belongs to
 #include "../../macOS/HitchTrace.h" // [CHOSEN] BF2_HITCH_TRACE (port addition, measurement)
+#include "../../macOS/ShaderCompileActivity.h" // [CHOSEN, not recovered] finite compile activity
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
