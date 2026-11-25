@@ -131,6 +131,33 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   and not resizable, as before; it becomes a full-screen primary, resizable window only for its
   Space and is restored when it is back. A resolution change made in full screen applies to the
   restored window.
+- **Window size and Retina.** `[CHOSEN, not recovered]` Windowed content keeps one point per
+  back-buffer pixel when it fits. Otherwise it scales proportionally to the largest size that
+  fits the screen's visible area after window decorations are subtracted. The Retina backing
+  scale does not divide the window size; a 1440x900 buffer on a 1440x900-point desktop nearly
+  fills the available area instead of becoming a 720x450-point window. The drawable retains
+  the selected pixel dimensions.
+- **Resolution choices.** `[CHOSEN, not recovered]` macOS lists GUI-usable CoreGraphics modes
+  by their logical point sizes: the HiDPI "looks like" size, or the pixel size for 1x modes.
+  When HiDPI modes exist, sizes exceeding the largest HiDPI logical size in either dimension
+  are omitted; non-Retina displays keep all usable sizes. The list is deduplicated and sorted
+  by width, height and refresh rate; a reported 0 Hz uses the panel rate. Listed modes are
+  internal render sizes; they do not switch the display. On the 2560x1600 MacBook Pro panel
+  this yields 720x450, 800x600, 825x525, 1024x640, 1024x768, 1152x720, 1280x800, 1440x900,
+  1650x1050 and 1680x1050. The M2's 2560x1664 panel offers 1024x665, 1280x832, 1470x956 and
+  1710x1112. New M2 profiles select the listed desktop point size (1470x956 at that desktop
+  setting), rather than its 2940x1912 backing size.
+  VideoOptions retains 32-bit modes at least 800 pixels wide, and the menu copies that list
+  without an aspect-ratio, maximum-size or desktop-size filter. Medium and Low explicitly
+  select 800x600, High selects 1024x768, AA is Off and view-distance scales are 0.9, 0.75 and
+  1.0 respectively, as recorded for retail `RendDX9.dll` 0x1000F390. This preset behavior is
+  shared across platforms. Selecting a listed resolution afterwards selects that exact entry.
+  Headless checks: `bf2_display_mode_policy_check` covers logical mode selection and window fitting;
+  `python3 Code/Tests/macos_resolution_list.py out/build/client-effects` checks the real
+  renderer/options list and Medium preset using an adapter metadata fixture controlled by the
+  paired display-mode environment hooks, after building `bf2_client`. Neither check creates
+  a window or starts the game. With the ten Intel logical modes at 60 Hz and a 1680x1050
+  desktop, the nine sizes at least 800 wide reach the options list, including 1680x1050.
 - **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
   can take the window out of its Space. The host then stays windowed and reports it until the
   engine switches again (one Alt+Enter brings the engine's own flag in line, the next one returns

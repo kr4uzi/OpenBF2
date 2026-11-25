@@ -21,6 +21,7 @@
 #include "../InputScript.h"         // [TEMP] BF2_INPUT_SCRIPT (docs/macos-c-input-script.md)
 #include "../Host/CursorFile.h"
 #include "CursorScale.h"                 // [CHOSEN] the cursor's size on screen
+#include "DisplayPolicy.h"
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -574,9 +575,8 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
 
     // [CHOSEN, not recovered] Windowed content size in points for a back buffer of
     // width x height pixels. A back buffer that fits the screen's visible area keeps one point
-    // per pixel (the size a 96-dpi Windows desktop shows). A larger one is shown at the screen's
-    // backing scale (one physical pixel per back-buffer pixel on Retina), and if it still does
-    // not fit it is scaled down to fit, keeping its aspect. The drawable stays width x height.
+    // per pixel. A larger one is scaled down only as far as the visible area requires, keeping
+    // its aspect, independently of the Retina backing scale. The drawable stays width x height.
     static NSSize windowedContentSize(int width, int height, NSScreen* screen, NSWindowStyleMask style)
     {
         NSSize size = NSMakeSize(width, height);
@@ -586,16 +586,8 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         const NSRect probe = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:style];
         const CGFloat maxW = NSWidth(visible) - (NSWidth(probe) - 100);
         const CGFloat maxH = NSHeight(visible) - (NSHeight(probe) - 100);
-        if (size.width <= maxW && size.height <= maxH)
-            return size;
-        const CGFloat scale = screen.backingScaleFactor > 1.0 ? screen.backingScaleFactor : 1.0;
-        size = NSMakeSize(size.width / scale, size.height / scale);
-        if (size.width > maxW || size.height > maxH)
-        {
-            const CGFloat k = std::min(maxW / size.width, maxH / size.height);
-            size = NSMakeSize(std::floor(size.width * k), std::floor(size.height * k));
-        }
-        return size;
+        const auto fitted = macos::fitWindowContent(width, height, maxW, maxH);
+        return NSMakeSize(fitted.width, fitted.height);
     }
 
     void updateDrawable()
@@ -2266,9 +2258,11 @@ static int builtInPanelRefreshHz()
     return 0;
 }
 
+// [CHOSEN, not recovered] Offer macOS's logical "looks like" sizes, omitting oversized 1x
+// modes on HiDPI displays. These are internal render sizes, never display-mode switches.
 std::vector<HostDisplayModeInfo> ClientHost::displayModes() const
 {
-    std::vector<HostDisplayModeInfo> modes;
+    std::vector<macos::DisplayMode> modes;
     const void* keys[] = { kCGDisplayShowDuplicateLowResolutionModes };
     const void* values[] = { kCFBooleanTrue };
     CFDictionaryRef options = CFDictionaryCreate(0, keys, values, 1,
@@ -2276,33 +2270,19 @@ std::vector<HostDisplayModeInfo> ClientHost::displayModes() const
     CFArrayRef list = CGDisplayCopyAllDisplayModes(CGMainDisplayID(), options);
     CFRelease(options);
     if (!list)
-        return modes;
+        return {};
     for (CFIndex i = 0; i < CFArrayGetCount(list); ++i)
     {
         CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(list, i);
-        if (!CGDisplayModeIsUsableForDesktopGUI(mode))
-            continue;
-        HostDisplayModeInfo info;
-        info.width = static_cast<int>(CGDisplayModeGetPixelWidth(mode));
-        info.height = static_cast<int>(CGDisplayModeGetPixelHeight(mode));
-        info.refreshHz = static_cast<int>(std::lround(CGDisplayModeGetRefreshRate(mode)));
-        if (info.refreshHz == 0)
-            info.refreshHz = builtInPanelRefreshHz();
-        info.bitsPerPixel = 32;
-        bool duplicate = false;
-        for (const HostDisplayModeInfo& m : modes)
-            duplicate = duplicate || (m.width == info.width && m.height == info.height &&
-                                      m.refreshHz == info.refreshHz);
-        if (!duplicate)
-            modes.push_back(info);
+        modes.push_back({static_cast<int>(CGDisplayModeGetWidth(mode)),
+                         static_cast<int>(CGDisplayModeGetHeight(mode)),
+                         static_cast<int>(CGDisplayModeGetPixelWidth(mode)),
+                         static_cast<int>(CGDisplayModeGetPixelHeight(mode)),
+                         static_cast<int>(std::lround(CGDisplayModeGetRefreshRate(mode))),
+                         CGDisplayModeIsUsableForDesktopGUI(mode)});
     }
     CFRelease(list);
-    std::sort(modes.begin(), modes.end(), [](const HostDisplayModeInfo& a, const HostDisplayModeInfo& b) {
-        if (a.width != b.width) return a.width < b.width;
-        if (a.height != b.height) return a.height < b.height;
-        return a.refreshHz < b.refreshHz;
-    });
-    return modes;
+    return macos::selectDisplayModes(modes, builtInPanelRefreshHz());
 }
 
 HostDisplayModeInfo ClientHost::desktopMode() const
