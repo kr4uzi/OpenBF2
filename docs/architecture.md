@@ -183,6 +183,31 @@ clients, and the Windows `bf2WinMain` wrapper in `Game/Main/BF2.cpp` keeps its S
 crash-dump scope unless `+seh 0` is supplied. Retail's true answer skips that flag reset
 and bypasses the SEH scope. Dedicated mode queries the answer without resetting the flag.
 
+## Squad asset requests
+
+Asset requests travel through `IssueSquadOrderEvent` (24), order type 2, to
+`SquadManager::issueRequest`. After storing and broadcasting the request, a squad with a
+leader and initialized AI posts ECAI/15: the complete `SquadOrder`, team, squad and first
+point. `AIEventListener` forwards artillery, UAV, vehicle-drop and supply requests to the
+strategic AI. The leader's ECHud/30 notification follows locally, except that a remote
+co-op leader receives a `PostRemoteEvent`. With no active AI, only leader ID 255 uses local
+delivery. An assigned commander's ECHud/29 notification follows the leader's notification.
+This ordering is shared by client and dedicated images (`BF2.exe` 0x4E60F0, dedicated PE
+0x45E710, Linux x86 ELF 0x0811DAE0).
+
+The retail asset-authorization rule still compares the sender's low byte with the full
+commander ID. The AI's local sender -1 becomes 255 and fails against an empty commander
+slot (-1). Restoring request delivery therefore restores AI handling and HUD feedback,
+but does not authorize assets without a commander. The AI rearms UAV requests for 30 seconds
+and other requests for 60 seconds, queues cooldown refusals for 2–5 seconds later, requires
+surviving artillery, and suspends automatic handling while a human commands the team.
+
+After configuring a macOS build, run
+`python3 Code/Tests/commander_requests_runtime.py out/build/<directory>` for headless checks
+with both image defines. The fixture executes production request, listener, courier, policy
+and asset-event code with synthetic squads, transport, clock and asset observers; it does
+not start a game or validate asset creation in a level.
+
 ## Client audio defaults
 
 `[CHOSEN, not recovered]` New profiles and an explicit restore of audio defaults use
