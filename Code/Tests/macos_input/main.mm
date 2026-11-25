@@ -920,6 +920,49 @@ void testCooperativeStartup()
     check(state().fullscreenEntering && !state().fullscreenWaiting,
           "delayed activation callback starts full screen without needing another pump");
 
+    // Active at launch, the activation lost before the window exists (owner start on macOS 15.7):
+    // the window ordered in while inactive asks again, and the activation enters the Space.
+    sys.appActive = sys.windowKey = false;
+    sys.windowVisible = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    sys.appActive = true;
+    apply(0.03); pump();
+    check(state().requests == 1 && host.isAppActive(), "the launch request is answered before the window exists");
+    sys.appActive = false;
+    apply(1.5); pump();
+    check(state().requests == 1 && !host.isAppActive(), "an activation lost before the window exists sends no request");
+    sys.windowVisible = true;
+    apply(0.0);
+    Hooks::windowOrderedInForTest(host, true);
+    check(state().requests == 2 && state().fullscreenWaiting && !state().fullscreenEntering,
+          "the window ordered in after the lost activation requests again, its full-screen start waits");
+    apply(1.0); pump();
+    check(state().requests == 3, "and repeats once a second while the window waits");
+    sys.appActive = sys.windowKey = true;
+    apply(0.2);
+    Hooks::focusCallbackForTest(host);
+    check(state().fullscreenEntering && !state().fullscreenWaiting, "the activation that follows enters the Space");
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 3, "leaving after that activation never restarts the requests");
+
+    // macOS 11-13: the launch request is answered and lost; nothing is requested again.
+    sys.cooperativeActivation = false;
+    sys.windowVisible = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    sys.appActive = true;
+    apply(0.03); pump();
+    sys.appActive = false;
+    apply(1.5); pump();
+    sys.windowVisible = true;
+    apply(0.0);
+    Hooks::windowOrderedInForTest(host, true);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 1 && state().fullscreenWaiting, "11-13 lost launch activation: no request at order-in");
+    sys.cooperativeActivation = true;
+
     // macOS 11-13's single, non-cooperative request must not be repeated.
     sys.appActive = sys.windowKey = false;
     sys.cooperativeActivation = false;
