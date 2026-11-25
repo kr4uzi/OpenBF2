@@ -235,8 +235,8 @@ int main()
           "bot server-origin message never charges the host");
     bot->resetSpamFilter();
     server->radioMessageFromPlayer(TCTeam, "roger_that", 254, 0, false, false); relay();
-    check(bot->getRadioSpamFlagCount() == 2 && player->getRadioSpamFlagCount() == 2,
-          "retail AI from-player path charges its own counter twice, never the host");
+    check(bot->getRadioSpamFlagCount() == 1 && player->getRadioSpamFlagCount() == 2,
+          "AI from-player path charges its own counter once, never the host");
     players->speaker = player;
     player->m_playerId = 42; player->resetSpamFilter();
     RadioMessageReceivedEvent remote(42, 0, 42, 1, 0, TCTeam, 3);

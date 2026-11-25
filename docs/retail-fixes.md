@@ -629,6 +629,21 @@ Each entry is a heading that names the fix, followed by these fields:
   `Code/BF2/Menu/BF2HudManagerHudEvents.cpp`, `Code/BF2/Game/GameServer/GameServer.cpp`;
   `Code/Tests/radio_spam_runtime.cpp`.
 
+### AI radio messages consume one allowance
+
+- **Retail:** `GameServer::radioMessageFromPlayer` charges a bot at submission
+  (BF2.exe `0x4C4FA8`, Windows dedicated `0x443270`, Linux ia-32 `0x080AD2F0`),
+  then relays under that bot's own connection ID. `playerMessageEvent` charges it
+  again (`0x4C8E9D`, `0x445F3D`, `0x080AEBE4`). One message therefore consumes two
+  units of the configured allowance. The direct AI event path charges only at relay.
+- **OpenBF2:** The from-player submission checks an AI sender's current blocked
+  state without incrementing its count. The relay charges the accepted message once.
+- **Applies to:** server-side AI radio submission, on every platform.
+- **Retail clients:** Human accounting, radio event IDs, channels, payloads and
+  wire formats are unchanged. An unmodified client receives the same radio messages;
+  bots reach the configured allowance after the configured number of messages.
+- **Source:** `Code/BF2/Game/GameServer/GameServer.cpp`.
+
 ### The dedicated server rejects ghost updates sent by a client
 
 - **Retail:** `GhostManager::processReceivedPacket` is the same on the dedicated server as on the

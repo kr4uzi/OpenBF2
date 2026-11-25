@@ -1583,7 +1583,9 @@ bool GameServer::radioMessageFromPlayer(TargetChannel channel, const std::string
             &messageId, 0, 0, message, empty1, empty2))
         return true;
 
-    if (!bypassSpamCheck && player->getIsThisASpam(true))
+    // [CHOSEN, not recovered] Retail fix "AI radio messages consume one allowance"
+    // (docs/retail-fixes.md). An AI sender is charged by the relay under its own ID.
+    if (!bypassSpamCheck && player->getIsThisASpam(!player->getIsAIPlayer()))
     {
         if (!isDedicated() && localPlayback && !player->getIsAIPlayer())
             showRadioSpamNotice(this, player);
