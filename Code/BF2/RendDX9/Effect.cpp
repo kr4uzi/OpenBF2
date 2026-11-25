@@ -1041,15 +1041,8 @@ unsigned int effectBegin(void* effect)
 {
     return effect ? static_cast<Effect*>(effect)->begin() : 0;
 }
-// [TEMP] [CHOSEN, not recovered] BF2_TERRAIN_TRACE (Geom/TerrainDraw.cpp): the last pass begun,
-// named in the trace lines. [RETIRE-WHEN: terrain-black-hexagons]
-void* g_traceLastEffect = 0;
-unsigned int g_traceLastPass = 0;
-
 void effectBeginPass(void* effect, unsigned int index)
 {
-    g_traceLastEffect = effect;                       // [TEMP] BF2_TERRAIN_TRACE
-    g_traceLastPass = index;
     if (effect)
         static_cast<Effect*>(effect)->beginPass(index);
 }

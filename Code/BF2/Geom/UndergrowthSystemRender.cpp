@@ -32,10 +32,8 @@
 #include "../RendDX9/ShaderParameter.h"
 #include "../RendDX9/Texture.h"
 #include "../RendMisc/IRenderView.h"
-#include <d3dx9.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -68,12 +66,6 @@ bool  indexBufferUnlock(void* wrapper);
 void  rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, int baseVertex,
                                    unsigned int minIndex, unsigned int numVertices,
                                    unsigned int startIndex);
-// [TEMP] BF2_UG_TRACE [CHOSEN, not recovered] Post-commit readback, implemented in StateManager.cpp.
-void rendererDrawIndexedPrimitiveWithTrace(unsigned int primCount, unsigned int type, int baseVertex,
-                                          unsigned int minIndex, unsigned int numVertices,
-                                          unsigned int startIndex,
-                                          void (*trace)(IDirect3DDevice9*, void*), void* context);
-void* effectD3dxHandle(void* effect);
 
 } // namespace dx9rend
 
@@ -211,141 +203,6 @@ struct UndergrowthDrawItem
 };
 
 typedef std::multimap<const char*, UndergrowthDrawItem> UndergrowthDrawList;
-
-// [TEMP] BF2_UG_TRACE [CHOSEN, not recovered]
-// [RETIRE-WHEN: undergrowth-black-patches] Remove this read-only diagnostic and its draw hooks
-// once the black fade-zone cells have been explained and the correction validated in game.
-bool ugTraceFrame()
-{
-    static const bool enabled = [] {
-        const char* value = std::getenv("BF2_UG_TRACE");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-    if (!enabled)
-        return false; // No clock, allocation, device query or log when unset.
-    static unsigned int frames = 0;
-    static unsigned int previousFrame = 0;
-    const unsigned int frame = dx9rend::rendererFrameOrdinal();
-    if (frames && frame == previousFrame)
-        return false;
-    previousFrame = frame;
-    const auto now = std::chrono::steady_clock::now();
-    static auto last = now;
-    if (frames >= 3 && now - last < std::chrono::seconds(5))
-        return false;
-    ++frames;
-    last = now;
-    return true;
-}
-
-struct UgTraceDraw
-{
-    const UndergrowthDrawItem* item;
-    const UndergrowthCell* cells;
-    const Vec3* camera;
-    void* effect;
-    dx9rend::ShaderParameter* parameters[3];
-    Vec4 values[3];
-};
-
-void ugTraceVector(const char* name, const float* v)
-{
-    std::fprintf(stderr, " %s=(%.9g,%.9g,%.9g,%.9g)", name, v[0], v[1], v[2], v[3]);
-}
-
-void ugTraceTexture(IDirect3DDevice9* device, unsigned int stage)
-{
-    IDirect3DBaseTexture9* texture = 0;
-    const HRESULT result = device->GetTexture(stage, &texture);
-    std::fprintf(stderr, " s%u=", stage);
-    if (FAILED(result))
-        std::fprintf(stderr, "unavailable(hr=0x%08x)", static_cast<unsigned int>(result));
-    else if (!texture)
-        std::fprintf(stderr, "null");
-    else
-    {
-        const D3DRESOURCETYPE type = texture->GetType();
-        unsigned int width = 0, height = 0;
-        D3DFORMAT format = D3DFMT_UNKNOWN;
-        HRESULT descResult = D3DERR_INVALIDCALL;
-        if (type == D3DRTYPE_VOLUMETEXTURE)
-        {
-            D3DVOLUME_DESC desc = {};
-            descResult = static_cast<IDirect3DVolumeTexture9*>(texture)->GetLevelDesc(0, &desc);
-            width = desc.Width; height = desc.Height; format = desc.Format;
-        }
-        else
-        {
-            D3DSURFACE_DESC desc = {};
-            if (type == D3DRTYPE_TEXTURE)
-                descResult = static_cast<IDirect3DTexture9*>(texture)->GetLevelDesc(0, &desc);
-            else if (type == D3DRTYPE_CUBETEXTURE)
-                descResult = static_cast<IDirect3DCubeTexture9*>(texture)->GetLevelDesc(0, &desc);
-            width = desc.Width; height = desc.Height; format = desc.Format;
-        }
-        std::fprintf(stderr, "%p(type=%u,width=%u,height=%u,format=0x%08x,levels=%u,descHr=0x%08x)",
-                     static_cast<void*>(texture), static_cast<unsigned int>(type), width, height,
-                     static_cast<unsigned int>(format), texture->GetLevelCount(),
-                     static_cast<unsigned int>(descResult));
-    }
-    if (texture)
-        texture->Release(); // GetTexture owns a reference, including on the native device.
-}
-
-void ugTraceDraw(IDirect3DDevice9* device, void* context)
-{
-    const UgTraceDraw& trace = *static_cast<const UgTraceDraw*>(context);
-    const UndergrowthDrawItem& item = *trace.item;
-    const UndergrowthCell& cell = *item.cell;
-    const double x = double(item.bounds.center.x) - trace.camera->x;
-    const double y = double(item.bounds.center.y) - trace.camera->y;
-    const double z = double(item.bounds.center.z) - trace.camera->z;
-    std::fprintf(stderr, "[UG] cell frame=%u index=%td distance=%.9g technique=%s shadowed=%u"
-                 " zPrepassed=%u lightCount=%u texScale=(%.9g,%.9g) texOffset=(%.9g,%.9g)"
-                 " colorMap=%p lightMap=%p",
-                 dx9rend::rendererFrameOrdinal(), item.cell - trace.cells, std::sqrt(x*x + y*y + z*z),
-                 item.technique, unsigned(item.shadowed), unsigned(item.zPrepassed), item.lightCount,
-                 cell.texScaleU, cell.texScaleV, cell.texOffsetU, cell.texOffsetV,
-                 static_cast<void*>(cell.colorMap), static_cast<void*>(cell.lightMap));
-    for (unsigned int stage = 0; stage < 4; ++stage)
-        ugTraceTexture(device, stage);
-    IDirect3DVertexShader9* vs = 0;
-    IDirect3DPixelShader9* ps = 0;
-    const HRESULT vsResult = device->GetVertexShader(&vs);
-    const HRESULT psResult = device->GetPixelShader(&ps);
-    std::fprintf(stderr, " vs=%p(vsHr=0x%08x) ps=%p(psHr=0x%08x)",
-                 static_cast<void*>(vs), unsigned(vsResult), static_cast<void*>(ps), unsigned(psResult));
-    if (vs) vs->Release();
-    if (ps) ps->Release();
-
-    // Keep register names explicit: techniques can assign parameters to different registers.
-    float constants[12];
-    const HRESULT constantResult = device->GetPixelShaderConstantF(0, constants, 3);
-    if (SUCCEEDED(constantResult))
-    {
-        ugTraceVector("ps.c0", constants);
-        ugTraceVector("ps.c1", constants + 4);
-        ugTraceVector("ps.c2", constants + 8);
-    }
-    else
-        std::fprintf(stderr, " ps.c0..c2=unavailable(hr=0x%08x;using-parameters)", unsigned(constantResult));
-    ID3DXEffect* effect = static_cast<ID3DXEffect*>(dx9rend::effectD3dxHandle(trace.effect));
-    const char* names[] = { "SunColor", "GIColor", "TerrainTexCoordScaleAndOffset" };
-    for (unsigned int i = 0; i < 3; ++i)
-    {
-        D3DXVECTOR4 value;
-        const D3DXHANDLE handle = static_cast<D3DXHANDLE>(trace.parameters[i]->getD3DXParam());
-        if (effect && handle && SUCCEEDED(effect->GetVector(handle, &value)))
-            ugTraceVector(names[i], &value.x);
-        else
-        {
-            ugTraceVector(names[i], &trace.values[i].x);
-            std::fprintf(stderr, "(%s=uploaded-parameter)", names[i]);
-        }
-    }
-    std::fprintf(stderr, "\n");
-    std::fflush(stderr);
-}
 
 // The comparator render and rebuildPatches hand std::sort: a one-byte functor taking the elements BY
 // value (the insertion sort 0x1014F290 copies both 8-byte records before its `fcomp`), ascending key.
@@ -1615,18 +1472,6 @@ void UndergrowthSystem::render(float time)
         std::sort(first, first + drawCount, UndergrowthCellDistanceLess());
     }
 
-    // [TEMP] BF2_UG_TRACE [CHOSEN, not recovered] The existing order is cell-centre distance.
-    const bool traceFrame = ugTraceFrame();
-    UndergrowthCell* traceCells[48];
-    unsigned int traceCellCount = 0;
-    Vec4 traceSun, traceGI;
-    if (traceFrame)
-    {
-        for (unsigned int i = 0; i < drawCount; ++i)
-            if (drawCount <= 48 || i < 24 || i >= drawCount - 24)
-                traceCells[traceCellCount++] = m_drawOrder[i].cell;
-    }
-
     // 6. the frame constants
     // the first dynamic-shadow record (LightManager +0x79C, 1176 bytes each),
     // NOT gated on dynamicShadowsEnable; the record vector is fetched three times, as shipped.
@@ -1654,7 +1499,6 @@ void UndergrowthSystem::render(float time)
     color.y = rgb.y * m_lightingScale;
     color.z = rgb.z * m_lightingScale;
     m_paramSunColor->setValue(&color, 0);
-    if (traceFrame) traceSun = color; // [TEMP] BF2_UG_TRACE: preserve the exact uploaded value.
 
     Vec3 giScratch;                                                          // [ebp-14h]
     rgb = *m_terrain->getGIColorRaw(&giScratch);                             // Terrain +0x84, copied
@@ -1663,7 +1507,6 @@ void UndergrowthSystem::render(float time)
     color.y = rgb.y * m_lightingScale;
     color.z = rgb.z * m_lightingScale;
     m_paramGIColor->setValue(&color, 0);
-    if (traceFrame) traceGI = color; // [TEMP] BF2_UG_TRACE
 
     rgb.x = raConstantF(0x230);                                              // the static point colour
     rgb.y = raConstantF(0x234);
@@ -1741,26 +1584,6 @@ void UndergrowthSystem::render(float time)
     m_paramTransparencyX8->setValue(&transparency, 0);
     m_paramAlphaRef->setValue(&alphaRef, 0);
     m_paramCameraToWater->setFloat(raConstantF(0x1D8));                      // +0x24 setFloat
-
-    // [TEMP] BF2_UG_TRACE [CHOSEN, not recovered] No repeated capability queries when disabled.
-    if (traceFrame)
-    {
-        std::fprintf(stderr, "[UG] frame=%u cells=%u sampled=%u", dx9rend::rendererFrameOrdinal(),
-                     drawCount, traceCellCount);
-        ugTraceVector("SunColor", &traceSun.x);
-        ugTraceVector("GIColor", &traceGI.x);
-        std::fprintf(stderr, " TransparencyX8=%.9g AlphaRef=%d lightingScale=%.9g"
-                     " viewDistance=%.9g viewDistanceFade=%.9g",
-                     transparencyX8, alphaRef, m_lightingScale, viewDistance, m_viewDistanceFade);
-        ugTraceVector("fade", &fade.x);
-        std::fprintf(stderr, " isMultisampleActive=%u hasAlphaToCoverage=%u simpleShaderEnable=%u"
-                     " dynamicShadowsEnable=%u camera=(%.9g,%.9g,%.9g)\n",
-                     unsigned(isMultisampleActive()),
-                     unsigned(reinterpret_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->hasAlphaToCoverage),
-                     unsigned(m_simpleShaderEnable), unsigned(m_dynamicShadowsEnable),
-                     statics.cameraPosition.x, statics.cameraPosition.y, statics.cameraPosition.z);
-        std::fflush(stderr);
-    }
 
     // 7. the depth prepass
     if (m_zPassPatchCount != 0)                                              // `jbe` - unsigned
@@ -1959,21 +1782,8 @@ void UndergrowthSystem::render(float time)
         UndergrowthPatch* const patch = item.cell->patch;
         dx9rend::vertexBufferBindStream(patch->vertexBuffer, 0);
         dx9rend::indexBufferBind(patch->indexBuffer);
-        // [TEMP] BF2_UG_TRACE [CHOSEN, not recovered] Only sampled color draws use readback.
-        if (traceFrame && std::find(traceCells, traceCells + traceCellCount, item.cell)
-                          != traceCells + traceCellCount)
-        {
-            UgTraceDraw trace = { &item, m_cells, &statics.cameraPosition, m_effect,
-                { m_paramSunColor, m_paramGIColor, m_paramTerrainTexCoordScaleAndOffset },
-                { traceSun, traceGI,
-                  { item.cell->texScaleU, item.cell->texScaleV,
-                    item.cell->texOffsetU, item.cell->texOffsetV } } };
-            dx9rend::rendererDrawIndexedPrimitiveWithTrace(patch->primitiveCount, D3DPT_TRIANGLELIST,
-                0, 0, patch->vertexCount, 0, ugTraceDraw, &trace);
-        }
-        else
-            dx9rend::rendererDrawIndexedPrimitive(patch->primitiveCount, D3DPT_TRIANGLELIST, 0, 0,
-                                                  patch->vertexCount, 0);
+        dx9rend::rendererDrawIndexedPrimitive(patch->primitiveCount, D3DPT_TRIANGLELIST, 0, 0,
+                                              patch->vertexCount, 0);
         currentTechnique = item.technique;
         currentStencilState = item.zPrepassed ? 1 : 0;
         ++terrainRendererStat(0x27C);
