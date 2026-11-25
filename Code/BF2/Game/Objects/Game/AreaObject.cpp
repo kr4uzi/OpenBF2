@@ -75,8 +75,7 @@ void AreaObject::handleFrameUpdate(float)
     }
 }
 
-#if DEDICATED
-// Dedicated-only: no client caller.
+// BF2.exe 0x5FFE10, dedicated PE 0x59C2A0 / ELF 0x816B0C0.
 void AreaObject::addAbsolutePoint()
 {
     const Vec3& position = getAbsolutePosition();
@@ -93,5 +92,4 @@ void AreaObject::addAbsolutePoint()
         arrow->setAbsolutePosition(arrowPosition);
     }
 }
-#endif
 } } }

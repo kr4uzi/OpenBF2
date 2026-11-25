@@ -31,6 +31,7 @@
 #include "ObjectSpawner.h"
 #include "SoldierTemplate.h"
 #include "Trigger.h"
+#include "AreaObject.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -1852,6 +1853,24 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(addLinePoint, addAreaLinePoint,
     activeAreaObjectTemplate() != 0, Vec2, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(triggerRadius, float, activeAreaObjectTemplate(),
     setTriggerRadius, getTriggerRadius, kObjTemplGameConsoleTag)
+
+namespace {
+// BF2.exe 0x50AB62 selects by the active object's template class, not its runtime class.
+AreaObject* activeAreaObject()
+{
+    IObject* object = objectManager->getActiveObject();
+    if (!object) return 0;
+    const IObjectTemplate* objectTemplate = object->getTemplate();
+    return objectTemplate && objectTemplate->getClassID() == CID_AreaObjectTemplate
+        ? static_cast<AreaObject*>(object) : 0;
+}
+void addAreaAbsolutePoint() { activeAreaObject()->addAbsolutePoint(); }
+}
+// BF2.exe 0x50AB04/0x50AB93; dedicated PE 0x484BA0. Zero arguments, no result.
+BF2_CONSOLE_OBJECT("Object", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(addAbsolutePoint, addAreaAbsolutePoint,
+    activeAreaObject() != 0, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
 // Item-container unlock level and replacement-item bindings.
 BF2_CONSOLE_PROPERTY_FN(unlockLevel, int, getActiveTemplate(CID_ItemContainerTemplate) != 0,

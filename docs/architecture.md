@@ -417,8 +417,8 @@ The shared console catalogue includes these settings and inspection commands in 
 | `Console` | `workingPath`, `echo`, `echoErrors`, `maxLineSize`, `maxHistorySize`, `maxCommandHistorySize`, `useRelativePaths`, `allowMultipleFileLoad`; `listVariables [prefix]` (default `v_`), `listConstants [prefix]` (default `c_`), `run <file> [arg1..arg4]`, `bindKeyToConsoleScript <1..12> <script>`; registry reflection through `getArgumentTypes`, `getEnumName`, `getRange`, `getReturnType`, `getDelta`, `hasBundledType`, `getTypeDescription`, `isDynamic`, `isSetGet`, `hasRange`, `getCategory`, `getActiveMethods`. |
 | `FileManager` | `addPath <path>` makes the path the first search/write path; `fileExists`, `deleteFile`, `moveFile <from> <to>`, `copyFile <from> <to>`, `mountArchive`. Copy forwards the shipped `true` third argument; the POSIX filesystem refuses an existing destination and creates a hard link. |
 | `InputDevices` | `setInvertAxis <device> <axis> <bool>`, `setAxisScale <device> <axis> <float>`; unavailable devices return false. |
-| `ObjectTemplate` | Particle `nearCullingEnable` (ordinary sprites only) and `isStaticSystem` (sprite, mesh, trail and NSA systems), access 2/category Emitter. `setToolTipType <name>` uses full `TT*` or short case-sensitive names; unknown tokens, including numeric tokens, select 22. `vehicleCameraShake` accepts `CstNoShake`, `CstExplosion`, `CstMachinegun`, `CstHitShake`, `CstDieShake` and decimal -1..3. `grip` accepts eight `PGF*` bit names, their `c_` forms and numeric normalization; its published range remains 0..7 without clamping. `zoom.changeCameraViewMode` and `zoom.startCameraViewMode` accept `CVMFirstPerson`, `CVMInside`, `CVMNose`, `CVMChase`, `CVMFrontChase`, `CVMFlyBy`, `CVMTrace`, `CVMExternTrace` and single-digit numeric normalization. `listTemplateClasses` lists registered classes. |
-| Inspection | `physics.listProperties`; `CollisionManager.getNameOfObjectInFocus`, `identityRotateObjectInFocus`, `buildDebugCollisionMeshes`; `Object.setAsSkyLight` (lights only), `Object.getLightSourceMask`; `Player.listPlayerClasses`; `Terrain.refreshTerrainSampling`; `Editor.getActiveObjectTemplate` and `Editor.getActiveObject` return borrowed name/pointer proxies. |
+| `ObjectTemplate` | Particle `nearCullingEnable` (ordinary sprites only) and `isStaticSystem` (sprite, mesh, trail and NSA systems), access 2/category Emitter. `setToolTipType <name>` uses full `TT*` or short case-sensitive names; unknown tokens, including numeric tokens, select 22. `vehicleCameraShake` accepts `CstNoShake`, `CstExplosion`, `CstMachinegun`, `CstHitShake`, `CstDieShake` and decimal -1..3. `grip` accepts eight `PGF*` bit names, their `c_` forms and numeric normalization; its published range remains 0..7 without clamping. `zoom.changeCameraViewMode` and `zoom.startCameraViewMode` accept `CVMFirstPerson`, `CVMInside`, `CVMNose`, `CVMChase`, `CVMFrontChase`, `CVMFlyBy`, `CVMTrace`, `CVMExternTrace` and single-digit numeric normalization. `listTemplateClasses` lists registered classes. `getTemplate [index]` returns a bundle child's template name, defaulting to the child selected by `addTemplate`/`setActiveTemplate`; invalid indices return empty text. `getHeatBarType` requires an engine template and advertises an int result, but retail publishes no value. |
+| Inspection | `physics.listProperties`; `CollisionManager.getNameOfObjectInFocus`, `identityRotateObjectInFocus`, `buildDebugCollisionMeshes`; `Object.setAsSkyLight` (lights only), `Object.getLightSourceMask`, `Object.addAbsolutePoint` (area templates only, no arguments; appends negative absolute x/z and creates a marker when `DirectionArrow` exists); `Player.listPlayerClasses`; `Terrain.refreshTerrainSampling`; `Editor.getActiveObjectTemplate` and `Editor.getActiveObject` return borrowed name/pointer proxies. |
 
 `Console.run` returns the script-open status as text (`0`/`1`); script output is discarded.
 The particle flags forward to renderer descriptors: near culling drives the sorted sprite
@@ -431,6 +431,26 @@ remains unpublished while its absorbed-water-object state update is unresolved.
 operations, enum conversions, template selectors and forwarding into typed descriptor observers
 without a window or game startup. It requires a completed macOS renderer-enabled client build;
 particle-manager construction, particle collection, rendered pixels and a joined player are untested.
+
+The client `BFGameEffector` keeps the recovered deferred material-effect consumer
+(BF2.exe `0x81FC40`). The append of a copied position and two material IDs
+(`0x81FCF6..0x81FD25`) is withheld at the `ai-material-effect-drain-caller` frontier
+until the frame caller is recovered and validated: without a drain, production records
+would accumulate for the entire session. This is an owner-requested
+`[CHOSEN, not recovered]` omission; immediate effect dispatch remains live.
+The consumer uses the AI update clock, checks its budget after each dispatch,
+and clears the entire queue even when the budget stops the walk. Both dedicated images
+have empty queue/consumer bodies. A per-frame caller has not been established in the
+inspected BF2.exe or AIDLL.dll; ordinary bot reach and visible effects remain unverified.
+`ServerGameLogic::uPlaying` skips ticket processing on client lightmap-rendering nodes
+(`0x4E0A24`); the dedicated images retain their state/enable gate without that node test.
+The rendering-node startup option remains unregistered.
+`Code/Tests/ai_effect_queue_runtime.py` checks the linked client and dedicated effector
+with typed material, game-logic and clock observers, including budget exhaustion,
+equality, unordered clock values and copied queue records seeded through a test-only
+friend. It also checks that repeated immediate effects do not allocate or grow the
+queue. It calls the consumer directly and does not establish a frame-scheduling
+path or audible output.
 
 ### The `openbf2` console extension
 

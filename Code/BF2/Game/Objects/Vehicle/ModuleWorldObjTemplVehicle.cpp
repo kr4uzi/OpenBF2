@@ -473,6 +473,40 @@ BF2_CONSOLE_PROPERTY_FN(remoteEngineInput, io::PlayerInputMap, activeEngine() !=
                         objTemplGetRemoteEngineInput(), objTemplSetRemoteEngineInput,
                         kObjTemplVehicleConsoleTag)
 
+// BF2.exe 0x57819D/0x5781EF, dedicated PE 0x51DC20/0x51DCB0: the shipped
+// command advertises int but only selects the engine template and publishes no result.
+namespace {
+class ConsoleClassEngineGetHeatBarType : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassEngineGetHeatBarType()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "getHeatBarType";
+        m_type = 0;
+        m_minNoArgs = 0;
+        m_maxNoArgs = 0;
+        m_returnType = "int";
+        m_hasReturnValue = false;
+        m_isDynamic = false;
+        consoleBindingList(kObjTemplVehicleConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const override { return activeEngine() != 0; }
+    void executeObjectMethod() override
+    {
+        if (m_argCount != 0) return;
+        m_hasReturnValue = false;
+        (void)activeEngine();
+    }
+    std::string getReturnValueAsString() const override { return std::string(); }
+    void setArgFromString(int, const std::string&) override {}
+    BF2_CC_COMMON_HOOKS
+};
+static ConsoleClassEngineGetHeatBarType s_consoleEngineGetHeatBarType;
+}
+
 // Aircraft propulsion/control properties. The existing field/virtual split is preserved;
 // authored damping, lift and gear values must not silently fall back to constructor defaults.
 // ELF ConsoleClass77..80; PE 0x51E1D0/0x51E390/0x51E550/0x51E710.

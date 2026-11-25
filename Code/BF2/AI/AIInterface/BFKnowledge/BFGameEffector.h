@@ -58,14 +58,21 @@ public:
     virtual int suicide(IAIPlayer* player);
 
 private:
+    // [TEMP] [CHOSEN, not recovered] Only the queue fixture defines this friend;
+    // it seeds the recovered consumer without enabling production queue growth.
+    friend struct BFGameEffectorQueueFixture;
+
     void queueSoundEffect(const Vec3& position, int a, int b);
 
-    // [INFERRED] Element name. Both ELF destructors iterate in 20-byte steps.
-    // [UNRESOLVED] Entry fields: the ELF queue/play methods are empty, so no writer exists.
+    // [INFERRED] Record and field names. BF2.exe 0x81FCF0 writes position then two IDs;
+    // 0x81FC40 reads the same record. Both ELF destructors iterate in 20-byte steps.
     struct SoundEffect
     {
-        unsigned char unread[20];
+        Vec3 position;
+        int materialA;
+        int materialB;
     };
+    static_assert(sizeof(SoundEffect) == 20, "AI material-effect record");
 
     /* +0x00 */ // vptr
     /* +0x04 */ std::vector<SoundEffect> m_soundEffects; // [INFERRED] name; native STL layout
