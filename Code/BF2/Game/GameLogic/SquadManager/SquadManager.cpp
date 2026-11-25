@@ -8,6 +8,8 @@
 
 #include "../../../Core/EventManager.h"               // local ECHud notifications
 #include "../../../Core/Ids.h"                       // IID_IBase, IID_ISquadManager
+#include "../../../Core/SettingsRepostitory.h"
+#include "../../../Core/StringUtil.h"
 #include "../../../AI/AIInterface/AIInstance.h"
 #include "../../../AI/AIInterface/IAIEventCourier.h"
 #include "../../../AI/AIInterface/SingletonServer.h"
@@ -608,9 +610,7 @@ void SquadManager::issueCommanderOrder(int teamId, int squadId, SquadOrder& orde
     }
 }
 
-// Broadcasts requests before leader then commander notification.
-// [UNRESOLVED] Bot/coop payload and routing dependencies remain unrecovered;
-// this path currently implements only the AI-singleton-null branch.
+// Broadcasts requests, then notifies active AI, the leader and the commander.
 void SquadManager::issueRequest(int teamId, int squadId, SquadOrder& order,
                                 bool suppressEvent)
 {
@@ -631,7 +631,35 @@ void SquadManager::issueRequest(int teamId, int squadId, SquadOrder& order,
     const int leaderId = squad->m_leaderPlayerId;
     if (leaderId >= 0)
     {
-        if (leaderId == 255)
+        if (ai::g_aiInstance && ai::aiInstance()->isInitialized())
+        {
+            // BF2.exe 0x4E619D..0x4E61E5; dedicated PE 0x45E710;
+            // Linux x86 0x0811DBCF..0x0811DCBB: ECAI/15 carries the whole order
+            // followed by team, squad and the first point, as read by AIEventListener.
+            struct CommanderRequestPayload
+            {
+                SquadOrder order;
+                int team;
+                int squad;
+                Vec3 position;
+            } payload;
+            static_assert(sizeof(CommanderRequestPayload) == 0x44,
+                          "commander request event payload");
+            payload.order = order;
+            payload.team = teamId;
+            payload.squad = squadId;
+            payload.position = order.points[0];
+            eventManager->postEvent(ECAI, 15, &payload, 0.0f);
+
+            // BF2.exe 0x4E61E8..0x4E62BC / Linux x86 0x0811DCBE..0x0811DF5B.
+            const std::string mode = settings->stringGet("GSGameMode", "gpm_cq");
+            if (compareIgnoreCase(mode, std::string("gpm_coop")) == 0 && leaderId != 255)
+                game->sendGameEventIfConnected(leaderId,
+                    new PostRemoteEvent(ECHud, 30, false, &order, 4, 0.0f));
+            else
+                eventManager->postEvent(ECHud, 30, &order, 0.0f);
+        }
+        else if (leaderId == 255)
             eventManager->postEvent(ECHud, 30, &order, 0.0f);
         else
             game->sendGameEventIfConnected(leaderId,
