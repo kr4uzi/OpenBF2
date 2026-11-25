@@ -52,6 +52,71 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Retail clients:** for a server or shared fix, why an unmodified retail client is unaffected.
 - **Source:** the files, and the issue where one exists.
 
+## AI asset requests
+
+### AI asset grants work in single player
+
+- **Retail:** A single-player squad leader with no commander hears the request announcement,
+  but receives no asset even when the AI grants the request. Requests on cooldown get a delayed
+  denial; ready requests clear their pending state and then fail asset authorization.
+  `SquadManager::issueRequest` (`BF2.exe` 0x4E60F0; dedicated PE 0x45E710; Linux x86
+  0x0811DAE0) posts ECAI/15. AIDLL request handlers (0x100BB730, 0x100BB920, 0x100BBA40,
+  0x100BBB60) call the engine commander, whose events are dispatched locally with sender -1
+  (`BF2.exe` 0x4DEA52; ELF `BFCommander` 0x0840F480–0x0840F740). UAV (0x540190), artillery
+  (0x540410) and supply (0x5423A0) authorization narrows that sender to byte 255 and compares
+  it with the full commander ID -1, rejecting the AI's grant. Vehicle drops use the same
+  comparison and remain outside this fix. These conclusions follow the retail instructions;
+  an on-screen retail reproduction has not been run.
+- **OpenBF2:** In single-player games only, UAV, artillery and supply events also accept the
+  exact local sender -1 while the team's commander ID is -1. The game must be non-dedicated,
+  have exactly one human registered with `PlayerManager`, and report current map mode `sp1`,
+  `sp2` or `sp3` (case-insensitive). Missing game/player managers refuse the exception.
+  A network sender 255, another player, or another negative
+  integer gains no new authority. An occupied commander seat keeps retail authorization,
+  and human commander assignment still disables the AI's automatic request handling
+  (AIDLL 0x100B9330). Scans and vehicle drops retain retail authorization. No cooldown,
+  artillery availability, target, asset-health or manager checks change.
+
+  The AI starts with UAV unavailable for 10 seconds and the other requests for 60 seconds;
+  resuming after a human commander resigns restarts those waits. A request must be strictly
+  later than its timer. A ready request queues the asset for the next engine update and clears
+  its pending request. UAV then rearms for 30 seconds; artillery, supplies and vehicle drop
+  rearm for 60 seconds independently, per team. Cooldown denials and artillery-unavailable
+  answers remain delayed by 2–5 seconds. No request is held until its cooldown ends: the
+  squad leader must request again.
+
+  A ready UAV request can start coverage at the requested position if the UAV is alive and
+  its tool timer is ready (stock coverage 30 seconds plus 5 seconds reload; the separate AI
+  timer is only 30 seconds). Artillery still needs surviving guns and a valid target and
+  retains its own firing interval and 60-tick launch delay (2 seconds at 30 ticks/second),
+  followed by projectile travel. Supplies retain the drop manager's
+  59.900002-second throttle and normal parachute descent. Vehicle-drop requests still clear
+  when the AI grants them but produce no vehicle without a commander, because this fix does
+  not change `DropVehicleEvent`. No positive delivery or impact time is guaranteed by an
+  authorization check.
+
+  Retail's menu classifies `sp1`/`sp2`/`sp3` as "Singleplayer" and distinguishes `gpm_coop`
+  as "Co-op" (`SwiffPlayer.dll` 0x10053755–0x10053844). Its map-list producer selects these
+  single-player layers by size when bots are selected but explicitly preserves `gpm_coop`
+  (0x10051D05–0x10051D9B). `HudInformationLayer`'s `SinglePlayerActive` flag only tests
+  `sp1`, so it would omit the other two layers. No universal engine single-player predicate
+  was established. This fix uses the menu classification, additionally restricted to a
+  sole-human listen host: retail's map-vote path checks non-dedicated operation and exactly
+  one human (`BF2.exe` 0x5BF759–0x5BF773); `isDedicated` reads its runtime flag at 0x440510.
+  `PlayerManager::getNumberOfHumanPlayers` counts non-AI players without a connected-state
+  filter (Linux x86 ELF 0x083027B0). Internet/LAN flags and maximum-player settings are not
+  used as a single-player identity because multiplayer co-op can share them.
+- **Applies to:** Single-player games only, on all platforms, under the condition above.
+  Dedicated servers, multiplayer co-op (including a host playing alone), other modes and any
+  server with more than the hosting human keep retail's authorization behavior. An occupied
+  commander seat or inactive AI keeps existing request handling.
+- **Retail clients:** Multiplayer servers keep retail behavior. No ABI, packet, serialized
+  field, event ID or content format changes; the local single-player game uses existing
+  request and asset events. Connect, load, join, play and reconnect have not been exercised.
+- **Source:** `Code/BF2/Game/GameEvents/UAVEvent.cpp`, `ArtilleryEvent.cpp`,
+  `SupplyDropEvent.cpp`, `SinglePlayerAIGrant.h`; `Code/Tests/commander_requests_runtime.cpp`
+  and `commander_requests_runtime.py`.
+
 ## Client
 
 ### Shared zipline ride sound detaches from a destroyed container
