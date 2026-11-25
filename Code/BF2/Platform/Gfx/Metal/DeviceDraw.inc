@@ -295,6 +295,7 @@
         FFDraw ff;
         if(!vs) { if(const char* why=fixedFunctionVertex(*decl,ff)) { drawOutcome="refused state (skipped)"; skipRefused(why); return D3D_OK; } }
         const auto& r=state.raw.render;
+        call.aliased=r[161]==0; // D3DRS_MULTISAMPLEANTIALIAS FALSE (DrawBridge.inc passFor)
         if(call.state.clipMask) { drawOutcome="refused state (skipped)"; skipRefused("IDirect3DDevice9::Draw state D3DRS_CLIPPLANEENABLE (user clip planes)"); return D3D_OK; }
         if(call.state.srgbWrite) { drawOutcome="refused state (skipped)"; skipRefused("IDirect3DDevice9::Draw state D3DRS_SRGBWRITEENABLE"); return D3D_OK; }
         for(unsigned i=0;i<21;++i) {

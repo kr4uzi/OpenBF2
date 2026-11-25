@@ -244,6 +244,7 @@ private:
     // [CHOSEN, not recovered] HiDPI menu text state. A replaced atlas
     // stays referenced until detachDevice: the FontRenderer may still hold it for a pending batch.
     void*        m_hidpiRetired = 0;
+    float        m_hidpiError = 1e9f;   // fit error of the HiDPI atlas in m_atlas; 1e9: none yet
 };
 
 // PE 0x100A34D0
@@ -978,11 +979,14 @@ void hidpiProcessPending()
 
 } // namespace
 
-// 1: *outTexture holds a new reference to the rebuilt atlas. 0: no matching outlines yet (retry
-// once more movies are loaded). -1: never (disabled, unreadable or coloured atlas).
-int hidpiBuildFontTexture(const std::string& base, const char* exportName, int N, void** outTexture)
+// 1: *outTexture holds a new reference to the rebuilt atlas. 0: no matching outlines yet, or none
+// better than *error (retry once more movies are loaded). -1: never (disabled, unreadable or
+// coloured atlas).
+int hidpiBuildFontTexture(const std::string& base, const char* exportName, int N, void** outTexture,
+                          float* error)
 {
     *outTexture = 0;
+    const float toBeat = error ? *error : 1e9f;
     if (N < 2)
         return -1;
     const auto* provider = movieOutlines();
@@ -1026,7 +1030,9 @@ int hidpiBuildFontTexture(const std::string& base, const char* exportName, int N
         const HiDpiChoice f = hidpiFit(outlines, exportList, i, fit, nominal, false, q.em, scratch);
         if (f.err < choice.err) { choice = f; list = exportList; }
     }
-    if (choice.err > kHiDpiMaxError)
+    // The exported font alone is trusted only when it fits well: the movies do not always export
+    // the typeface a .dif was rendered from under the .dif's name.
+    if (choice.err > kHiDpiConfidentError)
     {
         std::vector<HiDpiChoice> quick;
         for (int i = 0; i < starCount; ++i)
@@ -1041,7 +1047,7 @@ int hidpiBuildFontTexture(const std::string& base, const char* exportName, int N
             if (f.err < choice.err) { choice = f; list = "*"; }
         }
     }
-    if (choice.cand < 0 || choice.err > kHiDpiMaxError)
+    if (choice.cand < 0 || choice.err > kHiDpiMaxError || !(choice.err < toBeat))
         return 0;
 
     // The atlas at N x: the shipped bitmap resampled, then every glyph with an outline redrawn.
@@ -1099,6 +1105,8 @@ int hidpiBuildFontTexture(const std::string& base, const char* exportName, int N
     if (!texture)
         return -1;
     *outTexture = texture;
+    if (error)
+        *error = choice.err;
     ::renddx9abi::logf("[FontSystem] HiDPI \"%s\": SWF %s \"%s\", EM %.2f px, baseline %.2f, error %.3f; "
                        "atlas %ux%u -> %ux%u, %u of %u glyphs from outlines",
                        base.c_str(), list == exportList ? exportName : "*",
@@ -1155,13 +1163,21 @@ void DifFont::hidpiUpgrade()
     if (N < 2) N = 2;
     if (N > 4) N = 4;
     void* hi = 0;
-    const int result = hidpiBuildFontTexture(m_directory + m_key, name.c_str(), N, &hi);
+    // A weak fit (above kHiDpiConfidentError) stays pending: which typefaces are loaded depends on
+    // the order the movies load in (main menu first, or a direct start into the loading screen),
+    // and a later movie may hold the one the .dif was rendered from. It is replaced only by a
+    // better fit.
+    float error = m_hidpiError;
+    const int result = hidpiBuildFontTexture(m_directory + m_key, name.c_str(), N, &hi, &error);
     if (result == 0)
     {
         hidpiAddPending(this, [](void* self) { static_cast<DifFont*>(self)->hidpiUpgrade(); });
         return;
     }
-    hidpiRemovePending(this);
+    if (result < 0 || !hi || error <= kHiDpiConfidentError)
+        hidpiRemovePending(this);
+    else
+        hidpiAddPending(this, [](void* self) { static_cast<DifFont*>(self)->hidpiUpgrade(); });
     if (result < 0 || !hi)
         return;
     if (m_hidpiRetired)
@@ -1172,6 +1188,7 @@ void DifFont::hidpiUpgrade()
     }
     m_hidpiRetired = m_atlas;
     m_atlas = hi;
+    m_hidpiError = error;
 }
 
 

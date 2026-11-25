@@ -122,3 +122,60 @@ static int msaaOverlayDepthChecks(IDirect3DDevice9* d, D3DPRESENT_PARAMETERS& pp
     std::puts("PASS: multisampled overlay depth-stencil bracket leaves the device count unchanged; a leaked depth reference refuses Reset");
     return 0;
 }
+// D3DRS_MULTISAMPLEANTIALIAS FALSE on the multisampled back buffer (RendDX9 PE 0x100306D2: the HUD,
+// name tags, debug text and console run with it). A glyph quad as Font::Ported draws it: D3D9
+// screen coordinates on whole pixels (edges through pixel centres), u biased half a texel, linear
+// filtering, an atlas whose cells touch (Fonts/BF1942.font has no gutter). D3D9 writes every sample
+// with the pixel centre's coverage and value: exactly the cell's four texels, nothing beside them.
+// With multisampling on, the edge pixels are half covered and the right one shows the next cell.
+static int msaaAliasedGlyphChecks(IDirect3DDevice9* d) {
+    IDirect3DSurface9 *back = nullptr, *single = nullptr, *sys = nullptr;
+    IDirect3DTexture9* atlas = nullptr;
+    CHECK(d->GetRenderTarget(0,&back) == D3D_OK);
+    D3DSURFACE_DESC bd = {}; CHECK(back->GetDesc(&bd) == D3D_OK && bd.MultiSampleType != D3DMULTISAMPLE_NONE);
+    CHECK(d->CreateRenderTarget(bd.Width,bd.Height,bd.Format,D3DMULTISAMPLE_NONE,0,FALSE,&single,nullptr) == D3D_OK);
+    CHECK(d->CreateOffscreenPlainSurface(bd.Width,bd.Height,bd.Format,D3DPOOL_SYSTEMMEM,&sys,nullptr) == D3D_OK);
+    CHECK(d->CreateTexture(8,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&atlas,nullptr) == D3D_OK);
+    { D3DLOCKED_RECT lock = {}; CHECK(atlas->LockRect(0,&lock,nullptr,0) == D3D_OK);
+      unsigned* p = static_cast<unsigned*>(lock.pBits);
+      for (int i = 0; i < 8; ++i) p[i] = i < 4 ? 0xffff0000u : 0xffffffffu;   // cell A red, cell B white
+      CHECK(atlas->UnlockRect(0) == D3D_OK); }
+    struct V { float x,y,z,rhw,u,v; };
+    const float u0 = 0.5f / 8.0f, u1 = u0 + 4.0f / 8.0f;
+    const V quad[4] = {{2,2,0.5f,1,u0,0.5f},{6,2,0.5f,1,u1,0.5f},{2,6,0.5f,1,u0,0.5f},{6,6,0.5f,1,u1,0.5f}};
+    CHECK(d->SetVertexShader(nullptr) == D3D_OK && d->SetPixelShader(nullptr) == D3D_OK);
+    CHECK(d->SetRenderState(D3DRS_ZENABLE,0) == D3D_OK && d->SetRenderState(D3DRS_CULLMODE,1) == D3D_OK);
+    CHECK(d->SetTexture(0,atlas) == D3D_OK);
+    const DWORD stage[4][2] = {{1,2},{2,2},{4,2},{5,2}};   // COLOROP/ALPHAOP SELECTARG1, ARG1 TEXTURE
+    for (const auto& st : stage) CHECK(d->SetTextureStageState(0,static_cast<D3DTEXTURESTAGESTATETYPE>(st[0]),st[1]) == D3D_OK);
+    CHECK(d->SetSamplerState(0,D3DSAMP_ADDRESSU,3) == D3D_OK && d->SetSamplerState(0,D3DSAMP_ADDRESSV,3) == D3D_OK);
+    CHECK(d->SetSamplerState(0,D3DSAMP_MAGFILTER,2) == D3D_OK && d->SetSamplerState(0,D3DSAMP_MINFILTER,2) == D3D_OK &&
+          d->SetSamplerState(0,D3DSAMP_MIPFILTER,0) == D3D_OK);
+    CHECK(d->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1) == D3D_OK);
+    unsigned row[2][8] = {};
+    for (int pass = 0; pass < 2; ++pass) {
+        CHECK(d->SetRenderTarget(0,back) == D3D_OK);
+        CHECK(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,pass ? FALSE : TRUE) == D3D_OK);
+        CHECK(d->BeginScene() == D3D_OK && d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff0000ffu,1.0f,0) == D3D_OK);
+        CHECK(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)) == D3D_OK && d->EndScene() == D3D_OK);
+        CHECK(d->StretchRect(back,nullptr,single,nullptr,D3DTEXF_NONE) == D3D_OK);
+        CHECK(d->GetRenderTargetData(single,sys) == D3D_OK);
+        D3DLOCKED_RECT locked = {}; CHECK(sys->LockRect(&locked,nullptr,D3DLOCK_READONLY) == D3D_OK);
+        const unsigned* line = reinterpret_cast<const unsigned*>(static_cast<const unsigned char*>(locked.pBits) + locked.Pitch * 3);
+        for (int x = 0; x < 8; ++x) row[pass][x] = line[x] & 0xffffffu;
+        CHECK(sys->UnlockRect() == D3D_OK);
+    }
+    std::printf("glyph row, multisampling on:  %06x %06x | %06x %06x %06x %06x | %06x %06x\n",
+                row[0][0],row[0][1],row[0][2],row[0][3],row[0][4],row[0][5],row[0][6],row[0][7]);
+    std::printf("glyph row, MULTISAMPLEANTIALIAS FALSE: %06x %06x | %06x %06x %06x %06x | %06x %06x\n",
+                row[1][0],row[1][1],row[1][2],row[1][3],row[1][4],row[1][5],row[1][6],row[1][7]);
+    // FALSE: the cell's texels exactly, the background beside them.
+    CHECK(row[1][1] == 0x0000ffu && row[1][6] == 0x0000ffu);
+    for (int x = 2; x < 6; ++x) CHECK(row[1][x] == 0xff0000u);
+    // On: the right edge pixel is half covered with the next cell's white (the console's stray marks).
+    CHECK(row[0][6] != 0x0000ffu && ((row[0][6] >> 16) & 0xff) > 0x40 && ((row[0][6] >> 16) & 0xff) < 0xc0);
+    CHECK(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE) == D3D_OK && d->SetTexture(0,nullptr) == D3D_OK);
+    atlas->Release(); sys->Release(); single->Release(); back->Release();
+    std::puts("PASS: MULTISAMPLEANTIALIAS FALSE draws a whole-pixel glyph quad on the 4x back buffer without edge coverage or bleed");
+    return 0;
+}

@@ -312,6 +312,23 @@ This intentional client policy applies on every rebuilt platform; profile status
 movie files, native joining and packet behavior are unchanged. Live dialog/join
 validation remains coordinator work.
 
+## Overlays without multisampling
+
+Under multisampling, RendDX9 draws its overlays (the HUD, name tags, debug text, the frame
+counter and the console) with `D3DRS_MULTISAMPLEANTIALIAS` off (`Renderer::render`, PE
+0x100306D2). D3D9 then writes every sample with the pixel centre's coverage and colour: the
+overlays come out aliased, as without multisampling. Their quads use the D3D9 pixel-centre
+convention, so their edges run through pixel centres; `Font::Ported` relies on that for its
+half-texel coordinates. The Metal backend used to ignore the state. With the standard sample
+positions every edge pixel was then half covered: at 8x every glyph of the console font got a
+half-intensity column on each side, and the right-hand one showed the first column of the next
+atlas cell (the font has no gutter). `[CHOSEN, not recovered]` emulation in
+`Platform/Gfx/Metal/DrawBridge.inc` (`passFor`): a draw with the state off on a multisampled target
+runs in a render pass whose sample positions all lie on the pixel centre. A change of the state
+starts a new pass. A GPU without programmable sample positions keeps the standard positions. The
+GPU check `macos_metal_device` (`msaaAliasedGlyphChecks`) draws a glyph quad on the 4x back buffer
+with the state on and off.
+
 ## Offline shader coverage (S1c)
 
 The owner-requested S1c coverage work keeps all engine
