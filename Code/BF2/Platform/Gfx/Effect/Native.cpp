@@ -22,7 +22,6 @@
 #include <system_error>
 #include <thread>
 #if defined(__APPLE__)
-#include "../../macOS/ShaderCompileActivity.h"
 #include <pthread.h>
 #include <pthread/qos.h>
 #endif
@@ -258,13 +257,7 @@ struct Parallel final : ShaderBackend {
         };
         unsigned n = std::min<size_t>(std::max(1u, std::thread::hardware_concurrency()), jobs.size());
         std::vector<std::thread> threads;
-        for (unsigned i = 1; i < n; ++i) threads.emplace_back([&] {
-#if defined(__APPLE__)
-            // [CHOSEN, not recovered] Nested shader jobs must not inherit background priority.
-            pthread_set_qos_class_self_np(bf2macos::shaderCompileQos(qos_class_self()), 0);
-#endif
-            work();
-        });
+        for (unsigned i = 1; i < n; ++i) threads.emplace_back(work);
         work();
         for (auto& t : threads) t.join();
     }
@@ -292,7 +285,7 @@ void quiet() {
 const char kTag[] = "BF2FX-native-request\0";
 
 // [CHOSEN, not recovered] Serviced builds start immediately, independently of the queue. On
-// macOS keep an 8 MiB stack (the main thread's budget) and at least User Initiated QoS. The detached
+// macOS keep an 8 MiB stack (the main thread's budget) and the caller's QoS class. The detached
 // thread owns its work; setup failures throw instead of blocking the caller with an inline build.
 void startThread(std::function<void()> body) {
 #if defined(__APPLE__)
@@ -302,7 +295,8 @@ void startThread(std::function<void()> body) {
     if (error) throw std::system_error(error, std::generic_category(), "native effect thread attributes");
     error = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     if (!error) error = pthread_attr_setstacksize(&attr, size_t(8) << 20);
-    if (!error) error = pthread_attr_set_qos_class_np(&attr, bf2macos::shaderCompileQos(qos_class_self()), 0);
+    const auto qos = qos_class_self();
+    if (!error && qos != QOS_CLASS_UNSPECIFIED) error = pthread_attr_set_qos_class_np(&attr, qos, 0);
     pthread_t thread;
     if (!error) error = pthread_create(&thread, &attr, [](void* p) -> void* {
         const std::unique_ptr<std::function<void()>> run(static_cast<std::function<void()>*>(p));
@@ -397,10 +391,6 @@ private:
         for (unsigned i = 0; i < n; ++i) std::thread([this] { worker(); }).detach();
     }
     void worker() {
-#if defined(__APPLE__)
-        // [CHOSEN, not recovered] Queue builds serve the level even while the app is inactive.
-        pthread_set_qos_class_self_np(bf2macos::shaderCompileQos(qos_class_self()), 0);
-#endif
         for (;;) {
             std::shared_ptr<Job> job;
             {
@@ -475,10 +465,6 @@ bool skeleton(const std::string& text, Entry& out, std::string& error) {
 }
 
 Entry compile(const Request& r, const std::string* pre) {
-#if defined(__APPLE__)
-    // [CHOSEN, not recovered] End the App Nap exemption on every success, refusal or exception.
-    const bf2macos::ShaderCompileActivity activity;
-#endif
     quiet();
     Entry e;
     e.key = cacheKey(r);

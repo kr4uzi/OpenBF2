@@ -241,28 +241,12 @@ if(BF2_FX_NATIVE_AVAILABLE)
     # [CHOSEN, not recovered] Headless check of a wait for a build with a caller service (Native.h,
     # Service; the macOS client is its user): no game, window, GPU or effect cache is started.
     if(APPLE)
-        # [CHOSEN, not recovered] Foundation activity lifetime is shared by native effect and
-        # Metal builds. It has no window, host or GPU dependency and is absent from the server.
-        enable_language(OBJCXX)
-        target_sources(bf2_fx_native_compiler PRIVATE ../../macOS/ShaderCompileActivity.mm)
-        set_target_properties(bf2_fx_native_compiler PROPERTIES OBJCXX_STANDARD 17)
-        set_source_files_properties(../../macOS/ShaderCompileActivity.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-        target_link_libraries(bf2_fx_native_compiler PUBLIC "-framework Foundation")
-        add_executable(bf2_shader_compile_activity_check EXCLUDE_FROM_ALL
-            "${BF2_FX_REPO}/Code/Tests/macos_fx_runtime/compile_activity.mm")
-        target_link_libraries(bf2_shader_compile_activity_check PRIVATE bf2_fx_native_compiler)
-        set_target_properties(bf2_shader_compile_activity_check PROPERTIES OBJCXX_STANDARD 17)
-        target_compile_definitions(bf2_shader_compile_activity_check PRIVATE DEDICATED=0 BF2_IMAGE_RENDDX9=1)
-        target_compile_options(bf2_shader_compile_activity_check PRIVATE
-            "SHELL:-include ${BF2_ROOT}/Core/BuildConfig.h" -fobjc-arc -Wall -Wextra -Werror)
         add_executable(bf2_fx_wait_check EXCLUDE_FROM_ALL "${BF2_FX_REPO}/Code/Tests/macos_fx_runtime/native_wait.cpp")
         target_link_libraries(bf2_fx_wait_check PRIVATE bf2_fx_native_compiler)
         target_compile_definitions(bf2_fx_wait_check PRIVATE DEDICATED=0 BF2_IMAGE_RENDDX9=1)
         target_compile_options(bf2_fx_wait_check PRIVATE
             "SHELL:-include ${BF2_ROOT}/Core/BuildConfig.h" -Wall -Wextra -Werror)
         if(BUILD_TESTING)
-            add_test(NAME bf2_shader_compile_activity_check COMMAND bf2_shader_compile_activity_check)
-            set_tests_properties(bf2_shader_compile_activity_check PROPERTIES TIMEOUT 30)
             add_test(NAME bf2_fx_wait_check COMMAND bf2_fx_wait_check)
             set_tests_properties(bf2_fx_wait_check PROPERTIES TIMEOUT 250)
         endif()

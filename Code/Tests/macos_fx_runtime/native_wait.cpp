@@ -169,8 +169,7 @@ void run() {
 #if defined(__APPLE__)
     std::printf("build threads: worker qos 0x%lx stack %zu KiB, with a service qos 0x%lx stack %zu KiB\n",
                 s.worker.qos, s.worker.stack / 1024, s.serviced.qos, s.serviced.stack / 1024);
-    check(s.worker.qos == QOS_CLASS_USER_INITIATED, "the queue worker uses User Initiated QoS despite a Utility caller");
-    check(s.serviced.qos == QOS_CLASS_USER_INITIATED, "the serviced build uses User Initiated QoS despite a Utility caller");
+    check(s.serviced.qos == qos_class_self(), "the build's thread has the waiting thread's QoS class");
     check(s.serviced.stack >= (size_t(8) << 20), "the build's thread has the main thread's stack size");
 #endif
 
@@ -278,8 +277,8 @@ int main() {
     }).detach();
     setenv("BF2_FX_NATIVE_THREADS", "1", 1); // One queue worker, which step 1 occupies.
 #if defined(__APPLE__)
-    // [TEMP] A background caller must not consign required effect builds to Utility QoS.
-    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    // A class that a new thread does not get by default (and not the main thread's own either).
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
 #endif
     try {
         run();

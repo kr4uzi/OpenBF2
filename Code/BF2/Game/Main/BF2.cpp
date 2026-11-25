@@ -62,9 +62,6 @@ namespace memory { void memory_update_modules(const char*) { } }
 #  include "BF2Console.h"                            // IMenuLogic::getConsole()->getConsoleActive()
 #  include "../../Platform/Host/ClientHost.h"
 #  include "../../Platform/macOS/MacSystem.h"
-#  if defined(__APPLE__)
-#    include "../../Platform/Gfx/Metal/EffectShaders.h"
-#  endif
 #endif
 
 namespace dice {
@@ -263,10 +260,6 @@ void BF2::handleInGameWinMessages()
     }
 
 #if defined(__APPLE__)
-    // [CHOSEN, not recovered] Completed effects must feed Metal prebuild even when focus loss
-    // skips menu/world rendering and Present. No drawable or focused window is needed here.
-    bf2metal::createFinishedEffectShaders();
-
     // [CHOSEN, not recovered] Native full-screen controls and live GSFullScreen changes use
     // the same renderer reset, settings update and event as Alt+Enter. Startup pumps can run
     // before the renderer exists; synchronize only after its initialization.
