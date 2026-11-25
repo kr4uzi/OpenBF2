@@ -454,6 +454,19 @@ bool renderable(Frame* f)
         size.width > 0 && size.height > 0 && bounds.width > 0 && bounds.height > 0;
 }
 #if defined(BF2_METAL_DEVICE_TESTING)
+// [TEMP] Harness-only drawable capture (MetalBridge.h).
+struct TestDrawableCapture { bool armed=false; id<MTLBuffer> buffer=nil; id<MTLCommandBuffer> commands=nil; unsigned width=0, height=0; };
+static TestDrawableCapture testDrawableCapture;
+void captureNextPresentedDrawable() { testDrawableCapture=TestDrawableCapture{}; testDrawableCapture.armed=true; }
+bool presentedDrawablePixels(std::uint32_t* out, unsigned capacity, unsigned& width, unsigned& height)
+{
+    if(!testDrawableCapture.buffer || !testDrawableCapture.commands) return false;
+    [testDrawableCapture.commands waitUntilCompleted];
+    width=testDrawableCapture.width; height=testDrawableCapture.height;
+    if(std::size_t(width)*height>capacity) return false;
+    std::memcpy(out,testDrawableCapture.buffer.contents,std::size_t(width)*height*4);
+    return true;
+}
 void armCommandBufferFailure(Frame* f)
 {
     mainThread("bf2metal::armCommandBufferFailure");
@@ -629,6 +642,22 @@ PresentResult present(Frame* f,void* window,bool doNotWait)
             [e setFragmentTexture:f->color atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4]; [e endEncoding];
         }
+        if(!presentOpaqueAlpha(f,drawable.texture)) return PresentResult::lost;   // [CHOSEN] MenuBridge.inc
+#if defined(BF2_METAL_DEVICE_TESTING)
+        if(testDrawableCapture.armed && !doNotWait) {
+            testDrawableCapture.armed=false;
+            const NSUInteger w=drawable.texture.width, h=drawable.texture.height;
+            testDrawableCapture.buffer=[f->device newBufferWithLength:w*h*4 options:MTLResourceStorageModeShared];
+            id<MTLBlitCommandEncoder> copy=testDrawableCapture.buffer?[f->commands blitCommandEncoder]:nil;
+            if(copy) {
+                [copy copyFromTexture:drawable.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+                    sourceSize:MTLSizeMake(w,h,1) toBuffer:testDrawableCapture.buffer destinationOffset:0
+                    destinationBytesPerRow:w*4 destinationBytesPerImage:w*h*4];
+                [copy endEncoding];
+                testDrawableCapture.commands=f->commands; testDrawableCapture.width=unsigned(w); testDrawableCapture.height=unsigned(h);
+            }
+        }
+#endif
         if(f->prebuild) f->prebuild->presents=f->presents+1;
         if(++f->presents%1200==0) { prebuildSummary(f); framesSummary(f); } // traced runs only
         PresentCapture* capture=presentCaptureBegin(f);  // [TEMP] BF2_PRESENT_PNG

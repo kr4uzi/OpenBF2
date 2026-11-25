@@ -127,10 +127,12 @@ Each entry is a heading that names the fix, followed by these fields:
   back buffer with the render-pass alpha described in the entry above. D3D9 on Windows ignores
   that alpha. A presenter that honours it shows the shadowed High terrain as black holes in the
   middle distance; retail shows this under Parallels' D3D9.
-- **OpenBF2:** Before each Present of an A8R8G8B8 back buffer that is the current render target,
-  one full-screen draw writes alpha 1: alpha-only colour writes, no depth, stencil, alpha test,
-  blending, fog or scissor, and a pixel shader that outputs 1. All changed states, the viewport and
-  the bound shaders are restored. RGB, depth, stencil and every pass's output before Present are
+- **OpenBF2:** Before each Present of an A8R8G8B8 back buffer, one full-screen draw into that
+  swap chain's back buffer writes alpha 1, whatever render target the frame left current (with
+  post-production and multisampling it can be the scene target): alpha-only colour writes, no
+  depth-stencil surface, no depth, stencil, alpha test, blending, fog or scissor, and a pixel
+  shader that outputs 1. The quad overshoots the clip space, so multisampled edge pixels are fully
+  covered. The render target, depth-stencil surface, viewport, states and shaders are restored. RGB, depth, stencil and every pass's output before Present are
   unchanged. X8R8G8B8 and 16-bit back buffers are skipped. If the shaders cannot be created on a
   device, a log line says so once and Present continues as in retail.
 - **Applies to:** Client; all platforms.
