@@ -144,6 +144,24 @@ receive-thread completion. A successful startup test therefore also checks clean
 immediate port reuse, and reload. Record the configuration and paths exercised with every
 test result; the presence of these methods does not establish runtime coverage.
 
+## Debugger detection at startup
+
+`[CHOSEN, not recovered]` `Core/SystemInfo.cpp` returns false from
+`PosixSystemInfo::getIsDebuggerInstalled` on every platform, retaining the Linux server's
+answer (ia-32 ELF `0x083D2C80`) on Windows too. Retail Windows (`BF2.exe` `0x004C47A0`,
+`bf2_w32ded.exe` `0x00442990`) reads `SOFTWARE\Dice`'s `forceNoDebugger` override
+(`BF2.exe` `0x004C47C8`, `0x004C47E5`, `0x004C4809`), tests the Visual Studio 7.0/7.1
+Visual C++ registry keys (`0x004C48DE`, `0x004C4900`), and reads AeDebug's `Debugger`
+value (`0x004C4922`, `0x004C4945`, `0x004C4967`). It excludes commands containing
+`drwtsn32` or `drwatson` (`0x004C4992`, `0x004C49B8`) and returns a Boolean
+(`0x004C4A14`). This queries debugger registrations.
+
+When retail would report a registered debugger, OpenBF2 still takes the no-debugger
+startup choices: `BF2Engine::init` clears `hack-ignore-asserts` to `0` for non-dedicated
+clients, and the Windows `bf2WinMain` wrapper in `Game/Main/BF2.cpp` keeps its SEH
+crash-dump scope unless `+seh 0` is supplied. Retail's true answer skips that flag reset
+and bypasses the SEH scope. Dedicated mode queries the answer without resetting the flag.
+
 ## Client audio defaults
 
 `[CHOSEN, not recovered]` New profiles and an explicit restore of audio defaults use

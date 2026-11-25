@@ -583,6 +583,23 @@ Each entry is a heading that names the fix, followed by these fields:
 
 ## Client and server
 
+### Windows computer names keep all 15 characters
+
+- **Retail:** `GetComputerNameA` receives capacity 15 (`BF2.exe` `0x004C4717`,
+  `0x004C471E`; `bf2_w32ded.exe` `0x004428D0`, capacity store `0x004428EF`). A
+  15-character computer name needs 16 bytes including its terminator, so the call fails
+  and the cached name becomes `"unknown"` (`BF2.exe` `0x004C4728`–`0x004C4740`).
+  With no configured server name, `getServerName` produces `"BF2 server on unknown"`
+  (`bf2_w32ded.exe` `0x0054D250`). `SwiffHost::getComputerName` also exposes the cached name.
+- **OpenBF2:** Passes the full 255-byte buffer capacity, preserving all 15 characters.
+  Query failures still cache `"unknown"`.
+- **Applies to:** Client and server; Windows.
+- **Retail clients:** The default server-name text contains the actual computer name;
+  configured server names, protocol fields, file formats and gameplay behavior are unchanged.
+  Retail clients already accept the same text from an explicitly configured server name.
+- **Source:** `Code/BF2/Core/SystemInfo.cpp`, `Code/BF2/Game/Utility/BuildNrUtil.cpp`,
+  `Code/BF2/Menu/SwiffHost.cpp`
+
 ### Distributed lightmap jobs start numbering at zero
 
 - **Retail:** `DistributedLightRenderer`'s constructors leave the job counter at `+0x08`
