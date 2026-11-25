@@ -132,6 +132,8 @@ static bool depthHasStencil(MTLPixelFormat f)
 // MSL -> library. Runs on the render thread or a worker, without the mutex.
 static void compileLibrary(id<MTLDevice> device, LibraryEntry& e)
 {
+    // [CHOSEN, not recovered] Builds must progress equally in an occluded application.
+    const bf2macos::ShaderCompileActivity activity;
     @autoreleasepool {
         NSError* error = nil;
         NSString* source = [[NSString alloc] initWithBytes:e.msl.data() length:e.msl.size() encoding:NSUTF8StringEncoding];
@@ -160,6 +162,7 @@ static void compileLibrary(id<MTLDevice> device, LibraryEntry& e)
 static id<MTLRenderPipelineState> makePipeline(id<MTLDevice> device, const PipelineRecipe& r, id<MTLFunction> vertex,
                                                id<MTLFunction> fragment, std::string& error)
 {
+    const bf2macos::ShaderCompileActivity activity; // [CHOSEN, not recovered] includes compiler failures
     @autoreleasepool {
         MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
         for (const auto& in : r.attributes) {
@@ -197,7 +200,7 @@ static id<MTLRenderPipelineState> makePipeline(id<MTLDevice> device, const Pipel
 
 // Brings an entry to Ready or Failed: builds it when no thread has started it, waits when another
 // thread is building it. The lock is held on entry and on return and released in between. The
-// render thread (urgent) lends the building thread its priority and holds back new low-priority
+// render thread (urgent) lends the building thread its priority and holds back new batch
 // jobs while it waits.
 template<class Entry, class Build>
 static void settle(Prebuild* p, std::unique_lock<std::mutex>& lock, Entry& e, bool urgent, Build build)
@@ -316,7 +319,9 @@ static void buildBatch(Prebuild* p, std::unique_lock<std::mutex>& lock, Prebuild
 }
 static void prebuildWorker(Prebuild* p)
 {
-    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    // [CHOSEN, not recovered] Library batches serve the requested level, including when hidden.
+    // Sleeping workers hold no activity and consume no CPU; urgent draws can still lend priority.
+    pthread_set_qos_class_self_np(bf2macos::shaderCompileQos(qos_class_self()), 0);
     pthread_setname_np("bf2 metal prebuild");
     std::unique_lock<std::mutex> lock(p->mutex);
     for (;;) {
@@ -328,14 +333,12 @@ static void prebuildWorker(Prebuild* p)
             p->jobs.pop_front();
             job->queued = false;
             if (job->state != BuildState::Queued) continue;
-            // A draw is missing until this is built: ahead of the batches, at a higher priority.
-            pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+            // A draw is missing until this is built: ahead of the batches.
             const auto started = std::chrono::steady_clock::now();
             settlePipeline(p, lock, *job, false);
             job->readyFrame = p->presents;
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++p->pipelineBackground; p->backgroundMs += ms;
-            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
             lock.unlock();
             bf2hitch::add(bf2hitch::MetalPipeline, ms, "background, for a skipped draw");
             lock.lock();

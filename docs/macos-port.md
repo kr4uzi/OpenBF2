@@ -295,7 +295,7 @@ The longest stretches of a first load (no cached effects yet) are waits for nati
 facade therefore waits with a service (`bf2fx::native::wait`, `Service`) that calls
 `ClientHost::serviceWhileBusy()` about every 50 ms. The main thread then never runs the build
 itself: a job that no queue worker has started gets a thread of its own at once, with the main
-thread's stack size and QoS class (what the build had on the main thread), and a job that a worker
+thread's stack size and at least User Initiated QoS, and a job that a worker
 is running is waited for in the same timed waits. The synchronous build of a source that the
 refusal table does not know (`bf2fx::native::compile`) runs the same way. Entries, cache writes
 and compiler diagnostics are unchanged; other threads and the Linux client wait as before.
@@ -310,6 +310,41 @@ duplicate submissions/concurrent waiters, completion/service exceptions, refusal
 compiled entries. It uses real compilation; a held completion callback makes the long wait
 deterministic. On-screen loading, cursor animation and the absence of the spinning wait cursor
 still need a client run.
+
+### Shader compilation while the window is in the background
+
+`[CHOSEN, not recovered]` Native effect compilation runs on queue workers or a serviced build
+thread; Metal library batches and queued pipelines run on their own workers. These builds do
+not advance once per frame and do not need a drawable. Deactivating a full-screen window closes
+the engine's frame gate: it sleeps 100 ms and skips menu/world rendering. That policy remains.
+Previously, completed effects only created their device shader objects at `Present`, so an
+inactive client could finish its effect cache
+but leave those effects out of the Metal prebuild queue until it rendered again. The native
+message pump now also publishes completed effects, up to 16 per call, without drawing or
+changing focus. Loading-screen `DONOTWAIT` presentation already acquires drawables on a
+separate worker and returns busy instead of blocking compilation on an occluded window.
+
+Effect queue workers, serviced builds, nested shader workers and Metal prebuild workers now
+use at least User Initiated QoS, preserving User Interactive callers. Metal library batches
+previously used Utility QoS and only queued pipelines or urgent waiters raised it. Each actual
+effect, Metal library or pipeline build also owns a scoped
+`NSActivityUserInitiatedAllowingIdleSystemSleep` activity (`ShaderCompileActivity`), including
+failure and exception paths. This prevents App Nap during compilation; activities end when
+the builds finish, independently for overlapping workers. The client keeps normal background
+menu idling afterwards and allows system/display idle sleep throughout. No permanent App Nap
+disable, focus override or latency-critical I/O request is used.
+
+Headless checks: `bf2_shader_compile_activity_check` observes real Foundation begin/end calls
+for nesting, exceptions and overlapping threads, and checks QoS selection;
+`bf2_fx_wait_check` compiles real effects from a Utility caller and checks the queue and
+serviced build priorities alongside its wait/exception checks. Neither starts a game, window,
+audio device or GPU. Foreground/background throughput and actual App Nap scheduling still
+need an on-screen comparison with `+noSound 1`; code and headless checks establish the lifetime,
+priority and presentation-independent queue paths, not a measured speedup.
+
+On Intel x86_64, the activity check passes with zero failures and the native wait check passes
+41 checks, including User Initiated QoS on both build paths from a Utility caller. Both were
+run directly (`BUILD_TESTING=OFF`). `bf2_client` and `bf2` compile and link with `macos-x64`.
 
 ## G2 graphics subset
 
