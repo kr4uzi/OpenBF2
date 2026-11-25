@@ -196,7 +196,8 @@ public:
     void  wakeUpRagdoll();                                    // SoldierAnimation.cpp
     void  dropHelmetFx();
     void  stopDrowningSound();
-    void  triggerFootStepEffect(int, int);                    // empty
+    // Spawns a nearby third-person material effect; dedicated images do nothing.
+    void  triggerFootStepEffect(int material, int footMaterial);
     void  updateHoldBreathUnderwaterTime(float);              // empty
     void  removeFromLadder();                                 // empty
     // Handles message 6 using the occupant's fire input; alternate fire rearms its latch.
