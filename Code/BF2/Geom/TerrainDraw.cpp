@@ -2005,6 +2005,79 @@ bool terrainTraceEnabled()
     return enabled;
 }
 
+// [TEMP] [CHOSEN, not recovered] [RETIRE-WHEN: terrain-black-hexagons] Depth-test experiment for
+// the terrain colour passes (every terrain draw while the label is "drawFinal"), read once:
+//   BF2_TERRAIN_FINAL_ZFUNC=always        D3DRS_ZFUNC = D3DCMP_ALWAYS
+//   BF2_TERRAIN_FINAL_DEPTH_BIAS=<float>  D3DRS_DEPTHBIAS
+//   BF2_TERRAIN_FINAL_SLOPE_BIAS=<float>  D3DRS_SLOPESCALEDEPTHBIAS
+// Applied on the device after the pass's states are issued and restored right after the draw, so
+// the state manager's mirror stays true. Nothing changes with the variables unset.
+struct TerrainFinalSwitches
+{
+    bool any, always, bias, slope;
+    float depthBias, slopeBias;
+};
+const TerrainFinalSwitches& terrainFinalSwitches()
+{
+    static const TerrainFinalSwitches switches = [] {
+        TerrainFinalSwitches v = {};
+        const char* z = std::getenv("BF2_TERRAIN_FINAL_ZFUNC");
+        v.always = z && std::strcmp(z, "always") == 0;
+        const char* b = std::getenv("BF2_TERRAIN_FINAL_DEPTH_BIAS");
+        v.bias = b && *b;
+        v.depthBias = v.bias ? static_cast<float>(std::atof(b)) : 0.0f;
+        const char* sl = std::getenv("BF2_TERRAIN_FINAL_SLOPE_BIAS");
+        v.slope = sl && *sl;
+        v.slopeBias = v.slope ? static_cast<float>(std::atof(sl)) : 0.0f;
+        v.any = v.always || v.bias || v.slope;
+        if (v.any)
+            std::fprintf(stderr, "[TT] colour-pass depth switches: zfunc=%s depthBias=%.9g slopeBias=%.9g\n",
+                         v.always ? "always" : "pass", v.depthBias, v.slopeBias);
+        return v;
+    }();
+    return switches;
+}
+struct TerrainFinalSaved { bool applied; DWORD zfunc, bias, slope; };
+TerrainFinalSaved g_terrainFinalSaved = {};
+bool g_terrainTracking = false;   // labels, patches and pending draws are recorded this frame
+
+void terrainFinalApply(IDirect3DDevice9* d)
+{
+    const TerrainFinalSwitches& v = terrainFinalSwitches();
+    TerrainTraceState& s = g_terrainTrace;
+    if (!v.any || !s.pending || !s.label || std::strcmp(s.label, "drawFinal") != 0)
+        return;
+    TerrainFinalSaved& saved = g_terrainFinalSaved;
+    d->GetRenderState(D3DRS_ZFUNC, &saved.zfunc);
+    d->GetRenderState(static_cast<D3DRENDERSTATETYPE>(195), &saved.bias);    // D3DRS_DEPTHBIAS
+    d->GetRenderState(static_cast<D3DRENDERSTATETYPE>(175), &saved.slope);   // D3DRS_SLOPESCALEDEPTHBIAS
+    if (v.always)
+        d->SetRenderState(D3DRS_ZFUNC, 8u);                                   // D3DCMP_ALWAYS
+    if (v.bias)
+    {
+        DWORD bits; std::memcpy(&bits, &v.depthBias, 4);
+        d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(195), bits);
+    }
+    if (v.slope)
+    {
+        DWORD bits; std::memcpy(&bits, &v.slopeBias, 4);
+        d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(175), bits);
+    }
+    saved.applied = true;
+}
+
+void terrainFinalRestore()
+{
+    TerrainFinalSaved& saved = g_terrainFinalSaved;
+    if (!saved.applied)
+        return;
+    IDirect3DDevice9* const d = static_cast<dx9rend::RendDX9Base*>(dx9rend::g_rendererBase)->device;
+    d->SetRenderState(D3DRS_ZFUNC, saved.zfunc);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(195), saved.bias);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(175), saved.slope);
+    saved.applied = false;
+}
+
 // The FLOAT4 constants and samplers a shader declares, from its CTAB comment: name, register set
 // (2 FLOAT4, 3 sampler), first register, count.
 struct TraceConstant { std::string name; unsigned int set, reg, count; };
@@ -2088,6 +2161,7 @@ void traceTargets(IDirect3DDevice9* d)
 void terrainTraceHook(IDirect3DDevice9* d)
 {
     TerrainTraceState& s = g_terrainTrace;
+    terrainFinalApply(d);                             // the colour-pass depth switches, if set
     if (!s.active)
         return;
     const char* const technique = dx9rend::g_traceLastEffect
@@ -2199,7 +2273,9 @@ void terrainTraceFrameBegin(Terrain* terrain)
 {
     TerrainTraceState& s = g_terrainTrace;
     s.active = false;
-    dx9rend::g_terrainTraceDrawHook = 0;
+    s.pending = false;
+    g_terrainTracking = terrainFinalSwitches().any && terrain;
+    dx9rend::g_terrainTraceDrawHook = g_terrainTracking ? &terrainTraceHook : 0;
     if (!terrainTraceEnabled() || !terrain)
         return;
     const auto now = std::chrono::steady_clock::now();
@@ -2213,6 +2289,7 @@ void terrainTraceFrameBegin(Terrain* terrain)
     s.label = "RSMTZOnly";
     s.pending = false;
     g_terrainTraceCoverage.clear();
+    g_terrainTracking = true;
     dx9rend::g_terrainTraceDrawHook = &terrainTraceHook;
     const float* const m = dx9rend::rendererGetRenderView()->getViewMatrixPtr()->m;
     std::fprintf(stderr, "[TT] frame=%u ordinal=%u camera=(%.9g,%.9g,%.9g) lowQuality=%d terrainQuality=%d"
@@ -2225,7 +2302,7 @@ void terrainTraceFrameBegin(Terrain* terrain)
 // Names the system whose draws follow (terrain pass, render queues, overgrowth, undergrowth).
 void terrainTraceLabel(const char* label)
 {
-    if (g_terrainTrace.active)
+    if (g_terrainTracking)
         g_terrainTrace.label = label;
 }
 
@@ -2254,13 +2331,14 @@ void terrainTraceFrameEnd()
     std::fprintf(stderr, "[TT] end frame=%u draws=%u\n", s.frames, s.draws);
     std::fflush(stderr);
     s.active = false;
-    dx9rend::g_terrainTraceDrawHook = 0;
+    g_terrainTracking = terrainFinalSwitches().any;
+    dx9rend::g_terrainTraceDrawHook = g_terrainTracking ? &terrainTraceHook : 0;
 }
 
 // beginPatchDraw: the patch whose ranges the next drawPatchRange calls draw.
 void terrainTracePatch(const QuadPatch* patch)
 {
-    if (g_terrainTrace.active)
+    if (g_terrainTracking)
         g_terrainTrace.patch = patch;
 }
 
@@ -2268,8 +2346,10 @@ void terrainTracePatch(const QuadPatch* patch)
 void terrainTraceDraw(bool begin, unsigned int primitives, unsigned int vertices, unsigned int start)
 {
     TerrainTraceState& s = g_terrainTrace;
-    if (!s.active)
+    if (!g_terrainTracking)
         return;
+    if (!begin)
+        terrainFinalRestore();                        // after the draw
     s.pending = begin;
     s.primitives = primitives;
     s.vertices = vertices;
