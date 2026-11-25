@@ -195,6 +195,7 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // [CHOSEN, not recovered] Native GetAsyncKeyState(VK_RETURN) adapter.
     bool enterHeld[2] = { false, false };
     bool enterPressed = false;
+    unsigned int fullscreenShortcutKeys = 0; // Return keys consumed until their releases
     bool capsReleasePending = false;
     HostKeyEvent capsRelease;
     unsigned int buttonsDown = 0;   // buttons whose press was reported
@@ -896,7 +897,10 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
         if (activeChanged && !active)
             ++deactivations;
         if (!hasFocus())
+        {
             wheelRemainder = 0.0;
+            fullscreenShortcutKeys = 0;
+        }
         applyCursor();
         for (IHostEventListener* l : snapshot())
         {
@@ -1177,6 +1181,28 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
 
     void handleKey(NSEvent* event, bool down)
     {
+        // [CHOSEN, not recovered] Option+Return is a native window shortcut, like the green
+        // button. The pump reconciles its request through BF2Render::toggleFullscreen, including
+        // in menus and the console. Consume the chord so the retail GIAltEnter path cannot also
+        // toggle when game.allowToggleFullscreen is enabled; repeats and releases do nothing.
+        const unsigned int enterBit = event.keyCode == 0x24 ? 1u :
+                                      event.keyCode == 0x4C ? 2u :
+                                      event.keyCode == 0x34 ? 4u : 0u;
+        const NSEventModifierFlags shortcutMods = event.modifierFlags &
+            (NSEventModifierFlagOption | NSEventModifierFlagShift |
+             NSEventModifierFlagControl | NSEventModifierFlagCommand);
+        if (enterBit && (fullscreenShortcutKeys & enterBit))
+        {
+            if (!down)
+                fullscreenShortcutKeys &= ~enterBit;
+            return;
+        }
+        if (enterBit && down && !event.isARepeat && shortcutMods == NSEventModifierFlagOption)
+        {
+            fullscreenShortcutKeys |= enterBit;
+            ClientHost::instance().setFullscreen(!fullscreen.wanted());
+            return;
+        }
         HostKeyEvent key;
         key.dik       = macos::dikFromMacKeyCode(event.keyCode, eventIsISO(event));
         key.down      = down;
@@ -2049,11 +2075,13 @@ void ClientHost::resizeClient(int width, int height)
 // activation. The drawable size and the engine's WM_SIZE notification stay unchanged.
 void ClientHost::setFullscreen(bool fullscreen)
 {
-    if (!m_impl->window || fullscreen == m_impl->fullscreen.wanted())
+    if ((!m_impl->window && !m_impl->testHeadless) || fullscreen == m_impl->fullscreen.wanted())
         return;
     OpenBF2HostWindow* window = m_impl->window;
     const bool active = m_impl->activeForFullscreen();
     m_impl->startFullscreenTransition(m_impl->fullscreen.request(fullscreen, active));
+    if (m_impl->testHeadless)
+        return;
     if (m_impl->fullscreen.waiting())
         std::fprintf(stderr, "[host] full screen: requested while the application is inactive; it follows the activation\n");
     [window makeKeyAndOrderFront:nil];
