@@ -3365,11 +3365,10 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                     ++it;
                     continue;
                 }
-                // [CHOSEN, not recovered] Apply the morph-band retail fix to every detail pass,
-                // including pass 14. A debug merge uses its first node's bias for the merged range.
+                // [CHOSEN, not recovered] Apply the retail fix to every detail pass, including
+                // pass 14. A debug merge uses its first node's bias for the merged range.
                 setColourPassDepthBias(terrainColourPassDepthBias(
-                    t->m_cameraPosition, node->bounds.min, node->bounds.max,
-                    &t->m_morphLimits[2 * node->lod]));
+                    t->m_cameraPosition, node->bounds.min, node->bounds.max));
                 if ((t->m_drawDebugFlags & 2) == 0)
                 {
                     const unsigned int prims = count / 3;
@@ -3442,10 +3441,9 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
         {
             if (t->m_currentLod != lod)
                 t->setMorphConstants(lod);
-            // [CHOSEN, not recovered] LowDiffuse (or pass 14) uses the node's own LOD morph band.
+            // [CHOSEN, not recovered] LowDiffuse (or pass 14) uses the same per-node fix.
             const float bias = terrainColourPassDepthBias(
-                t->m_cameraPosition, node->bounds.min, node->bounds.max,
-                &t->m_morphLimits[2 * node->lod]);
+                t->m_cameraPosition, node->bounds.min, node->bounds.max);
             setColourPassDepthBias(bias);
             if ((t->m_drawDebugFlags & 1) == 0)
             {
@@ -3460,8 +3458,7 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                         break;
                     // [CHOSEN, not recovered] Nodes can share a draw only with equal bias.
                     if (terrainColourPassDepthBias(t->m_cameraPosition,
-                            next->bounds.min, next->bounds.max,
-                            &t->m_morphLimits[2 * next->lod]) != bias)
+                            next->bounds.min, next->bounds.max) != bias)
                         break;
                     const unsigned int nextStart = lodStart(next);
                     const unsigned int nextCount = lodCount(next);

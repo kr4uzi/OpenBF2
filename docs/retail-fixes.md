@@ -157,27 +157,13 @@ Each entry is a heading that names the fix, followed by these fields:
   Retail shows them on DX10-class and AMD GPUs ("flickering black hexagons"), and OpenBF2 shows
   them on macOS (Metal). Turning `D3DRS_ZFUNC` to ALWAYS for these draws removes them. On an Intel
   Mac the gap lies between 1e-7 and 1e-6 in D3D9 depth units.
-- **OpenBF2:** Each terrain node drawn by `drawFinal` carries a depth bias only when its bounds
-  overlap its LOD's geomorph band. `TerrainShader_Shared.fx::geoMorphPosition` in
-  `mods/bf2/Shaders_client.zip` computes
-  `cameraDist = (camera.x - x)^2 + (camera.w - 1)^2 + (camera.z - z)^2` and
-  `interpVal = saturate(cameraDist * limits.x - limits.y)`. The node overlaps `0 < interpVal < 1`
-  when its nearest squared distance is less than `(1 + limits.y) / limits.x` and its farthest
-  squared distance is greater than `limits.y / limits.x`. Both distances use the nearest/farthest
-  horizontal xz point of the bounds and the same vertical term `(camera.w - 1)^2`.
-  `Terrain::applyFrameConstants` uploads `m_cameraPosition` as `CAMERAPOS`, with `w` set to
-  height above terrain + 1 (or 1 without a heightmap cluster); `Terrain::setMorphConstants`
-  uploads `m_morphLimits[2 * node->lod]` as `NEARFARMORPHLIMITS`. Nonpositive `limits.x`
-  disables the bias. Outside the band the bias is 0. Inside it, `D3DRS_DEPTHBIAS` = -1e-6 within
+- **OpenBF2:** Each terrain node drawn by `drawFinal` carries `D3DRS_DEPTHBIAS` = -1e-6 within
   60 m of the camera (D3D9 depth units, about 17 steps of a 24-bit depth buffer). Beyond 60 m it is
-  scaled by `(60/d)^2`, where `d` remains the xyz distance from the frame's terrain camera
-  position to the nearest point of the node's world bounds. A constant depth-buffer bias corresponds
-  to a world distance that grows roughly with distance squared: far additive FullDetail layers can then cover
+  scaled by `(60/d)^2`, where `d` is the distance from the frame's terrain camera position to the
+  nearest point of the node's world bounds. A constant depth-buffer bias corresponds to a world
+  distance that grows roughly with distance squared: far additive FullDetail layers can then cover
   near-coplanar bushes, tree bases and road pieces with bright white specks, especially when
   zoomed with iron sights. Scaling keeps approximately the world-space offset used at 60 m.
-  With bias disabled the black patches return only in the geomorph band and no white specks
-  appear; applying bias outside that band leaves bright specks in distant terrain. Restricting
-  the bias to the band targets the observed patches while leaving other terrain unbiased.
   Measurements on an Intel Mac: -1e-7 leaves smaller black patches, -5e-7 still leaves some white
   specks, and -1e-6 removes the middle-distance black patches; slope -1 with constant 0 is worse.
   Every colour pass uses the node's bias; lower-LOD batches merge only nodes with equal bias,

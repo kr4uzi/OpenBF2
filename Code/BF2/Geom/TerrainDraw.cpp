@@ -1573,13 +1573,10 @@ void Terrain::drawFinal()
     // Where a colour pass lands a few depth units behind that depth, the pixel keeps the cleared
     // back buffer. The exact source of the difference has not been isolated (the two shaders do
     // not spell the position the same way: FullDetail adds vScaleTransY.zw). QuadPatch::drawFinal
-    // applies bias only where the node's bounds overlap its LOD's open geomorph band, where the
-    // black patches appear. Outside the band it is 0, avoiding additive layers covering bushes,
-    // tree bases and roads with white specks. In the band it is -1e-6 within 60 m of each node's
-    // bounds, scaled by (60/d)^2 beyond. Both tests use m_cameraPosition, the frame's camerapos
-    // constant; the band uses xwz (w - 1 for height) and m_morphLimits[2 * node->lod], as the shader
-    // does, while the magnitude keeps the nearest xyz distance. The cache spans this patch loop;
-    // only these terrain draws carry the bias,
+    // applies -1e-6 within 60 m of each node's bounds, scaled by (60/d)^2 beyond. This covers the
+    // measured middle-distance gap without letting distant additive layers cover bushes, tree
+    // bases and roads with white specks. Distance uses m_cameraPosition, the frame's camerapos
+    // shader constant. The cache spans this patch loop; only these terrain draws carry the bias,
     // reset to the world value 0 before the surrounding ring, roads, decals, water and later passes.
     terrainResetColourPassBiasCache();
     TerrainCullerNode** it = list->data();
