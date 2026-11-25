@@ -68,9 +68,9 @@ Each entry is a heading that names the fix, followed by these fields:
   comparison and remain outside this fix. These conclusions follow the retail instructions;
   an on-screen retail reproduction has not been run.
 - **OpenBF2:** In single-player games only, UAV, artillery and supply events also accept the
-  exact local sender -1 while the team's commander ID is -1. The game must be non-dedicated,
-  have exactly one human registered with `PlayerManager`, and report current map mode `sp1`,
-  `sp2` or `sp3` (case-insensitive). Missing game/player managers refuse the exception.
+  exact local sender -1 while the team's commander ID is -1. The current map mode must be
+  `sp1`, `sp2` or `sp3` (case-insensitive), on any host and regardless of human count.
+  A missing game refuses the exception.
   A network sender 255, another player, or another negative
   integer gains no new authority. An occupied commander seat keeps retail authorization,
   and human commander assignment still disables the AI's automatic request handling
@@ -100,19 +100,15 @@ Each entry is a heading that names the fix, followed by these fields:
   single-player layers by size when bots are selected but explicitly preserves `gpm_coop`
   (0x10051D05–0x10051D9B). `HudInformationLayer`'s `SinglePlayerActive` flag only tests
   `sp1`, so it would omit the other two layers. No universal engine single-player predicate
-  was established. This fix uses the menu classification, additionally restricted to a
-  sole-human listen host: retail's map-vote path checks non-dedicated operation and exactly
-  one human (`BF2.exe` 0x5BF759–0x5BF773); `isDedicated` reads its runtime flag at 0x440510.
-  `PlayerManager::getNumberOfHumanPlayers` counts non-AI players without a connected-state
-  filter (Linux x86 ELF 0x083027B0). Internet/LAN flags and maximum-player settings are not
-  used as a single-player identity because multiplayer co-op can share them.
-- **Applies to:** Single-player games only, on all platforms, under the condition above.
-  Dedicated servers, multiplayer co-op (including a host playing alone), other modes and any
-  server with more than the hosting human keep retail's authorization behavior. An occupied
-  commander seat or inactive AI keeps existing request handling.
-- **Retail clients:** Multiplayer servers keep retail behavior. No ABI, packet, serialized
-  field, event ID or content format changes; the local single-player game uses existing
-  request and asset events. Connect, load, join, play and reconnect have not been exercised.
+  was established. This fix uses the menu classification without host-type or human-count
+  restrictions. Internet/LAN flags and maximum-player settings do not define the map's mode.
+- **Applies to:** Games running a single-player game mode, on any host and all platforms;
+  other game modes keep retail's refusal. An occupied commander seat or inactive AI keeps
+  existing request handling.
+- **Retail clients:** No ABI, packet, serialized field, event ID or content format changes;
+  single-player modes use existing request and asset events, including when hosted on a
+  dedicated server. Other game modes keep retail behavior. Connect, load, join, play and
+  reconnect have not been exercised.
 - **Source:** `Code/BF2/Game/GameEvents/UAVEvent.cpp`, `ArtilleryEvent.cpp`,
   `SupplyDropEvent.cpp`, `SinglePlayerAIGrant.h`; `Code/Tests/commander_requests_runtime.cpp`
   and `commander_requests_runtime.py`.
