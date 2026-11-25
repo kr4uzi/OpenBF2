@@ -103,6 +103,40 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/RendDX9/BF2Render.cpp`, `Code/Tests/macos_metal_device/msaa.inc`;
   [#35](https://github.com/kr4uzi/OpenBF2/issues/35)
 
+### Screenshots are saved opaque instead of with the back buffer's alpha
+
+- **Retail:** `renderer.dumpScreen` (Print Screen) copies the back buffer into an A8R8G8B8 scratch
+  surface (`RendDX9.dll` `0x1000521A`, `CreateOffscreenPlainSurface` with format `0x15`) and saves
+  it as `screenNNN.png` and `screenNNN.jpg`. A 32-bit fullscreen back buffer is A8R8G8B8 too
+  (windowed mode takes the desktop format), and its alpha is render-pass data. On High terrain,
+  the low-detail pass for every terrain node above LOD 0 (`Hi_Terrain` pass 3, `Shared_PS_LowDetail` in `Shaders_client.zip`
+  `TerrainShader_Shared.fx`) returns the light-accumulation alpha, which is the dynamic-shadow
+  term written by pass 7 (`DirectionalLightShadows`). The other branch of the same shader returns
+  alpha 1. Shadowed terrain beyond the full-detail nodes therefore has alpha 0. The `.png` keeps
+  it: a viewer shows black holes, shaped like the shadows of bushes and palms, in the middle
+  distance. The `.jpg` of the same frame is correct.
+- **OpenBF2:** The capture stages X8R8G8B8, so the `.png` is opaque and has the same colour as
+  the `.jpg`. The rendering and the `.jpg` are unchanged.
+- **Applies to:** Client; all platforms (Linux has used this since
+  [#36](https://github.com/kr4uzi/OpenBF2/issues/36)).
+- **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`
+
+### The back buffer is presented opaque
+
+- **Retail:** `rendererPresent` (`RendDX9.dll` `0x10005AE0`) presents the A8R8G8B8 fullscreen
+  back buffer with the render-pass alpha described in the entry above. D3D9 on Windows ignores
+  that alpha. A presenter that honours it shows the shadowed High terrain as black holes in the
+  middle distance; retail shows this under Parallels' D3D9.
+- **OpenBF2:** Before each Present of an A8R8G8B8 back buffer that is the current render target,
+  one full-screen draw writes alpha 1: alpha-only colour writes, no depth, stencil, alpha test,
+  blending, fog or scissor, and a pixel shader that outputs 1. All changed states, the viewport and
+  the bound shaders are restored. RGB, depth, stencil and every pass's output before Present are
+  unchanged. X8R8G8B8 and 16-bit back buffers are skipped. If the shaders cannot be created on a
+  device, a log line says so once and Present continues as in retail.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`, `Code/BF2/RendDX9/OpaqueBackBufferAlpha.h`,
+  `Code/BF2/RendDX9/RendDX9Init.cpp`, `Code/Tests/macos_metal_device/opaque.inc`
+
 ### The effect parameter snapshot zeroes its description before the query
 
 - **Retail:** `Effect::snapshotParameterValues` calls `GetParameterDesc` into an uninitialized
