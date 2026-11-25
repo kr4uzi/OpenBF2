@@ -208,7 +208,7 @@ void Terrain::update()
     updateWaterConstants();                                               // vslot +0xE0
 }
 
-// the first arm: push, update, the constants, the main draw, the water, pop.
+// Draws the main terrain, water and terrain colour before world objects.
 void Terrain::renderWorldPassBegin()
 {
     dx9rend::stateManagerPush();
@@ -218,15 +218,20 @@ void Terrain::renderWorldPassBegin()
         drawMain();
     if (m_flag35A)
         drawWater();                                                      // vslot +0xD8
+    // [CHOSEN, not recovered] Retail fix "Terrain colour passes no longer leave black patches
+    // in the middle distance" (docs/retail-fixes.md). Retail renderWorldPassBegin (PE 0x100E0E50)
+    // ends after drawWater; renderWorldPassEnd (0x100E10C0) draws colour after world objects.
+    // Finish it here so biased additive colour cannot land on objects touching the ground.
+    // Keep water before the underwater pass 14.
+    if (m_drawMain)
+        drawFinal();
     dx9rend::stateManagerPop();
 }
 
-// the closing arm: the diffuse passes, then the ring.
+// Draws the surrounding ring after world objects.
 void Terrain::renderWorldPassEnd()
 {
     dx9rend::stateManagerPush();
-    if (m_drawMain)
-        drawFinal();
     if (m_flag359 && m_surroundingBuilt)
         drawSurrounding();
     dx9rend::stateManagerPop();
@@ -1520,7 +1525,7 @@ void Terrain::reloadForLowQuality()
 }
 
 
-// the +0xBC arm's diffuse passes: the technique again, per visible node's patch the
+// The terrain colour passes: the technique again, per visible node's patch the
 // colormap and the low-detail map, then the patch's detail passes.
 
 void Terrain::drawFinal()
@@ -1547,10 +1552,10 @@ void Terrain::drawFinal()
     // back buffer. The exact source of the difference has not been isolated (the two shaders do
     // not spell the position the same way: FullDetail adds vScaleTransY.zw). QuadPatch::drawFinal
     // applies -1e-6 within 60 m of each node's bounds, scaled by (60/d)^2 beyond. This covers the
-    // measured middle-distance gap without letting distant additive layers cover bushes, tree
-    // bases and roads with white specks. Distance uses m_cameraPosition, the frame's camerapos
+    // measured middle-distance gap while bounding the world-space offset at distance.
+    // Distance uses m_cameraPosition, the frame's camerapos
     // shader constant. The cache spans this patch loop; only these terrain draws carry the bias,
-    // reset to the world value 0 before the surrounding ring, roads, decals, water and later passes.
+    // reset to the world value 0 before world objects, the surrounding ring and later passes.
     terrainResetColourPassBiasCache();
     TerrainCullerNode** it = list->data();
     while (it != list->data() + list->size())
