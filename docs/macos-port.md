@@ -127,10 +127,11 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   running application (two seconds at most) and hands the front over as the launcher does:
   `yieldActivationToApplication:` and `activateFromApplication:options:` (macOS 11 to 13:
   `activateWithOptions:`). A restart made in the background hands nothing over.
-- **Windowed stays windowed.** A windowed game window is `NSWindowCollectionBehaviorFullScreenNone`
-  and not resizable, as before; it becomes a full-screen primary, resizable window only for its
-  Space and is restored when it is back. A resolution change made in full screen applies to the
-  restored window.
+- **Windowed full-screen controls.** A windowed game window remains
+  `NSWindowCollectionBehaviorFullScreenPrimary` and is not resizable. Its green button and
+  View > Toggle Full Screen (Ctrl+Cmd+F) request either mode. Only the full-screen transition
+  adds the resizable style; returning removes it. A resolution change made in full screen
+  applies to the restored window.
 - **Window size and Retina.** `[CHOSEN, not recovered]` Windowed content keeps one point per
   back-buffer pixel when it fits. Otherwise it scales proportionally to the largest size that
   fits the screen's visible area after window decorations are subtracted. The Retina backing
@@ -159,9 +160,17 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   a window or starts the game. With the ten Intel logical modes at 60 Hz and a 1680x1050
   desktop, the nine sizes at least 800 wide reach the options list, including 1680x1050.
 - **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
-  can take the window out of its Space. The host then stays windowed and reports it until the
-  engine switches again (one Alt+Enter brings the engine's own flag in line, the next one returns
-  to full screen); it never pulls the user back into the Space.
+  can take the window out of its Space. At the next engine message pump, native requests and
+  completed AppKit transitions run through `BF2Render::toggleFullscreen`, the same path as
+  Alt+Enter: window flag, renderer reset, `GSFullScreen` and renderer event all follow. One
+  Alt+Enter then returns to full screen. Entry through the green button or shortcut follows the
+  same rules. A live `SettingsManager.boolSet GSFullScreen 0` or `1` also uses this path; an
+  explicit settings change takes precedence over the host when both differ from the engine.
+  Video options expose resolution and quality rather than a separate full-screen setting.
+  `+fullscreen` still selects the startup mode. Synchronization waits for the renderer to exist
+  and runs outside AppKit callbacks; it retains the selected back-buffer dimensions and the
+  existing focus and mouse rules. Pending, refused and timed-out Space transitions retain the
+  requested mode and the retry/activation policy above.
 - **Focus and mouse.** The engine's focus is what AppKit reports: the game window is the key
   window, the application is active, and the window's full-screen Space is the active one
   (`syncFocus`, called from the delegate's callbacks, the active-Space notification and once per
