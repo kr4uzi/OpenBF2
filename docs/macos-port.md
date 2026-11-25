@@ -51,6 +51,13 @@ screen-size window with hidden Dock and menu bar (`NSApplicationPresentationHide
 HideMenuBar`), which stayed on the desktop's Space. The rules are in
 `Code/BF2/Platform/macOS/NativeFullscreen.h`; `CocoaHost.mm` starts the transitions it answers.
 
+Option+Return (either Option key, Return or keypad Enter) uses the same native request as the
+green button and Ctrl+Cmd+F, including in menus and the console. The host consumes the chord's
+Return press, repeats and release; plain Return and Option alone remain ordinary input.
+At the engine pump the request runs through `BF2Render::toggleFullscreen` once. This native
+shortcut is independent of `game.allowToggleFullscreen`, the initially disabled permission
+for the shared retail `GIAltEnter` path (left Alt plus Return).
+
 - **Display mode and drawable.** Unchanged: the display mode is never switched, the drawable
   keeps the back-buffer size the engine set (`resizeClient` -> `updateDrawable`) and Core
   Animation scales it to the Space's view, nearest-neighbour at whole-number factors and linear
