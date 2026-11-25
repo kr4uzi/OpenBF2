@@ -19,7 +19,7 @@
 #include "../BF2/Sound/BfSound.h"
 using namespace dice::hfe;
 static unsigned checks, failures, memoryQueries, frees;
-static std::vector<DWORD> memorySamples;
+static std::vector<ULONGLONG> memorySamples;
 static void* watchedOwner;
 static bool captureOwner;
 static std::vector<void*> watchedPointers;
@@ -76,10 +76,12 @@ struct ClassManagerObserver : ClassManager {
 };
 static void check(bool value,const char* label)
 { ++checks; if(!value){++failures;std::printf("FAIL %s\n",label);} }
-static void WINAPI memoryObserver(LPMEMORYSTATUS status)
+static BOOL WINAPI memoryObserver(LPMEMORYSTATUSEX status)
 {
+    check(status->dwLength==sizeof(*status),"extended memory status size initialized");
     unsigned index=memoryQueries++;
-    status->dwTotalPhys=memorySamples.empty()?512u*1024*1024:memorySamples[index%memorySamples.size()];
+    status->ullTotalPhys=memorySamples.empty()?512ull*1024*1024:memorySamples[index%memorySamples.size()];
+    return TRUE;
 }
 // Patch only this isolated executable's actual import slot; kernel32.lib otherwise
 // resolves the symbol before /alternatename and bypasses the observer.
@@ -96,7 +98,7 @@ static bool installMemoryObserver()
         for(;names->u1.AddressOfData;++names,++slots){
             if(IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))continue;
             auto* name=reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base+names->u1.AddressOfData);
-            if(std::strcmp(reinterpret_cast<char*>(name->Name),"GlobalMemoryStatus"))continue;
+            if(std::strcmp(reinterpret_cast<char*>(name->Name),"GlobalMemoryStatusEx"))continue;
             DWORD oldProtect=0,unused=0;
             if(!VirtualProtect(&slots->u1.Function,sizeof(slots->u1.Function),PAGE_READWRITE,&oldProtect))return false;
             slots->u1.Function=reinterpret_cast<ULONG_PTR>(&memoryObserver);
@@ -174,11 +176,14 @@ static void checkData()
     memorySamples={512u*1024*1024}; memoryQueries=0;
     AudioSettingsData data;
     check(defaults(data) && data.soundQuality=="Low" && memoryQueries==1,"actual data constructor/defaults query once");
-    struct Sample{DWORD bytes;const char* quality;};
-    for(const auto& sample:{Sample{0,"Low"},Sample{764u*1024*1024,"Low"},Sample{764u*1024*1024+0x80000,"Low"},
+    struct Sample{ULONGLONG bytes;const char* quality;};
+    for(const auto& sample:{Sample{0,"Low"},Sample{512ull*1024*1024,"Low"},
+        Sample{1024ull*1024*1024,"Medium"},Sample{16ull*1024*1024*1024,"Medium"},
+        Sample{764u*1024*1024,"Low"},Sample{764u*1024*1024+0x80000,"Low"},
         Sample{764u*1024*1024+0x80001,"Medium"},Sample{768u*1024*1024,"Medium"},
-        Sample{0xffffffffu-0x7ffffu,"Medium"},Sample{0xffffffffu,"Low"}}){
-        memorySamples={sample.bytes}; data.reset();check(data.soundQuality==sample.quality,"legacy rounding/threshold/32-bit overflow preserved");
+        Sample{0xffffffffu-0x7ffffu,"Medium"},Sample{0xffffffffu,"Medium"},
+        Sample{4ull*1024*1024*1024,"Medium"},Sample{~0ull,"Medium"}}){
+        memorySamples={sample.bytes}; data.reset();check(data.soundQuality==sample.quality,"full memory size with shipped rounding and quality threshold");
     }
     memorySamples={512u*1024*1024};
     data.reset();

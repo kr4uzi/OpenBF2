@@ -1331,11 +1331,11 @@ source attached after they are unqueued, so the music thread's `alDeleteBuffers`
 `AL_INVALID_OPERATION` and leaked twelve buffers per stop. On Apple the thread clears the
 source's `AL_BUFFER` first (`Music.cpp`); for spec-conforming implementations that is a no-op.
 
-`Game/AudioSettings.cpp`'s physical-memory query emulates `GlobalMemoryStatus` for the
-large-address-aware 32-bit `BF2.exe` (its PE header has the flag): `hw.memsize` saturated to a
-32-bit `DWORD`, then the shipped `(dwTotalPhys + 0x7FFFF) >> 20` arithmetic in 32 bits. With
-4 GB or more that wraps to 0 MB, so the default sound quality is "Low", as the retail client
-picks on such a machine.
+`Game/AudioSettings.cpp` reads the full `hw.memsize` value and converts it to megabytes
+without the legacy 32-bit overflow, preserving retail's rounding and 768 MB quality
+threshold. Machines with 768 MB or more get "Medium" by default; existing profiles keep
+their saved quality. This all-platform [retail fix](retail-fixes.md#new-profiles-get-the-audio-quality-the-memory-check-intended)
+also uses full-width physical-memory queries on Windows and Linux.
 
 `bf2_client` links CoreAudio and CoreFoundation; OpenAL.framework is loaded at run time, as the
 Win32 image loads `OpenAL32.dll`. OpenAL Soft was not needed and not installed.
