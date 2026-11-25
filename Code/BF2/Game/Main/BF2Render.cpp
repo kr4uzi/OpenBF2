@@ -20,6 +20,9 @@
 #include "../Utility/BuildNrUtil.h"
 #include "../IGameLogic.h"
 #include "../../../RendDX9Abi/DisplayModeAbi.h"
+#if defined(__APPLE__)
+#include "../../Platform/macOS/FullscreenMode.h"
+#endif
 
 // render's own collaborators.
 #include "../../Math/Mat4.h"
@@ -399,11 +402,27 @@ void BF2Render::slot0x10()
 // Requires window, carrier, renderer, settings and event manager. Renderer refusal is ignored.
 // The event payload contains height alone; consumers expecting packed dimensions observe width zero.
 // [UNRESOLVED] The source return type is unknown; the declared unsigned result preserves postEvent's value.
+// BF2.exe 0x453130: the carrier is reused and only event 1 is posted (height alone).
 unsigned int BF2Render::toggleFullscreen()
 {
     m_window->toggleFullscreenStyle();                                          // +0x48
     m_displayModeCarrier->fullscreen = (m_displayModeCarrier->fullscreen == 0);
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Cocoa never changes the display mode. The startup carrier can
+    // predate profile application; use the renderer's applied mode and AA, then resize the
+    // host before Reset so its drawable, pointer mapping and restored window agree.
+    dx9rend::prepareMacFullscreenMode(m_renderer, *m_displayModeCarrier);
+    m_window->resizeClient(m_displayModeCarrier->width, m_displayModeCarrier->height);
+    eventManager->postEvent(static_cast<EventCategory>(11), 3, 0, 0.0f);
+#endif
     m_renderer->setDisplayMode(*m_displayModeCarrier);                          // +0x10
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] As on video-options apply, notify menu layout after Reset.
+    // The retail toggle event below does not reach BF2Engine's resolution handler.
+    unsigned int packedSize = (static_cast<unsigned int>(m_displayModeCarrier->width) << 16)
+                              | m_displayModeCarrier->height;
+    eventManager->postEvent(static_cast<EventCategory>(11), 2, &packedSize, 0.0f);
+#endif
 
     settings->boolSet(std::string("GSFullScreen"),                              // +0x54
                       reinterpret_cast<const bool&>(m_displayModeCarrier->fullscreen));

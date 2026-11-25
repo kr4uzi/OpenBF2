@@ -159,6 +159,27 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   paired display-mode environment hooks, after building `bf2_client`. Neither check creates
   a window or starts the game. With the ten Intel logical modes at 60 Hz and a 1680x1050
   desktop, the nine sizes at least 800 wide reach the options list, including 1680x1050.
+- **Run-time mode and layout.** `[CHOSEN, not recovered]` A full-screen switch takes the
+  renderer's applied video settings, including MSAA, depth and vsync. The startup carrier can
+  still contain 800x600 at 85 Hz after a profile has applied 1680x1050 at 60 Hz with 8x MSAA;
+  it is refreshed before each switch. Entry preserves a mode listed by the adapter, including
+  its refresh rate. An unlisted mode takes `DisplayModePolicy::preferredMode`, as for the
+  full-screen start policy; window-only sizes added by `injectRequestedMode` do not count as
+  display modes. Unsupported full-screen MSAA selects Off. Leaving keeps the applied mode.
+  Both directions resize the host before device reset and send the same pre-change and packed
+  resolution events as video-options apply. The drawable, restored window, menu movie scale,
+  Swiff viewport and pointer mapping therefore use the same render dimensions. The layer keeps
+  `kCAGravityResize` and `updateMagnification` scaling.
+
+  Retail `BF2.exe` (1.50, x86) at 0x453130–0x4531AB reuses the carrier and posts only renderer
+  event 1, with height alone. Its engine handler at 0x4097DB–0x409860 resizes the movie and
+  Swiff viewport only for event 2, whose payload packs width and height. Those shared recovered
+  bodies retain their behavior; Cocoa adds the mode selection and resolution notifications.
+  `macos_resolution_list.py` also runs the production toggle with window/reset/event fixtures:
+  desktop and smaller listed profiles, an unlisted refresh, an injected window size, supported
+  and unsupported MSAA, leaving after an options change, and both switch directions. It checks
+  host resize before reset and the packed layout notification afterwards. These are headless
+  contract checks; AppKit animation and rendered menu appearance still need an on-screen check.
 - **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
   can take the window out of its Space. At the next engine message pump, native requests and
   completed AppKit transitions run through `BF2Render::toggleFullscreen`, the same path as
@@ -168,9 +189,9 @@ HideMenuBar`), which stayed on the desktop's Space. The rules are in
   explicit settings change takes precedence over the host when both differ from the engine.
   Video options expose resolution and quality rather than a separate full-screen setting.
   `+fullscreen` still selects the startup mode. Synchronization waits for the renderer to exist
-  and runs outside AppKit callbacks; it retains the selected back-buffer dimensions and the
-  existing focus and mouse rules. Pending, refused and timed-out Space transitions retain the
-  requested mode and the retry/activation policy above.
+  and runs outside AppKit callbacks; it uses the applied or preferred back-buffer mode described
+  above and the existing focus and mouse rules. Pending, refused and timed-out Space transitions
+  retain the requested mode and the retry/activation policy above.
 - **Focus and mouse.** The engine's focus is what AppKit reports: the game window is the key
   window, the application is active, and the window's full-screen Space is the active one
   (`syncFocus`, called from the delegate's callbacks, the active-Space notification and once per
