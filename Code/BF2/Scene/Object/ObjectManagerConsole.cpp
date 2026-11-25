@@ -198,14 +198,14 @@ public:
         m_hasReturnValue = false;
         m_isDynamic = true;
     BF2_CC_TAIL(0, kObjectManagerConsoleTag)
-    bool isObjectActive() const override { return objectManager->getActiveObject() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return objectManager->getActiveObject() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount != 0) return;
         m_hasReturnValue = true;
         m_returnValue = objectManager->getActiveObject()->getTemplate();
     }
-    void setArgFromString(int, const std::string&) override {}
+    void setArgFromString(int, const std::string&) {}
     BF2_CC_RETURN_AS_STRING
     BF2_CC_COMMON_HOOKS
 private:
@@ -440,15 +440,15 @@ public:
         m_argTypes[0] = "std::string";
         m_argTypes[1] = "std::string";
     BF2_CC_TAIL(2, kObjectManagerConsoleTag)
-    bool isObjectActive() const override { return true; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return true; }
+    void executeObjectMethod()
     {
         if (m_argCount != 2) return;
         m_hasReturnValue = true;
         m_returnValue = playerManager->createPlayer(BF2_CC_ARG(std::string, 0),
                                                      BF2_CC_ARG(std::string, 1), -1);
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(std::string, 1)
         BF2_CC_CONVERT(std::string, 2)

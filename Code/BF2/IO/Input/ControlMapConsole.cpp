@@ -143,15 +143,15 @@ public:
         for (int i = 0; i < 3; ++i) m_argNeedsConversion[i] = -1;
         consoleBindingList(kControlMapConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return true; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return true; }
+    void executeObjectMethod()
     {
         if (m_argCount != 3) return;
         m_hasReturnValue = true;
         m_returnValue = consoleSetDeviceInvertAxis(BF2_CC_ARG(InputDeviceFlags, 0),
             BF2_CC_ARG(InputDeviceAxes, 1), BF2_CC_ARG(bool, 2));
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(InputDeviceFlags, 1)
         BF2_CC_CONVERT(InputDeviceAxes, 2)

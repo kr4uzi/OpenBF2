@@ -214,15 +214,15 @@ public:
         m_argTypes[2] = "std::string";
         m_argTypes[3] = "std::string";
     BF2_CC_TAIL(4, kGameLogicConsoleTag)
-    bool isObjectActive() const override { return gameLogic != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return gameLogic != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount != 4) return;
         m_hasReturnValue = false;
         gameLogicSetKit(BF2_CC_ARG(int, 0), BF2_CC_ARG(KitType, 1),
                         BF2_CC_ARG(std::string, 2), BF2_CC_ARG(std::string, 3));
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(int, 1)
         if (index == 2)
@@ -235,7 +235,7 @@ public:
         BF2_CC_CONVERT(std::string, 3)
         BF2_CC_CONVERT(std::string, 4)
     }
-    std::string getReturnValueAsString() const override { return std::string(); }
+    std::string getReturnValueAsString() const { return std::string(); }
     BF2_CC_COMMON_HOOKS
 };
 static ConsoleClassSetKit s_consoleSetKit;
@@ -427,15 +427,15 @@ public:
         m_argTypes[2] = "std::string";
         m_argTypes[3] = "std::string";
     BF2_CC_TAIL(4, kGameLogicConsoleTag)
-    bool isObjectActive() const override { return getVoiceMessages() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return getVoiceMessages() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount != 4) return;
         m_hasReturnValue = true;
         m_returnValue = messagesPlayRadioMessage(BF2_CC_ARG(int, 0), BF2_CC_ARG(std::string, 1),
             BF2_CC_ARG(std::string, 2), BF2_CC_ARG(std::string, 3));
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(int, 1)
         BF2_CC_CONVERT(std::string, 2)

@@ -652,13 +652,13 @@ public:
         m_argTypes[0] = "PhysicsGripFlags"; m_argNeedsConversion[0] = -1;
         consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return getActiveTemplate(CID_SimpleObjectTemplate) != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return getActiveTemplate(CID_SimpleObjectTemplate) != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = BaseTemplateConsoleAccess::getGrip(); }
         else if (m_argCount == 1) { m_hasReturnValue = false; BaseTemplateConsoleAccess::setGrip(BF2_CC_ARG(PhysicsGripFlags, 0)); }
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         if (index != 1) return;
         static PhysicsGripFlags argument;
@@ -668,13 +668,13 @@ public:
         m_args[0] = reinterpret_cast<std::string*>(&argument);
     }
     BF2_CC_RETURN_AS_STRING
-    bool objectHasRange() const override { return true; }
-    std::pair<const void*, const void*> getObjectRange() const override
+    bool objectHasRange() const { return true; }
+    std::pair<const void*, const void*> getObjectRange() const
     { m_min = 0; m_max = 7; return std::make_pair(&m_min, &m_max); }
-    std::pair<std::string, std::string> getObjectRangeAsString() const override
+    std::pair<std::string, std::string> getObjectRangeAsString() const
     { m_min = 0; m_max = 7; return std::make_pair(std::string("0"), std::string("7")); }
-    std::string getObjectDeltaAsString() const override { return "PGFNoGrip"; }
-    void checkObjectRange(bool) override {}
+    std::string getObjectDeltaAsString() const { return "PGFNoGrip"; }
+    void checkObjectRange(bool) {}
 private:
     PhysicsGripFlags m_returnValue;
     mutable unsigned int m_min, m_max;
@@ -864,8 +864,8 @@ public:
         m_argNeedsConversion[0] = -1;
         consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return getActiveTemplate(CID_BundleTemplate) != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return getActiveTemplate(CID_BundleTemplate) != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount == 0 || m_argCount == 1)
         {
@@ -875,7 +875,7 @@ public:
             m_returnValue = bundle->getTemplate(m_argCount == 0 ? BaseTemplateConsoleAccess::activeMemberId() : suppliedIndex);
         }
     }
-    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(int, 1) }
+    void setArgFromString(int index, const std::string& value) { BF2_CC_CONVERT(int, 1) }
     BF2_CC_RETURN_AS_STRING
     BF2_CC_COMMON_HOOKS
 private:

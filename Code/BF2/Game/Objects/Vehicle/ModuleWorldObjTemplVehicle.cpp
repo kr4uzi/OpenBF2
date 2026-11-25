@@ -493,15 +493,15 @@ public:
         m_isDynamic = false;
         consoleBindingList(kObjTemplVehicleConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return activeEngine() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return activeEngine() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount != 0) return;
         m_hasReturnValue = false;
         (void)activeEngine();
     }
-    std::string getReturnValueAsString() const override { return std::string(); }
-    void setArgFromString(int, const std::string&) override {}
+    std::string getReturnValueAsString() const { return std::string(); }
+    void setArgFromString(int, const std::string&) {}
     BF2_CC_COMMON_HOOKS
 };
 static ConsoleClassEngineGetHeatBarType s_consoleEngineGetHeatBarType;
