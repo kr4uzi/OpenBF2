@@ -1797,10 +1797,15 @@ void destroyDeviceCaps()
     }
 }
 
+void rendererReleaseOpaqueAlphaResources();   // RendDX9Draw.cpp
+
 // PE 0x1000A5E0. Swap-chain pointers and the device remain stored after release.
 bool rendererReleaseD3DDevice(void* renderer)
 {
     RendDX9Base* const b = baseOf(renderer);
+    // [CHOSEN, not recovered] Retail fix "The back buffer is presented opaque": the alpha draw's
+    // shaders and declaration hold device references, so they go before the device.
+    rendererReleaseOpaqueAlphaResources();
     for (std::vector<IDirect3DSwapChain9*>::iterator it = b->swapChains.begin();
          it != b->swapChains.end(); ++it)
         (*it)->Release();

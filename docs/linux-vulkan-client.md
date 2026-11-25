@@ -641,7 +641,8 @@ Validation on Linux x86-64 with GCC 14.2 (full client) and GCC 16.2 (standalone 
   game geometry. Both Linux screenshot paths now stage opaque X8R8G8B8 pixels:
   `Code/BF2/Platform/Linux/FrameCapture.cpp` for F12 and the Linux arm of
   `Code/BF2/RendDX9/RendDX9Draw.cpp` for built-in Print Screen. General D3DX surface/texture
-  export still retains alpha, and Windows/macOS capture behavior is unchanged. The manual
+  export still retains alpha. The built-in capture later became opaque on every platform (retail
+  fix "Screenshots are saved opaque instead of with the back buffer's alpha"). The manual
   `bf2_linux_capture` target (enable `BF2_LINUX_CAPTURE_DEVICE_CHECK`) exercises actual
   capture, resolve and PNG output with one and eight samples. Old code fails its alpha
   check; fixed output preserves every resolved RGB byte and has no alpha channel, while
