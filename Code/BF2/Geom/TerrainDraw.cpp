@@ -1566,6 +1566,20 @@ void Terrain::drawFinal()
     if (dx9rend::rendererGetHemiRenderMode() == 4)
         dx9rend::stateManagerClear(1u, 0x808080u, 0.0f, 0u);             // sub_100057E0(1, 8421504, ...)
     lightManagerRestoreRendererTarget0();
+    // [CHOSEN, not recovered] Retail fix "Terrain colour passes no longer leave black patches in
+    // the middle distance" (docs/retail-fixes.md). The colour passes test LESSEQUAL, without
+    // depth writes, against the depth pass 0 (ZFillLightmap) wrote with another vertex shader.
+    // Where a colour pass lands a few depth units behind that depth, the pixel keeps the cleared
+    // back buffer. The exact source of the difference has not been isolated (the two shaders do
+    // not spell the position the same way: FullDetail adds vScaleTransY.zw). A constant bias of
+    // -1e-6 (D3D9 depth units, about 17 steps of a 24-bit buffer) covers the gap measured on an
+    // Intel Mac (between 1e-7 and 1e-6). Only these terrain draws carry it: it is set here and
+    // returned to the world value 0 (the state manager's base, as the road renderer resets it)
+    // before the surrounding ring, roads, decals, water and every later pass.
+    const float colourPassBias = -1.0e-6f;
+    unsigned int colourPassBiasBits;
+    std::memcpy(&colourPassBiasBits, &colourPassBias, sizeof(colourPassBiasBits));
+    dx9rend::stateManagerSetRenderState(195u, colourPassBiasBits);       // D3DRS_DEPTHBIAS
     TerrainCullerNode** it = list->data();
     while (it != list->data() + list->size())
     {
@@ -1574,6 +1588,7 @@ void Terrain::drawFinal()
         param(m_hTexLayer[5])->setValue(patch->lowDetailmap, 0);
         patch->drawFinal(it);                                             // sub_1018C910, advances `it`
     }
+    dx9rend::stateManagerSetRenderState(195u, 0u);                        // D3DRS_DEPTHBIAS, world value
     dx9rend::effectEnd(m_effect);
 }
 

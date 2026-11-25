@@ -143,6 +143,30 @@ Each entry is a heading that names the fix, followed by these fields:
   [#36](https://github.com/kr4uzi/OpenBF2/issues/36)).
 - **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`
 
+### Terrain colour passes no longer leave black patches in the middle distance
+
+- **Retail:** `Terrain::drawMain` writes the terrain's depth in pass 0 (`ZFillLightmap`, ZFUNC LESS)
+  and `Terrain::drawFinal` then draws the colour passes (`LowDiffuse`, `FullDetail`,
+  `FullDetailMounten`, `FullDetailWithEnvMap`) with ZFUNC LESSEQUAL and no depth writes,
+  `FullDetail` additively onto a cleared target. The two kinds of pass use different vertex shaders
+  in `TerrainShader_Hi.fx`, and they spell the position differently: only the `FullDetail` family
+  adds `vScaleTransY.zw`. Where a colour pass lands a few depth units behind the depth pass 0
+  wrote (the exact source of the difference has not been isolated), that pixel fails the test and
+  keeps the cleared back buffer: flat, exactly black, ragged patches
+  on the ground in the middle distance, which change with every small turn of the view.
+  Retail shows them on DX10-class and AMD GPUs ("flickering black hexagons"), and OpenBF2 shows
+  them on macOS (Metal). Turning `D3DRS_ZFUNC` to ALWAYS for these draws removes them. On an Intel
+  Mac the gap lies between 1e-7 and 1e-6 in D3D9 depth units.
+- **OpenBF2:** The terrain draws of `drawFinal` carry `D3DRS_DEPTHBIAS` = -1e-6 (D3D9 depth units,
+  about 17 steps of a 24-bit depth buffer). The bias is reset to the world value 0 after them, so
+  pass 0, pass 7, the light passes, the surrounding ring, roads, decals and water are unchanged. The
+  Metal backend applies `D3DRS_DEPTHBIAS` as `setDepthBias` scaled by 2^24-1. That is exact for a
+  24-bit depth buffer. For Apple silicon's Depth32Float_Stencil8 it is exact near depth 1, where
+  mid-range terrain lies, and smaller closer in, so the bias still applies there. A larger bias
+  (-1e-5) let the terrain cover coplanar road and track decals.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Geom/TerrainDraw.cpp`
+
 ### The effect parameter snapshot zeroes its description before the query
 
 - **Retail:** `Effect::snapshotParameterValues` calls `GetParameterDesc` into an uninitialized
