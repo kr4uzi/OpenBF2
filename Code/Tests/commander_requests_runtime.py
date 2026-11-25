@@ -36,6 +36,7 @@ def generate(out):
     ]
     includes = ['Game/GameLogic/SquadManager/SquadManager.h', 'Game/GameLogic/SquadManager/Squad.h',
                 'Game/GameEvents/IssueSquadOrderEvent.h', 'Game/MapInfo.h', 'Game/IGame.h', 'Core/EventManager.h',
+                'Scene/Object/PlayerManager.h',
                 'Core/SettingsRepostitory.h', 'Core/StringUtil.h', 'AI/AIInterface/AIInstance.h',
                 AI + 'Main/AIEventCourier.h', AI + 'Main/AIMain.h', AI + 'Main/AIRandom.h',
                 AI + 'Main/CommonSingletonServer.h', AI + 'AIStrategic/SAI.h',
@@ -48,9 +49,11 @@ def generate(out):
                '[[noreturn]] void unexpected(const char* name);',
                'void broadcast(GameEvent*);', 'void remote(int, GameEvent*);',
                'SAI* activeSAI(int);', 'double now();',
-               'void useAsset(int, int, int, Vec2);', 'bool artilleryAvailable();']
+               'void useAsset(int, int, int, Vec2);', 'bool artilleryAvailable();',
+               'const std::string& currentGameMode();']
     specs = [
         ('IGame', 'Game/IGame.h', 'ObservedGame', {
+            'getCurrentMapGameMode': 'return currentGameMode();',
             'sendGameEventToAllConnected': 'broadcast(event);',
             'sendGameEventIfConnected': 'remote(playerId, event);'}),
         ('IAIMain', AI + 'Main/AIMain.h', 'ObservedMain', {'getSAI': 'return activeSAI(side);'}),
@@ -88,6 +91,7 @@ def generate(out):
                         r'int AIEventCourier::event_received' + name + r'Request\(')]
     for name in ['Artillery', 'Uav', 'Supply', 'VehicleDrop']:
         actual += [body(AI + 'AIStrategic/SAI.cpp', r'bool SAI::playerRequests' + name + r'\(')]
+    actual += [body(AI + 'AIStrategic/SAI.cpp', r'void SAI::setPlayerIsCommander\(')]
     actual += ['} } }']
     (out / 'request_actual.cpp').write_text('\n'.join(actual) + '\n')
 

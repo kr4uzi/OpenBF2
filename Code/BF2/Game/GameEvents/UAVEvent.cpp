@@ -1,4 +1,5 @@
 #include "UAVEvent.h"
+#include "SinglePlayerAIGrant.h"
 
 #include "../../Core/EventManager.h"             // eventManager->postEvent
 #include "../../Core/IBase.h"
@@ -62,13 +63,18 @@ void UAVEvent::executeClient()
 // Routes commander UAV requests using the connection id's low byte for authorization.
 // Scan payloads identify the connection; the other arm identifies the team. Y is zero.
 // Missing manager and unauthorized requests still return true.
+// Single-player AI asset grants also work while the commander seat is empty; scans do not.
 bool UAVEvent::executeServer(int connectionId)
 {
     if (!squadManager)
         return true;
 
-    if (squadManagerIface()->getCommander(m_team)                            // +0x70
-            != static_cast<unsigned char>(connectionId))                     // byte-truncated
+    // [CHOSEN, not recovered] Retail fix "AI asset grants work in single player".
+    // Only sp1/sp2/sp3 with one human on a non-dedicated host permits local AI grants.
+    // Other servers and scans keep retail authority.
+    const int commanderId = squadManagerIface()->getCommander(m_team);
+    if (commanderId != static_cast<unsigned char>(connectionId) &&
+        !(commanderId == -1 && connectionId == -1 && !m_isScan && allowsSinglePlayerAIGrant()))
         return true;
 
     world::CommanderToolNotification notification;

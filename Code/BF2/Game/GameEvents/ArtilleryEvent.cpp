@@ -1,4 +1,5 @@
 #include "ArtilleryEvent.h"
+#include "SinglePlayerAIGrant.h"
 
 #include "../Objects/IObject.h"                  // queryInterface, handleMessage (slot 65 = +0x104)
 #include "../Objects/Game/ArtilleryHandler.h"
@@ -99,8 +100,8 @@ void ArtilleryEvent::executeClient()
     weapon->handleMessage(static_cast<world::TemplateMessage>(WEAPON_MESSAGE_FIRE), 0, false);
 }
 
-// Requests artillery fire only for the commander; compares the connection's low
-// byte. Wrong event type is fatal. Missing managers/handler or unauthorized senders
+// Requests artillery for the commander or a single-player AI grant with an empty seat.
+// Wrong event type is fatal. Missing managers/handler or unauthorized senders
 // are ignored with true. Team indexing is unchecked.
 bool ArtilleryEvent::executeServer(int connectionId)
 {
@@ -114,9 +115,12 @@ bool ArtilleryEvent::executeServer(int connectionId)
     if (!squadManager)
         return true;
 
-    // THE truncation IS ON THE connection ID, NOT ON getCommander's result - see above.
-    if (squadManagerIface()->getCommander(m_team) !=
-        static_cast<int>(static_cast<unsigned char>(connectionId)))
+    // [CHOSEN, not recovered] Retail fix "AI asset grants work in single player".
+    // Only sp1/sp2/sp3 with one human on a non-dedicated host permits local AI grants.
+    // Other servers keep the retail byte comparison.
+    const int commanderId = squadManagerIface()->getCommander(m_team);
+    if (commanderId != static_cast<unsigned char>(connectionId) &&
+        !(commanderId == -1 && connectionId == -1 && allowsSinglePlayerAIGrant()))
         return true;
 
     if (!world::artilleryManager)

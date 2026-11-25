@@ -1,4 +1,5 @@
 #include "SupplyDropEvent.h"
+#include "SinglePlayerAIGrant.h"
 
 #include "../../Core/IBase.h"
 #include "../../IO/BitStream.h"                  // readBits / writeBits
@@ -38,8 +39,8 @@ int SupplyDropEvent::getType() const
     return GESupplyDrop;
 }
 
-// Requests supply drop only for the commander. Missing managers or rejected
-// requests still return true. Commander ID and team comparisons use their low bytes.
+// Requests supply drop for the commander or a single-player AI grant with an empty seat.
+// Missing managers or rejected requests still return true. Team and sender narrow to bytes.
 bool SupplyDropEvent::executeServer(int connectionId)
 {
     if (!squadManager)
@@ -47,8 +48,12 @@ bool SupplyDropEvent::executeServer(int connectionId)
 
     const int team = static_cast<unsigned char>(m_team);              // byte of a 32-bit field
 
-    if (squadManagerIface()->getCommander(team)                       // +0x70
-            != static_cast<unsigned char>(connectionId))              // byte-truncated
+    // [CHOSEN, not recovered] Retail fix "AI asset grants work in single player".
+    // Only sp1/sp2/sp3 with one human on a non-dedicated host permits local AI grants.
+    // Other servers keep the retail byte comparison.
+    const int commanderId = squadManagerIface()->getCommander(team);
+    if (commanderId != static_cast<unsigned char>(connectionId) &&
+        !(commanderId == -1 && connectionId == -1 && allowsSinglePlayerAIGrant()))
         return true;
 
     world::supplyDropManager->requestSupplyDrop(static_cast<unsigned char>(team), m_position);
