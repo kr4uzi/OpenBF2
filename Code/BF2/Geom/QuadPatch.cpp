@@ -2722,10 +2722,17 @@ void TerrainCuller::gatherShadowFrustumNode(TerrainCullerNode* node, Frustum* fi
 
 namespace {
 
+// [TEMP] BF2_TERRAIN_TRACE (TerrainDraw.cpp) [RETIRE-WHEN: terrain-black-hexagons]
+}   // namespace
+void terrainTracePatch(const QuadPatch* patch);
+void terrainTraceDraw(bool begin, unsigned int primitives, unsigned int vertices, unsigned int start);
+namespace {
+
 // The per-patch constants the three draws set first: scaletransxz, scalebaseuv, the stream, and
 // colorlighttex from the lightmap's width.
 void beginPatchDraw(QuadPatch* patch)
 {
+    terrainTracePatch(patch);                         // [TEMP] BF2_TERRAIN_TRACE
     Terrain* const t = patch->terrain;
     float scaleTrans[4];
     scaleTrans[0] = static_cast<float>(t->m_primaryWorldScale.x * 255.0);
@@ -2742,8 +2749,10 @@ void beginPatchDraw(QuadPatch* patch)
 
 inline void drawPatchRange(Terrain* t, unsigned int primCount, unsigned int vertexCount, unsigned int start)
 {
+    terrainTraceDraw(true, primCount, vertexCount, start);    // [TEMP] BF2_TERRAIN_TRACE
     dx9rend::rendererDrawIndexedPrimitive(primCount, static_cast<unsigned int>(t->m_primitiveType),
                                           0, 0u, vertexCount, start);
+    terrainTraceDraw(false, 0, 0, 0);
 }
 
 // Morph constants in PE 0x1018991B..0x10189C39, the batched draw's inlined copy of

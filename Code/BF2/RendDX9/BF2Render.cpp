@@ -103,6 +103,9 @@ namespace hfe {
 // singleton) and the Font::Ported colour getter (font slot +0x34).
 namespace geom {
 extern IBase* g_DebugTextWriter;
+// [TEMP] BF2_TERRAIN_TRACE (Geom/TerrainDraw.cpp) [RETIRE-WHEN: terrain-black-hexagons]
+void terrainTraceFrameBegin(Terrain* terrain);
+void terrainTraceLabel(const char* label);
 unsigned fontPortedGetColour(IBase* font);
 int fontPortedGetHeight(IBase* font);
 void debugTextWriterSetColour(IBase* writer, unsigned colour);                      // slot +0x20
@@ -2607,6 +2610,8 @@ bool Renderer::renderFrame(double time, float deltaTime)
                     m_objectDrawer, timeF);
             }
 
+            // [TEMP] BF2_TERRAIN_TRACE (Geom/TerrainDraw.cpp) [RETIRE-WHEN: terrain-black-hexagons]
+            geom::terrainTraceFrameBegin(geom::g_Terrain ? static_cast<geom::Terrain*>(geom::g_Terrain) : 0);
             renderQueueFlush(0x30, 1);                       // RSMTZOnly
 
             // Terrain is available after the level's terrain.create command.
@@ -2658,6 +2663,7 @@ bool Renderer::renderFrame(double time, float deltaTime)
 
                 // fetch the view independently, then call +0x34.
                 // Its genuine empty-path return is recovered in OverGrowth.cpp.
+                geom::terrainTraceLabel("overgrowth");     // [TEMP] BF2_TERRAIN_TRACE
                 if (sw(1703) && g_OverGrowth)
                 {
                     IRenderView* const overGrowthView = rendererGetRenderView();
@@ -2667,11 +2673,13 @@ bool Renderer::renderFrame(double time, float deltaTime)
                 if (shouldToggleTransparencyAA())
                     stateManagerSetTransparencyAA(false);
 
+                geom::terrainTraceLabel("worldQueues");    // [TEMP] BF2_TERRAIN_TRACE
                 renderQueuesFlushWorldPass();
 
                 if (shouldToggleTransparencyAA())
                     stateManagerSetTransparencyAA(true);
 
+                geom::terrainTraceLabel("undergrowth");    // [TEMP] BF2_TERRAIN_TRACE
                 // Draw grass inside the transparency-AA bracket.
                 if (sw(1702) && geom::g_UndergrowthSystem)
                     static_cast<geom::UndergrowthSystem*>(geom::g_UndergrowthSystem)->render(timeF);

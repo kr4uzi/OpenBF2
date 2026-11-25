@@ -35,6 +35,11 @@
 #include <cstring>
 #include <new>
 #include <cstdint>
+#include <chrono>      // [TEMP] BF2_TERRAIN_TRACE
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <vector>
 #include "../GeomMisc/FSQuadDrawer.h"   // textureHalfTexelSize, PE 0x100846A0
 
 namespace dice {
@@ -59,10 +64,21 @@ bool  indexBufferUnlock(void* wrapper);
 void  rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, int baseVertex,
                                    unsigned int minIndex, unsigned int numVertices,
                                    unsigned int startIndex);               // StateManager.cpp, sub_10005820
+// [TEMP] BF2_TERRAIN_TRACE [RETIRE-WHEN: terrain-black-hexagons] The post-apply draw hook
+// (StateManager.cpp preDrawApply) and the last effect pass begun (Effect.cpp effectBeginPass).
+extern void (*g_terrainTraceDrawHook)(IDirect3DDevice9* device);
+extern void* g_traceLastEffect;
+extern unsigned int g_traceLastPass;
+const std::string& effectCurrentTechniqueName(void* effect);               // Effect.cpp
 
 } // namespace dx9rend
 
 namespace geom {
+
+// [TEMP] BF2_TERRAIN_TRACE (end of this file) [RETIRE-WHEN: terrain-black-hexagons]
+class Terrain;
+void terrainTraceLabel(const char* label);
+void terrainTraceFrameEnd();
 
 extern LightManager* g_LightManager;                                       // ModuleGeom.cpp, dword_1024B914
 void* terrainShadowArrayParameter(unsigned int ordinal);
@@ -213,22 +229,28 @@ void Terrain::renderWorldPassBegin()
     dx9rend::stateManagerPush();
     update();                                                             // vslot +0x28
     applyFrameConstants();
+    terrainTraceLabel("drawMain");                                        // [TEMP] BF2_TERRAIN_TRACE
     if (m_drawMain)
         drawMain();
+    terrainTraceLabel("water");
     if (m_flag35A)
         drawWater();                                                      // vslot +0xD8
     dx9rend::stateManagerPop();
+    terrainTraceLabel("afterDrawMain");
 }
 
 // the closing arm: the diffuse passes, then the ring.
 void Terrain::renderWorldPassEnd()
 {
     dx9rend::stateManagerPush();
+    terrainTraceLabel("drawFinal");                                       // [TEMP] BF2_TERRAIN_TRACE
     if (m_drawMain)
         drawFinal();
+    terrainTraceLabel("surrounding");
     if (m_flag359 && m_surroundingBuilt)
         drawSurrounding();
     dx9rend::stateManagerPop();
+    terrainTraceFrameEnd();
 }
 
 
@@ -1000,6 +1022,7 @@ void Terrain::drawMain()
         const unsigned int count = static_cast<unsigned int>(m_shadowRanges.size());
         if (count)
         {
+            terrainTraceLabel("drawMain:p7");                             // [TEMP] BF2_TERRAIN_TRACE
             dx9rend::effectBeginPass(m_effect, 7u);
             dx9rend::indexBufferBind(m_indexBuffer);
             param(m_hShadowMap)->setValue(lightManagerShadowMapTexture(g_LightManager), 0);  // +0x21C
@@ -1009,6 +1032,7 @@ void Terrain::drawMain()
         }
     }
     dx9rend::indexBufferBind(m_lodIndexBuffer);
+    terrainTraceLabel("drawMain:p0");                                     // [TEMP] BF2_TERRAIN_TRACE
     dx9rend::effectBeginPass(m_effect, 0u);
     it = list->data();
     while (it != list->data() + list->size())
@@ -1019,6 +1043,7 @@ void Terrain::drawMain()
     }
     if (dx9rend::rendererGetHemiRenderMode() != 4)                        // sub_10009F00, base +0x20
     {
+        terrainTraceLabel("drawMain:lights");                             // [TEMP] BF2_TERRAIN_TRACE
         if (m_effect && *dx9rend::effectShaderVersion(m_effect) == 1)
             drawDetailPass();
         else
@@ -1898,6 +1923,258 @@ void Terrain::drawWaterCell(float x0, float z0, float x1, float z1, void* lightm
         record[8] = colour[2];
     }
     dx9rend::renderQueueAddToSlot(9u, entry);                             // raShaderServer->m_specialManagers[RSMTWater]->+0x04
+}
+
+
+// [TEMP] [CHOSEN, not recovered] BF2_TERRAIN_TRACE=1: a read-only trace of the terrain draws and of
+// every depth-writing draw between the terrain's light pass and its colour passes, for the black
+// mid-range terrain hexagons. Read once; with the variable unset nothing is queried or logged.
+// The first three frames after start are traced, then one frame every five seconds. Each traced
+// draw is one "[TT]" line on stderr: T = a terrain draw (drawPatchRange), F = another system's
+// depth-writing draw. Values are read back from the device after the state manager's pre-draw
+// apply, so they are what the draw used.
+// [RETIRE-WHEN: terrain-black-hexagons] Remove this module, its hooks in StateManager.cpp,
+// Effect.cpp, QuadPatch.cpp and BF2Render.cpp, and tools/macos/terrain-trace once the hexagons are
+// explained and the correction is confirmed in game.
+namespace {
+
+struct TerrainTraceState
+{
+    bool          active;
+    unsigned int  frames;
+    const char*   label;
+    const QuadPatch* patch;          // set by beginPatchDraw
+    bool          pending;           // a drawPatchRange draw is under way
+    unsigned int  primitives, vertices, start;
+    unsigned int  draws;
+};
+TerrainTraceState g_terrainTrace = {};
+
+bool terrainTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("BF2_TERRAIN_TRACE");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+// The FLOAT4 constants a shader declares, from its CTAB comment: name, first register, count.
+struct TraceConstant { std::string name; unsigned int reg, count; };
+
+const std::vector<TraceConstant>& traceShaderConstants(IDirect3DVertexShader9* shader)
+{
+    static std::map<const void*, std::vector<TraceConstant> > cache;
+    std::map<const void*, std::vector<TraceConstant> >::iterator it = cache.find(shader);
+    if (it != cache.end())
+        return it->second;
+    std::vector<TraceConstant>& out = cache[shader];
+    UINT size = 0;
+    if (!shader || FAILED(shader->GetFunction(0, &size)) || size < 8)
+        return out;
+    std::vector<unsigned int> tokens((size + 3) / 4);
+    if (FAILED(shader->GetFunction(tokens.data(), &size)))
+        return out;
+    for (std::size_t i = 1; i < tokens.size();)
+    {
+        const unsigned int t = tokens[i];
+        if ((t & 0xFFFFu) != 0xFFFEu)
+            break;                                       // comments come first
+        const unsigned int length = (t >> 16) & 0x7FFFu;
+        if (length >= 1 && i + 1 + length <= tokens.size() && tokens[i + 1] == 0x42415443u)   // 'CTAB'
+        {
+            const unsigned char* const table = reinterpret_cast<const unsigned char*>(&tokens[i + 2]);
+            const std::size_t bytes = (length - 1) * 4u;
+            unsigned int count = 0, info = 0;
+            if (bytes >= 28)
+            {
+                std::memcpy(&count, table + 12, 4);
+                std::memcpy(&info, table + 16, 4);
+            }
+            for (unsigned int c = 0; c < count && info + 20u * (c + 1) <= bytes; ++c)
+            {
+                const unsigned char* const e = table + info + 20u * c;
+                unsigned int nameOffset = 0;
+                unsigned short set = 0, reg = 0, regs = 0;
+                std::memcpy(&nameOffset, e, 4);
+                std::memcpy(&set, e + 4, 2);
+                std::memcpy(&reg, e + 6, 2);
+                std::memcpy(&regs, e + 8, 2);
+                if (set != 2 || nameOffset >= bytes)
+                    continue;                            // FLOAT4 only
+                const char* const name = reinterpret_cast<const char*>(table + nameOffset);
+                out.push_back(TraceConstant{ std::string(name, strnlen(name, bytes - nameOffset)), reg, regs });
+            }
+        }
+        i += 1 + length;
+    }
+    return out;
+}
+
+DWORD traceRenderState(IDirect3DDevice9* d, unsigned int state)
+{
+    DWORD value = 0xDEADBEEFu;
+    d->GetRenderState(static_cast<D3DRENDERSTATETYPE>(state), &value);
+    return value;
+}
+
+void traceTargets(IDirect3DDevice9* d)
+{
+    IDirect3DSurface9* rt = 0;
+    IDirect3DSurface9* ds = 0;
+    d->GetRenderTarget(0, &rt);
+    if (FAILED(d->GetDepthStencilSurface(&ds)))
+        ds = 0;
+    float bias = 0, slope = 0;
+    const DWORD biasBits = traceRenderState(d, 195), slopeBits = traceRenderState(d, 175);
+    std::memcpy(&bias, &biasBits, 4);
+    std::memcpy(&slope, &slopeBits, 4);
+    std::fprintf(stderr, " z=%u zw=%u zf=%u bias=%.9g slope=%.9g cw=0x%x rt=%p ds=%p",
+                 unsigned(traceRenderState(d, 7)), unsigned(traceRenderState(d, 14)),
+                 unsigned(traceRenderState(d, 23)), bias, slope, unsigned(traceRenderState(d, 168)),
+                 static_cast<void*>(rt), static_cast<void*>(ds));
+    if (rt) rt->Release();
+    if (ds) ds->Release();
+}
+
+void terrainTraceHook(IDirect3DDevice9* d)
+{
+    TerrainTraceState& s = g_terrainTrace;
+    if (!s.active)
+        return;
+    const char* const technique = dx9rend::g_traceLastEffect
+        ? dx9rend::effectCurrentTechniqueName(dx9rend::g_traceLastEffect).c_str() : "-";
+    IDirect3DVertexShader9* vs = 0;
+    IDirect3DPixelShader9* ps = 0;
+    d->GetVertexShader(&vs);
+    d->GetPixelShader(&ps);
+    if (!s.pending)
+    {
+        // Another system: only draws that write depth.
+        if (traceRenderState(d, 7) && traceRenderState(d, 14))
+        {
+            std::fprintf(stderr, "[TT] F frame=%u draw=%u label=%s vs=%p ps=%p", s.frames, s.draws++,
+                         s.label ? s.label : "-", static_cast<void*>(vs), static_cast<void*>(ps));
+            traceTargets(d);
+            std::fprintf(stderr, "\n");
+        }
+        if (vs) vs->Release();
+        if (ps) ps->Release();
+        return;
+    }
+    const QuadPatch* const patch = s.patch;
+    const Terrain* const t = patch ? patch->terrain : 0;
+    const int count = t ? t->m_patchCount : 0;
+    const int index = patch ? patch->patchIndex : -1;
+    std::fprintf(stderr, "[TT] T frame=%u draw=%u label=%s tech=%s pass=%u patch=%p idx=%d grid=(%d,%d)"
+                 " curLod=%d prim=%u verts=%u start=%u base=0 min=0 vs=%p ps=%p",
+                 s.frames, s.draws++, s.label ? s.label : "-", technique, dx9rend::g_traceLastPass,
+                 static_cast<const void*>(patch), index, count ? index % count : -1,
+                 count ? index / count : -1, t ? t->m_currentLod : -9, s.primitives, s.vertices, s.start,
+                 static_cast<void*>(vs), static_cast<void*>(ps));
+    for (unsigned int stream = 0; stream < 2; ++stream)
+    {
+        IDirect3DVertexBuffer9* vb = 0;
+        UINT offset = 0, stride = 0;
+        d->GetStreamSource(stream, &vb, &offset, &stride);
+        std::fprintf(stderr, " vb%u=%p+%u/%u", stream, static_cast<void*>(vb), offset, stride);
+        if (vb) vb->Release();
+    }
+    IDirect3DIndexBuffer9* ib = 0;
+    d->GetIndices(&ib);
+    std::fprintf(stderr, " ib=%p", static_cast<void*>(ib));
+    if (ib) ib->Release();
+    traceTargets(d);
+    const std::vector<TraceConstant>& constants = traceShaderConstants(vs);
+    if (constants.empty())
+    {
+        float c[16 * 4];
+        d->GetVertexShaderConstantF(0, c, 16);
+        for (unsigned int r = 0; r < 16; ++r)
+            std::fprintf(stderr, " c%u=(%.9g,%.9g,%.9g,%.9g)", r, c[4 * r], c[4 * r + 1], c[4 * r + 2], c[4 * r + 3]);
+    }
+    for (std::size_t i = 0; i < constants.size(); ++i)
+    {
+        const TraceConstant& k = constants[i];
+        for (unsigned int r = 0; r < k.count && r < 8; ++r)
+        {
+            float c[4] = {};
+            d->GetVertexShaderConstantF(k.reg + r, c, 1);
+            std::fprintf(stderr, " %s[%u]@c%u=(%.9g,%.9g,%.9g,%.9g)", k.name.c_str(), r, k.reg + r,
+                         c[0], c[1], c[2], c[3]);
+        }
+    }
+    std::fprintf(stderr, "\n");
+    if (vs) vs->Release();
+    if (ps) ps->Release();
+}
+
+} // namespace
+
+// Called before the frame's z-only queue: decides whether this frame is traced and, if so, logs
+// the frame header and arms the draw hook. Cheap and silent with the variable unset.
+void terrainTraceFrameBegin(Terrain* terrain)
+{
+    TerrainTraceState& s = g_terrainTrace;
+    s.active = false;
+    dx9rend::g_terrainTraceDrawHook = 0;
+    if (!terrainTraceEnabled() || !terrain)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    static auto last = now;
+    if (s.frames >= 3 && now - last < std::chrono::seconds(5))
+        return;
+    last = now;
+    ++s.frames;
+    s.active = true;
+    s.draws = 0;
+    s.label = "RSMTZOnly";
+    s.pending = false;
+    dx9rend::g_terrainTraceDrawHook = &terrainTraceHook;
+    const float* const m = dx9rend::rendererGetRenderView()->getViewMatrixPtr()->m;
+    std::fprintf(stderr, "[TT] frame=%u ordinal=%u camera=(%.9g,%.9g,%.9g) lowQuality=%d terrainQuality=%d"
+                 " msaa=%d patchCount=%d patchSize=%d\n",
+                 s.frames, dx9rend::rendererFrameOrdinal(), m[12], m[13], m[14], int(terrain->m_lowQuality),
+                 dx9rend::rendererGetVideoOptions()->getQuality(0), int(isMultisampleActive()),
+                 terrain->m_patchCount, terrain->m_patchSize);
+}
+
+// Names the system whose draws follow (terrain pass, render queues, overgrowth, undergrowth).
+void terrainTraceLabel(const char* label)
+{
+    if (g_terrainTrace.active)
+        g_terrainTrace.label = label;
+}
+
+// The end of the terrain's colour passes: the traced frame is complete.
+void terrainTraceFrameEnd()
+{
+    TerrainTraceState& s = g_terrainTrace;
+    if (!s.active)
+        return;
+    std::fprintf(stderr, "[TT] end frame=%u draws=%u\n", s.frames, s.draws);
+    std::fflush(stderr);
+    s.active = false;
+    dx9rend::g_terrainTraceDrawHook = 0;
+}
+
+// beginPatchDraw: the patch whose ranges the next drawPatchRange calls draw.
+void terrainTracePatch(const QuadPatch* patch)
+{
+    if (g_terrainTrace.active)
+        g_terrainTrace.patch = patch;
+}
+
+// drawPatchRange: brackets one terrain draw (set before the draw, cleared after).
+void terrainTraceDraw(bool begin, unsigned int primitives, unsigned int vertices, unsigned int start)
+{
+    TerrainTraceState& s = g_terrainTrace;
+    if (!s.active)
+        return;
+    s.pending = begin;
+    s.primitives = primitives;
+    s.vertices = vertices;
+    s.start = start;
 }
 
 } // namespace geom
