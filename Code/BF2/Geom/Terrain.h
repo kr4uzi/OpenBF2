@@ -487,7 +487,7 @@ public:
     void  drawDetailPass();                                          // sub_100DF990  the ShaderVersion-1 detail/light pass [read - stops, see the body]
     void  drawMaskLights();                                          // sub_100DE5B0  the point-light pass over getVisibleLightsByMask(2313) - LightManager +0x18, the frame's visible lights
     void  reloadForLowQuality();                                     // sub_100DDF90  the Low_Terrain fallback reload
-    void  drawFinal();                                               // sub_100DB680  the +0xBC arm's diffuse passes
+    void  drawFinal();                                               // sub_100DB680  terrain colour passes
     void  drawSurrounding();                                         // sub_100E0F80  Shared_SurroundingTerrain over the ring
     void  drawWaterRa(float seaLevel);                               // sub_100DBF50  the ShaderVersion-1 Ra water over the gathered nodes
     void  drawWaterGrid(float seaLevel);                             // sub_100DCA50  the 65x65-grid water, one cell per patch-sized square
@@ -651,11 +651,11 @@ public:
     float          m_farTopTilingHi;        // +0x330  16.0; file
     float          m_farYOffset;            // +0x334  0; file
     std::vector<TerrainDetailTexture*> m_detailTextures;   // +0x338  one per record
-    int            m_currentPass;           // +0x348  0; drawFinal's pass cache (the +0xBC arm resets it)
+    int            m_currentPass;           // +0x348  0; pass cache reset by drawFinal
     ::dice::hfe::world::IHeightmap* m_primaryHeightmap; // +0x34C  init: the cluster's primary heightmap
     int            m_heightmapSizeX;        // +0x350  init: its size
     int            m_heightmapSizeZ;        // +0x354
-    unsigned char  m_drawMain;              // +0x358  1  the +0xB8 arm's main draw gate, the +0xBC arm's diffuse gate
+    unsigned char  m_drawMain;              // +0x358  1  main and colour draw gate
     unsigned char  m_flag359;               // +0x359  1  the +0xBC arm's ring gate (with +0x35C)
     unsigned char  m_flag35A;               // +0x35A  1  the +0xB8 arm's slot +0xD8 (water) gate
     unsigned char  m_flag35B;               // +0x35B  0  drawFinal: "makeDynamicLightmap is obsolete!" when set

@@ -158,12 +158,21 @@ Each entry is a heading that names the fix, followed by these fields:
   them on macOS (Metal). Turning `D3DRS_ZFUNC` to ALWAYS for these draws removes them. On an Intel
   Mac the gap lies between 1e-7 and 1e-6 in D3D9 depth units.
 - **OpenBF2:** Each terrain node drawn by `drawFinal` carries `D3DRS_DEPTHBIAS` = -1e-6 within
-  60 m of the camera (D3D9 depth units, about 17 steps of a 24-bit depth buffer). Beyond 60 m it is
+  60 m of the camera (D3D9 depth units, about 17 steps of a 24-bit depth buffer). The colour passes
+  now run immediately after the depth and light pass and the water in
+  `Terrain::renderWorldPassBegin`, before world objects, overgrowth and undergrowth.
+  Retail runs `drawMain` and `drawWater` in `renderWorldPassBegin` (RendDX9 PE `0x100E0E50`),
+  then draws objects before `renderWorldPassEnd` (`0x100E10C0`) calls `drawFinal` and
+  `drawSurrounding`. With the bias, additive terrain colour could land on object pixels within
+  the bias of the ground, leaving thin bright lines at bush and tree bases and grass that has
+  sunk flat at its fade distance. Drawing colour first lets objects cover the finished terrain
+  with their normal depth test against the unbiased depth passes; colour passes never write
+  depth. The cost is computing terrain colour also where objects later cover it.
+  `drawSurrounding` stays after world objects. Beyond 60 m the bias is
   scaled by `(60/d)^2`, where `d` is the distance from the frame's terrain camera position to the
   nearest point of the node's world bounds. A constant depth-buffer bias corresponds to a world
-  distance that grows roughly with distance squared: far additive FullDetail layers can then cover
-  near-coplanar bushes, tree bases and road pieces with bright white specks, especially when
-  zoomed with iron sights. Scaling keeps approximately the world-space offset used at 60 m.
+  distance that grows roughly with distance squared. Scaling keeps approximately the world-space
+  offset used at 60 m; the draw order prevents terrain colour from adding to world objects.
   Measurements on an Intel Mac: -1e-7 leaves smaller black patches, -5e-7 still leaves some white
   specks, and -1e-6 removes the middle-distance black patches; slope -1 with constant 0 is worse.
   Every colour pass uses the node's bias; lower-LOD batches merge only nodes with equal bias,
