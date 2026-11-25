@@ -2449,6 +2449,16 @@ if(BF2_LINUX_CLIENT)
         USES_TERMINAL VERBATIM)
 endif()
 
+# [TEMP] [CHOSEN, not recovered] Headless terrain colour-pass bias check; no graphics device.
+add_executable(bf2_terrain_colour_pass_bias_check EXCLUDE_FROM_ALL
+    Code/Tests/terrain_colour_pass_bias.cpp)
+bf2_configure_cpp_target(bf2_terrain_colour_pass_bias_check)
+bf2_set_platform_compat(bf2_terrain_colour_pass_bias_check)
+bf2_set_image(bf2_terrain_colour_pass_bias_check 0)
+if(BUILD_TESTING)
+    add_test(NAME bf2_terrain_colour_pass_bias_check COMMAND bf2_terrain_colour_pass_bias_check)
+endif()
+
 # [TEMP] Issue #33: content-free policy checks, with no renderer or gameplay claim.
 add_executable(bf2_hud_widescreen_check EXCLUDE_FROM_ALL
     Code/Tests/hud_widescreen_policy.cpp

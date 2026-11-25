@@ -157,15 +157,26 @@ Each entry is a heading that names the fix, followed by these fields:
   Retail shows them on DX10-class and AMD GPUs ("flickering black hexagons"), and OpenBF2 shows
   them on macOS (Metal). Turning `D3DRS_ZFUNC` to ALWAYS for these draws removes them. On an Intel
   Mac the gap lies between 1e-7 and 1e-6 in D3D9 depth units.
-- **OpenBF2:** The terrain draws of `drawFinal` carry `D3DRS_DEPTHBIAS` = -1e-6 (D3D9 depth units,
-  about 17 steps of a 24-bit depth buffer). The bias is reset to the world value 0 after them, so
+- **OpenBF2:** Each terrain node drawn by `drawFinal` carries `D3DRS_DEPTHBIAS` = -1e-6 within
+  60 m of the camera (D3D9 depth units, about 17 steps of a 24-bit depth buffer). Beyond 60 m it is
+  scaled by `(60/d)^2`, where `d` is the distance from the frame's terrain camera position to the
+  nearest point of the node's world bounds. A constant depth-buffer bias corresponds to a world
+  distance that grows roughly with distance squared: far additive FullDetail layers can then cover
+  near-coplanar bushes, tree bases and road pieces with bright white specks, especially when
+  zoomed with iron sights. Scaling keeps approximately the world-space offset used at 60 m.
+  Measurements on an Intel Mac: -1e-7 leaves smaller black patches, -5e-7 still leaves some white
+  specks, and -1e-6 removes the middle-distance black patches; slope -1 with constant 0 is worse.
+  Every colour pass uses the node's bias; lower-LOD batches merge only nodes with equal bias,
+  while the debug detail merge uses the first node's value. Redundant state sets are skipped
+  across patches and layers for the frame. The bias is reset to the world value 0 after them, so
   pass 0, pass 7, the light passes, the surrounding ring, roads, decals and water are unchanged. The
   Metal backend applies `D3DRS_DEPTHBIAS` as `setDepthBias` scaled by 2^24-1. That is exact for a
   24-bit depth buffer. For Apple silicon's Depth32Float_Stencil8 it is exact near depth 1, where
   mid-range terrain lies, and smaller closer in, so the bias still applies there. A larger bias
   (-1e-5) let the terrain cover coplanar road and track decals.
 - **Applies to:** Client; all platforms.
-- **Source:** `Code/BF2/Geom/TerrainDraw.cpp`
+- **Source:** `Code/BF2/Geom/TerrainDraw.cpp`, `Code/BF2/Geom/QuadPatch.cpp`,
+  `Code/BF2/Geom/TerrainColourPassBias.h`
 
 ### The effect parameter snapshot zeroes its description before the query
 

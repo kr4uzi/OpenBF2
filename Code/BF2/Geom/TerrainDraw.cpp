@@ -14,6 +14,7 @@
 #include <string>
 #include "Terrain.h"
 #include "QuadPatch.h"
+#include "TerrainColourPassBias.h"
 #include "XpLightManager.h"
 #include "StaticMesh.h"
 #include "../Game/Objects/Visual/LightSource.h"   // the mask-light pass's lights
@@ -1571,15 +1572,13 @@ void Terrain::drawFinal()
     // depth writes, against the depth pass 0 (ZFillLightmap) wrote with another vertex shader.
     // Where a colour pass lands a few depth units behind that depth, the pixel keeps the cleared
     // back buffer. The exact source of the difference has not been isolated (the two shaders do
-    // not spell the position the same way: FullDetail adds vScaleTransY.zw). A constant bias of
-    // -1e-6 (D3D9 depth units, about 17 steps of a 24-bit buffer) covers the gap measured on an
-    // Intel Mac (between 1e-7 and 1e-6). Only these terrain draws carry it: it is set here and
-    // returned to the world value 0 (the state manager's base, as the road renderer resets it)
-    // before the surrounding ring, roads, decals, water and every later pass.
-    const float colourPassBias = -1.0e-6f;
-    unsigned int colourPassBiasBits;
-    std::memcpy(&colourPassBiasBits, &colourPassBias, sizeof(colourPassBiasBits));
-    dx9rend::stateManagerSetRenderState(195u, colourPassBiasBits);       // D3DRS_DEPTHBIAS
+    // not spell the position the same way: FullDetail adds vScaleTransY.zw). QuadPatch::drawFinal
+    // applies -1e-6 within 60 m of each node's bounds, scaled by (60/d)^2 beyond. This covers the
+    // measured middle-distance gap without letting distant additive layers cover bushes, tree
+    // bases and roads with white specks. Distance uses m_cameraPosition, the frame's camerapos
+    // shader constant. The cache spans this patch loop; only these terrain draws carry the bias,
+    // reset to the world value 0 before the surrounding ring, roads, decals, water and later passes.
+    terrainResetColourPassBiasCache();
     TerrainCullerNode** it = list->data();
     while (it != list->data() + list->size())
     {

@@ -16,6 +16,7 @@
 #include <string>
 #include "../../RendDX9Abi/D3dx9Sdk.h"
 #include "QuadPatch.h"
+#include "TerrainColourPassBias.h"
 #include "RaQuadPatchAdapter.h"
 #include "MeshTemplate.h"
 #include "Terrain.h"
@@ -140,6 +141,23 @@ inline bool lod1(const TerrainCullerNode* n) { return n->visible && n->lod == 1;
 inline bool lod0n(const TerrainCullerNode* n) { return n && n->visible && n->lod == 0; }
 inline bool lod1n(const TerrainCullerNode* n) { return n && n->visible && n->lod == 1; }
 
+// [CHOSEN, not recovered] The colour-pass retail fix keeps one state cache across all patches
+// and layers of a drawFinal invocation. The next invocation resets it, including other views.
+unsigned int g_colourPassBiasBits = 0;
+bool g_colourPassBiasValid = false;
+
+void setColourPassDepthBias(float bias)
+{
+    unsigned int bits;
+    std::memcpy(&bits, &bias, sizeof(bits));
+    if (!g_colourPassBiasValid || bits != g_colourPassBiasBits)
+    {
+        dx9rend::stateManagerSetRenderState(195u, bits); // D3DRS_DEPTHBIAS
+        g_colourPassBiasBits = bits;
+        g_colourPassBiasValid = true;
+    }
+}
+
 // [CHOSEN, not recovered] Native arithmetic support for the retained x87 walk expressions.
 #if (defined(__APPLE__) || defined(BF2_NATIVE_X87))
 using CullerWalkReal = bf2x87::Real;
@@ -157,6 +175,11 @@ inline CullerWalkReal cullerWalkSqrt(CullerWalkReal value) { return std::sqrt(va
 
 
 } // anonymous namespace
+
+void terrainResetColourPassBiasCache()
+{
+    g_colourPassBiasValid = false;
+}
 
 
 // QuadPatchDetailLayer
@@ -3342,6 +3365,10 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                     ++it;
                     continue;
                 }
+                // [CHOSEN, not recovered] Apply the retail fix to every detail pass, including
+                // pass 14. A debug merge uses its first node's bias for the merged range.
+                setColourPassDepthBias(terrainColourPassDepthBias(
+                    t->m_cameraPosition, node->bounds.min, node->bounds.max));
                 if ((t->m_drawDebugFlags & 2) == 0)
                 {
                     const unsigned int prims = count / 3;
@@ -3414,6 +3441,10 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
         {
             if (t->m_currentLod != lod)
                 t->setMorphConstants(lod);
+            // [CHOSEN, not recovered] LowDiffuse (or pass 14) uses the same per-node fix.
+            const float bias = terrainColourPassDepthBias(
+                t->m_cameraPosition, node->bounds.min, node->bounds.max);
+            setColourPassDepthBias(bias);
             if ((t->m_drawDebugFlags & 1) == 0)
             {
                 unsigned int count = lodCount(node);
@@ -3424,6 +3455,10 @@ void QuadPatch::drawFinal(TerrainCullerNode**& it)
                 {
                     TerrainCullerNode* const next = *it;
                     if (next->patch != this)
+                        break;
+                    // [CHOSEN, not recovered] Nodes can share a draw only with equal bias.
+                    if (terrainColourPassDepthBias(t->m_cameraPosition,
+                            next->bounds.min, next->bounds.max) != bias)
                         break;
                     const unsigned int nextStart = lodStart(next);
                     const unsigned int nextCount = lodCount(next);
