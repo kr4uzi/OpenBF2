@@ -78,8 +78,11 @@ void AudioSettingsData::reset()
     voipCaptureThreshold = 0.1f;
     voipBoostEnabled = false;
     voipUsePushToTalk = true;
-    provider = "software";
-    soundQuality = physicalMemoryMegabytes() < 768 ? "Low" : "Medium";
+    // [CHOSEN, not recovered] All-platform audio defaults (docs/architecture.md,
+    // "Client audio defaults"). Retail BF2.exe 0x4B0C10 selects software and
+    // Low/Medium at 768 MB; keep its low-memory guard, otherwise prefer High.
+    provider = "hardware";
+    soundQuality = physicalMemoryMegabytes() < 768 ? "Low" : "High";
     effectsVolume = 1.0f;
     helpVoiceVolume = 1.0f;
     musicVolume = 0.33f;

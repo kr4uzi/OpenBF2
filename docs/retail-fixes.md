@@ -65,11 +65,14 @@ Each entry is a heading that names the fix, followed by these fields:
   saturates at `0xFFFFFFFF`; the addition wraps and reports 0 MB, selecting "Low".
 - **OpenBF2:** Reads the full physical-memory size with `GlobalMemoryStatusEx` (`ullTotalPhys`)
   on Windows, `sysctl hw.memsize` on macOS and `sysinfo` on Linux. Conversion and rounding
-  use 64-bit arithmetic and clamp to the `int` range. The rounding, 768 MB threshold and
-  "Low"/"Medium" choices remain unchanged, so modern machines get "Medium". Only defaults
-  change: existing profiles keep their saved quality when `Audio.con` is loaded. Explicitly
-  restoring defaults also uses the corrected memory check. No audio provider, quality row,
-  profile format or network contract changes.
+  use 64-bit arithmetic and clamp to the `int` range. This memory-read fix preserves the
+  rounding and 768 MB threshold, so the low-memory guard no longer mistakes a modern
+  machine for a low-memory one. The separate `[CHOSEN, not recovered]`
+  [client audio defaults](architecture.md#client-audio-defaults) select hardware and High
+  above that guard, replacing retail's software and Medium defaults. Existing profiles
+  keep their saved settings when `Audio.con` is loaded; explicitly restoring defaults
+  uses the corrected memory check and the new defaults. No quality row, profile format
+  or network contract changes.
 - **Applies to:** Client; all platforms.
 - **Source:** `Code/BF2/Game/AudioSettings.cpp`, `Code/Tests/audio_settings_runtime.cpp`
 
