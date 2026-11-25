@@ -10,6 +10,7 @@
 // preserve the existing caller ordering rather than adding a silent null fallback.
 
 #include "ObjectManager.h"
+#include "../../Platform/Host/BusyService.h"
 #include "../../Game/Objects/GeometryPartAccess.h"   // named geometry operations (non-MSVC)
 #if defined(BF2_STATIC_PLUGINS) && !defined(_MSC_VER)
 // [CHOSEN, not recovered] One native scale-interface declaration in every image.
@@ -2329,6 +2330,8 @@ IObject* ObjectManager::getRegisteredObject(int id)
 // PE 0x00728400; ELF 0x08310C00. The remaining registry/update/culler checks are shipped invariants.
 void ObjectManager::deleteAllRegisteredObjects()
 {
+    // [CHOSEN, not recovered] Service the host throughout large teardown passes, never engine input.
+    host::serviceWhileBusy();
     m_clientUpdateTick    = 0;                                           // +0x10C
     m_deletingAllObjects  = true;                                        // +0x90
 
@@ -2338,6 +2341,7 @@ void ObjectManager::deleteAllRegisteredObjects()
         IObject* const object = it->second;
         if (object && object->getObjectCacheID())                        // vt +0x2C
             destroyObject(object);                                       // vt +0x14
+        host::serviceWhileBusy();
     }
     destroyObjects();                                                    // vt +0x98
     m_objectCache->deleteAll();                                          // unguarded, as shipped
@@ -2353,6 +2357,7 @@ void ObjectManager::deleteAllRegisteredObjects()
             if (parent)
                 parent->removeChild(object);                             // vt +0xF8
         }
+        host::serviceWhileBusy();
     }
 
     for (std::map<unsigned int, IObject*>::iterator it = m_allRegisteredObjects.begin();
@@ -2366,6 +2371,7 @@ void ObjectManager::deleteAllRegisteredObjects()
                     << "hierarchy error: object still has a parent while deleting all registered objects";
             object->forceDestroy();                                      // vt +0x38
         }
+        host::serviceWhileBusy();
     }
     destroyObjects();
 
@@ -2589,6 +2595,10 @@ void ObjectManager::destroyObjects()
     m_currentDestroyList = &m_destroyLists[m_destroyListIndex];
     for (unsigned int i = 0; i < list->size(); ++i)
     {
+        // [CHOSEN, not recovered] A level's queued destruction can take seconds to drain.
+        // Only bulk teardown needs servicing here; ordinary frame destruction keeps its timing.
+        if (m_deletingAllObjects)
+            host::serviceWhileBusy();
         IObject* object = (*list)[i];
         if ((object_detail::LayoutAccess::flags(object) & 0x200u) != 0)
         {

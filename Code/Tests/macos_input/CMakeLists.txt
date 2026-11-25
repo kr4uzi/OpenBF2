@@ -23,6 +23,7 @@ set(BF2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../BF2")
 
 add_executable(macos_input_test
     main.mm
+    "${BF2_ROOT}/Core/Thread.cpp"
     ../macos_host/control_map_fixture.cpp
     "${BF2_ROOT}/Platform/macOS/CocoaHost.mm"
     "${BF2_ROOT}/Platform/macOS/MacGamepad.mm"

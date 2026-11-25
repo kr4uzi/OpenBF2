@@ -6,6 +6,7 @@
 #include "../PunkBuster/PbGlue.h"
 #include "../PunkBuster/PbAvailability.h"   // [CHOSEN, not recovered] the join's PunkBuster flag per build
 #include "PerformanceLogging.h"             // +0x74, deleted in shutdownGame and shutdownEngine (every image)
+#include "../../Platform/Host/BusyService.h"
 #include "BF2EngineSetup.h"
 #include "BF2Log.h"                         // [INFERRED] path; Game/Main/BF2Log.cpp is attested
 #include "BF2Console.h"                     // [INFERRED] path
@@ -1532,6 +1533,10 @@ void BF2Engine::shutdownGame(bool activateMenuAfter)   // bool from BF2.exe 0x40
     if (!game)                                  // /0x8138017 -> straight to the epilogue
         return;
 
+    // [CHOSEN, not recovered] Disconnect and quit share synchronous teardown. Use the load
+    // service here and between teardown phases; queued input waits for the normal frame pump.
+    host::serviceWhileBusy();
+
     if (performanceLogging)                     // field 116, tested at 0x813801d
     {
         // ~PerformanceLogging is inlined: the vptr is stored (0x8138259) and then operator delete is
@@ -1558,9 +1563,18 @@ void BF2Engine::shutdownGame(bool activateMenuAfter)   // bool from BF2.exe 0x40
     if (quitNextFrameFlag)                      // field 68, cmp byte [ebx+44h] at 0x813807a
         deactivateMenu();                       // [PLATFORM] a stub in this build
 
+#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+    // [CHOSEN, not recovered] The movie's disconnect callback has already restored the arrow
+    // after queuing its request. Select its animated busy cursor for the actual synchronous work.
+    ui::ISwiffHost* busyHost = static_cast<ui::ISwiffHost*>(classManager->getSingleton("SwiffHost"));
+    if (busyHost)
+        host::ClientHost::instance().setCursor(busyHost->getCursor(1));
+#endif
+
     if (game)                                   // re-tested at 0x8138090 - it cannot have changed
     {
         game->shutdown();                                   // IGame vtable +0x1C, 0x81381d0
+        host::serviceWhileBusy();
         classManager->unregisterSingleton("Game");           // ClassManager vtable +0x48, 0x81381fc
         game = 0;
     }
@@ -1571,6 +1585,8 @@ void BF2Engine::shutdownGame(bool activateMenuAfter)   // bool from BF2.exe 0x40
         gameLogic = 0;
     }
 
+    host::serviceWhileBusy();
+
     // Level-scoped singletons registered elsewhere during level load; dropped so the next level
     // re-creates them. The array is built on the stack (var_158/154/150 at 0x81380ad-0x81380c0),
     // NUL-terminated, and walked with a pointer. Two temporary std::strings are built per iteration,
@@ -1580,6 +1596,7 @@ void BF2Engine::shutdownGame(bool activateMenuAfter)   // bool from BF2.exe 0x40
     {
         if (classManager->getSingleton(*name))          // ClassManager vtable +0x4C, 0x8138110
             classManager->unregisterSingleton(*name);   // ClassManager vtable +0x48, 0x8138179
+        host::serviceWhileBusy();
     }
 
 #if !DEDICATED
@@ -1589,6 +1606,12 @@ void BF2Engine::shutdownGame(bool activateMenuAfter)   // bool from BF2.exe 0x40
     mapList->save();
     if (activateMenuAfter && !quitNextFrameFlag && !byte51)
         activateMenu(0);
+    host::serviceWhileBusy();
+#endif
+#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+    // [CHOSEN, not recovered] Menu initialization may have changed the busy state meanwhile.
+    if (busyHost)
+        host::ClientHost::instance().setCursor(busyHost->getCursor(busyHost->getBusy()));
 #endif
 }
 

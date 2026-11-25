@@ -4,6 +4,7 @@
 
 // Include Ids before IObjectTemplate so later extern declarations retain the constants' internal linkage.
 #include "ObjectTemplateManager.h"
+#include "../../../../Platform/Host/BusyService.h"
 #include <cstdio>    // [TEMP] probe F - createTemplate failure tracer; retire with RW-97
 #include "../../../../Core/Ids.h"
 #include "../../../../Game/Objects/IObjectTemplate.h"     // [UNRESOLVED] true home; not attested
@@ -418,12 +419,18 @@ void ObjectTemplateManager::deleteAll(bool onlyRuntimeCreated)
             if ((t->getFlags() & 0x4000) != 0)         // template vtable +0x48
                 deleteTemplate(t);                     // virtual, slot +0x44
             it = next;
+            // [CHOSEN, not recovered] Runtime template teardown can outlast the host's event deadline.
+            host::serviceWhileBusy();
         }
     }
     else
     {
         for (Iter it = m_globalTemplateList.begin(); it != m_globalTemplateList.end(); ++it)
+        {
             (*it)->release();                          // template vtable +0x08
+            // [CHOSEN, not recovered] Also service full template release on engine shutdown.
+            host::serviceWhileBusy();
+        }
 
         m_objTemplateNameHashes.clear();
         m_globalTemplateList.clear();
