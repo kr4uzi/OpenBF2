@@ -39,6 +39,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
+#include <utility>
 #include <vector>
 #include "../GeomMisc/FSQuadDrawer.h"   // textureHalfTexelSize, PE 0x100846A0
 
@@ -1932,7 +1934,9 @@ void Terrain::drawWaterCell(float x0, float z0, float x1, float z1, void* lightm
 // The first three frames after start are traced, then one frame every five seconds. Each traced
 // draw is one "[TT]" line on stderr: T = a terrain draw (drawPatchRange), F = another system's
 // depth-writing draw. Values are read back from the device after the state manager's pre-draw
-// apply, so they are what the draw used.
+// apply, so they are what the draw used: the vertex shader's FLOAT4 constants by name, the pixel
+// shader's ("ps:") and the textures on its samplers ("s:"). At the frame end one C line per patch
+// compares the triangles pass 0 drew with those the colour passes drew.
 // [RETIRE-WHEN: terrain-black-hexagons] Remove this module, its hooks in StateManager.cpp,
 // Effect.cpp, QuadPatch.cpp and BF2Render.cpp, and tools/macos/terrain-trace once the hexagons are
 // explained and the correction is confirmed in game.
@@ -1950,6 +1954,48 @@ struct TerrainTraceState
 };
 TerrainTraceState g_terrainTrace = {};
 
+// Per patch in the traced frame: the triangles pass 0 drew and the triangles the colour passes
+// (drawFinal) drew, each as its sorted vertex-index triple. A pass-0 triangle no colour pass
+// draws stays black (FullDetail adds onto a black target); a different triangulation shows as
+// triangles on one side only.
+struct TraceCoverage { std::set<unsigned long long> pass0, colour; };
+std::map<int, TraceCoverage> g_terrainTraceCoverage;
+
+void traceTriangles(IDirect3DDevice9* d, int primitiveType, unsigned int start, unsigned int primitives,
+                    std::set<unsigned long long>& out)
+{
+    IDirect3DIndexBuffer9* ib = 0;
+    d->GetIndices(&ib);
+    if (!ib)
+        return;
+    D3DINDEXBUFFER_DESC desc = {};
+    ib->GetDesc(&desc);
+    const unsigned int size = desc.Format == D3DFMT_INDEX32 ? 4u : 2u;
+    const unsigned int indices = primitiveType == 4 ? primitives * 3u : primitives + 2u;   // list or strip
+    void* data = 0;
+    if (primitives && (start + indices) * size <= desc.Size &&
+        SUCCEEDED(ib->Lock(start * size, indices * size, &data, D3DLOCK_READONLY | D3DLOCK_NOOVERWRITE)) && data)
+    {
+        auto index = [&](unsigned int i) -> unsigned long long {
+            return size == 4 ? static_cast<const unsigned int*>(data)[i] : static_cast<const unsigned short*>(data)[i];
+        };
+        for (unsigned int p = 0; p < primitives; ++p)
+        {
+            unsigned long long v[3];
+            for (unsigned int k = 0; k < 3; ++k)
+                v[k] = index(primitiveType == 4 ? 3 * p + k : p + k);
+            if (v[0] == v[1] || v[1] == v[2] || v[0] == v[2])
+                continue;                                 // strip degenerates
+            if (v[0] > v[1]) std::swap(v[0], v[1]);
+            if (v[1] > v[2]) std::swap(v[1], v[2]);
+            if (v[0] > v[1]) std::swap(v[0], v[1]);
+            out.insert((v[0] << 42) | (v[1] << 21) | v[2]);
+        }
+        ib->Unlock();
+    }
+    ib->Release();
+}
+
 bool terrainTraceEnabled()
 {
     static const bool enabled = [] {
@@ -1959,10 +2005,12 @@ bool terrainTraceEnabled()
     return enabled;
 }
 
-// The FLOAT4 constants a shader declares, from its CTAB comment: name, first register, count.
-struct TraceConstant { std::string name; unsigned int reg, count; };
+// The FLOAT4 constants and samplers a shader declares, from its CTAB comment: name, register set
+// (2 FLOAT4, 3 sampler), first register, count.
+struct TraceConstant { std::string name; unsigned int set, reg, count; };
 
-const std::vector<TraceConstant>& traceShaderConstants(IDirect3DVertexShader9* shader)
+template<class Shader>
+const std::vector<TraceConstant>& traceShaderConstants(Shader* shader)
 {
     static std::map<const void*, std::vector<TraceConstant> > cache;
     std::map<const void*, std::vector<TraceConstant> >::iterator it = cache.find(shader);
@@ -2000,10 +2048,10 @@ const std::vector<TraceConstant>& traceShaderConstants(IDirect3DVertexShader9* s
                 std::memcpy(&set, e + 4, 2);
                 std::memcpy(&reg, e + 6, 2);
                 std::memcpy(&regs, e + 8, 2);
-                if (set != 2 || nameOffset >= bytes)
-                    continue;                            // FLOAT4 only
+                if ((set != 2 && set != 3) || nameOffset >= bytes)
+                    continue;                            // FLOAT4 and samplers only
                 const char* const name = reinterpret_cast<const char*>(table + nameOffset);
-                out.push_back(TraceConstant{ std::string(name, strnlen(name, bytes - nameOffset)), reg, regs });
+                out.push_back(TraceConstant{ std::string(name, strnlen(name, bytes - nameOffset)), set, reg, regs });
             }
         }
         i += 1 + length;
@@ -2085,6 +2133,12 @@ void terrainTraceHook(IDirect3DDevice9* d)
     std::fprintf(stderr, " ib=%p", static_cast<void*>(ib));
     if (ib) ib->Release();
     traceTargets(d);
+    if (t && s.label && (std::strcmp(s.label, "drawMain:p0") == 0 || std::strcmp(s.label, "drawFinal") == 0))
+    {
+        TraceCoverage& c = g_terrainTraceCoverage[index];
+        traceTriangles(d, t->m_primitiveType, s.start, s.primitives,
+                       std::strcmp(s.label, "drawFinal") == 0 ? c.colour : c.pass0);
+    }
     const std::vector<TraceConstant>& constants = traceShaderConstants(vs);
     if (constants.empty())
     {
@@ -2096,13 +2150,41 @@ void terrainTraceHook(IDirect3DDevice9* d)
     for (std::size_t i = 0; i < constants.size(); ++i)
     {
         const TraceConstant& k = constants[i];
-        for (unsigned int r = 0; r < k.count && r < 8; ++r)
+        for (unsigned int r = 0; k.set == 2 && r < k.count && r < 8; ++r)
         {
             float c[4] = {};
             d->GetVertexShaderConstantF(k.reg + r, c, 1);
             std::fprintf(stderr, " %s[%u]@c%u=(%.9g,%.9g,%.9g,%.9g)", k.name.c_str(), r, k.reg + r,
                          c[0], c[1], c[2], c[3]);
         }
+    }
+    // The pixel shader's FLOAT4 constants ("ps:" prefix) and samplers ("s:" prefix, the texture
+    // bound to the sampler's stage: pointer, format, size of level 0, levels).
+    const std::vector<TraceConstant>& pixel = traceShaderConstants(ps);
+    for (std::size_t i = 0; i < pixel.size(); ++i)
+    {
+        const TraceConstant& k = pixel[i];
+        if (k.set == 2)
+        {
+            for (unsigned int r = 0; r < k.count && r < 8; ++r)
+            {
+                float c[4] = {};
+                d->GetPixelShaderConstantF(k.reg + r, c, 1);
+                std::fprintf(stderr, " ps:%s[%u]@c%u=(%.9g,%.9g,%.9g,%.9g)", k.name.c_str(), r, k.reg + r,
+                             c[0], c[1], c[2], c[3]);
+            }
+            continue;
+        }
+        IDirect3DBaseTexture9* texture = 0;
+        d->GetTexture(k.reg, &texture);
+        D3DSURFACE_DESC desc = {};
+        if (texture && texture->GetType() == D3DRTYPE_TEXTURE)
+            static_cast<IDirect3DTexture9*>(texture)->GetLevelDesc(0, &desc);
+        std::fprintf(stderr, " s:%s@s%u=%p(fmt=0x%x,%ux%u,levels=%u)", k.name.c_str(), k.reg,
+                     static_cast<void*>(texture), unsigned(desc.Format), desc.Width, desc.Height,
+                     texture ? unsigned(texture->GetLevelCount()) : 0u);
+        if (texture)
+            texture->Release();
     }
     std::fprintf(stderr, "\n");
     if (vs) vs->Release();
@@ -2130,6 +2212,7 @@ void terrainTraceFrameBegin(Terrain* terrain)
     s.draws = 0;
     s.label = "RSMTZOnly";
     s.pending = false;
+    g_terrainTraceCoverage.clear();
     dx9rend::g_terrainTraceDrawHook = &terrainTraceHook;
     const float* const m = dx9rend::rendererGetRenderView()->getViewMatrixPtr()->m;
     std::fprintf(stderr, "[TT] frame=%u ordinal=%u camera=(%.9g,%.9g,%.9g) lowQuality=%d terrainQuality=%d"
@@ -2152,6 +2235,22 @@ void terrainTraceFrameEnd()
     TerrainTraceState& s = g_terrainTrace;
     if (!s.active)
         return;
+    for (std::map<int, TraceCoverage>::const_iterator it = g_terrainTraceCoverage.begin();
+         it != g_terrainTraceCoverage.end(); ++it)
+    {
+        const TraceCoverage& c = it->second;
+        unsigned int uncovered = 0, extra = 0;
+        unsigned long long sample = 0;
+        for (std::set<unsigned long long>::const_iterator k = c.pass0.begin(); k != c.pass0.end(); ++k)
+            if (!c.colour.count(*k)) { if (!uncovered) sample = *k; ++uncovered; }
+        for (std::set<unsigned long long>::const_iterator k = c.colour.begin(); k != c.colour.end(); ++k)
+            if (!c.pass0.count(*k)) ++extra;
+        std::fprintf(stderr, "[TT] C frame=%u idx=%d pass0Triangles=%u colourTriangles=%u uncovered=%u"
+                     " colourOnly=%u firstUncovered=(%llu,%llu,%llu)\n",
+                     s.frames, it->first, unsigned(c.pass0.size()), unsigned(c.colour.size()), uncovered, extra,
+                     sample >> 42, (sample >> 21) & 0x1FFFFFull, sample & 0x1FFFFFull);
+    }
+    g_terrainTraceCoverage.clear();
     std::fprintf(stderr, "[TT] end frame=%u draws=%u\n", s.frames, s.draws);
     std::fflush(stderr);
     s.active = false;

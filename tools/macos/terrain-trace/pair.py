@@ -70,7 +70,7 @@ def main():
             p = partners[0]
             used.add(key)
             keys = sorted(set(p) | set(f))
-            diffs = [k for k in keys if p.get(k) != f.get(k) and (verbose or k not in EXPECTED)]
+            diffs = [k for k in keys if p.get(k) != f.get(k) and (verbose or (k not in EXPECTED and not k.startswith(('ps:', 's:'))))]
             if diffs:
                 mismatched += 1
                 print('  DIFF idx=%s grid=%s curLod=%s  p0 draw=%s pass=%s | final draw=%s pass=%s'
