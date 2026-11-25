@@ -1476,6 +1476,30 @@ void rendererDrawIndexedPrimitive(unsigned int primCount, unsigned int type, int
     }
 }
 
+// [TEMP] BF2_UG_TRACE [CHOSEN, not recovered]
+// [RETIRE-WHEN: undergrowth-black-patches] Remove after runtime state identifies the black cells.
+// Diagnostic-only variant: observe the device after the normal commit/flush, without a second
+// CommitChanges or any extra state setters. The ordinary draw path remains untouched.
+void rendererDrawIndexedPrimitiveWithTrace(unsigned int primCount, unsigned int type, int baseVertex,
+                                           unsigned int minIndex, unsigned int numVertices,
+                                           unsigned int startIndex,
+                                           void (*trace)(IDirect3DDevice9*, void*), void* context)
+{
+    if (!primCount)
+        return;
+    preDrawApply(sm());
+    trace(rendererDevice(), context);
+    rendererDevice()->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(type), baseVertex,
+                                           minIndex, numVertices, startIndex, primCount);
+    unsigned char* stats = static_cast<RendDX9Base*>(g_rendererBase)->renderStats;
+    if (stats[644])
+    {
+        ++*reinterpret_cast<unsigned int*>(stats + 452);
+        *reinterpret_cast<unsigned int*>(stats + 456) += primCount;
+        *reinterpret_cast<unsigned int*>(stats + 448) += primCount;
+    }
+}
+
 // sub_100058B0 - the UP (user-pointer) variant, for SwiffRender's line strips.
 // Read in full: clear stream 0 through the StateManager first (D3D requires no bound stream for a
 // UP draw), pre-draw apply, DrawPrimitiveUP, then the UP stat pair (+468/+472; sub_1000D650) and
