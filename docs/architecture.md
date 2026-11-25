@@ -166,6 +166,11 @@ their bitmap appearance. The spawn and commander HUD font pages use the same mat
 SwiffPlayer and RendDX9 exchange outlines through the engine's named singleton
 registry, which also works when Windows loads the two plugins as separate DLLs.
 SWF curve precision follows the ratio of output pixels to movie pixels.
+A menu font whose best fit is weak (error above 0.05) is fitted again when another movie
+loads, and a better fit replaces its texture. Which typefaces are available depends on the
+order the movies load in: through the main menu, `DynamicText_13` first fitted TradeGothic
+(error 0.096). A start straight into the loading screen fits Helvetica Condensed Bold
+(error 0.011).
 See [issue #42](https://github.com/kr4uzi/OpenBF2/issues/42).
 
 ## Client display modes and HiDPI UI
