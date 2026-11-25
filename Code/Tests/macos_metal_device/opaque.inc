@@ -100,3 +100,97 @@ static int opaqueAlphaChecks(IDirect3DDevice9* d) {
               "an X8R8G8B8 target keeps no shader alpha (DESTALPHA reads 1)");
     return 0;
 }
+
+// The multisampled fullscreen path (the owner's run: A8R8G8B8, 8 samples). Two parts:
+// 1. The RendDX9 present step's device sequence (RendDX9Draw.cpp forceBackBufferAlphaOpaque): with
+//    another render target current (the post-production scene target at Present), bind the
+//    multisampled back buffer, no depth-stencil surface, draw, restore. A resolve of the back
+//    buffer into an A8R8G8B8 target must read alpha 255 and unchanged RGB.
+// 2. The Metal present seam (MenuBridge.inc presentOpaqueAlpha): a back buffer with alpha-0
+//    pixels, presented as is, must reach the CAMetalLayer drawable with alpha 255, RGB unchanged.
+static bool opaqueDrawableCheck(unsigned rgb, unsigned& alphaMin, bool& rgbKept) {
+    static std::uint32_t pixels[1024*1024]; unsigned pw = 0, ph = 0;
+    if (!bf2metal::presentedDrawablePixels(pixels,1024*1024,pw,ph) || !pw || !ph) return false;
+    alphaMin = 255; rgbKept = true;
+    for (unsigned i = 0; i < pw*ph; ++i) {
+        const unsigned a = pixels[i] >> 24; alphaMin = a < alphaMin ? a : alphaMin;
+        rgbKept = rgbKept && (pixels[i] & 0x00ffffffu) == rgb;
+    }
+    return true;
+}
+static int opaqueMsaaPresentChecks(IDirect3D9* d3d, IDirect3DDevice9* d, D3DPRESENT_PARAMETERS& pp) {
+    using namespace dice::hfe::dx9rend;
+    const D3DPRESENT_PARAMETERS saved = pp;
+    D3DMULTISAMPLE_TYPE samples = D3DMULTISAMPLE_8_SAMPLES;
+    if (d3d->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A8R8G8B8,TRUE,samples,nullptr) != D3D_OK)
+        samples = D3DMULTISAMPLE_4_SAMPLES;
+    pp.BackBufferFormat = D3DFMT_A8R8G8B8; pp.MultiSampleType = samples; pp.MultiSampleQuality = 0;
+    CHECK(d->Reset(&pp) == D3D_OK);
+    const unsigned rgb = 0x00336699u;
+    IDirect3DSurface9 *back = nullptr, *scene = nullptr, *resolved = nullptr, *depth = nullptr;
+    D3DSURFACE_DESC bd = {};
+    CHECK(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back) == D3D_OK && back->GetDesc(&bd) == D3D_OK &&
+          bd.Format == D3DFMT_A8R8G8B8 && bd.MultiSampleType == samples);
+    CHECK(d->GetDepthStencilSurface(&depth) == D3D_OK);
+    CHECK(d->CreateRenderTarget(bd.Width,bd.Height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&scene,nullptr) == D3D_OK);
+    CHECK(d->CreateRenderTarget(bd.Width,bd.Height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr) == D3D_OK);
+    IDirect3DVertexShader9* vs = nullptr; IDirect3DPixelShader9* ps = nullptr; IDirect3DVertexDeclaration9* decl = nullptr;
+    const D3DVERTEXELEMENT9 elements[2] = { {0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0}, D3DDECL_END() };
+    CHECK(d->CreateVertexShader(reinterpret_cast<const DWORD*>(opaque_alpha::kVertexShader),&vs) == D3D_OK);
+    CHECK(d->CreatePixelShader(reinterpret_cast<const DWORD*>(opaque_alpha::kPixelShader),&ps) == D3D_OK);
+    CHECK(d->CreateVertexDeclaration(elements,&decl) == D3D_OK);
+
+    // 1. The frame: alpha 0 in the multisampled back buffer; the scene target current at Present.
+    CHECK(d->BeginScene() == D3D_OK && d->Clear(0,nullptr,D3DCLEAR_TARGET,rgb,1.0f,0) == D3D_OK && d->EndScene() == D3D_OK);
+    CHECK(d->SetRenderTarget(0,scene) == D3D_OK);
+    D3DVIEWPORT9 savedViewport = {}; CHECK(d->GetViewport(&savedViewport) == D3D_OK);
+    CHECK(d->BeginScene() == D3D_OK);
+    for (unsigned i = 0; i < opaque_alpha::kRenderStateCount; ++i)
+        CHECK(d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(opaque_alpha::kRenderStates[i][0]),
+                                opaque_alpha::kRenderStates[i][1]) == D3D_OK);
+    CHECK(d->SetVertexShader(vs) == D3D_OK && d->SetPixelShader(ps) == D3D_OK && d->SetVertexDeclaration(decl) == D3D_OK);
+    CHECK(d->SetStreamSource(0,nullptr,0,0) == D3D_OK);
+    IDirect3DSurface9 *oldTarget = nullptr, *oldDepth = nullptr;
+    CHECK(d->GetRenderTarget(0,&oldTarget) == D3D_OK && oldTarget == scene);
+    CHECK(d->GetDepthStencilSurface(&oldDepth) == D3D_OK);
+    CHECK(d->SetRenderTarget(0,back) == D3D_OK && d->SetDepthStencilSurface(nullptr) == D3D_OK);
+    const D3DVIEWPORT9 full = {0,0,bd.Width,bd.Height,0.0f,1.0f};
+    CHECK(d->SetViewport(&full) == D3D_OK);
+    CHECK(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,opaque_alpha::kQuadPrimitives,opaque_alpha::kQuad,opaque_alpha::kQuadStride) == D3D_OK);
+    CHECK(d->SetDepthStencilSurface(oldDepth) == D3D_OK && d->SetRenderTarget(0,oldTarget) == D3D_OK);
+    CHECK(d->SetViewport(&savedViewport) == D3D_OK);
+    oldDepth->Release(); oldTarget->Release();
+    CHECK(d->EndScene() == D3D_OK);
+    CHECK(d->StretchRect(back,nullptr,resolved,nullptr,D3DTEXF_NONE) == D3D_OK);   // the multisample resolve
+    unsigned alphaMin = 0, alphaMax = 0; bool rgbKept = false;
+    {
+        IDirect3DSurface9* sys = nullptr; D3DLOCKED_RECT r = {};
+        CHECK(d->CreateOffscreenPlainSurface(bd.Width,bd.Height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&sys,nullptr) == D3D_OK);
+        CHECK(d->GetRenderTargetData(resolved,sys) == D3D_OK && sys->LockRect(&r,nullptr,D3DLOCK_READONLY) == D3D_OK);
+        alphaMin = 255; rgbKept = true;
+        for (unsigned y = 0; y < bd.Height; ++y) for (unsigned x = 0; x < bd.Width; ++x) {
+            unsigned v; std::memcpy(&v,static_cast<const unsigned char*>(r.pBits)+y*r.Pitch+x*4,4);
+            alphaMin = (v>>24) < alphaMin ? (v>>24) : alphaMin; rgbKept = rgbKept && (v & 0x00ffffffu) == rgb;
+        }
+        CHECK(sys->UnlockRect() == D3D_OK); sys->Release();
+    }
+    CHECK(alphaMin == 255 && rgbKept);
+
+    // 2. A frame whose back buffer keeps alpha 0, presented as is: the drawable must be opaque.
+    CHECK(d->SetRenderTarget(0,back) == D3D_OK);
+    CHECK(d->BeginScene() == D3D_OK && d->Clear(0,nullptr,D3DCLEAR_TARGET,rgb,1.0f,0) == D3D_OK && d->EndScene() == D3D_OK);
+    bf2metal::captureNextPresentedDrawable();
+    CHECK(d->Present(nullptr,nullptr,nullptr,nullptr) == D3D_OK);
+    CHECK(opaqueDrawableCheck(rgb,alphaMin,rgbKept) && alphaMin == 255 && rgbKept);
+
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(168),0xf); d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(22),3);
+    d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(7),1); d->SetRenderState(static_cast<D3DRENDERSTATETYPE>(14),1);
+    d->SetVertexShader(nullptr); d->SetPixelShader(nullptr); d->SetVertexDeclaration(nullptr);
+    decl->Release(); ps->Release(); vs->Release(); depth->Release();
+    CHECK(resolved->Release() == 0 && scene->Release() == 0 && back->Release() == 0);
+    pp = saved;
+    CHECK(d->Reset(&pp) == D3D_OK);
+    std::printf("PASS: %ux multisampled A8R8G8B8 back buffer: the present step's draw with another target current "
+                "resolves to alpha 255, RGB unchanged; an alpha-0 frame reaches the drawable opaque\n", unsigned(samples));
+    return 0;
+}

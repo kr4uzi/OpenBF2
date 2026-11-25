@@ -292,26 +292,29 @@ bool ensureOpaqueAlpha(IDirect3DDevice9* d)
     return !g_opaqueAlpha.failed;
 }
 
-// Writes alpha 1 over the whole back buffer; RGB, depth and stencil are untouched. Runs only for
-// an A8R8G8B8 back buffer that is the current render target, outside the frame's scene.
-void forceBackBufferAlphaOpaque(RendDX9Base* b)
+// Writes alpha 1 over the whole back buffer of the swap chain being presented; RGB, depth and
+// stencil are untouched. The back buffer is bound for this one draw, whatever the frame's last
+// render target was (with post-production and multisampling it can be the scene target), with no
+// depth-stencil surface (a bound one could differ in size or sample count). The render target,
+// depth-stencil surface and viewport are put back on the device after the draw, so the state
+// manager's mirror stays true. Runs only for an A8R8G8B8 back buffer, outside the frame's scene.
+void forceBackBufferAlphaOpaque(RendDX9Base* b, IDirect3DSwapChain9* chain)
 {
-    if (b->pp.BackBufferFormat != D3DFMT_A8R8G8B8 || b->inScene)
-        return;
-    IDirect3DSurface9* const backBuffer = rendererBackBufferSurface();
-    if (!backBuffer || stateManagerGetRenderTarget(0) != backBuffer)
+    if (b->pp.BackBufferFormat != D3DFMT_A8R8G8B8 || b->inScene || !chain)
         return;
     IDirect3DDevice9* const d = device();
     if (!ensureOpaqueAlpha(d))
         return;
+    IDirect3DSurface9* backBuffer = 0;
+    if (chain->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer) < 0 || !backBuffer)
+        return;
     D3DSURFACE_DESC desc;
-    if (backBuffer->GetDesc(&desc) < 0)
-        return;
     D3DVIEWPORT9 saved;
-    if (d->GetViewport(&saved) < 0)
+    if (backBuffer->GetDesc(&desc) < 0 || d->GetViewport(&saved) < 0 || d->BeginScene() < 0)
+    {
+        backBuffer->Release();
         return;
-    if (d->BeginScene() < 0)
-        return;
+    }
 
     stateManagerPush();
     for (unsigned int i = 0; i < opaque_alpha::kRenderStateCount; ++i)
@@ -320,14 +323,30 @@ void forceBackBufferAlphaOpaque(RendDX9Base* b)
     stateManagerSetPixelShader(g_opaqueAlpha.pixelShader);
     stateManagerSetVertexDeclaration(g_opaqueAlpha.declaration);
     stateManagerSetStreamSource(0, 0, 0, 0);                  // a UP draw requires no bound stream
-    stateManagerPreDrawApply();
+    stateManagerPreDrawApply();                               // also issues the mirror's render target
+
+    IDirect3DSurface9* oldTarget = 0;
+    IDirect3DSurface9* oldDepth = 0;
+    d->GetRenderTarget(0, &oldTarget);
+    if (d->GetDepthStencilSurface(&oldDepth) < 0)             // D3DERR_NOTFOUND: none bound
+        oldDepth = 0;
+    d->SetRenderTarget(0, backBuffer);
+    d->SetDepthStencilSurface(0);
     D3DVIEWPORT9 full = { 0, 0, desc.Width, desc.Height, 0.0f, 1.0f };
     d->SetViewport(&full);
     d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, opaque_alpha::kQuadPrimitives, opaque_alpha::kQuad,
                        opaque_alpha::kQuadStride);
-    d->SetViewport(&saved);
+    d->SetDepthStencilSurface(oldDepth);
+    if (oldTarget)
+        d->SetRenderTarget(0, oldTarget);
+    d->SetViewport(&saved);                                   // after SetRenderTarget, which resets it
+    if (oldDepth)
+        oldDepth->Release();
+    if (oldTarget)
+        oldTarget->Release();
     stateManagerPop();
     d->EndScene();
+    backBuffer->Release();
 }
 
 } // anonymous namespace
@@ -374,7 +393,7 @@ bool rendererPresent(unsigned int mode)
 
     IDirect3DSwapChain9* chain = b->swapChains[b->currentSwapChain];   // +0xE4[+0xF0]
 
-    forceBackBufferAlphaOpaque(b);   // [CHOSEN, not recovered] Retail fix, see above
+    forceBackBufferAlphaOpaque(b, chain);   // [CHOSEN, not recovered] Retail fix, see above
 #if defined(BF2_LINUX_CLIENT)
     bf2LinuxCaptureBeforePresent(chain);
 #endif

@@ -103,7 +103,7 @@ int main(int argc, char** argv)
         CHECK(device->Release()==0 && d3d->Release()==0); metalTestDestroy(window); return 0;
     }
     if(argc==2 && !std::strcmp(argv[1],"--opaque")) {
-        CHECK(opaqueAlphaChecks(device)==0);
+        CHECK(opaqueAlphaChecks(device)==0 && opaqueMsaaPresentChecks(d3d,device,pp)==0);
         CHECK(device->Release()==0 && d3d->Release()==0); metalTestDestroy(window); return 0;
     }
     if(argc==2 && !std::strcmp(argv[1],"--ingame")) {
@@ -213,6 +213,7 @@ int main(int argc, char** argv)
         if (msaaSurfaceChecks(device)) return 1;
         if (msaaOverlayDepthChecks(device,pp)) return 1;
     }
+    if (opaqueMsaaPresentChecks(d3d,device,pp)) return 1;
     pp.MultiSampleType = D3DMULTISAMPLE_NONE;
     CHECK(device->Reset(&pp) == D3D_OK && pp.MultiSampleType == D3DMULTISAMPLE_NONE);
     CHECK(device->BeginScene() == D3D_OK && device->Clear(0,nullptr,D3DCLEAR_TARGET,0xff102030u,1.0f,0) == D3D_OK &&

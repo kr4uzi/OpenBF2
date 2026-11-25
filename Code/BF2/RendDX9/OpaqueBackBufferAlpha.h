@@ -21,13 +21,15 @@ const unsigned int kPixelShader[] =
     0x00000001u, 0x800F0000u, 0xA0E40000u, 0x0000FFFFu
 };
 
-// A triangle strip over the whole clip space, FLOAT3 positions with a 12-byte stride.
+// A triangle strip beyond the whole clip space, FLOAT3 positions with a 12-byte stride. D3D9's
+// half-pixel offset moves a [-1, 1] quad half a pixel up and left, which leaves the samples of the
+// last column and row uncovered under multisampling; the overshoot is clipped by the viewport.
 const float kQuad[12] =
 {
-    -1.0f,  1.0f, 0.5f,
-     1.0f,  1.0f, 0.5f,
-    -1.0f, -1.0f, 0.5f,
-     1.0f, -1.0f, 0.5f
+    -2.0f,  2.0f, 0.5f,
+     2.0f,  2.0f, 0.5f,
+    -2.0f, -2.0f, 0.5f,
+     2.0f, -2.0f, 0.5f
 };
 const unsigned int kQuadStride = 12;
 const unsigned int kQuadPrimitives = 2;
