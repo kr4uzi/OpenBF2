@@ -360,8 +360,8 @@ public:
         m_isDynamic = true;
         m_argTypes[0] = "ConnectionType";
     BF2_CC_TAIL(1, kSvConsoleTag)
-    bool isObjectActive() const override { return svReceiver() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return svReceiver() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount == 1)
         {
@@ -375,7 +375,7 @@ public:
             m_returnValue = static_cast<ConnectionType>(svReceiver()->m_maxConnectionType);
         }
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         if (index == 1)
         {

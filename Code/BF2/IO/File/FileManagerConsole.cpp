@@ -302,12 +302,12 @@ class BF2_CC_NAME : public ConsoleObjectBaseImpl { \
     BF2_CC_HEAD(name, 1, 0, 1, #T, false) \
         m_argTypes[0] = #T; \
     BF2_CC_TAIL(1, kFileConsoleTag) \
-    bool isObjectActive() const override { return true; } \
-    void executeObjectMethod() override { \
+    bool isObjectActive() const { return true; } \
+    void executeObjectMethod() { \
         if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = mainConsole->getter(); } \
         else if (m_argCount == 1) { m_hasReturnValue = false; mainConsole->setter(BF2_CC_ARG(T, 0)); } \
     } \
-    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(T, 1) } \
+    void setArgFromString(int index, const std::string& value) { BF2_CC_CONVERT(T, 1) } \
     BF2_CC_RETURN_AS_STRING \
     BF2_CC_COMMON_HOOKS \
     T m_returnValue; \
@@ -335,12 +335,12 @@ class BF2_CC_NAME : public ConsoleObjectBaseImpl { \
     BF2_CC_HEAD(name, 0, 0, 1, "std::string", false) \
         m_argTypes[0] = "std::string"; \
     BF2_CC_TAIL(1, kFileConsoleTag) \
-    bool isObjectActive() const override { return true; } \
-    void executeObjectMethod() override { \
+    bool isObjectActive() const { return true; } \
+    void executeObjectMethod() { \
         if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = target(prefix); } \
         else if (m_argCount == 1) { m_hasReturnValue = true; m_returnValue = target(BF2_CC_ARG(std::string, 0)); } \
     } \
-    void setArgFromString(int index, const std::string& value) override { BF2_CC_CONVERT(std::string, 1) } \
+    void setArgFromString(int index, const std::string& value) { BF2_CC_CONVERT(std::string, 1) } \
     BF2_CC_RETURN_AS_STRING \
     BF2_CC_COMMON_HOOKS \
     std::string m_returnValue; \
@@ -365,14 +365,14 @@ public:
         m_argNeedsConversion[0] = -1; m_argNeedsConversion[1] = 0;
         consoleBindingList(kFileConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return true; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return true; }
+    void executeObjectMethod()
     {
         if (m_argCount != 2) return;
         m_hasReturnValue = true;
         m_returnValue = consoleBindKey(BF2_CC_ARG(int, 0), BF2_CC_ARG(std::string, 1));
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     { BF2_CC_CONVERT(int, 1) BF2_CC_CONVERT(std::string, 2) }
     BF2_CC_RETURN_AS_STRING
     BF2_CC_COMMON_HOOKS
@@ -395,8 +395,8 @@ public:
         for (int i = 0; i < 5; ++i) { m_argTypes[i] = "std::string"; m_argNeedsConversion[i] = 0; }
         consoleBindingList(kFileConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return true; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return true; }
+    void executeObjectMethod()
     {
         if (m_argCount < 1 || m_argCount > 5) return;
         std::string args[5];
@@ -407,7 +407,7 @@ public:
                                   "", "", "", "", Console::ignoredString_);
         m_returnValue = result.str();
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(std::string, 1) BF2_CC_CONVERT(std::string, 2)
         BF2_CC_CONVERT(std::string, 3) BF2_CC_CONVERT(std::string, 4) BF2_CC_CONVERT(std::string, 5)

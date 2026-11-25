@@ -1349,15 +1349,15 @@ public:
         m_argTypes[0] = "dice::hfe::world::ToolTipType"; m_argNeedsConversion[0] = -1;
         consoleBindingList(kObjTemplGameConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return GameTemplateConsoleAccess::playerControlObject() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return GameTemplateConsoleAccess::playerControlObject() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount != 1) return;
         const ToolTipType value = BF2_CC_ARG(ToolTipType, 0);
         m_hasReturnValue = false;
         GameTemplateConsoleAccess::playerControlObject()->setToolTipType(value);
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         if (index != 1) return;
         static ToolTipType argument;

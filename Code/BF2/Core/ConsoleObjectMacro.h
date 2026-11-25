@@ -342,12 +342,12 @@ namespace { \
 class BF2_CC_NAME : public ::dice::hfe::ConsoleObjectBaseImpl { \
     BF2_CC_HEAD(fnName, 0, 0, 0, #RET, false) \
     BF2_CC_TAIL(0, listTag) \
-    bool isObjectActive() const override { return (activeExpr); } \
-    void executeObjectMethod() override { \
+    bool isObjectActive() const { return (activeExpr); } \
+    void executeObjectMethod() { \
         if (m_argCount != 0) return; \
         m_hasReturnValue = true; m_returnValue = target(); \
     } \
-    void setArgFromString(int, const std::string&) override {} \
+    void setArgFromString(int, const std::string&) {} \
     BF2_CC_RETURN_AS_STRING \
     BF2_CC_COMMON_HOOKS \
 private: RET m_returnValue; \

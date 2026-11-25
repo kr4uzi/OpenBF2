@@ -260,8 +260,8 @@ public:
         }
         consoleBindingList(kModuleGameConsoleTag).push_back(this);
     }
-    bool isObjectActive() const override { return python::pythonHost() != 0; }
-    void executeObjectMethod() override
+    bool isObjectActive() const { return python::pythonHost() != 0; }
+    void executeObjectMethod()
     {
         if (m_argCount < 1 || m_argCount > 9)
             return;
@@ -272,7 +272,7 @@ public:
         m_returnValue = python::pythonHost()->consoleSendCommand(
             args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
     }
-    void setArgFromString(int index, const std::string& value) override
+    void setArgFromString(int index, const std::string& value)
     {
         BF2_CC_CONVERT(std::string, 1)
         BF2_CC_CONVERT(std::string, 2)
