@@ -155,15 +155,23 @@ charges the host again and charges it for bypassed and bot-generated server mess
 The original checks are BF2.exe `0x4C8E8B`–`0x4C8E9D`, Windows dedicated
 `0x445F2B`–`0x445F3D` and Linux ia-32 `0x080AEBCB`–`0x080AEBE4`.
 
-Retail still charges the medic's automatic `get_up` line after a successful revive
-(BF2.exe `0x4E1381`–`0x4E1390`). That is distinct from the defibrillator's bypassed
-`AUTO_MOODGP_usingshockpaddles` use message. The limiter resets the entire interval
+Retail charges the medic's automatic `get_up` line after a successful revive
+(BF2.exe `0x4E1381`–`0x4E1390`). The
+[revive speech fix](retail-fixes.md#automatic-revive-speech-preserves-the-radio-allowance)
+bypasses that submission in the revive caller and remote HUD event 51. Server relay
+checks a human's exact `get_up`/`TCLocal`/type-3/extra-0 radio tuple without charging;
+an existing block still prevents delivery. Manual submission still counts, although
+an identical remote console send cannot be distinguished at relay. A retail peer's
+own accounting remains outside the fix. This line is distinct from the defibrillator's
+bypassed `AUTO_MOODGP_usingshockpaddles` use message. The limiter resets the entire interval
 window, rather than removing one message at a time. Windows images retain the double
 world-clock result during comparisons; the Linux dedicated image rounds each read to
 float. World time is in seconds. `Code/Tests/radio_spam_runtime.py --engine-build
 <build-directory> --output <check-directory>` uses the completed macOS client and
-dedicated objects to check submission, relay, clock boundaries and kit use without
-starting a game or opening devices or sockets.
+dedicated objects to check submission, remote HUD dispatch, relay, clock boundaries
+and kit use without starting a game or opening devices or sockets. It compiles the
+successful-revive notification branch from source into the fixture; health changes,
+revive eligibility and production gameplay are not exercised.
 
 ## Debugger detection at startup
 

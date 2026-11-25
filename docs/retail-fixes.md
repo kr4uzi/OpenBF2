@@ -591,6 +591,44 @@ Each entry is a heading that names the fix, followed by these fields:
 
 ## Server
 
+### Automatic revive speech preserves the radio allowance
+
+- **Retail:** A successful soldier revive makes the medic say `get_up` on `TCLocal`.
+  The local-human arm passes `bypassSpamCheck=false` (BF2.exe `0x4E1381`–`0x4E1390`;
+  Windows dedicated `0x45A25F`–`0x45A26E`; Linux ia-32 `0x08103578`–`0x081035CF`).
+  For a remote medic, the server sends HUD event 51 with the message and channel
+  (BF2.exe `0x4E139E`–`0x4E13DC`); the HUD submits it through `GameClient::radioMessage`
+  with the same false argument. The client or hosted game charges it like manual radio
+  input, and the remote server charges its own counter in `playerMessageEvent`.
+  Repeated successful revives can therefore block requests and order replies without
+  repeated communication input. The defibrillator's `AUTO_MOODGP_usingshockpaddles`
+  use message already bypasses the submission charge.
+- **OpenBF2:** The automatic local-human revive submission and the matching remote HUD
+  notification bypass the charge. At server relay, a human's radio event with the
+  registered `get_up` ID, `TCLocal`, type 3 and extra value 0 checks the existing block
+  without adding to the counter. Other channels, types, extra values, messages, text
+  and AI retain their accounting. Server-local delivery already checks without charging;
+  the admin dispatcher handles text, so neither needs an exemption.
+
+  Stock infantry, vehicle and squad radio menus do not offer `get_up`. The console can
+  submit `game.radioMessage TCLocal get_up`, and custom menus can invoke that command.
+  Manual submission still counts, including manual `get_up`. The radio packet has no
+  automatic/manual flag: an identical remote console submission matches the relay
+  exemption too. This exact tuple is the narrowest distinction available there without
+  changing the protocol; its sender still pays the manual submission charge locally.
+- **Applies to:** Client and server, hosted and dedicated, on every platform.
+- **Retail clients/servers:** Event IDs, channels, payloads, settings and wire format stay
+  unchanged. A retail client on an OpenBF2 server benefits from the server exemption,
+  but its own client still charges revive speech and can show its normal spam warning
+  and block manual radio until its local cooldown ends. An OpenBF2 client on a retail
+  server preserves its local allowance, but the retail server still charges the automatic
+  line. It can then suppress that medic's relayed speech and subsequent manual radio
+  until its server cooldown ends; the medic can hear local playback while other players
+  receive nothing, without a local spam warning if the client's counter is below its limit.
+- **Source:** `Code/BF2/Game/GameLogic/ServerGameLogic.cpp`,
+  `Code/BF2/Menu/BF2HudManagerHudEvents.cpp`, `Code/BF2/Game/GameServer/GameServer.cpp`;
+  `Code/Tests/radio_spam_runtime.cpp`.
+
 ### The dedicated server rejects ghost updates sent by a client
 
 - **Retail:** `GhostManager::processReceivedPacket` is the same on the dedicated server as on the

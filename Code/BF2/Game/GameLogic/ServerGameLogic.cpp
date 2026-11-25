@@ -4047,7 +4047,10 @@ bool ServerGameLogic::resurrect(world::IProjectileObject* projectile, world::IOb
     if (player && L::objectTemplate(object)->getClassID() == world::CID_SoldierTemplate)
     {
         char voiceMessage[36];
-        std::strcpy(voiceMessage, "get_up");                           // leaves the stack tail untouched
+        std::strcpy(voiceMessage, "get_up");                           // leaves the padding untouched
+        // BF2.exe 0x4E1269 / ELF 0x08103249: the remote HUD payload ends with its channel.
+        const TargetChannel channel = TCLocal;
+        std::memcpy(voiceMessage + 32, &channel, sizeof channel);
 
         if (player->getIsAIPlayer())
         {
@@ -4067,7 +4070,9 @@ bool ServerGameLogic::resurrect(world::IProjectileObject* projectile, world::IOb
         }
         else if (player == world::playerManager->getLocalHumanPlayer())
         {
-            game->radioMessage(TCLocal, std::string(voiceMessage), player, 0, true, false);
+            // [CHOSEN, not recovered] Retail fix "Automatic revive speech preserves the radio allowance"
+            // (docs/retail-fixes.md). Only this automatic submission bypasses the charge.
+            game->radioMessage(TCLocal, std::string(voiceMessage), player, 0, true, true);
         }
         else
         {
