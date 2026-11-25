@@ -80,6 +80,11 @@ std::list<ConsoleObject*>& toolObjectConsoleObjects();      // Scene/Object/Tool
 #include "../Game/Main/BF2ClientSeams.h"  // their slots
 #include "../Game/LocalProfileManager.h" // client factory4104FC, native startup owner
 #include "../Game/ProfileManager.h" // client factory410382, online-profile lifetime/status owner
+#include "../Game/Persistence/RankManager.h"
+#include "../Game/Persistence/ClanManager.h"
+#include "../Game/Persistence/NewsManager.h"
+#include "../Game/AutoPatch/AutoPatch.h"
+#include "../Game/Persistence/Persistence.h"
 #include "../Game/AudioSettings.h"       // client factory4105B9, native settings owner
 #include "../Game/GeneralSettings.h"     // client factory4106BE, native settings owner
 #include "../Game/GameServerSettings.h"  // client factory41067C, the ServerSettings mirror
@@ -400,6 +405,12 @@ void ModuleGame::getClassList(std::vector<ClassRegInfo>& out)
         out.push_back(ClassRegInfo{CID_LocalProfileManager, "dice.hfe.LocalProfileManager", &LocalProfileManager::create});
         // PE430C97..430CCF: the online owner immediately follows the local manager.
         out.push_back(ClassRegInfo{CID_ProfileManager, "dice.hfe.ProfileManager", &ProfileManager::create});
+        // BF2.exe 0x430CD6 / 0x430D15 / 0x430D54 / 0x430D93 / 0x430DD2.
+        out.push_back(ClassRegInfo{CID_RankManager, "dice.hfe.RankManager", &RankManager::create});
+        out.push_back(ClassRegInfo{CID_ClanManager, "dice.hfe.ClanManager", &ClanManager::create});
+        out.push_back(ClassRegInfo{CID_NewsManager, "dice.hfe.NewsManager", &NewsManager::create});
+        out.push_back(ClassRegInfo{CID_AutoPatch, "dice.hfe.AutoPatch", &AutoPatch::create});
+        out.push_back(ClassRegInfo{CID_Persistence, "dice.hfe.Persistence", &Persistence::create});
         // PE430E11..430E39: later than LocalProfileManager, before GlobalSettings.
         out.push_back(ClassRegInfo{CID_ServerBrowser, "dice.hfe.ServerBrowser", &ServerBrowser::create});
         // PE430E50: the existing MenuTeamManager singleton requires this factory.

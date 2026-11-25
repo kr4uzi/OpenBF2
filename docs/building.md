@@ -618,6 +618,16 @@ The SDK's stand-alone CD-key server `key.gamespy.com` is never looked up (keys a
 the heartbeat address), so it has no key. Dedicated servers link neither the server list nor
 the presence code and show no menu, so they never look up the names marked "(client)".
 
+The client's RankManager and ClanManager expose lifetime and interface lookup only.
+NewsManager forwards a descriptor to AutoPatch, whose shipped `checkForPatch` always
+returns false without contacting a patch server. Persistence copies the shared SDK
+identity strings when constructed; `connect` checks only for a current online profile,
+and its update does nothing. These five classes are absent from the dedicated image.
+They add no service-name lookups or provider configuration keys.
+`bf2_online_services_check` exercises their offline lifetime, forwarding and singleton
+creation. `Code/Tests/online_services_registration.py --build-dir <build> --server <bf2>`
+checks the production registrations in both image configurations and dedicated symbols.
+
 #### The provider file: `+onlineProviderConfig <path>`
 
 `[CHOSEN, not recovered]` One command-line option selects the online provider. It names a JSON

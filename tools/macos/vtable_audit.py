@@ -30,6 +30,15 @@ def side(header, cls, image="host", source=None, probe="getRef", subobject=None,
 # A pair is a consumer declaration and the actual provider declaration, compiled
 # independently: several images deliberately declare the same qualified name.
 PAIRS = [
+    *[("online-service-" + cls,
+       side("Code/BF2/Game/" + header, "I" + cls),
+       side("Code/BF2/Game/" + header, cls)) for cls, header in [
+        ("RankManager", "Persistence/RankManager.h"),
+        ("ClanManager", "Persistence/ClanManager.h"),
+        ("NewsManager", "Persistence/NewsManager.h"),
+        ("AutoPatch", "AutoPatch/AutoPatch.h"),
+        ("Persistence", "Persistence/Persistence.h"),
+    ]],
     ("debug-text-writer", side("Code/BF2/GeomMisc/DebugTextWriter.h", "geom::IDebugTextWriter"),
      side("Code/BF2/GeomMisc/DebugTextWriter.cpp", "geom::DebugTextWriter", "renderer")),
     ("pov-native-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),
@@ -310,6 +319,22 @@ def check_pair(compiler, pair):
             errors.append(dict(slot=i, view=method, host=actual, expected=expected))
     if len(a) > len(b):
         errors.append(dict(error="view extends beyond provider"))
+    if name.startswith('online-service-'):
+        # PE tables 8A2E68/7C/90/A8/C0: four IBase slots, operations, destructor.
+        # Native Itanium adds a second destructor entry, keeping its trailing position.
+        cls = name.removeprefix('online-service-')
+        expected = ['void addRef()', 'int getRef()', 'int release()',
+                    'void *queryInterface(unsigned int) const']
+        if cls == 'NewsManager':
+            expected += ['void checkForPatch(PatchDesc *)']
+        elif cls == 'AutoPatch':
+            expected += ['bool checkForPatch(PatchDesc *)']
+        elif cls == 'Persistence':
+            expected += ['bool connect()', 'void update()']
+        expected += ['~destructor() [complete]', '~destructor() [deleting]']
+        if a != expected:
+            errors.append(dict(error='retail operation order or native destructor placement changed',
+                               expected=expected, actual=a))
     if name == 'class-manager':
         # Unlike classes inheriting their shared interface, this independent
         # view needs canonical C++ type checks as well as the textual slot dump.
