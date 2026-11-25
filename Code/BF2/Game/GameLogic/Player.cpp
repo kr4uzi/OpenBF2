@@ -4706,18 +4706,28 @@ void Player::update(float deltaTime)
 
     // Recheck the count after each clock call. The equality guard skips the
     // window check on the tick that armed the timer.
+    // [PLATFORM] PE keeps the returned double (BF2.exe 0x50550F..0x50555F,
+    // dedicated PE 0x47A475..0x47A4C9);
+    // the dedicated ELF rounds each clock read to float (0x080EA5FD..0x080EA725).
+    // Promote the timer operand so the ELF subtraction is not rounded to float
+    // before comparison; its FSUB feeds FUCOMIP without an intervening store.
+#if !DEDICATED || defined(_WIN32)
+    using RadioSpamTime = double;
+#else
+    using RadioSpamTime = float;
+#endif
     if (m_radioSpamFlagCount >= maxSpamFlagCount &&
-        static_cast<float>(WorldPref::getWorldTime()) - m_radioSpamFilterFlagTimer
-            >= static_cast<float>(blockedDuration))
+        static_cast<RadioSpamTime>(WorldPref::getWorldTime()) - static_cast<double>(m_radioSpamFilterFlagTimer)
+            >= static_cast<RadioSpamTime>(blockedDuration))
     {
         m_radioSpamFlagCount        = 0;
         m_radioSpamBlockedFlagCount = 0;
         m_radioSpamFilterFlagTimer  = -1.0f;              // the ctor's sentinel again
     }
     else if (m_radioSpamFlagCount < maxSpamFlagCount &&
-             m_radioSpamFilterFlagTimer != static_cast<float>(WorldPref::getWorldTime()) &&
-             static_cast<float>(WorldPref::getWorldTime()) - m_radioSpamFilterFlagTimer
-                 >= static_cast<float>(serverInfo->m_block.radioSpamInterval))   // ServerInfo +0x28
+             m_radioSpamFilterFlagTimer != static_cast<RadioSpamTime>(WorldPref::getWorldTime()) &&
+             static_cast<RadioSpamTime>(WorldPref::getWorldTime()) - static_cast<double>(m_radioSpamFilterFlagTimer)
+                 >= static_cast<RadioSpamTime>(serverInfo->m_block.radioSpamInterval))
     {
         m_radioSpamFlagCount        = 0;
         m_radioSpamBlockedFlagCount = 0;

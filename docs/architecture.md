@@ -144,6 +144,27 @@ receive-thread completion. A successful startup test therefore also checks clean
 immediate port reuse, and reload. Record the configuration and paths exercised with every
 test result; the presence of these methods does not establish runtime coverage.
 
+## Radio spam accounting
+
+The radio and chat allowance belongs to each `Player`. Submission charges ordinary
+radio messages; `AUTO_` kit use messages bypass that charge. The server relay compares
+the low byte of the player ID with `0xFF` before charging: the hosted human has ID 255
+and shares the submission counter, while remote players have a separate server counter.
+Preserve this byte comparison on native ports. Comparing the full integer with `-1`
+charges the host again and charges it for bypassed and bot-generated server messages.
+The original checks are BF2.exe `0x4C8E8B`–`0x4C8E9D`, Windows dedicated
+`0x445F2B`–`0x445F3D` and Linux ia-32 `0x080AEBCB`–`0x080AEBE4`.
+
+Retail still charges the medic's automatic `get_up` line after a successful revive
+(BF2.exe `0x4E1381`–`0x4E1390`). That is distinct from the defibrillator's bypassed
+`AUTO_MOODGP_usingshockpaddles` use message. The limiter resets the entire interval
+window, rather than removing one message at a time. Windows images retain the double
+world-clock result during comparisons; the Linux dedicated image rounds each read to
+float. World time is in seconds. `Code/Tests/radio_spam_runtime.py --engine-build
+<build-directory> --output <check-directory>` uses the completed macOS client and
+dedicated objects to check submission, relay, clock boundaries and kit use without
+starting a game or opening devices or sockets.
+
 ## Debugger detection at startup
 
 `[CHOSEN, not recovered]` `Core/SystemInfo.cpp` returns false from
