@@ -15,6 +15,8 @@
 
 #include "../../BF2/IO/Input/NativeInputDeviceManager.h"
 #include "../../BF2/Platform/Host/ClientHost.h"
+#include "../../BF2/Platform/Host/BusyService.h"
+#include "../../BF2/Core/Thread.h"
 #include "../../BF2/Platform/macOS/CocoaHostTestHooks.h"
 #include "../../BF2/Platform/macOS/CursorScale.h"
 #include "../../BF2/Platform/macOS/MacKeyMap.h"
@@ -714,6 +716,64 @@ void testBusyService()
     settle();
 }
 
+// [TEMP] Models the receive thread's delayed exit during unload, using the production Thread
+// join. The worker exits after three host services; a deadline prevents a broken join hanging.
+std::atomic<bool> g_unloadExit(false);
+unsigned g_unloadServices = 0;
+void observeUnloadService()
+{
+    if (++g_unloadServices == 3)
+        g_unloadExit.store(true);
+}
+class UnloadWorker : public dice::hfe::Thread
+{
+public:
+    std::atomic<bool> exited{false};
+    void run() override
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!g_unloadExit.load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        exited.store(true);
+    }
+};
+
+void testUnloadService()
+{
+    begin("unload: receive-thread join services the host without dispatching held input");
+    ClientHost& host = ClientHost::instance();
+    WindowMessageRecorder messages;
+    host.addListener(&messages);
+    g_holdInjected = true;
+    key(kVK_ANSI_A, true); key(kVK_ANSI_A, false);
+    g_holdInjected = false;
+    g_unloadExit.store(false);
+    g_unloadServices = 0;
+    CocoaHostTestHooks::setBusyServiceObserverForTest(observeUnloadService);
+    UnloadWorker worker;
+    const bool started = worker.start("UnloadWorker", dice::hfe::Thread::Priority_Normal);
+    check(started, "unload worker started");
+    if (started)
+    {
+        check(worker.stop() && worker.exited.load(), "join waits for actual worker completion");
+        check(g_unloadServices >= 3, "host serviced repeatedly while waiting for shutdown");
+    }
+    const unsigned before = g_unloadServices;
+    std::thread other([] { dice::hfe::host::serviceWhileBusy(); });
+    other.join();
+    check(g_unloadServices == before, "a worker never enters the host busy service");
+    CocoaHostTestHooks::setBusyServiceObserverForTest(nullptr);
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 2 &&
+          messages.values(hostmsg::WM_KEYDOWN).empty() && messages.values(hostmsg::WM_KEYUP).empty(),
+          "input remains held throughout teardown and join");
+    CocoaHostTestHooks::deliverHeldEventsForTest(host);
+    check(messages.values(hostmsg::WM_KEYDOWN) == std::vector<unsigned int>({0x41}) &&
+          messages.values(hostmsg::WM_KEYUP) == std::vector<unsigned int>({0x41}),
+          "the next normal pump delivers each held event once");
+    host.removeListener(&messages);
+    settle();
+}
+
 // A simulated system checks the cache and input gate without creating NSApplication or a window.
 void testFocusFollowsAppKit()
 {
@@ -1306,6 +1366,7 @@ int main(int argc, char** argv)
 
         testHostBoundary();
         testBusyService();
+        testUnloadService();
         testCursorScale();
         testFocusFollowsAppKit();
         testCooperativeStartup();

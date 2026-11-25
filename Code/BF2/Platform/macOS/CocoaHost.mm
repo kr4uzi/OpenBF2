@@ -39,6 +39,9 @@ extern "C" UInt32 KBGetLayoutType(SInt16 keyboardType);
 
 namespace {
 const UInt32 kLayoutTypeISO = 0x49534F20u;  // 'ISO '
+#if defined(OPENBF2_HOST_TEST_SEAMS)
+void (*busyServiceObserver)() = nullptr;
+#endif
 
 bool currentKeyboardIsISO()
 {
@@ -1416,6 +1419,10 @@ struct ClientHost::Impl : inputscript::IInputScriptSink
     // full-screen transition belongs to the real pump; do not run its selectors or callbacks here.
     void serviceWhileBusy()
     {
+#if defined(OPENBF2_HOST_TEST_SEAMS)
+        if (testHeadless && busyServiceObserver)
+            busyServiceObserver();
+#endif
         if (!appInitialized || testHeadless || scripted || servicing || fullscreen.transitioning())
             return;
         const double now = uptime();
@@ -2544,6 +2551,11 @@ void CocoaHostTestHooks::holdEventForTest(host::ClientHost& host, void* nsEvent)
 unsigned CocoaHostTestHooks::heldEventsForTest(const host::ClientHost& host)
 {
     return static_cast<unsigned>(host.m_impl->heldEvents.count);
+}
+
+void CocoaHostTestHooks::setBusyServiceObserverForTest(void (*observer)())
+{
+    busyServiceObserver = observer;
 }
 
 void CocoaHostTestHooks::deliverHeldEventsForTest(host::ClientHost& host)

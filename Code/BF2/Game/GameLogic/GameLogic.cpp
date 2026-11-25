@@ -3,6 +3,7 @@
 // Script order and event registration are part of the content contract.
 
 #include "GameLogic.h"
+#include "../../Platform/Host/BusyService.h"
 #include "../Main/Game.h"        // isDedicated - loadCallback's client/server split
 #if !DEDICATED
 #include "../VoipClient/BF2VoipClient.h"   // bf2VoipClient (ds:0x9A4DA0)
@@ -161,11 +162,17 @@ extern IBase*               squadManager;      // ds:0x8ACBFA4 - Core/Globals.cp
 // flush sound triggers. Returns true.
 bool GameLogic::unload()
 {
+    // [CHOSEN, not recovered] Local-server and multiplayer teardown both unload here. Keep
+    // AppKit responsive between synchronous phases without delivering game input or callbacks.
+    host::serviceWhileBusy();
     m_isLevelLoadedXP = false;
     destroyAllControlPoints();
     reset();
+    host::serviceWhileBusy();
     world::objectManager->deleteAllRegisteredObjects();
+    host::serviceWhileBusy();
     world::objectTemplateManager->deleteAll(true);
+    host::serviceWhileBusy();
 
     m_controlPointGroups.clear();
     m_controlPointMap.clear();
@@ -184,11 +191,15 @@ bool GameLogic::unload()
     if (!isDedicated())
         g_bfSound->engine()->removeAllTriggers();
     eventManager->postEvent(ECCore, 13, 0, 0.0f);
+    host::serviceWhileBusy();
     reinterpret_cast<io::INetworkableInfoManager*>(io::networkableInfoManager)->deleteAllInfos();
     io::fileManager->unmountArchive(std::string("*levels"));
+    host::serviceWhileBusy();
 
     if (ai::g_aiInstance)
         bf2Engine->shutdownAI();
+
+    host::serviceWhileBusy();
 
     static_cast<SpawnManager*>(spawnManager)->removeAll();
     if (CombatAreaManager::getInstance())
@@ -207,6 +218,7 @@ bool GameLogic::unload()
     m_kits.clear();
     m_isLevelLoaded = false;
     io::networkManager->m_networkedTemplates.clear();
+    host::serviceWhileBusy();
     return true;
 }
 
