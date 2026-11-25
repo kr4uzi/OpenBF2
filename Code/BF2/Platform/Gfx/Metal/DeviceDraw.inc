@@ -291,6 +291,14 @@
         bf2metal::DrawCall call;
         if(const char* why=programmableState(call.state,ps?ps->record.get():nullptr,src.type==D3DPT_POINTLIST)) { drawOutcome="refused state (skipped)"; skipRefused(why); return D3D_OK; }
         if(!decl) { drawOutcome="no vertex declaration or FVF"; return D3DERR_INVALIDCALL; } // D3D9: a draw needs one
+        // [CHOSEN, not recovered] D3D9 emulation seam: an X8 colour target has no alpha; D3D9 reads
+        // it as opaque and DESTALPHA blends see 1. Its Metal texture is BGRA8, so a draw must not
+        // store shader alpha there: alpha stays at the 1 that clears and opaque copies write.
+        // Otherwise the presented drawable carries render-pass alpha, which Core Animation
+        // composites over the layer's black background (the High terrain's shadow holes).
+        if(const auto* target=static_cast<Surface*>(colorTarget.ptr))
+            if(target->desc.Format==D3DFMT_X8R8G8B8 || target->desc.Format==D3DFMT_X8B8G8R8)
+                call.state.colorMask&=~1u;   // MTLColorWriteMaskAlpha (StateMapping.inc packs the Metal mask)
         // [CHOSEN, not recovered] No vertex shader: fixed-function vertex processing (FFVertex.h).
         FFDraw ff;
         if(!vs) { if(const char* why=fixedFunctionVertex(*decl,ff)) { drawOutcome="refused state (skipped)"; skipRefused(why); return D3D_OK; } }
