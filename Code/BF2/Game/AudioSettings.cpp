@@ -9,14 +9,13 @@
 #include "../Sound/BfSound.h"
 #if defined(_WIN32)
 #include <windows.h>
-#else
-#if defined(__APPLE__)
-#include <sys/sysctl.h>               // [CHOSEN, not recovered] hw.memsize for the GlobalMemoryStatus arm
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
 #elif defined(__linux__)
 #include <sys/sysinfo.h>
 #endif
 #include <cstdint>
-#endif
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -25,39 +24,36 @@
 
 namespace dice { namespace hfe {
 namespace {
-//: preserve the legacy 32-bit API, unsigned overflow before the shift,
-// rounding to the next four megabytes, and the actual C++ exception fallback.
+// [CHOSEN, not recovered] Retail fix "New profiles get the audio quality the memory check intended".
+// Read the full physical-memory size instead of overflowing the legacy DWORD.
+// Preserve the shipped rounding to four megabytes and exception fallback.
 int physicalMemoryMegabytes()
 {
     try {
-#if defined(_WIN32)
-        MEMORYSTATUS status;
-        GlobalMemoryStatus(&status);
-        int megabytes = static_cast<int>((status.dwTotalPhys + 0x7FFFFu) >> 20);
-#else
-        // [CHOSEN, not recovered] GlobalMemoryStatus for the large-address-aware 32-bit BF2.exe:
-        // dwTotalPhys is a 32-bit DWORD saturated at 0xFFFFFFFF above 4 GB. The same DWORD
-        // arithmetic follows, so a machine with 4 GB or more wraps to 0 MB and selects "Low", as
-        // the retail client does on such a machine.
         std::uint64_t physical = 0;
-#if defined(__APPLE__)
+#if defined(_WIN32)
+        MEMORYSTATUSEX status = {};
+        status.dwLength = sizeof(status);
+        if (GlobalMemoryStatusEx(&status))
+            physical = status.ullTotalPhys;
+#elif defined(__APPLE__)
         std::size_t length = sizeof(physical);
         if (sysctlbyname("hw.memsize", &physical, &length, 0, 0) != 0)
             physical = 0;
 #elif defined(__linux__)
-        // [CHOSEN, not recovered] Native Linux memory query (issue #36); the legacy
-        // saturation, DWORD overflow and quality threshold below remain unchanged.
+        // [CHOSEN, not recovered] Native Linux memory query (issue #36).
         struct sysinfo memory;
         if (::sysinfo(&memory) == 0)
             physical = static_cast<std::uint64_t>(memory.totalram) * memory.mem_unit;
 #endif
-        const std::uint32_t totalPhys = physical > 0xFFFFFFFFull ? 0xFFFFFFFFu
-                                                                 : static_cast<std::uint32_t>(physical);
-        int megabytes = static_cast<int>(static_cast<std::uint32_t>(totalPhys + 0x7FFFFu) >> 20);
-#endif
-        const int remainder = megabytes % 4;
+        // Bound bytes before adding the rounding bias; round in 64 bits before narrowing.
+        const int maximum = (std::numeric_limits<int>::max)();
+        if (physical >= (static_cast<std::uint64_t>(maximum) << 20))
+            return maximum;
+        std::uint64_t megabytes = (physical + 0x7FFFFu) >> 20;
+        const unsigned int remainder = static_cast<unsigned int>(megabytes % 4);
         if (remainder) megabytes += 4 - remainder;
-        return megabytes;
+        return megabytes > static_cast<std::uint64_t>(maximum) ? maximum : static_cast<int>(megabytes);
     } catch (...) {
         return 256;
     }

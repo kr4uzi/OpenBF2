@@ -74,6 +74,25 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/Game/Objects/Game/ZiplineContainer.cpp`,
   `Code/Tests/client_effects_runtime.cpp`
 
+### New profiles get the audio quality the memory check intended
+
+- **Retail:** The audio-defaults initializer (`BF2.exe` 1.50 x86 `0x4B0C10`) calls the
+  memory helper at `0x4B0C3F`, compares its result with 768 MB at `0x4B0C44`, and chooses
+  "Low" below that threshold or "Medium" otherwise. The helper (`0x4B0B80`) calls
+  `GlobalMemoryStatus` at `0x4B0BAC` through import `0x87F0C0`, reads its 32-bit
+  `dwTotalPhys`, adds `0x7FFFF` at `0x4B0BB5` and shifts right by 20 at `0x4B0BBA`, then
+  rounds up to a multiple of four megabytes. On machines with 4 GB or more the legacy API
+  saturates at `0xFFFFFFFF`; the addition wraps and reports 0 MB, selecting "Low".
+- **OpenBF2:** Reads the full physical-memory size with `GlobalMemoryStatusEx` (`ullTotalPhys`)
+  on Windows, `sysctl hw.memsize` on macOS and `sysinfo` on Linux. Conversion and rounding
+  use 64-bit arithmetic and clamp to the `int` range. The rounding, 768 MB threshold and
+  "Low"/"Medium" choices remain unchanged, so modern machines get "Medium". Only defaults
+  change: existing profiles keep their saved quality when `Audio.con` is loaded. Explicitly
+  restoring defaults also uses the corrected memory check. No audio provider, quality row,
+  profile format or network contract changes.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Game/AudioSettings.cpp`, `Code/Tests/audio_settings_runtime.cpp`
+
 ### Unsupported stored video mode falls back to the closest supported one
 
 - **Retail:** `VideoOptions::setDynamicOption` accepts only entries of the enumerated resolution and
