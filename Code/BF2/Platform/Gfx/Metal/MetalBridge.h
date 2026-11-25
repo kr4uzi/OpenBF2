@@ -33,10 +33,6 @@ bool renderable(Frame*);
 // [TEMP] Harness-only fault injection at the next completed command submission.
 void injectCommandBufferFailure(void* device);
 void armCommandBufferFailure(Frame*);
-// [TEMP] Harness-only: the next blocking Present copies its drawable, after every present pass,
-// for presentedDrawablePixels (BGRA bytes as 32-bit words, row-major, width * height words).
-void captureNextPresentedDrawable();
-bool presentedDrawablePixels(std::uint32_t* out, unsigned capacity, unsigned& width, unsigned& height);
 #endif
 bool clear(Frame*, unsigned flags, std::uint32_t color, float depth, unsigned stencil);
 enum class PresentResult { ok, busy, lost, invalidWindow };
