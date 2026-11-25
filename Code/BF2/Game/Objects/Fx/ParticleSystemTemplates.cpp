@@ -318,6 +318,23 @@ bool SpriteParticleSystemTemplateBase::getIsStaticSystem() const
     return static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getIsStaticSystem();
 }
 
+// BF2.exe 0x64F650/0x64F690; ELF 0x8210EC0/0x8210F10.
+// The setter rechecks the descriptor after forwarding; the getter requires a descriptor.
+void SpriteParticleSystemTemplateBase::setLightAffectionFactor(float value)
+{
+    if (m_impl)
+    {
+        static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->setLightAffectionFactor(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+
+float SpriteParticleSystemTemplateBase::getLightAffectionFactor() const
+{
+    return static_cast<geom::IParticleSpriteSystemTemplate*>(m_impl)->getLightAffectionFactor();
+}
+
 // BF2.exe 0x64C260/0x64C280: only the setter guards the renderer descriptor.
 void SpriteParticleSystemTemplate::setNearCullingEnable(bool value)
 {

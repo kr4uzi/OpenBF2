@@ -385,6 +385,10 @@ struct GameTemplateConsoleAccess
         return static_cast<GrapplingHookRopeTemplate*>(
             getActiveTemplate(CID_GrapplingHookRopeTemplate));
     }
+    static float getMaxRopeLength() { return grapplingHookRope()->_float174; }
+    static void setMaxRopeLength(float value) { grapplingHookRope()->_float174 = value; }
+    static int getNumberOfLinks() { return grapplingHookRope()->_dword178; }
+    static void setNumberOfLinks(int value) { grapplingHookRope()->_dword178 = value; }
     static float getThrowStrength() { return grapplingHookRope()->m_throwStrength; }
     static void setThrowStrength(float v) { grapplingHookRope()->m_throwStrength = v; }
     static float getUpThrowBoost() { return grapplingHookRope()->m_upThrowBoost; }
@@ -451,6 +455,8 @@ struct GameTemplateConsoleAccess
         return static_cast<PlayerControlObjectTemplate*>(
             getActiveTemplate(CID_PlayerControlObjectTemplate));
     }
+    static float getShakeFactor() { return playerControlObject()->m_shakeFactor; }
+    static void setShakeFactor(float value) { playerControlObject()->m_shakeFactor = value; }
     static io::PlayerInputMap getSpecialToggleWeaponInput()
     {
         return static_cast<io::PlayerInputMap>(playerControlObject()->m_specialToggleWeaponInput);
@@ -1188,6 +1194,36 @@ BF2_CONSOLE_PROPERTY_FN(Timeout, float,
                         GameTemplateConsoleAccess::getZiplineTimeout(),
                         GameTemplateConsoleAccess::setZiplineTimeout, kObjTemplGameConsoleTag)
 
+// BF2.exe executors 0x52D170/0x52D28D/0x52D3AA/0x52D5E4/0x52D82A;
+// dedicated PE 0x4B9210/0x4B93D0/0x4B9590/0x4B9910/0x4B9CB0.
+// These are the placement and entry fields read by ZiplineTemplate, not per-rope state.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 15)
+BF2_CONSOLE_FIELD(MaxZiplineLength, float, GameTemplateConsoleAccess::zipline(),
+                  m_searchRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(EntryRadius, float, GameTemplateConsoleAccess::zipline(),
+                  m_entryRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(collisionStartRadius, float, GameTemplateConsoleAccess::zipline(),
+                  m_collisionStartRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(heightOffset, float, GameTemplateConsoleAccess::zipline(),
+                  m_creationHeightOffset, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(distanceCannotEnter, float, GameTemplateConsoleAccess::zipline(),
+                  m_minZiplineLength, kObjTemplGameConsoleTag)
+// BF2.exe 0x52D959; dedicated PE 0x4B9E90. Zipline::init scales link geometry with this value.
+BF2_CONSOLE_FIELD(ropeScaleFactor, float,
+                  static_cast<ZiplineRopeTemplate*>(getActiveTemplate(CID_ZiplineRopeTemplate)),
+                  m_lengthScale, kObjTemplGameConsoleTag)
+// BF2.exe 0x52DA76/0x52DB93; dedicated PE 0x4BA050/0x4BA210.
+// GrapplingHookRope::initialize reads these to size its particles and links.
+BF2_CONSOLE_PROPERTY_FN(MaxRopeLength, float,
+                        GameTemplateConsoleAccess::grapplingHookRope() != 0,
+                        GameTemplateConsoleAccess::getMaxRopeLength(),
+                        GameTemplateConsoleAccess::setMaxRopeLength, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(NumberOfLinks, int,
+                        GameTemplateConsoleAccess::grapplingHookRope() != 0,
+                        GameTemplateConsoleAccess::getNumberOfLinks(),
+                        GameTemplateConsoleAccess::setNumberOfLinks, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
+
 // DropVehicleTemplate: PE gate sub_4BE080 = getActiveTemplate(40020); the int executor stores the
 // recovered m_destroyVehicleTime at PE +0x210 (int -> int).
 BF2_CONSOLE_PROPERTY_FN(noPassengerTimeToLive, int,
@@ -1221,6 +1257,11 @@ BF2_CONSOLE_FIELD(clientHitDetection, bool, activeDestroyableWindowsBundle(),
 // BF2.exe 0x523633: direct string get/set on the window bundle.
 BF2_CONSOLE_FIELD(effectTemplateBaseName, std::string, activeDestroyableWindowsBundle(),
                   effectTemplateBaseName, kObjTemplGameConsoleTag)
+// BF2.exe 0x523395: separate from the destroyable-object and dynamic-bundle overloads.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
+BF2_CONSOLE_FIELD(respawnDelay, float, activeDestroyableWindowsBundle(),
+                  respawnDelay, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
 // objectTemplate.setNumWindows - dedicated PE gate 0x4AAAF0 =
 // `getActiveTemplate(0xC4DC = CID_DestroyableWindowsBundleTemplate) != 0`; ctor 0x4AAA00,
 // executor 0x4AAB70, one int argument, void, file-static. Set-only: the shipped executor's only
@@ -1241,6 +1282,11 @@ void setVehicleShake(CameraShakeTriggers value)
 BF2_CONSOLE_PROPERTY_FN_RANGED(vehicleCameraShake, CameraShakeTriggers,
                                GameTemplateConsoleAccess::playerControlObject() != 0,
                                getVehicleShake(), setVehicleShake, -1, 3, kObjTemplGameConsoleTag)
+// BF2.exe 0x52BB49; dedicated PE 0x4B6FC0. PlayerControlObject::getShakeFactor reads this field.
+BF2_CONSOLE_PROPERTY_FN(shakeFactor, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getShakeFactor(),
+                        GameTemplateConsoleAccess::setShakeFactor, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(maintainCameraOnExit, bool,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setMaintainCameraOnExit, getMaintainCameraOnExit, kObjTemplGameConsoleTag)
@@ -1803,6 +1849,11 @@ BF2_CONSOLE_PROPERTY_FN(abilityInVehicleMaterial, int, getActiveTemplate(CID_Kit
 // Destructible-object respawn, walkability and bounds properties.
 BF2_CONSOLE_FIELD(respawnDelay, float, static_cast<DestroyableObjectTemplate*>(getActiveTemplate(CID_DestroyableObjectTemplate)),
                   respawnDelay, kObjTemplGameConsoleTag)
+// BF2.exe 0x555786; dedicated PE 0x4E84C0. GameLogic copies this delay into the object's spawner.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 14)
+BF2_CONSOLE_FIELD(respawnDelay, float, static_cast<DynamicBundleTemplate*>(getActiveTemplate(CID_DynamicBundleTemplate)),
+                  respawnDelay, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
 BF2_CONSOLE_FIELD(nrOfRespawns, int, static_cast<DestroyableObjectTemplate*>(getActiveTemplate(CID_DestroyableObjectTemplate)),
                   nrOfRespawns, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(usedByAi, bool, getActiveTemplate(CID_DestroyableObjectTemplate) != 0,

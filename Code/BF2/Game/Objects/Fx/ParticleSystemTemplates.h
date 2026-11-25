@@ -189,6 +189,8 @@ public:
     float getRandomIntensity() const;
     void setAlphaCull(float value);
     float getAlphaCull() const;
+    void setLightAffectionFactor(float value);
+    float getLightAffectionFactor() const;
     // / 0x82112B0, 67 B / 27 B - Nonvirtual like the twelve
     // above; the mesh particle's `directionalScale` console binding (ConsoleClass387, a mesh-only
     // selector) is their only caller. Impl ELF +0x1BC / +0x1C0 = IParticleSpriteSystemTemplate

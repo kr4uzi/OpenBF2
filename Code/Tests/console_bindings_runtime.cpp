@@ -16,6 +16,10 @@
 #include "../BF2/Game/Objects/Base/SimpleObjectTemplate.h"
 #include "../BF2/Game/Objects/PlayerControlObjectTemplate.h"
 #include "../BF2/Game/Objects/ToggleCameraCompTemplate.h"
+#include "../BF2/Game/Objects/TemplateLeaves.h"
+#include "../BF2/Game/Objects/GrapplingHookRopeTemplate.h"
+#include "../BF2/Game/Objects/DestroyableObjectTemplate.h"
+#include "../BF2/Game/Objects/Game/PlayerControlObject.h"
 #include "../BF2/Game/Objects/Fx/ParticleSystemTemplates.h"
 #include "../BF2/Game/Objects/Base/BundleTemplate.h"
 #include "../BF2/Game/Objects/EngineTemplate.h"
@@ -28,6 +32,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <sys/stat.h>
 
@@ -90,6 +95,60 @@ struct Templates : ObjectTemplateManager
     IObjectTemplate* getTemplate(const std::string& name) const override
     { return name == "DirectionArrow" ? directionArrow : ObjectTemplateManager::getTemplate(name); }
 };
+struct Grappling : GrapplingHookRopeTemplate
+{
+    float length() const { return _float174; }
+    int links() const { return _dword178; }
+};
+template<class Template> struct Particle : Template
+{ void attach(geom::IParticleSystemTemplate* value) { this->m_impl = value; } };
+template<class Descriptor> struct LightDescriptor : Descriptor
+{
+    unsigned writes = 0, refreshes = 0;
+    std::function<void()> onWrite;
+    void setLightAffectionFactor(float value) override
+    {
+        Descriptor::setLightAffectionFactor(value);
+        ++writes;
+        if (onWrite) onWrite();
+    }
+    void refreshDerivedState() override
+    {
+        check(writes == refreshes + 1, "light affection setter precedes refresh");
+        ++refreshes;
+    }
+};
+static void propertyMetadata(const char* name, int category, const char* type)
+{
+    auto* binding = row("ObjectTemplate", name);
+    check(binding->getAccess() == 2 && binding->getCategory() == category && binding->isDynamic()
+          && binding->isSetGet() && !binding->hasRange() && binding->getMinNoArgs() == 0
+          && binding->getMaxNoArgs() == 1 && std::string(binding->getReturnType()) == type,
+          "template property metadata");
+}
+template<class Template, class Descriptor> static void particleLight()
+{
+    auto* particle = new Particle<Template>;
+    // Dedicated templates can lack descriptors: the shipped setter must accept that state.
+    particle->setLightAffectionFactor(0.75f);
+    auto* descriptor = new LightDescriptor<Descriptor>;
+    particle->attach(descriptor); objectTemplateManager->setActiveObjectTemplate(particle);
+    propertyMetadata("LightAffectionFactor", 19, "float");
+    for (const char* value : {"0.25", "-1", "2"})
+    {
+        call("ObjectTemplate", "LightAffectionFactor", {value});
+        check(std::stof(call("ObjectTemplate", "LightAffectionFactor")) == std::stof(value)
+              && descriptor->valueLightAffectionFactor == std::stof(value), "light affection typed round trip");
+    }
+    check(descriptor->writes == 3 && descriptor->refreshes == 3, "one refresh per light affection write");
+    descriptor->onWrite = [particle] { particle->attach(0); };
+    call("ObjectTemplate", "LightAffectionFactor", {"0.5"});
+    check(descriptor->writes == 4 && descriptor->refreshes == 3, "light affection rechecks descriptor after setter");
+    particle->attach(descriptor);
+    propertyMetadata("isStaticSystem", 21, "bool");
+    call("ObjectTemplate", "isStaticSystem", {"1"});
+    check(call("ObjectTemplate", "isStaticSystem") == "1", "all four particle classes accept static flag");
+}
 struct Device : io::IAdvancedInputDevice
 {
     io::InputDeviceAxes axis = io::IDAxis_None; bool inverted = false; unsigned int writes = 0;
@@ -237,6 +296,62 @@ int main()
     check(pco->getVehicleCameraShake() == 0 && call("ObjectTemplate", "vehicleCameraShake") == "CstExplosion", "camera shake name and display");
     call("ObjectTemplate", "vehicleCameraShake", {"unknown"}); check(pco->getVehicleCameraShake() == 0, "unknown shake retains parsed value");
     check(row("ObjectTemplate", "vehicleCameraShake")->getCategory() == 15, "shake PlayerControlObject category");
+    propertyMetadata("shakeFactor", 15, "float");
+    auto* vehicle = new PlayerControlObject(pco);
+    for (const char* value : {"4", "3", "1", "-0.5"})
+    {
+        call("ObjectTemplate", "shakeFactor", {value});
+        check(vehicle->getShakeFactor() == std::stof(value)
+              && std::stof(call("ObjectTemplate", "shakeFactor")) == std::stof(value),
+              "shake factor reaches live vehicle reader");
+    }
+
+    auto* zipline = new ZiplineTemplate; objectTemplateManager->setActiveObjectTemplate(zipline);
+    for (const char* name : {"MaxZiplineLength", "EntryRadius", "collisionStartRadius", "heightOffset", "distanceCannotEnter"})
+        propertyMetadata(name, 15, "float");
+    // Use the content spellings through the real console, including its set-prefix aliases.
+    std::ofstream("files/rope.con") << "ObjectTemplate.setMaxZiplineLength 75.0\n"
+        "ObjectTemplate.setEntryRadius 3.0\nObjectTemplate.collisionStartRadius 1.5\n"
+        "ObjectTemplate.heightOffset -1.0\nObjectTemplate.distanceCannotEnter 3.5\n";
+    check(call("Console", "run", {"rope.con"}) == "1", "zipline content script opens");
+    check(zipline->m_searchRadius == 75 && zipline->m_entryRadius == 3
+          && zipline->m_collisionStartRadius == 1.5f && zipline->m_creationHeightOffset == -1
+          && zipline->m_minZiplineLength == 3.5f, "zipline script reaches placement and entry inputs");
+    check(call("ObjectTemplate", "MaxZiplineLength") == "75"
+          && call("ObjectTemplate", "heightOffset") == "-1", "zipline getters read authored values");
+    call("ObjectTemplate", "EntryRadius", {"2.25"});
+    check(zipline->m_entryRadius == 2.25f && call("ObjectTemplate", "EntryRadius") == "2.25", "entry radius changes from its default");
+    auto* ziplineRope = new ZiplineRopeTemplate; objectTemplateManager->setActiveObjectTemplate(ziplineRope);
+    propertyMetadata("ropeScaleFactor", 15, "float");
+    call("ObjectTemplate", "ropeScaleFactor", {"0.985"});
+    check(ziplineRope->m_lengthScale == 0.985f, "rope scale reaches link geometry input");
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "MaxZiplineLength"), "zipline selector excludes rope template");
+    auto* grappling = new Grappling; objectTemplateManager->setActiveObjectTemplate(grappling);
+    propertyMetadata("MaxRopeLength", 15, "float"); propertyMetadata("NumberOfLinks", 15, "int");
+    std::ofstream("files/rope.con") << "ObjectTemplate.setMaxRopeLength 14.0\nObjectTemplate.setNumberOfLinks 26\n";
+    call("Console", "run", {"rope.con"});
+    check(grappling->length() == 14 && grappling->links() == 26, "grappling script reaches simulation dimensions");
+    call("ObjectTemplate", "MaxRopeLength", {"18"});
+    check(grappling->length() == 18 && call("ObjectTemplate", "MaxRopeLength") == "18"
+          && call("ObjectTemplate", "NumberOfLinks") == "26", "rope length and integer count getters");
+
+    auto* dynamic = new DynamicBundleTemplate; objectTemplateManager->setActiveObjectTemplate(dynamic);
+    propertyMetadata("respawnDelay", 14, "float");
+    check(call("ObjectTemplate", "respawnDelay") == "-1", "dynamic respawn default");
+    call("ObjectTemplate", "respawnDelay", {"3600"});
+    check(dynamic->respawnDelay == 3600 && call("ObjectTemplate", "respawnDelay") == "3600", "dynamic bundle respawn input");
+    auto* windows = new DestroyableWindowsBundleTemplate; objectTemplateManager->setActiveObjectTemplate(windows);
+    propertyMetadata("respawnDelay", 0, "float");
+    call("ObjectTemplate", "respawnDelay", {"12.5"});
+    check(windows->respawnDelay == 12.5f && call("ObjectTemplate", "respawnDelay") == "12.5", "window respawn input");
+    auto* destroyable = new DestroyableObjectTemplate; objectTemplateManager->setActiveObjectTemplate(destroyable);
+    call("ObjectTemplate", "respawnDelay", {"9"});
+    check(destroyable->respawnDelay == 9 && dynamic->respawnDelay == 3600 && windows->respawnDelay == 12.5f,
+          "respawn overloads select distinct template storage");
+    objectTemplateManager->setActiveObjectTemplate(simple);
+    for (const char* name : {"MaxZiplineLength", "EntryRadius", "collisionStartRadius", "heightOffset",
+                             "distanceCannotEnter", "ropeScaleFactor", "MaxRopeLength", "NumberOfLinks", "shakeFactor", "respawnDelay"})
+        check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", name), "gameplay bindings reject unrelated templates");
 
     auto* zoom = new ToggleCameraCompTemplate;
     simple->setComponent(zoom->getInterfaceID(), static_cast<IObjectTemplateComponent*>(zoom));
@@ -262,8 +377,20 @@ int main()
     }
     check(descriptor->getNearCullingEnable(), "near flag reaches typed renderer descriptor slot");
     check(descriptor->getIsStaticSystem(), "static flag reaches typed renderer descriptor slot");
+    particleLight<SpriteParticleSystemTemplate, geom::SaveDescriptor0>();
+    particleLight<MeshParticleSystemTemplate, geom::SaveDescriptor1>();
+    particleLight<TrailSystemTemplate, geom::SaveDescriptor2>();
+    particleLight<NonScreenAlignedParticleSystemTemplate, geom::SaveDescriptor4>();
+    auto* emitter = new ParticleSystemEmitterTemplate; objectTemplateManager->setActiveObjectTemplate(emitter);
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "LightAffectionFactor")
+          && !mainConsoleObjects->getConsoleObject("ObjectTemplate", "isStaticSystem"), "sprite-base properties exclude emitters");
     objectTemplateManager->setActiveObjectTemplate(simple);
     check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "nearCullingEnable"), "near culling rejects non-sprites");
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "LightAffectionFactor"), "light affection rejects unrelated templates");
+    objectTemplateManager->setActiveObjectTemplate(0);
+    check(!mainConsoleObjects->getConsoleObject("ObjectTemplate", "NumberOfLinks")
+          && !mainConsoleObjects->getConsoleObject("ObjectTemplate", "LightAffectionFactor"), "new bindings reject missing active template");
+    objectTemplateManager->setActiveObjectTemplate(simple);
 
     objectTemplateManager->registerTemplateClass(10, "First"); objectTemplateManager->registerTemplateClass(20, "Second");
     check(call("ObjectTemplate", "listTemplateClasses") == "First\nSecond\n", "template class listing");
@@ -344,7 +471,7 @@ int main()
     objectManager->setActiveObject(0);
     check(!mainConsoleObjects->getConsoleObject("HeightmapCluster", "compileWaterMeshesIntoHeightmap"), "unfinished water bake stays unpublished");
 
-    std::remove("files/script.con"); std::remove("files/source.txt");
+    std::remove("files/script.con"); std::remove("files/source.txt"); std::remove("files/rope.con");
     std::printf("console bindings: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
