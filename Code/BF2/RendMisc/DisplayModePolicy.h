@@ -33,14 +33,12 @@ inline bool betterRefresh(unsigned a, unsigned b, unsigned desktopRefresh)
 // wide (the resolution list's own 800-pixel floor). The same rule on every platform (owner decision
 // 2026-11-20, no performance cap):
 //   1. the largest mode that fits the desktop. On Windows and Linux the desktop is reported in
-//      pixels, so this is the desktop mode itself. Intel Macs list their point sizes as
-//      low-resolution modes too, so this is the point size (1440x900 on a 2880x1800 backing),
-//      shown at an exact 2x;
+//      pixels, so this is the desktop mode itself. macOS lists logical point sizes, so Retina
+//      desktops select their point size (1470x956 on a 2940x1912 backing);
 //   2. when none fits, the smallest mode that is a whole multiple (2x, 3x) of the desktop: the pixel
 //      size of the image the system composites for this screen (the Retina backing store, 2940x1912
-//      for a 1470x956-point desktop on the M2), so the drawable reaches it without rescaling.
-//      Apple-silicon panels list only these backing sizes. Wherever the desktop scale is a whole
-//      number, this size equals the native panel mode or the desktop mode;
+//      for a 1470x956-point desktop on the M2), so the drawable reaches it without rescaling,
+//      wherever such a mode is listed;
 //   3. otherwise the smallest mode larger than the desktop.
 // Ties on size take the desktop's refresh rate, then the highest.
 inline int preferredMode(const Mode* modes, std::size_t count, const Mode& desktop, unsigned minWidth)

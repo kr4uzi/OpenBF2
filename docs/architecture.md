@@ -179,13 +179,12 @@ See [issue #42](https://github.com/kr4uzi/OpenBF2/issues/42).
 (`RendMisc/DisplayModePolicy.h`, `Menu/MenuViewport.h`):
 
 - A new profile's resolution uses the preferred mode, the same rule on every
-  platform: the largest listed mode that fits the desktop (on Windows and Linux the
-  desktop mode itself); when none fits (Apple-silicon panels list only their Retina
-  backing sizes, while the macOS desktop is reported in points), the listed whole
-  multiple of the desktop: the pixel size of the image the system composites for
-  this screen (2940x1912 for a 1470x956-point desktop), which equals the native or
-  desktop mode wherever the desktop scale is a whole number; otherwise the smallest
-  larger mode. On macOS and Linux a
+  platform: the largest listed mode that fits the desktop. Windows and Linux list
+  pixel sizes; macOS lists GUI-usable logical point sizes, capped at the largest
+  HiDPI logical size when present. New Apple-silicon profiles therefore find and
+  select their desktop point size (1470x956 on an M2 at that desktop setting),
+  instead of its 2940x1912 backing size. When none fits, the rule selects a listed
+  whole multiple of the desktop, otherwise the smallest larger mode. On macOS and Linux a
   fullscreen start without `+szx/+szy`, and the engine's own default sizes (the
   presets' 800x600 and 1024x768, the empty profile's 800x600@60Hz), take the same
   mode when the display does not list them. Windowed starts and explicit

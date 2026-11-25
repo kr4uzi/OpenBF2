@@ -21,7 +21,7 @@ namespace host {
 
 struct HostDisplayModeInfo
 {
-    int width;                      // pixels
+    int width;                      // logical points on macOS, pixels on other hosts
     int height;
     int refreshHz;                  // 0 when the display does not report one (most LCD panels report 60)
     int bitsPerPixel;               // 32 for every mode macOS offers
@@ -150,9 +150,9 @@ public:
     bool getClipboardText(std::string& text) const;
 
     // Display modes of the main display (duplicates removed) and the current desktop mode.
-    // macOS desktopMode reports the desktop's logical size in points (e.g. 1440x900 on a
-    // 2880x1800 Retina panel), the size a Windows user would call the desktop resolution;
-    // displayModes lists pixel sizes, which include the same sizes as low-resolution modes.
+    // [CHOSEN, not recovered] macOS reports logical point sizes for both calls. displayModes
+    // lists GUI-usable sizes, capped in each dimension at the largest HiDPI logical size when
+    // present; 1x displays keep all usable modes. Zero-Hz modes use the panel refresh rate.
     std::vector<HostDisplayModeInfo> displayModes() const;
     HostDisplayModeInfo desktopMode() const;
 

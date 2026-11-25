@@ -1,10 +1,13 @@
 // [TEMP] Content-free checks of the native hosts' display-mode policy (RendMisc/DisplayModePolicy.h):
 // the fullscreen start mode and the new-profile resolution. The mode lists are those the hosts
-// report (pixel sizes; the macOS desktop in points). No device, renderer or profile is modelled.
+// report (logical sizes on macOS). No device, renderer or profile is modelled.
 #include "../BF2/RendMisc/DisplayModePolicy.h"
 #include "../BF2/Menu/MenuViewport.h"
 #include <cstdio>
 #include <vector>
+#if defined(__APPLE__)
+#include "../BF2/Platform/macOS/DisplayPolicy.h"
+#endif
 
 namespace dm = dice::hfe::displaymode;
 namespace {
@@ -26,22 +29,84 @@ bool is(const std::vector<dm::Mode>& modes, int index, unsigned w, unsigned h, u
 
 int main()
 {
-    // Intel MacBook Pro 13" (2560x1600 panel, desktop 1440x900 points): the list repeats the point
-    // sizes as low-resolution modes, so the largest fitting mode is the point size itself.
+#if defined(__APPLE__)
+    using dice::hfe::host::HostDisplayModeInfo;
+    using dice::hfe::macos::DisplayMode;
+    using dice::hfe::macos::selectDisplayModes;
+    using dice::hfe::macos::fitWindowContent;
+    const std::vector<DisplayMode> intelAvailable = {
+        {1680,1050,3360,2100,0,true}, {1440,900,2880,1800,0,true},
+        {1280,800,2560,1600,0,true}, {1024,640,2048,1280,0,true},
+        {825,525,1650,1050,0,true}, {720,450,1440,900,0,true},
+        {2880,1800,2880,1800,0,true}, {2560,1600,2560,1600,0,true},
+        {2048,1280,2048,1280,0,true}, {1650,1050,1650,1050,0,true},
+        {1440,900,1440,900,0,true}, {1280,800,1280,800,0,true},
+        {1152,720,1152,720,0,true}, {1024,768,1024,768,0,true},
+        {800,600,800,600,0,true}, {840,524,840,524,0,false}, {640,480,640,480,0,false}};
+    const auto logicalIntel = selectDisplayModes(intelAvailable, 60);
+    const std::vector<HostDisplayModeInfo> expectedIntel = {
+        {720,450,60,32}, {800,600,60,32}, {825,525,60,32}, {1024,640,60,32},
+        {1024,768,60,32}, {1152,720,60,32}, {1280,800,60,32}, {1440,900,60,32},
+        {1650,1050,60,32}, {1680,1050,60,32}};
+    const auto sameModes = [](const std::vector<HostDisplayModeInfo>& a,
+                              const std::vector<HostDisplayModeInfo>& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(),
+            [](const HostDisplayModeInfo& x, const HostDisplayModeInfo& y) {
+                return x.width == y.width && x.height == y.height &&
+                       x.refreshHz == y.refreshHz && x.bitsPerPixel == y.bitsPerPixel;
+            });
+    };
+    check(sameModes(logicalIntel, expectedIntel),
+          "Intel Retina: sorted logical sizes, deduplicated, GUI-usable, 0 Hz becomes 60");
+    const std::vector<DisplayMode> m2Available = {
+        {1710,1112,3420,2224,0,true}, {1470,956,2940,1912,0,true},
+        {1280,832,2560,1664,0,true}, {1024,665,2048,1330,0,true},
+        {2560,1664,2560,1664,0,true}, {2940,1912,2940,1912,0,true}};
+    const std::vector<HostDisplayModeInfo> expectedM2 = {
+        {1024,665,60,32}, {1280,832,60,32}, {1470,956,60,32}, {1710,1112,60,32}};
+    check(sameModes(selectDisplayModes(m2Available, 60), expectedM2),
+          "M2 Retina: logical sizes include the desktop and omit oversized 1x modes");
+    check(sameModes(selectDisplayModes({{1920,1080,1920,1080,60,true},
+                                       {2560,1440,2560,1440,144,true},
+                                       {1920,1080,1920,1080,120,true},
+                                       {1920,1080,1920,1080,60,true}}, 60),
+                    {{1920,1080,60,32}, {1920,1080,120,32}, {2560,1440,144,32}}),
+          "1x display: keep all usable sizes and distinct nonzero refresh rates");
+    check(selectDisplayModes({{1000,700,2000,1400,0,true},
+                              {1100,600,1100,600,0,true},
+                              {900,800,900,800,0,true},
+                              {2000,1400,4000,2800,0,false}}, 60).size() == 1,
+          "HiDPI cap rejects excess width or height; unusable HiDPI does not enlarge it");
+    check(selectDisplayModes({}, 60).empty(), "macOS: empty enumeration stays empty");
+    const auto fitted = fitWindowContent(1440, 900, 1440, 853);
+    check(fitted.width == 1364 && fitted.height == 853,
+          "Retina desktop buffer fits around menu/title bars instead of halving");
+    const auto smallWindow = fitWindowContent(800, 600, 1440, 853);
+    check(smallWindow.width == 800 && smallWindow.height == 600, "fitting buffer keeps one point per pixel");
+    const auto largeWindow = fitWindowContent(2880, 1800, 1440, 853);
+    check(largeWindow.width == fitted.width && largeWindow.height == fitted.height,
+          "larger same-aspect buffer occupies the same available area");
+    const auto wideWindow = fitWindowContent(2560, 1080, 1440, 853);
+    check(wideWindow.width == 1440 && wideWindow.height == 607, "ultrawide window is width limited");
+    const auto portrait = fitWindowContent(900, 1440, 1440, 853);
+    check(portrait.width == 533 && portrait.height == 853, "portrait window is height limited");
+#endif
+    // Logical sizes from the macOS host include each Retina desktop point size.
     const std::vector<dm::Mode> intel = {
-        {2560, 1600, 60}, {3360, 2100, 60}, {2880, 1800, 60}, {2048, 1280, 60}, {1650, 1050, 60},
-        {1440, 900, 60}, {1280, 800, 60}, {1152, 720, 60}, {1024, 768, 60}, {800, 600, 60}, {640, 480, 60}};
-    check(is(intel, pick(intel, {1440, 900, 60}), 1440, 900, 60), "Intel Retina: desktop point size");
+        {720,450,60}, {800,600,60}, {825,525,60}, {1024,640,60}, {1024,768,60},
+        {1152,720,60}, {1280,800,60}, {1440,900,60}, {1650,1050,60}, {1680,1050,60}};
+    check(is(intel, pick(intel, {1680, 1050, 60}), 1680, 1050, 60), "Intel Retina: desktop point size");
     check(dm::listsSize(&intel[0], intel.size(), 800, 600), "Intel lists 800x600: the start keeps it");
 
-    // MacBook Air M2 (2560x1664 panel, desktop 1470x956 points): only backing sizes are listed.
+    // MacBook Air M2 (2560x1664 panel, desktop 1470x956 points).
     const std::vector<dm::Mode> m2 = {
-        {2048, 1330, 60}, {2560, 1664, 60}, {2940, 1912, 60}, {3420, 2224, 60}};
+        {1024,665,60}, {1280,832,60}, {1470,956,60}, {1710,1112,60}};
     check(!dm::listsSize(&m2[0], m2.size(), 800, 600), "M2 has no 800x600");
-    check(is(m2, pick(m2, {1470, 956, 60}), 2940, 1912, 60), "M2: the 2x backing store of the desktop");
-    check(is(m2, pick(m2, {1280, 832, 60}), 2560, 1664, 60), "M2 at 'larger text': 2x of 1280x832");
+    check(is(m2, pick(m2, {1470, 956, 60}), 1470, 956, 60), "M2: desktop point size");
+    check(is(m2, pick(m2, {1280, 832, 60}), 1280, 832, 60), "M2 at 'larger text': desktop point size");
     // A desktop with no whole multiple listed: the smallest larger mode.
-    check(is(m2, pick(m2, {1600, 1000, 60}), 2048, 1330, 60), "no multiple: smallest larger mode");
+    const std::vector<dm::Mode> backing = {{2048,1330,60}, {2560,1664,60}, {2940,1912,60}, {3420,2224,60}};
+    check(is(backing, pick(backing, {1600, 1000, 60}), 2048, 1330, 60), "no multiple: smallest larger mode");
     // A 3x multiple counts when 2x is missing.
     const std::vector<dm::Mode> notMultiple = {{3000, 2000, 60}, {2400, 1500, 60}};
     check(is(notMultiple, pick(notMultiple, {1000, 600, 60}), 2400, 1500, 60),
