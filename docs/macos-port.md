@@ -1584,7 +1584,8 @@ Measured on this machine: Apple's OpenAL opens the default output for every devi
 seven provider rows pass (`DirectSound`, `DirectSound3D`, `MMSYSTEM`, `Default Device`, null),
 so no device-name mapping is needed. It has no EAX, so the "System OpenAL" rows are refused
 unless `allow-any-system-openal` is set, as on a Windows machine without Creative's OpenAL; the
-default "Software Audio" rows load `BF2OpenAL.dll`, which maps to the same framework.
+non-system Software Audio and Hardware Audio rows load `BF2OpenAL.dll`, which maps to
+the same framework.
 
 One Apple deviation needed a port arm: OpenAL.framework keeps buffers that were queued on a
 source attached after they are unqueued, so the music thread's `alDeleteBuffers` failed with
@@ -1592,10 +1593,12 @@ source attached after they are unqueued, so the music thread's `alDeleteBuffers`
 source's `AL_BUFFER` first (`Music.cpp`); for spec-conforming implementations that is a no-op.
 
 `Game/AudioSettings.cpp` reads the full `hw.memsize` value and converts it to megabytes
-without the legacy 32-bit overflow, preserving retail's rounding and 768 MB quality
-threshold. Machines with 768 MB or more get "Medium" by default; existing profiles keep
-their saved quality. This all-platform [retail fix](retail-fixes.md#new-profiles-get-the-audio-quality-the-memory-check-intended)
-also uses full-width physical-memory queries on Windows and Linux.
+without the legacy 32-bit overflow, preserving retail's rounding and 768 MB low-memory
+guard. This all-platform [retail fix](retail-fixes.md#new-profiles-get-the-audio-quality-the-memory-check-intended)
+also uses full-width physical-memory queries on Windows and Linux. Separately, the
+`[CHOSEN, not recovered]` [client audio defaults](architecture.md#client-audio-defaults)
+select hardware on every platform, with High from 768 MB upward and Low below it.
+Existing profiles keep their saved provider and quality.
 
 `bf2_client` links CoreAudio and CoreFoundation; OpenAL.framework is loaded at run time, as the
 Win32 image loads `OpenAL32.dll`. OpenAL Soft was not needed and not installed.

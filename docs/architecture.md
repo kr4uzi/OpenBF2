@@ -144,6 +144,61 @@ receive-thread completion. A successful startup test therefore also checks clean
 immediate port reuse, and reload. Record the configuration and paths exercised with every
 test result; the presence of these methods does not establish runtime coverage.
 
+## Client audio defaults
+
+`[CHOSEN, not recovered]` New profiles and an explicit restore of audio defaults use
+provider `hardware` and quality `High` on every platform. The rounded physical-memory
+check retains `Low` below 768 MB. Software, Low and Medium remain selectable, and loading
+an existing `Audio.con` applies its saved values through the same setters as before.
+The [full-width memory read](retail-fixes.md#new-profiles-get-the-audio-quality-the-memory-check-intended)
+is a retail fix; preferring hardware and High is a separate port policy. Software with
+Low or Medium can lose single-fire weapon sounds on macOS; hardware with High avoids
+that path. No profile syntax, provider index, quality row or network contract changes.
+
+Retail `BF2.exe` 1.50 x86 `0x4B0C10` assigns `software` and selects Low/Medium around
+768 MB (`0x4B0C3F` calls the memory helper; `0x4B0C44` compares). Its apply helper
+`0x4B1420` maps hardware to BF2Audio provider 1 without EAX or 2 with EAX, both requesting
+`DirectSound3D`. BF2Audio builds its provider table at `0x100112A0`; `OpenALProvider::open`
+at `0x100118F0` loads `BF2OpenAL.dll` and passes that device name to `alcOpenDevice`
+at `0x10011A49`. A failed open closes the provider and returns error 4; it does not try
+software. `BfSoundEngine::openProvider` (`0x10005B70`) clears the active provider on
+failure, and `initialize` (`0x10006FA0`) returns that error. The settings wrapper
+`0x4B1750` retries the previous record (`0x4B179B`) and restarts music (`0x4B17AF`),
+then returns the original failure. Before the first successful apply, the constructor
+(`0x4B1B20`) leaves the current provider empty with EAX enabled: name lookup
+(`0x4B1240`) returns -1, plus EAX gives index 0 into `{6, 0, 1, 2, 3, 4}`
+(`0x8A3538`). Retrying that record therefore opens software row 6 at the current quality
+(now High on normal-memory machines). A successful retry clears status but still returns
+the original failure and leaves the requested settings pending. After a successful apply,
+failure instead retries the previously applied provider and quality. These are shared
+recovered paths.
+
+The native OpenAL backends already select a working default output when no physical
+hardware acceleration is available:
+
+| Platform | Hardware device selection |
+| --- | --- |
+| macOS | `OpenAL.framework` accepts `DirectSound3D` and opens the default output, as measured in [Audio (S2.5)](macos-port.md#audio-s25). Both BF2OpenAL and OpenAL32 names load that framework. |
+| Windows | The [bundled OpenAL Soft 1.25.2](ci-releases.md#openal-soft-in-the-windows-clients) treats `DirectSound3D`, `DirectSound` and `MMSYSTEM` as default-device aliases in [`alcOpenDevice`](https://github.com/kcat/openal-soft/blob/1.25.2/alc/alc.cpp#L2770-L2798). It mixes in software without requiring a hardware sound card. |
+| Linux | `OpenALProvider::open` passes null to OpenAL Soft (`libopenal.so.1`) for non-system provider rows, selecting the native default output (issue #36). |
+
+No additional software retry is needed on these backends: the hardware and software rows
+open the same output, and the initial-apply path already retries software. Missing libraries,
+absent output devices and context failures still report initialization failure; changing
+the provider label cannot supply an absent device.
+EAX detection is optional for the hardware row, so lack of EAX does not refuse it. High
+is valid for every provider: `applyRecord` maps it to engine quality 0 and 32 voices;
+BF2Audio loads samples at 44100 Hz. Only UltraHigh requires creative and is downgraded
+to High on other providers. High is never downgraded.
+
+`Code/Tests/audio_settings_runtime.cpp` checks the memory guard, exact saved lines,
+existing software/Low/Medium settings, and High on every provider through the real
+settings owner and typed sound observers. It also checks an initial hardware-open failure
+followed by a successful software retry, retaining High and the wrapper's original result.
+Run its `.cmd` runner on Windows x86, or
+`sh Code/Tests/audio_settings_runtime.sh <build-directory>` on macOS x86_64.
+This fixture opens no audio device.
+
 ## Client menu fonts
 
 The main, pause and between-rounds Flash menus use a centered 4:3 viewport.
