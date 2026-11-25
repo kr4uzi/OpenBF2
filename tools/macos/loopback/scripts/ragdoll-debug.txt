@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] ragDoll.drawConstraints and ragDoll.save: spawn, enable constraint drawing, write
 # ragDollConstraints.inc (into the game folder, as retail: the run's client-root/
 # ragdollconstraints.inc), then suicide so

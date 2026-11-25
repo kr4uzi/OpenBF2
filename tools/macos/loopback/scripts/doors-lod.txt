@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] rend-doors: the warehouse doors at each static-mesh LOD. Needs
 # --client-env BF2_CLIENT_CONSOLE_FULL_ACCESS=1 for renderer.globalStaticMeshLodDistanceScale.
 # lrgstrgbuilding_03.tweak: setSubGeometryLodDistance 0 0 50 / 0 1 600. Scaling the switch

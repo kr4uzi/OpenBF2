@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] The 17 profile console rows recovered in frontier batch 8, typed after spawning: a player
 # profile, a character, a second mod setting, every get/set row, the kit index rows, then activation
 # (first character, the BF2 setting) and applySettings, which renames the local player to Batch8Name

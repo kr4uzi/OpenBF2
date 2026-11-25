@@ -38,7 +38,9 @@ extern OldConsole* g_executingConsole;       // ds:0x8AC3C88 - see handleCommand
 
 namespace {
 #if !DEDICATED
-// [TEMP] [CHOSEN, not recovered] Local console testing requested by the owner.
+// [TEMP] [CHOSEN, not recovered] Local console testing, in debug builds only (NDEBUG undefined).
+// A release build never unlocks, whatever its environment says: the unlocked console reaches
+// commands such as the renderer's draw switches, which give an advantage in online play.
 // Only keyboard Enter/Tab can establish this scope; calls outside that scope retain their
 // access policy. Scripts invoked by an unlocked command inherit its local scope.
 // [RETIRE-WHEN: client-console-testing] Remove after developer-console policy
@@ -47,9 +49,13 @@ thread_local OldConsole* s_unlockedInteractiveConsole = nullptr;
 
 bool interactiveFullAccessEnabled()
 {
+#if !defined(NDEBUG)
     // Opt-in: without BF2_CLIENT_CONSOLE_FULL_ACCESS the retail end-user access policy applies.
     const char* value = std::getenv("BF2_CLIENT_CONSOLE_FULL_ACCESS");
     return value && std::strcmp(value, "0") != 0;
+#else
+    return false;                               // release builds: the retail access policy only
+#endif
 }
 
 class InteractiveAccessScope

@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] rend-doors: the commander screen. Needs
 # --client-env BF2_CLIENT_CONSOLE_FULL_ACCESS=1: the typed console runs at access 1, and the
 # squad-list apply cell (HudSquad::singleClickNew column 10) has no fixed screen coordinate. The
