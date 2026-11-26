@@ -4070,9 +4070,7 @@ bool ServerGameLogic::resurrect(world::IProjectileObject* projectile, world::IOb
         }
         else if (player == world::playerManager->getLocalHumanPlayer())
         {
-            // [CHOSEN, not recovered] Retail fix "Automatic revive speech preserves the radio allowance"
-            // (docs/retail-fixes.md). Only this automatic submission bypasses the charge.
-            game->radioMessage(TCLocal, std::string(voiceMessage), player, 0, true, true);
+            game->radioMessage(TCLocal, std::string(voiceMessage), player, 0, true, false);
         }
         else
         {

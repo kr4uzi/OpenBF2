@@ -155,15 +155,16 @@ charges the host again and charges it for bypassed and bot-generated server mess
 The original checks are BF2.exe `0x4C8E8B`–`0x4C8E9D`, Windows dedicated
 `0x445F2B`–`0x445F3D` and Linux ia-32 `0x080AEBCB`–`0x080AEBE4`.
 
-Retail charges the medic's automatic `get_up` line after a successful revive
-(BF2.exe `0x4E1381`–`0x4E1390`). The
-[revive speech fix](retail-fixes.md#automatic-revive-speech-preserves-the-radio-allowance)
-bypasses that submission in the revive caller and remote HUD event 51. Server relay
-checks a human's exact `get_up`/`TCLocal`/type-3/extra-0 radio tuple without charging;
-an existing block still prevents delivery. Manual submission still counts, although
-an identical remote console send cannot be distinguished at relay. A retail peer's
-own accounting remains outside the fix. This line is distinct from the defibrillator's
-bypassed `AUTO_MOODGP_usingshockpaddles` use message. The limiter resets the entire interval
+The medic's automatic `get_up` line after a successful revive is charged as in retail:
+at the host submission (BF2.exe `0x4E1381`–`0x4E1393`), at the client's submission through
+HUD event 51 (`0x75A7E0`–`0x75A7FA`), and at the server relay under the player-ID rule
+above. HUD event 51 carries the message name in 32 bytes followed by the channel at
+offset `0x20`. A blocked player's revive line is refused; the local human receives
+`spam` on channel 14 and `HUD_HUD_MENU_CHAT_SPAM_MESSAGE`, with the host notice skipped
+on a dedicated server. This line is distinct from the defibrillator's bypassed
+`AUTO_MOODGP_usingshockpaddles` use message. The
+[AI radio fix](retail-fixes.md#ai-radio-messages-consume-one-allowance) keeps AI from-player
+messages charged once at relay. The limiter resets the entire interval
 window, rather than removing one message at a time. Windows images retain the double
 world-clock result during comparisons; the Linux dedicated image rounds each read to
 float. World time is in seconds. `Code/Tests/radio_spam_runtime.py --engine-build

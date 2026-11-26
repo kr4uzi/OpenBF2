@@ -260,10 +260,7 @@ void BF2HudManager::handleHudEvent(unsigned int id, EventNode*, void* data)
         if (data) {
             const std::string message(static_cast<const char*>(data));
             const TargetChannel channel = eventValue<TargetChannel>(data, 0x20);
-            // [CHOSEN, not recovered] Retail fix "Automatic revive speech preserves the radio allowance"
-            // (docs/retail-fixes.md). The server asks a remote medic to speak through HUD event 51.
-            const bool revive = channel == TCLocal && message == "get_up";
-            game->radioMessage(channel, message, local, 0, true, revive);
+            game->radioMessage(channel, message, local, 0, true, false);
         }
         return;
     case 18: case 19: {
