@@ -70,8 +70,8 @@ bool UAVEvent::executeServer(int connectionId)
         return true;
 
     // [CHOSEN, not recovered] Retail fix "AI asset grants work in single player".
-    // sp1/sp2/sp3 permits local AI grants on any host, regardless of human count.
-    // Other game modes and scans keep retail authority.
+    // Only sp1/sp2/sp3 with one human on a non-dedicated host permits local AI grants.
+    // Other servers and scans keep retail authority.
     const int commanderId = squadManagerIface()->getCommander(m_team);
     if (commanderId != static_cast<unsigned char>(connectionId) &&
         !(commanderId == -1 && connectionId == -1 && !m_isScan && allowsSinglePlayerAIGrant()))

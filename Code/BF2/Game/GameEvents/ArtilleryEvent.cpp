@@ -116,8 +116,8 @@ bool ArtilleryEvent::executeServer(int connectionId)
         return true;
 
     // [CHOSEN, not recovered] Retail fix "AI asset grants work in single player".
-    // sp1/sp2/sp3 permits local AI grants on any host, regardless of human count.
-    // Other game modes keep the retail byte comparison.
+    // Only sp1/sp2/sp3 with one human on a non-dedicated host permits local AI grants.
+    // Other servers keep the retail byte comparison.
     const int commanderId = squadManagerIface()->getCommander(m_team);
     if (commanderId != static_cast<unsigned char>(connectionId) &&
         !(commanderId == -1 && connectionId == -1 && allowsSinglePlayerAIGrant()))
