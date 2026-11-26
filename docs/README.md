@@ -12,6 +12,7 @@ contribution workflow and validation requirements.
 | Toolchains, targets, and build checks | [Building](building.md) |
 | Engine images, source layout and lifecycle | [Engine architecture](architecture.md) |
 | Recovery prerequisites, contribution rules and validation | [Development guide](development.md) |
+| Function inventories and client review coverage | [Reconstruction progress](progress.md) |
 | Fixes of incorrect retail behavior, and the rule for adding one | [Retail fixes](retail-fixes.md) |
 | Editor console commands and script undo | [Editor console guide](editor-console.md) |
 | macOS port status, port rules and the client/Metal frontier | [macOS port](macos-port.md) |
@@ -55,6 +56,9 @@ those tools:
 - `tracks/swf/`: `ledger.csv`, `ledger-summary.md`, `swiffplayer-gameswf-functions.csv`, the
   `s1-*.csv`/`s1-inputs.json`/`s2-scope.csv` tables and the `*-ledger-overrides.csv` files
   (`tools/tracks/swf_align.py`, `tools/tracks/swf_ledger.py`).
+- `tracks/client/ledger.csv`, `tracks/client/ledger-summary.md` (`tools/tracks/client_ledger.py`);
+  `tracks/markers.csv` and `progress.md` (`tools/tracks/progress.py`, checked by
+  `tools/tracks/test_progress.py`). The progress tool reads all five ledgers and renderer attribution.
 
 [AGENTS.md](../AGENTS.md) is the working policy. Third-party documentation stays with its
 dependency under `Code/BF2/External/`. The validation commands are in the development guide,
