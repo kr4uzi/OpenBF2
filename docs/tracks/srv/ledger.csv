@@ -221,7 +221,7 @@ bf2,0x080b5a10,5,dice::hfe::GameServer::debugShowGhostPriorities(int),Code/BF2/G
 bf2,0x080b5a20,96,dice::hfe::GameServer::getTotalActiveGhosts(),Code/BF2/Game/GameServer/GameServer.cpp,done,74a4af14,GameServer.cpp,0
 bf2,0x080b5a80,309,"dice::hfe::GameServer::sendRadioMessageToAI(dice::hfe::GameServer::IEventWrapper&, int)",Code/BF2/Game/GameServer/GameServer.cpp,done,74a4af14,GameServer.cpp,0
 bf2,0x080b5bc0,53,dice::hfe::GameServer::isRecordingDemo() const,Code/BF2/Game/GameServer/GameServer.cpp,stop,,GameServer.cpp,0
-bf2,0x080b5c00,450,"dice::hfe::GameServer::onAutoRecordingAvailable(std::string const&, std::string const&)",Code/BF2/Game/GameServer/GameServer.cpp,stop,,GameServer.cpp,0
+bf2,0x080b5c00,450,"dice::hfe::GameServer::onAutoRecordingAvailable(std::string const&, std::string const&)",Code/BF2/Game/GameServer/GameServer.cpp,done,6f2fb0c1,GameServer.cpp,0
 bf2,0x080b5dd0,302,"dice::hfe::GameServer::getPlayerConnectionIp(dice::hfe::world::IPlayer*, std::string&)",Code/BF2/Game/GameServer/GameServer.cpp,done,74a4af14,GameServer.cpp,0
 bf2,0x080b5f00,55,"dice::hfe::GameServer::getPlayerConnectionIpAndPort(dice::hfe::world::IPlayer*, std::string&)",Code/BF2/Game/GameServer/GameServer.cpp,done,74a4af14,GameServer.cpp,0
 bf2,0x080b5f40,85,"dice::hfe::GameServer::getConnectionIpAndPort(int, std::string&)",Code/BF2/Game/GameServer/GameServer.cpp,done,74a4af14,GameServer.cpp,0
@@ -297,13 +297,13 @@ bf2,0x080b9ce0,167,dice::hfe::ReservedSlots::~ReservedSlots(),Code/BF2/Game/Game
 bf2,0x080b9d90,8,dice::hfe::ReservedSlots::getConfigFile() const,Code/BF2/Game/GameServer/ReservedSlots.cpp,done,74a4af14,ReservedSlots.cpp,0
 bf2,0x080b9da0,9,dice::hfe::ReservedSlots::setConfigFile(std::string const&),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,74a4af14,ReservedSlots.cpp,0
 bf2,0x080b9db0,777,dice::hfe::ReservedSlots::load(),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,74a4af14,ReservedSlots.cpp,0
-bf2,0x080ba0c0,1054,dice::hfe::ReservedSlots::save(),Code/BF2/Game/GameServer/ReservedSlots.cpp,stop,,ReservedSlots.cpp,1
-bf2,0x080ba4e0,117,dice::hfe::ReservedSlots::save(std::ostream&),Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
-bf2,0x080ba560,547,dice::hfe::ReservedSlots::addNick(std::string const&),Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
-bf2,0x080ba790,232,dice::hfe::ReservedSlots::removeNick(std::string const&),Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
+bf2,0x080ba0c0,1054,dice::hfe::ReservedSlots::save(),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
+bf2,0x080ba4e0,117,dice::hfe::ReservedSlots::save(std::ostream&),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
+bf2,0x080ba560,547,dice::hfe::ReservedSlots::addNick(std::string const&),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
+bf2,0x080ba790,232,dice::hfe::ReservedSlots::removeNick(std::string const&),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
 bf2,0x080ba880,405,dice::hfe::ReservedSlots::isNickReserved(std::string const&) const,Code/BF2/Game/GameServer/ReservedSlots.cpp,done,74a4af14,ReservedSlots.cpp,0
-bf2,0x080baa20,54,dice::hfe::ReservedSlots::clear(),Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
-bf2,0x080baa60,114,dice::hfe::ReservedSlots::list(),Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
+bf2,0x080baa20,54,dice::hfe::ReservedSlots::clear(),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
+bf2,0x080baa60,114,dice::hfe::ReservedSlots::list(),Code/BF2/Game/GameServer/ReservedSlots.cpp,done,6f2fb0c1,ReservedSlots.cpp,0
 bf2,0x080baae0,91,"__static_initialization_and_destruction_0(int, int)",Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
 bf2,0x080bab40,16,__tcf_0,Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
 bf2,0x080bab50,16,__tcf_1,Code/BF2/Game/GameServer/ReservedSlots.cpp,todo,,ReservedSlots.cpp,1
@@ -430,7 +430,7 @@ bf2,0x083d2b30,39,dice::hfe::PosixSystemInfo::getNumberOfPageFaults() const,Code
 bf2,0x083d2b60,23,"dice::hfe::PosixSystemInfo::getMemoryInfo(unsigned int&, unsigned int&) const",Code/BF2/Core/SystemInfo.cpp,done,74a4af14,SystemInfo_posix.cpp,0
 bf2,0x083d2b80,139,dice::hfe::PosixSystemInfo::getComputerName() const,Code/BF2/Core/SystemInfo.cpp,done,74a4af14,SystemInfo_posix.cpp,0
 bf2,0x083d2c10,110,dice::hfe::PosixSystemInfo::getDateTimeString() const,Code/BF2/Core/SystemInfo.cpp,done,74a4af14,SystemInfo_posix.cpp,0
-bf2,0x083d2c80,7,dice::hfe::PosixSystemInfo::getIsDebuggerInstalled() const,Code/BF2/Core/SystemInfo.cpp,done,74a4af14,SystemInfo_posix.cpp,0
+bf2,0x083d2c80,7,dice::hfe::PosixSystemInfo::getIsDebuggerInstalled() const,Code/BF2/Core/SystemInfo.cpp,chosen,,SystemInfo_posix.cpp,0
 bf2,0x083d2c90,7,dice::hfe::PosixSystemInfo::getMemoryUsage() const,Code/BF2/Core/SystemInfo.cpp,done,74a4af14,,0
 bf2,0x083d2ca0,49,dice::hfe::Mutex::Mutex(),Code/BF2/Core/Mutex.cpp,done,74a4af14,Threading_pthreads.cpp,0
 bf2,0x083d2ce0,49,dice::hfe::Mutex::Mutex(),Code/BF2/Core/Mutex.cpp,done,74a4af14,Threading_pthreads.cpp,0
@@ -628,9 +628,9 @@ bf2,0x08438960,186,dice::hfe::TickCalculator::compute(double),Code/BF2/IO/TickCa
 bf2,0x08438a20,64,dice::hfe::Token::Token(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
 bf2,0x08438a60,64,dice::hfe::Token::Token(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
 bf2,0x08438aa0,104,dice::hfe::Token::operator++(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
-bf2,0x08438b10,107,dice::hfe::Token::operator--(),Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
-bf2,0x08438b80,133,dice::hfe::Token::operator+=(unsigned int),Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
-bf2,0x08438c10,53,dice::hfe::Token::operator[](unsigned int) const,Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
+bf2,0x08438b10,107,dice::hfe::Token::operator--(),Code/BF2/IO/Tokenizer.cpp,done,6f2fb0c1,Tokenizer.cpp,0
+bf2,0x08438b80,133,dice::hfe::Token::operator+=(unsigned int),Code/BF2/IO/Tokenizer.cpp,done,6f2fb0c1,Tokenizer.cpp,0
+bf2,0x08438c10,53,dice::hfe::Token::operator[](unsigned int) const,Code/BF2/IO/Tokenizer.cpp,done,6f2fb0c1,Tokenizer.cpp,0
 bf2,0x08438c50,52,dice::hfe::Tokenizer::Tokenizer(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
 bf2,0x08438c90,52,dice::hfe::Tokenizer::Tokenizer(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
 bf2,0x08438cd0,198,dice::hfe::Tokenizer::~Tokenizer(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
@@ -640,7 +640,7 @@ bf2,0x08439080,1196,"dice::hfe::Tokenizer::init(char const*, unsigned int)",Code
 bf2,0x08439530,189,dice::hfe::Tokenizer::clean(),Code/BF2/IO/Tokenizer.cpp,done,74a4af14,Tokenizer.cpp,0
 bf2,0x084395f0,495,dice::hfe::Tokenizer::getNumber(dice::hfe::Token&),Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
 bf2,0x084397e0,230,dice::hfe::Tokenizer::getIntNumber(dice::hfe::Token&),Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
-bf2,0x084398d0,418,dice::hfe::Tokenizer::getInt64Number(dice::hfe::Token&),Code/BF2/IO/Tokenizer.cpp,todo,,Tokenizer.cpp,1
+bf2,0x084398d0,418,dice::hfe::Tokenizer::getInt64Number(dice::hfe::Token&),Code/BF2/IO/Tokenizer.cpp,done,6f2fb0c1,Tokenizer.cpp,0
 bf2,0x0843a550,74,dice::hfe::io::ZReader::ZReader(),Code/BF2/IO/ZUtil.cpp,done,74a4af14,ZUtil.cpp,0
 bf2,0x0843a5a0,74,dice::hfe::io::ZReader::ZReader(),Code/BF2/IO/ZUtil.cpp,done,74a4af14,ZUtil.cpp,0
 bf2,0x0843a5f0,62,dice::hfe::io::ZReader::~ZReader(),Code/BF2/IO/ZUtil.cpp,done,74a4af14,ZUtil.cpp,0
@@ -1657,42 +1657,42 @@ bf2,0x08499600,15,dice::hfe::io::ControlMapManager::addRef(),Code/BF2/IO/Input/C
 bf2,0x08499610,11,dice::hfe::io::ControlMapManager::getRef(),Code/BF2/IO/Input/ControlMapManager.cpp,done,74a4af14,,0
 bf2,0x08499620,57,dice::hfe::io::ControlMapManager::release(),Code/BF2/IO/Input/ControlMapManager.cpp,done,74a4af14,,0
 bf2,0x08499660,32,dice::hfe::io::ControlMapManager::queryInterface(unsigned int) const,Code/BF2/IO/Input/ControlMapManager.cpp,done,74a4af14,,0
-bf2,0x08499860,335,dice::hfe::io::FalconDevice::FalconDevice(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x084999b0,160,dice::hfe::io::FalconDevice::FalconDevice(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499a50,62,dice::hfe::io::FalconDevice::~FalconDevice(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499a90,62,dice::hfe::io::FalconDevice::~FalconDevice(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499ad0,15,dice::hfe::io::FalconDevice::init(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499ae0,19,dice::hfe::io::FalconDevice::setCooperativeMode(dice::hfe::io::InputDeviceMode),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b00,11,dice::hfe::io::FalconDevice::getCooperativeMode() const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b10,7,dice::hfe::io::FalconDevice::activate(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b20,10,dice::hfe::io::FalconDevice::deActivate(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b30,24,dice::hfe::io::FalconDevice::buttonDown(dice::hfe::io::InputDeviceButtons) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b50,31,dice::hfe::io::FalconDevice::buttonPressed(dice::hfe::io::InputDeviceButtons) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499b70,46,dice::hfe::io::FalconDevice::buttonPressedSampleLatency(dice::hfe::io::InputDeviceButtons) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499ba0,31,dice::hfe::io::FalconDevice::buttonReleased(dice::hfe::io::InputDeviceButtons) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499bc0,23,"dice::hfe::io::FalconDevice::setInvertAxis(dice::hfe::io::InputDeviceAxes, bool)",Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499be0,25,dice::hfe::io::FalconDevice::getInvertAxis(dice::hfe::io::InputDeviceAxes) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499c00,23,"dice::hfe::io::FalconDevice::setAxisScale(dice::hfe::io::InputDeviceAxes, float)",Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499c20,24,dice::hfe::io::FalconDevice::getAxisScale(dice::hfe::io::InputDeviceAxes) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499c40,41,"dice::hfe::io::FalconDevice::readAxis(dice::hfe::io::InputDeviceAxes, bool) const",Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499c70,7,"dice::hfe::io::FalconDevice::getNextInput(dice::hfe::io::InputDeviceAxes&, dice::hfe::io::InputDeviceButtons&, dice::hfe::io::InputDeviceKeys&, bool&)",Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,FalconDevice.cpp,0
-bf2,0x08499c80,115,dice::hfe::io::FalconDevice::updateCurrentState(float),Code/BF2/IO/Input/FalconDevice.cpp,stop,,FalconDevice.cpp,0
-bf2,0x08499d00,5,dice::hfe::io::FalconDevice::update(float),Code/BF2/IO/Input/FalconDevice.cpp,stop,,FalconDevice.cpp,0
-bf2,0x08499d10,10,"dice::hfe::io::falconHandler(void*, int, int, int, unsigned char)",Code/BF2/IO/Input/FalconDevice.cpp,todo,,FalconDevice.cpp,1
-bf2,0x08499d20,66,"__static_initialization_and_destruction_0(int, int)",Code/BF2/IO/Input/FalconDevice.cpp,todo,,FalconDevice.cpp,1
-bf2,0x08499d70,16,__tcf_0,Code/BF2/IO/Input/FalconDevice.cpp,todo,,FalconDevice.cpp,1
-bf2,0x08499d80,31,_GLOBAL__I__ZN4dice3hfe2io17g_FalconInputListE,Code/BF2/IO/Input/FalconDevice.cpp,todo,,FalconDevice.cpp,1
+bf2,0x08499860,335,dice::hfe::io::FalconDevice::FalconDevice(),,todo,,FalconDevice.cpp,1
+bf2,0x084999b0,160,dice::hfe::io::FalconDevice::FalconDevice(),,todo,,FalconDevice.cpp,1
+bf2,0x08499a50,62,dice::hfe::io::FalconDevice::~FalconDevice(),,todo,,FalconDevice.cpp,1
+bf2,0x08499a90,62,dice::hfe::io::FalconDevice::~FalconDevice(),,todo,,FalconDevice.cpp,1
+bf2,0x08499ad0,15,dice::hfe::io::FalconDevice::init(),,todo,,FalconDevice.cpp,1
+bf2,0x08499ae0,19,dice::hfe::io::FalconDevice::setCooperativeMode(dice::hfe::io::InputDeviceMode),,todo,,FalconDevice.cpp,1
+bf2,0x08499b00,11,dice::hfe::io::FalconDevice::getCooperativeMode() const,,todo,,FalconDevice.cpp,1
+bf2,0x08499b10,7,dice::hfe::io::FalconDevice::activate(),,todo,,FalconDevice.cpp,1
+bf2,0x08499b20,10,dice::hfe::io::FalconDevice::deActivate(),,todo,,FalconDevice.cpp,1
+bf2,0x08499b30,24,dice::hfe::io::FalconDevice::buttonDown(dice::hfe::io::InputDeviceButtons) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499b50,31,dice::hfe::io::FalconDevice::buttonPressed(dice::hfe::io::InputDeviceButtons) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499b70,46,dice::hfe::io::FalconDevice::buttonPressedSampleLatency(dice::hfe::io::InputDeviceButtons) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499ba0,31,dice::hfe::io::FalconDevice::buttonReleased(dice::hfe::io::InputDeviceButtons) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499bc0,23,"dice::hfe::io::FalconDevice::setInvertAxis(dice::hfe::io::InputDeviceAxes, bool)",,todo,,FalconDevice.cpp,1
+bf2,0x08499be0,25,dice::hfe::io::FalconDevice::getInvertAxis(dice::hfe::io::InputDeviceAxes) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499c00,23,"dice::hfe::io::FalconDevice::setAxisScale(dice::hfe::io::InputDeviceAxes, float)",,todo,,FalconDevice.cpp,1
+bf2,0x08499c20,24,dice::hfe::io::FalconDevice::getAxisScale(dice::hfe::io::InputDeviceAxes) const,,todo,,FalconDevice.cpp,1
+bf2,0x08499c40,41,"dice::hfe::io::FalconDevice::readAxis(dice::hfe::io::InputDeviceAxes, bool) const",,todo,,FalconDevice.cpp,1
+bf2,0x08499c70,7,"dice::hfe::io::FalconDevice::getNextInput(dice::hfe::io::InputDeviceAxes&, dice::hfe::io::InputDeviceButtons&, dice::hfe::io::InputDeviceKeys&, bool&)",,todo,,FalconDevice.cpp,1
+bf2,0x08499c80,115,dice::hfe::io::FalconDevice::updateCurrentState(float),,todo,,FalconDevice.cpp,1
+bf2,0x08499d00,5,dice::hfe::io::FalconDevice::update(float),,todo,,FalconDevice.cpp,1
+bf2,0x08499d10,10,"dice::hfe::io::falconHandler(void*, int, int, int, unsigned char)",,todo,,FalconDevice.cpp,1
+bf2,0x08499d20,66,"__static_initialization_and_destruction_0(int, int)",,todo,,FalconDevice.cpp,1
+bf2,0x08499d70,16,__tcf_0,,todo,,FalconDevice.cpp,1
+bf2,0x08499d80,31,_GLOBAL__I__ZN4dice3hfe2io17g_FalconInputListE,,todo,,FalconDevice.cpp,1
 bf2,0x08499df0,20,"dice::hfe::io::IAdvancedInputDevice::peakXYAxis(float&, float&)",Code/BF2/IO/Input/Input.h,done,74a4af14,,0
-bf2,0x08499e10,15,dice::hfe::io::FalconDevice::addRef(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499e20,11,dice::hfe::io::FalconDevice::getRef(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499e30,60,dice::hfe::io::FalconDevice::release(),Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499e70,40,dice::hfe::io::FalconDevice::queryInterface(unsigned int) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499ea0,10,dice::hfe::io::FalconDevice::getType() const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499eb0,11,dice::hfe::io::FalconDevice::getNumAxes() const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499ec0,5,"dice::hfe::io::FalconDevice::setAxisAdd(dice::hfe::io::InputDeviceAxes, float)",Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499ed0,7,dice::hfe::io::FalconDevice::getAxisAdd(dice::hfe::io::InputDeviceAxes) const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499ee0,11,dice::hfe::io::FalconDevice::getNumButtons() const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
-bf2,0x08499ef0,7,dice::hfe::io::FalconDevice::isActive() const,Code/BF2/IO/Input/FalconDevice.cpp,done,74a4af14,,0
+bf2,0x08499e10,15,dice::hfe::io::FalconDevice::addRef(),,todo,,,1
+bf2,0x08499e20,11,dice::hfe::io::FalconDevice::getRef(),,todo,,,1
+bf2,0x08499e30,60,dice::hfe::io::FalconDevice::release(),,todo,,,1
+bf2,0x08499e70,40,dice::hfe::io::FalconDevice::queryInterface(unsigned int) const,,todo,,,1
+bf2,0x08499ea0,10,dice::hfe::io::FalconDevice::getType() const,,todo,,,1
+bf2,0x08499eb0,11,dice::hfe::io::FalconDevice::getNumAxes() const,,todo,,,1
+bf2,0x08499ec0,5,"dice::hfe::io::FalconDevice::setAxisAdd(dice::hfe::io::InputDeviceAxes, float)",,todo,,,1
+bf2,0x08499ed0,7,dice::hfe::io::FalconDevice::getAxisAdd(dice::hfe::io::InputDeviceAxes) const,,todo,,,1
+bf2,0x08499ee0,11,dice::hfe::io::FalconDevice::getNumButtons() const,,todo,,,1
+bf2,0x08499ef0,7,dice::hfe::io::FalconDevice::isActive() const,,todo,,,1
 bf2,0x08499f00,780,"dice::hfe::io::operator<<(std::ostream&, dice::hfe::io::GameInputMap)",Code/BF2/IO/Input/InputMapStream.cpp,done,74a4af14,GameInput.cpp|InputHandler.cpp|InputManager.cpp|InputUtils.cpp,0
 bf2,0x0849a210,11214,"dice::hfe::io::operator>>(std::basic_istream<wchar_t, std::char_traits<wchar_t>>&, dice::hfe::io::GameInputMap&)",,todo,,GameInput.cpp|InputHandler.cpp|InputManager.cpp|InputUtils.cpp,1
 bf2,0x0849cde0,10846,"dice::hfe::io::operator>>(std::istream&, dice::hfe::io::GameInputMap&)",Code/BF2/IO/Input/InputMapStream.cpp,done,74a4af14,GameInput.cpp|InputHandler.cpp|InputManager.cpp|InputUtils.cpp,0
