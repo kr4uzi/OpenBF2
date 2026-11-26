@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Content-free checks of production radio submission, relay and Player decay.
+"""Content-free checks of radio charges, revive refusals, relay and Player decay.
 
 Uses the existing strict-image fixture runner; opens no window, audio device or socket.
 """

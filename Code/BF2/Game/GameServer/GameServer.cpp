@@ -2138,20 +2138,6 @@ public:
     virtual int getSenderId() { return m_event->m_connectionId; }             //  +0x1C
     virtual int getChannel()  { return m_event->m_channel; }                  //  +0x24
     virtual int getFlags()    { return m_event->m_field0F; }                  //  +0x20
-    // [CHOSEN, not recovered] Retail fix "Automatic revive speech preserves the radio allowance"
-    // (docs/retail-fixes.md). The wire has no automatic/manual flag; an identical console
-    // submission is indistinguishable here. Keep the exemption to this exact radio tuple.
-    bool isReviveCallout() const
-    {
-        if (m_event->m_channel != TCLocal || m_event->m_type != 3 || m_event->m_field0F != 0)
-            return false;
-        GameLogic* const logic = static_cast<GameLogic*>(gameLogic);
-        VoiceMessages* const messages = logic ? logic->getVoiceMessages() : 0;
-        int messageId;
-        const std::string empty;
-        return messages && messages->namesToIds(&messageId, 0, 0, "get_up", empty, empty)
-            && messageId == m_event->m_messageId;
-    }
     virtual void sendMessage(ServerConnection* connection)
     {
         if (!connection)
@@ -4174,12 +4160,7 @@ void GameServer::playerMessageEvent(IEventWrapper& wrapper)
         // BF2.exe 0x4C8E8B..0x4C8E9D / dedicated PE 0x445F2B..0x445F3D /
         // ELF 0x080AEBCB..0x080AEBE4 compare the low byte with 0xFF.
         // The hosted human has ID 255 and was already counted at submission.
-        bool count = static_cast<unsigned char>(sender->getId()) != 0xFF;
-        // [CHOSEN, not recovered] Retail fix "Automatic revive speech preserves the radio allowance"
-        // (docs/retail-fixes.md). Check an existing block without charging human revive speech.
-        const RadioMessageEW* const radio = dynamic_cast<RadioMessageEW*>(&wrapper);
-        if (count && radio && !sender->getIsAIPlayer() && radio->isReviveCallout())
-            count = false;
+        const bool count = static_cast<unsigned char>(sender->getId()) != 0xFF;
         if (sender->getIsThisASpam(count))
             return;
     }

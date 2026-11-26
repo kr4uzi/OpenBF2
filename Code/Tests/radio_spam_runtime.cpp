@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include <csignal>
 #include <cstring>
@@ -49,6 +50,7 @@
 #include "../BF2/Core/Ids.h"
 #if !DEDICATED
 #include "../BF2/Game/Common/ClientConnection.h"
+#include "../BF2/Game/Main/BF2ClientSeams.h"
 #include "../BF2/Menu/BF2HudManager.h"
 #endif
 
@@ -101,6 +103,28 @@ struct Weapon : world::GenericFireArm {
     explicit Weapon(world::IPlayer* p) : GenericFireArm(new world::GenericFireArmTemplate), speaker(p) {}
     world::IPlayer* getPlayer() override { return speaker; }
 };
+#if !DEDICATED
+// [TEMP] Observe refusal text without constructing the HUD's movie or sound owners.
+struct Hud : hud::BF2HudManager {
+    int notices = 0;
+    int seconds = 0;
+    int team = -1;
+    std::wstring text;
+    std::wstring getLocalizedString(std::string key) override
+    {
+        check(key == "HUD_HUD_MENU_CHAT_SPAM_MESSAGE", "spam HUD localization key");
+        return L"Blocked for #SEC# second(s).";
+    }
+    std::wstring replaceWideTokenFromInt(std::wstring value, std::string token, int count) override
+    {
+        check(value == L"Blocked for #SEC# second(s)." && token == "#SEC#", "spam HUD seconds token");
+        seconds = count;
+        return L"Blocked for " + std::to_wstring(count) + L" second(s).";
+    }
+    void addServerChat(std::wstring value, int senderTeam) override
+    { ++notices; text = value; team = senderTeam; }
+};
+#endif
 }
 
 int main()
@@ -198,10 +222,15 @@ int main()
     // Observe the component's actual bypass argument through a transport override, below.
     struct Submission : GameServer {
         bool bypass = false;
+        // [TEMP] Forward local playback only for a sender already at the limit.
+        bool observeLocalRefusal = false;
+        std::vector<std::pair<TargetChannel, std::string>> notices;
         std::vector<PostRemoteEvent*> notifications;
         bool radioMessage(TargetChannel c, const std::string& m, world::IPlayer* p,
-                          unsigned int e, bool, bool b) override
-        { bypass = b; return GameServer::radioMessage(c, m, p, e, false, b); }
+                          unsigned int e, bool playback, bool b) override
+        { bypass = b; return GameServer::radioMessage(c, m, p, e, playback && observeLocalRefusal, b); }
+        bool localGameInfoMessage(TargetChannel c, const std::string& m) override
+        { notices.emplace_back(c, m); return true; }
         void sendGameEventIfPlaying(unsigned int id, GameEvent* event) override
         {
             check(id == 42 && event->getType() == 11, "revive notification targets remote medic");
@@ -221,21 +250,45 @@ int main()
     check(player->getRadioSpamFlagCount() == 1, "ordinary use relay counts once");
     players->local = player;
     reviveCallout(player);
-    check(submission->bypass && player->getRadioSpamFlagCount() == 1,
-          "automatic host revive does not charge submission");
+    check(!submission->bypass && player->getRadioSpamFlagCount() == 2,
+          "automatic host revive charges one submission unit");
     relay();
-    check(player->getRadioSpamFlagCount() == 1, "automatic host revive relay does not charge");
+    check(player->getRadioSpamFlagCount() == 2, "automatic host revive relay adds no second charge");
     players->local = player;
     server->radioMessage(TCLocal, "get_up", player, 0, false, false); relay();
-    check(player->getRadioSpamFlagCount() == 2, "manual host get_up still counts");
+    check(player->getRadioSpamFlagCount() == 3, "manual host get_up still counts");
+    player->getIsThisASpam(true);
+    players->local = player;
+#if !DEDICATED
+    auto* hud = new Hud; hudManager = hud;
+    setDedicated(false);
+#endif
+    submission->observeLocalRefusal = true;
+    const auto hostPosted = events->messages.size();
+    reviveCallout(player);
+    check(!submission->bypass && player->getRadioSpamFlagCount() == 4
+          && player->getRadioSpamBlockedFlagCount() > 0 && events->messages.size() == hostPosted,
+          "blocked host revive submits no speech event");
+#if !DEDICATED
+    check(submission->notices.size() == 1 && submission->notices.back().first == 14
+          && submission->notices.back().second == "spam", "blocked host gets spam on channel 14");
+    check(hud->notices == 1 && hud->seconds == config.radioBlockedDuration + 1
+          && hud->team == player->getTeam() && hud->text == L"Blocked for 32 second(s).",
+          "blocked host gets the HUD spam line with remaining seconds");
+    setDedicated(true);
+#else
+    check(submission->notices.empty(), "dedicated host omits local spam notice");
+#endif
+    submission->observeLocalRefusal = false;
+    player->resetSpamFilter();
     auto* bot = new Speaker; bot->m_playerId = 254; bot->m_isAI = true;
     players->speaker = bot;
     server->radioMessage(TCLocalTeam, "out_of_heal", bot, 0, false, false); relay();
-    check(bot->getRadioSpamFlagCount() == 1 && player->getRadioSpamFlagCount() == 2,
+    check(bot->getRadioSpamFlagCount() == 1 && player->getRadioSpamFlagCount() == 0,
           "bot server-origin message never charges the host");
     bot->resetSpamFilter();
     server->radioMessageFromPlayer(TCTeam, "roger_that", 254, 0, false, false); relay();
-    check(bot->getRadioSpamFlagCount() == 1 && player->getRadioSpamFlagCount() == 2,
+    check(bot->getRadioSpamFlagCount() == 1 && player->getRadioSpamFlagCount() == 0,
           "AI from-player path charges its own counter once, never the host");
     players->speaker = player;
     player->m_playerId = 42; player->resetSpamFilter();
@@ -252,17 +305,18 @@ int main()
         server->handleRadioMessageReceivedEvent(&event, nullptr);
     };
     relayRadio(reviveId);
-    check(player->getRadioSpamFlagCount() == 1, "remote human revive relay is uncounted");
+    check(player->getRadioSpamFlagCount() == 2, "remote human get_up on TCLocal charges at relay");
     auto* voices = logic->m_voiceMessages;
     logic->m_voiceMessages = new VoiceMessages("", "", "");
     relayRadio(reviveId);
-    check(player->getRadioSpamFlagCount() == 2, "unregistered message id gets no exemption");
+    check(player->getRadioSpamFlagCount() == 3, "relay counts without a registered message name");
     logic->m_voiceMessages = nullptr;
     relayRadio(reviveId);
-    check(player->getRadioSpamFlagCount() == 3, "missing voice registry gets no exemption");
+    check(player->getRadioSpamFlagCount() == 4, "relay counts without a voice registry");
+    player->resetSpamFilter();
     gameLogic = nullptr;
     relayRadio(reviveId);
-    check(player->getRadioSpamFlagCount() == 4, "missing game logic gets no exemption");
+    check(player->getRadioSpamFlagCount() == 1, "relay counts without game logic");
     gameLogic = logic; logic->m_voiceMessages = voices;
     player->resetSpamFilter(); relayRadio(0);
     relayRadio(reviveId, TCTeam);
@@ -300,10 +354,14 @@ int main()
 #if !DEDICATED
     struct Client : GameClient {
         bool bypass = false;
+        bool observeLocalRefusal = false;
+        std::vector<std::pair<TargetChannel, std::string>> notices;
         std::vector<RadioMessageEvent*> sent;
         bool radioMessage(TargetChannel c, const std::string& m, world::IPlayer* p,
-                          unsigned int e, bool, bool b) override
-        { bypass = b; return GameClient::radioMessage(c, m, p, e, false, b); }
+                          unsigned int e, bool playback, bool b) override
+        { bypass = b; return GameClient::radioMessage(c, m, p, e, playback && observeLocalRefusal, b); }
+        bool localGameInfoMessage(TargetChannel c, const std::string& m) override
+        { notices.emplace_back(c, m); return true; }
         void sendGameEvent(unsigned int id, GameEvent* event) override
         {
             check(id == 0xFFFFFFFFu && event->getType() == 20, "client radio transport contract");
@@ -316,8 +374,8 @@ int main()
     players->local = players->speaker = remoteHuman;
     game = client;
     reviveCallout(remoteHuman);
-    check(client->bypass && remoteHuman->getRadioSpamFlagCount() == 0 && client->sent.size() == 1,
-          "local-human revive through GameClient is uncounted");
+    check(!client->bypass && remoteHuman->getRadioSpamFlagCount() == 1 && client->sent.size() == 1,
+          "local-human revive through GameClient charges submission");
 
     // The server's remote-human arm and the client's actual HUD dispatcher use the
     // same notification payload as retail. No local playback is allowed by the observer.
@@ -331,10 +389,9 @@ int main()
           && notification->m_payloadBitSize == 36 && channel == TCLocal,
           "remote revive payload carries TCLocal at byte 32");
     game = client; players->local = players->speaker = remoteHuman;
-    auto* hud = new hud::BF2HudManager;
     hud->handleEvent(ECHud, 51, nullptr, notification->m_payload);
-    check(client->bypass && remoteHuman->getRadioSpamFlagCount() == 0 && client->sent.size() == 2,
-          "remote client's HUD revive is uncounted on its own side");
+    check(!client->bypass && remoteHuman->getRadioSpamFlagCount() == 2 && client->sent.size() == 2,
+          "HUD event 51 charges the client's counter with bypass false");
     auto* sent = client->sent.back();
     check(sent->m_messageId == reviveId && sent->m_senderId == 42 && sent->m_field0F == 0
           && sent->m_channel == TCLocal && sent->m_type == 3, "revive wire fields stay retail");
@@ -342,24 +399,38 @@ int main()
     RadioMessageReceivedEvent received(42, sent->m_messageId, sent->m_senderId, sent->m_team,
                                        sent->m_field0F, sent->m_channel, sent->m_type);
     server->handleRadioMessageReceivedEvent(&received, nullptr);
-    check(player->getRadioSpamFlagCount() == 0 && remoteHuman->getRadioSpamFlagCount() == 0,
-          "client and server both leave revive uncounted");
+    check(player->getRadioSpamFlagCount() == 1 && remoteHuman->getRadioSpamFlagCount() == 2,
+          "client submission and server relay charge their own revive counters");
     game = client; players->local = players->speaker = remoteHuman;
+    remoteHuman->resetSpamFilter();
     client->radioMessage(TCLocal, "get_up", remoteHuman, 0, false, false);
     check(!client->bypass && remoteHuman->getRadioSpamFlagCount() == 1,
           "manual client get_up still charges submission");
     client->radioMessage(TCTeam, "roger_that", remoteHuman, 0, false, false);
     check(remoteHuman->getRadioSpamFlagCount() == 2, "manual client radio still counts");
     char other[36] = {};
+    channel = TCTeam;
     std::strcpy(other, "roger_that"); std::memcpy(other + 32, &channel, sizeof channel);
     hud->handleEvent(ECHud, 51, nullptr, other);
-    check(!client->bypass && remoteHuman->getRadioSpamFlagCount() == 3,
-          "other HUD radio notifications still count");
+    check(!client->bypass && remoteHuman->getRadioSpamFlagCount() == 3
+          && client->sent.back()->m_channel == TCTeam,
+          "other HUD radio notifications count and read the payload channel");
     client->radioMessage(TCTeam, "roger_that", remoteHuman, 0, false, false);
     const auto clientSent = client->sent.size();
     client->radioMessage(TCTeam, "roger_that", remoteHuman, 0, false, false);
     check(client->sent.size() == clientSent && remoteHuman->getRadioSpamBlockedFlagCount() > 0,
           "manual client radio remains blocked at the limit");
+    client->observeLocalRefusal = true;
+    const int hudNotices = hud->notices;
+    hud->handleEvent(ECHud, 51, nullptr, notification->m_payload);
+    check(!client->bypass && client->sent.size() == clientSent
+          && remoteHuman->getRadioSpamFlagCount() == 4,
+          "blocked HUD event 51 submits no revive speech event");
+    check(client->notices.size() == 1 && client->notices.back().first == 14
+          && client->notices.back().second == "spam", "blocked client gets spam on channel 14");
+    check(hud->notices == hudNotices + 1 && hud->seconds == config.radioBlockedDuration + 1
+          && hud->team == remoteHuman->getTeam() && hud->text == L"Blocked for 32 second(s).",
+          "blocked client gets the HUD spam line with remaining seconds");
     game = server; players->local = nullptr; players->speaker = player;
 #endif
     config.radioMaxSpamFlagCount = 6;
