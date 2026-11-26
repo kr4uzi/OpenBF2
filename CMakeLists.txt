@@ -3356,6 +3356,8 @@ if(BUILD_TESTING AND MSVC)
             bf2_swiff_queued_mouse_check
             bf2_antialiasing_policy_check
             bf2_glyph_pixel_snap_check
+            bf2_terrain_shader_source_check
+            bf2_online_services_check
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         USES_TERMINAL
         VERBATIM
