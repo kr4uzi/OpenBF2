@@ -18,7 +18,6 @@
 #include "../BF2/Game/GameEvents/SupplyDropEvent.h"
 #include "../BF2/Game/GameEvents/DropVehicleEvent.h"
 #include "../BF2/Game/Objects/Game/SupplyDropManager.h"
-#include "../BF2/Game/Main/Game.h"
 
 using EngineSquadManager = dice::hfe::SquadManager;
 using AISquadManager = dice::hfe::ai::SquadManager;
@@ -27,11 +26,6 @@ int checks, broadcasts, aiEvents, hudLeader, hudCommander, assetCalls, warnings;
 int remoteLeader, remoteCommander, assetType, assetTeam, assetSquad;
 int authorized[4]{};
 bool guns = true;
-bool dedicatedMode = false;
-int humanCount = 1;
-std::string mapMode = "sp1";
-struct Grant { int type; int team; Vec2 position; };
-std::vector<Grant> pendingGrants;
 Vec2 assetPosition;
 double gameTime = 100;
 std::string trace;
@@ -77,7 +71,6 @@ void remote(int id, GameEvent* event)
 SAI* activeSAI(int side) { check(side == 2, "courier team"); return policy; }
 double now() { return gameTime; }
 bool artilleryAvailable() { return guns; }
-const std::string& currentGameMode() { return mapMode; }
 void useAsset(int type, int team, int squad, Vec2 position)
 {
     ++assetCalls;
@@ -86,47 +79,9 @@ void useAsset(int type, int team, int squad, Vec2 position)
     assetSquad = squad;
     assetPosition = position;
     trace += 'A';
-    pendingGrants.push_back(Grant{type, team, position});
-}
-
-// The engine commander queues these events for a later update with local sender -1.
-static void dispatchGrants()
-{
-    for (const auto& grant : pendingGrants) {
-        switch (grant.type) {
-        case 0: {
-            ArtilleryEvent event;
-            event.m_team = grant.team;
-            event.m_artilleryType = ArtilleryEvent::ArtilleryTypeRequestFire;
-            event.m_target = grant.position;
-            event.executeServer(-1);
-            break;
-        }
-        case 1: {
-            UAVEvent event(grant.position.x, grant.position.y, grant.team, false);
-            event.executeServer(-1);
-            break;
-        }
-        case 2: {
-            DropVehicleEvent event(grant.position.x, grant.position.y, grant.team, false);
-            event.executeServer(-1);
-            break;
-        }
-        case 3: {
-            SupplyDropEvent event(grant.position.x, grant.position.y, grant.team);
-            event.executeServer(-1);
-            break;
-        }
-        default: unexpected("queued asset type");
-        }
-    }
-    pendingGrants.clear();
 }
 
 namespace dice { namespace hfe {
-#if !DEDICATED
-bool isDedicated() { return dedicatedMode; }
-#endif
 IGame* game = nullptr;
 EventManager* eventManager = nullptr;
 SettingsRepostitory* settings = nullptr;
@@ -141,9 +96,6 @@ Squad* EngineSquadManager::getSquad(int team, int squad)
 EventManager::EventManager() {}
 EventManager::~EventManager() {}
 namespace world {
-PlayerManager* playerManager = nullptr;
-PlayerManager::PlayerManager() {}
-PlayerManager::~PlayerManager() {}
 ArtilleryManager* artilleryManager = nullptr;
 SupplyDropManager* supplyDropManager = nullptr;
 ArtilleryManager::ArtilleryManager() : m_handlers{} {}
@@ -194,8 +146,6 @@ AISquadManager::SquadManager() {}
 AISquadManager::~SquadManager() {}
 void AISquadManager::incomingArtillery(Vec3, int side)
 { check(side == 2, "artillery warning team"); ++warnings; }
-void AISquadManager::unAssignSquads(int side)
-{ check(side == 2, "commander resignation unassigns the team's squads"); }
 } } }
 
 struct ObservedAI : IAIInstance {
@@ -248,9 +198,6 @@ struct Bus : EventManager {
 };
 struct Policy : SAI { Policy() : SAI(2, 0, 0, Vec2{}, Vec2{}) {} };
 struct Courier : AIEventCourier {};
-struct ObservedPlayers : world::PlayerManager {
-    int getNumberOfHumanPlayers() const override { return humanCount; }
-};
 
 int main()
 {
@@ -271,8 +218,6 @@ int main()
     world::ArtilleryManager artillery;
     world::ArtilleryHandler battery(2);
     world::SupplyDropManager supplies;
-    ObservedPlayers players;
-    world::playerManager = &players;
     artillery.m_handlers[1] = &battery;
     world::artilleryManager = &artillery;
     world::supplyDropManager = &supplies;
@@ -329,7 +274,7 @@ int main()
           "no surviving guns queues artillery unavailable");
     guns = true;
     manager.commander = 11;
-    strategy.setPlayerIsCommander(true);
+    strategy.m_flag1D1 = true;
     trace.clear();
     manager.issueRequest(2, 3, request, false);
     check(trace == "BILC" && remoteCommander == 11 && assetCalls == 4,
@@ -368,13 +313,13 @@ int main()
     squad.m_leaderPlayerId = -1;
     manager.issueRequest(2, 3, request, false);
     check(trace == "B", "leaderless squad has no AI request");
-    // Only local AI dispatch gains authority while the commander seat is empty.
+    // The shipped local dispatch passes -1; the asset event compares its low byte
+    // against the full commander ID. Do not silently turn that into an authorization bypass.
     UAVEvent uav(123, 678, 2, false);
     trace.clear();
     uav.executeServer(-1);
-    check(trace == (DEDICATED ? "" : "U"), "only single player accepts the local AI UAV grant");
+    check(trace.empty(), "empty commander (-1) differs from local sender byte 255");
     manager.commander = 11;
-    trace.clear();
     uav.executeServer(11);
     check(trace == "U", "assigned commander can launch UAV");
     ArtilleryEvent fire;
@@ -385,59 +330,23 @@ int main()
     DropVehicleEvent vehicle(123, 678, 2, false);
     UAVEvent scan(123, 678, 2, true);
     GameEvent* requests[] = {&fire, &uav, &vehicle, &supply};
-    struct Session { const char* mode; int humans; bool dedicated; bool singlePlayer; };
-    const Session sessions[] = {
-        {"sp1", 1, false, true}, {"sp2", 1, false, true}, {"sp3", 1, false, true},
-        {"SP1", 1, false, true}, {"Sp2", 1, false, true}, {"sP3", 1, false, true},
-        {"gpm_coop", 1, false, false}, {"GPM_COOP", 2, false, false},
-        {"gpm_cq", 1, false, false}, {"sp1", 2, false, false}, {"sp1", 0, false, false},
-        {"sp1", 1, true, false}, {"sp2", 1, true, false}, {"sp3", 1, true, false},
-        {"gpm_coop", 1, true, false}, {"sp10", 1, false, false}, {"", 1, false, false},
-    };
-    for (const auto& session : sessions) {
-        mapMode = session.mode;
-        humanCount = session.humans;
-        dedicatedMode = session.dedicated;
-        for (int commander : {-1, 11, 255}) {
-            manager.commander = commander;
-            for (int sender : {-257, -1, 0, 7, 11, 255, 267, 511}) {
-                for (int type = 0; type < 4; ++type) {
-                    const int before = authorized[type];
-                    requests[type]->executeServer(sender);
-                    const bool expected = commander == static_cast<unsigned char>(sender)
-                        || (!DEDICATED && session.singlePlayer && commander == -1 && sender == -1
-                            && type != 2);
-                    check(authorized[type] - before == (expected ? 1 : 0),
-                          "retail authority except local single-player grants for three assets");
-                }
+    for (int commander : {-1, 11, 255}) {
+        manager.commander = commander;
+        for (int sender : {-257, -1, 0, 7, 11, 255, 267, 511}) {
+            for (int type = 0; type < 4; ++type) {
+                const int before = authorized[type];
+                requests[type]->executeServer(sender);
+                const bool expected = commander == static_cast<unsigned char>(sender);
+                check(authorized[type] - before == (expected ? 1 : 0),
+                      "retail authorization compares full commander with sender byte");
             }
         }
     }
-    mapMode = "sp1";
-    humanCount = 1;
-    dedicatedMode = false;
     // A scan is not an AI asset request and remains refused without a commander.
     manager.commander = -1;
     trace.clear();
     scan.executeServer(-1);
     check(trace.empty(), "no automatic scan without a commander");
-    // Missing session data cannot turn a local AI sender into a commander.
-    const int beforeMissingGame = authorized[0] + authorized[1] + authorized[3];
-    game = nullptr;
-    uav.executeServer(-1);
-    fire.executeServer(-1);
-    supply.executeServer(-1);
-    check(trace.empty() && authorized[0] + authorized[1] + authorized[3] == beforeMissingGame,
-          "missing game refuses the local AI grant");
-    game = &transport;
-    world::playerManager = nullptr;
-    const int beforeMissingPlayers = authorized[0] + authorized[1] + authorized[3];
-    uav.executeServer(-1);
-    fire.executeServer(-1);
-    supply.executeServer(-1);
-    check(authorized[0] + authorized[1] + authorized[3] == beforeMissingPlayers,
-          "missing player manager refuses the local AI grant");
-    world::playerManager = &players;
     strategy.m_flag1D1 = false;
     strategy.m_time68 = strategy.m_time70 = strategy.m_time78 = strategy.m_time80 = 500;
     gameTime = 500;
@@ -459,54 +368,5 @@ int main()
     check(strategy.m_time80 == gameTime + 30 && strategy.m_time68 == gameTime + 60
           && strategy.m_time70 == gameTime + 60 && strategy.m_time78 == gameTime + 60,
           "independent cooldowns rearm from the grant time");
-
-    // Carry the same ready AI request through the asset events in each kind of session.
-    // Initial/resumed waits are 10 seconds for UAV and 60 seconds for other assets.
-    for (const auto& session : sessions) {
-        mapMode = session.mode;
-        humanCount = session.humans;
-        dedicatedMode = session.dedicated;
-        manager.commander = -1;
-        for (int type = 0; type < 4; ++type) {
-            pendingGrants.clear();
-            gameTime = 1000;
-            strategy.setPlayerIsCommander(true);
-            strategy.setPlayerIsCommander(false);
-            check(strategy.m_time80 == 1010 && strategy.m_time68 == 1060 &&
-                  strategy.m_time70 == 1060 && strategy.m_time78 == 1060,
-                  "commander resignation restarts the initial waits");
-            request.orderId = type;
-            gameTime = type == 1 ? 1010 : 1060;
-            const int callsBefore = assetCalls;
-            const int authorityBefore = authorized[type];
-            manager.issueRequest(2, 3, request, false);
-            dispatchGrants();
-            check(assetCalls == callsBefore && authorized[type] == authorityBefore,
-                  "initial wait refuses at its exact deadline");
-            gameTime += 0.01;
-            manager.issueRequest(2, 3, request, false);
-            check(assetCalls == callsBefore + 1 && authorized[type] == authorityBefore,
-                  "ready AI grant queues before asset dispatch");
-            dispatchGrants();
-            const bool delivered = !DEDICATED && session.singlePlayer && type != 2;
-            check(authorized[type] == authorityBefore + (delivered ? 1 : 0),
-                  "ready grants reach three asset managers only in single player");
-            manager.issueRequest(2, 3, request, false);
-            dispatchGrants();
-            check(assetCalls == callsBefore + 1,
-                  "accepted and refused grants both keep retail cooldown rearming");
-        }
-        manager.commander = 11;
-        strategy.setPlayerIsCommander(true);
-        gameTime = 2000;
-        const int callsBefore = assetCalls;
-        for (int type = 0; type < 4; ++type) {
-            request.orderId = type;
-            manager.issueRequest(2, 3, request, false);
-        }
-        check(assetCalls == callsBefore && pendingGrants.empty(),
-              "human commander disables every automatic asset in every session");
-    }
-    std::printf("PASS %d checks: requests, waits, single-player grants, dedicated/co-op refusal, human commander\n",
-                checks);
+    std::printf("PASS %d checks: requests, AI policy, human commander, coop and asset authority\n", checks);
 }

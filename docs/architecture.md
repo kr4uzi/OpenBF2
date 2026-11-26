@@ -203,24 +203,18 @@ delivery. An assigned commander's ECHud/29 notification follows the leader's not
 This ordering is shared by client and dedicated images (`BF2.exe` 0x4E60F0, dedicated PE
 0x45E710, Linux x86 ELF 0x0811DAE0).
 
-The retail asset-authorization rule compares the sender's low byte with the full commander
-ID. The AI's local sender -1 becomes 255 and fails against an empty commander slot (-1).
-The retail fix [AI asset grants work in single player](retail-fixes.md#ai-asset-grants-work-in-single-player)
-also accepts the local sender -1 for UAV, artillery and supplies while that slot is empty,
-only on a non-dedicated host with exactly one human and current map mode `sp1`, `sp2` or
-`sp3` (case-insensitive). Dedicated servers, multiplayer co-op and sessions with additional
-humans keep retail authorization. Vehicle drops and scans retain retail authorization.
-The AI rearms UAV requests for 30 seconds and other requests for 60 seconds,
-queues cooldown refusals for 2–5 seconds later, requires
+The retail asset-authorization rule still compares the sender's low byte with the full
+commander ID. The AI's local sender -1 becomes 255 and fails against an empty commander
+slot (-1). Restoring request delivery therefore restores AI handling and HUD feedback,
+but does not authorize assets without a commander. The AI rearms UAV requests for 30 seconds
+and other requests for 60 seconds, queues cooldown refusals for 2–5 seconds later, requires
 surviving artillery, and suspends automatic handling while a human commands the team.
 
 After configuring a macOS build, run
 `python3 Code/Tests/commander_requests_runtime.py out/build/<directory>` for headless checks
-with both image defines. The fixture executes production request, listener, courier, policy,
-commander-state and asset-event code with synthetic squads, transport, player counts, clock
-and asset observers. It checks grants after the initial/resumed waits, cooldowns, surviving
-guns, human commanders, and dedicated/co-op/multiple-human refusal. It does not start a game
-or validate asset creation in a level.
+with both image defines. The fixture executes production request, listener, courier, policy
+and asset-event code with synthetic squads, transport, clock and asset observers; it does
+not start a game or validate asset creation in a level.
 
 ## Client audio defaults
 
