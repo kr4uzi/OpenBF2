@@ -123,7 +123,6 @@ AIStrategicArea::AIStrategicArea(const std::string& name, Vec2 topLeft, Vec2 cen
 
 // ELF 0x335B70 (C2; C1 0x335E70).
 // Creates a control-point area with an unset-height sentinel and one record per pathfinding map.
-
 AIStrategicArea::AIStrategicArea(const std::string& name, unsigned int controlPointId, float radius)
     : AIStrategicObject(radius, -666.0f)
     , m_list268()
