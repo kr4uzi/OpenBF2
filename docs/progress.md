@@ -7,9 +7,9 @@ This page is generated from the repository's five function ledgers by `python3 t
 | Part | Retail image | Functions | Functions with a source body | Deliberate replacements | Stops | Library or compiler code | Open functions | Open share of retail bytes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Bot AI | libaidll.so | 12,170 | 10,961 | 0 | 0 | 1,209 | 0 | 0.0% |
-| Renderer | RendDX9.dll | 9,762 | 5,679 | 88 | 3 | 76 | 3,916 | 25.7% |
+| Renderer | RendDX9.dll | 9,762 | 5,678 | 88 | 3 | 76 | 3,917 | 25.8% |
 | Menu player | SwiffPlayer.dll | 2,168 | 1,940 | 85 | 3 | 0 | 140 | 1.0% |
-| Server network, files, console | bf2 | 1,882 | 1,453 | 3 | 6 | 0 | 420 | 18.7% |
+| Server network, files, console | bf2 | 1,882 | 1,434 | 4 | 2 | 0 | 442 | 18.6% |
 | Client program | BF2.exe | 39,197 | Not measured | 29 | Not measured | 2,671 | 19,234 | 44.1% |
 
 Key (the ledgers' own words):
@@ -27,10 +27,10 @@ Recorded ledger revisions (generation hashes, not a claim of current-source cove
 
 | Part | Recorded revision |
 | --- | --- |
-| Bot AI | `265d41e5` |
-| Renderer | `6aa73920` |
+| Bot AI | `6f2fb0c1` |
+| Renderer | `6f2fb0c1` |
 | Menu player | unknown |
-| Server network, files, console | `f17066f6` |
+| Server network, files, console | `6f2fb0c1` |
 | Client program | `e976b82b` |
 
 ## Renderer open rows by attribution
@@ -47,8 +47,8 @@ Only current RendDX9.dll `todo` rows are joined to the attribution table by addr
 | compiler | 1,322 | 24,779 |
 | editor | 0 | 0 |
 | missing | 2,353 | 362,342 |
-| No attribution class | 3 | 285 |
-| Total | 3,916 | 432,113 |
+| No attribution class | 4 | 1,626 |
+| Total | 3,917 | 433,454 |
 
 `missing` means unexplained so far; it has not been shown to be unwritten code.
 
