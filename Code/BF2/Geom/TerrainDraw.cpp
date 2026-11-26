@@ -14,7 +14,6 @@
 #include <string>
 #include "Terrain.h"
 #include "QuadPatch.h"
-#include "TerrainColourPassBias.h"
 #include "XpLightManager.h"
 #include "StaticMesh.h"
 #include "../Game/Objects/Visual/LightSource.h"   // the mask-light pass's lights
@@ -208,7 +207,7 @@ void Terrain::update()
     updateWaterConstants();                                               // vslot +0xE0
 }
 
-// Draws the main terrain, water and terrain colour before world objects.
+// Draws the main terrain and water before world objects (PE 0x100E0E50).
 void Terrain::renderWorldPassBegin()
 {
     dx9rend::stateManagerPush();
@@ -218,20 +217,15 @@ void Terrain::renderWorldPassBegin()
         drawMain();
     if (m_flag35A)
         drawWater();                                                      // vslot +0xD8
-    // [CHOSEN, not recovered] Retail fix "Terrain colour passes no longer leave black patches
-    // in the middle distance" (docs/retail-fixes.md). Retail renderWorldPassBegin (PE 0x100E0E50)
-    // ends after drawWater; renderWorldPassEnd (0x100E10C0) draws colour after world objects.
-    // Finish it here so biased additive colour cannot land on objects touching the ground.
-    // Keep water before the underwater pass 14.
-    if (m_drawMain)
-        drawFinal();
     dx9rend::stateManagerPop();
 }
 
-// Draws the surrounding ring after world objects.
+// Draws the terrain colour passes and surrounding ring after world objects (PE 0x100E10C0).
 void Terrain::renderWorldPassEnd()
 {
     dx9rend::stateManagerPush();
+    if (m_drawMain)
+        drawFinal();
     if (m_flag359 && m_surroundingBuilt)
         drawSurrounding();
     dx9rend::stateManagerPop();
@@ -1545,18 +1539,6 @@ void Terrain::drawFinal()
     if (dx9rend::rendererGetHemiRenderMode() == 4)
         dx9rend::stateManagerClear(1u, 0x808080u, 0.0f, 0u);             // sub_100057E0(1, 8421504, ...)
     lightManagerRestoreRendererTarget0();
-    // [CHOSEN, not recovered] Retail fix "Terrain colour passes no longer leave black patches in
-    // the middle distance" (docs/retail-fixes.md). The colour passes test LESSEQUAL, without
-    // depth writes, against the depth pass 0 (ZFillLightmap) wrote with another vertex shader.
-    // Where a colour pass lands a few depth units behind that depth, the pixel keeps the cleared
-    // back buffer. The exact source of the difference has not been isolated (the two shaders do
-    // not spell the position the same way: FullDetail adds vScaleTransY.zw). QuadPatch::drawFinal
-    // applies -1e-6 within 60 m of each node's bounds, scaled by (60/d)^2 beyond. This covers the
-    // measured middle-distance gap while bounding the world-space offset at distance.
-    // Distance uses m_cameraPosition, the frame's camerapos
-    // shader constant. The cache spans this patch loop; only these terrain draws carry the bias,
-    // reset to the world value 0 before world objects, the surrounding ring and later passes.
-    terrainResetColourPassBiasCache();
     TerrainCullerNode** it = list->data();
     while (it != list->data() + list->size())
     {
@@ -1565,7 +1547,6 @@ void Terrain::drawFinal()
         param(m_hTexLayer[5])->setValue(patch->lowDetailmap, 0);
         patch->drawFinal(it);                                             // sub_1018C910, advances `it`
     }
-    dx9rend::stateManagerSetRenderState(195u, 0u);                        // D3DRS_DEPTHBIAS, world value
     dx9rend::effectEnd(m_effect);
 }
 

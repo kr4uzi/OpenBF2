@@ -2691,8 +2691,8 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\D3D9Forward\GeneratedNative\ForwardWrappers.cpp"
 if errorlevel 1 set /a RC+=1
 
-rem Headless terrain colour-pass retail-fix policy check (client image).
-cl %FLAGS0% "%~dp0terrain_colour_pass_bias.cpp"
+rem Content-free terrain shader source correction check (client image).
+cl %FLAGS0% "%~dp0terrain_shader_source.cpp"
 if errorlevel 1 set /a RC+=1
 
 if %RC%==0 (echo ALL OK) else (echo *** %RC% FILE^(S^) FAILED ***)
