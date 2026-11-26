@@ -39,7 +39,8 @@ it up later; the AI subproject's matching-build plan (kept outside the repositor
    `tools/ai-reconstruct/build_ledger.py`), and a progress log (a dated line per merge, running agents, next
    items) with the track's other notes outside the repository (rule 11). On resume: read this README and the
    track's start brief, progress log and hand-off notes; check `git worktree list` for unmerged
-   `<track>-*` worktrees; continue.
+   `<track>-*` worktrees; continue. The [client review ledger](client/ledger.csv) records client-behaviour
+   verdicts, and the generated [progress page](../progress.md) combines all five function ledgers.
 6. **Gates before you report a state green:**
    - Build in your worktree: `cmake --build out/build/<track> --target bf2_client bf2 bf2_aidll bf2_vtable_audit`
      (configure like the integration build, incl. `-DBF2_FX_NATIVE_DEPS=<nativefx build>` (see

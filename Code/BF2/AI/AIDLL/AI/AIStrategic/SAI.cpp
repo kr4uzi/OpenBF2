@@ -453,7 +453,7 @@ void SAI::addStrategy(Strategy* strategy)
     m_activeStrategy = &m_strategies[0];
 }
 
-// One resumable pass, with a budget check after each
+// ELF 0x327E90. One resumable pass, with a budget check after each
 // advancing stage. Equality and NaN pass the budget check; state 4's frequency gate instead
 // requires an ordered strict greater-than. The prefix always runs, even for exhausted budgets.
 // State 5 and 16..18 are holes. The scheduled helpers retain their own named frontiers.

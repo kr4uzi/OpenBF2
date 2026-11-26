@@ -1,0 +1,182 @@
+kind,file,line,function,note
+abort,Code/BF2/Animation/BoneAnimation/RagDoll.cpp,413,RagDoll::getCollidingObjects,
+abort,Code/BF2/Animation/BoneAnimation/RagDoll.cpp,1604,RagDoll::getCenter,
+abort,Code/BF2/Animation/BoneAnimation/RagDoll.cpp,1615,RagDoll::applyOnSkeleton,
+abort,Code/BF2/Animation/BoneAnimation/RagDollTemplate.cpp,128,RagDollTemplate::~RagDollTemplate,
+abort,Code/BF2/Animation/BoneAnimation/RagDollTemplate.cpp,316,RagDollTemplate::addParticle,
+abort,Code/BF2/Animation/BoneAnimation/Skeleton.cpp,722,stagingIndexIsSane,
+abort,Code/BF2/Animation/BoneAnimation/Skeleton.cpp,865,Skeleton::buildApplyAnimationData,
+abort,Code/BF2/Core/Debug.cpp,41,Debug::~Debug,
+abort,Code/BF2/Core/Debug.cpp,140,internal_debugCallback,
+abort,Code/BF2/Core/ModuleRegistry.cpp,1545,AIInterfaceModule::initAIConnection,
+abort,Code/BF2/Core/MsvcCrtCompat.h,186,sprintf_s,
+abort,Code/BF2/Game/Common/ServerConnection.cpp,122,enableObject,
+abort,Code/BF2/Game/Common/ServerConnection.cpp,269,ServerConnection::clientSendDatabase,
+abort,Code/BF2/Game/EndOfRoundInfo.cpp,131,EndOfRoundInfo::setFromDataBlock,
+abort,Code/BF2/Game/EndOfRoundInfo.cpp,236,EndOfRoundInfo::updateNetBuffer,
+abort,Code/BF2/Game/GameLogic/GameLogic.cpp,2065,GameLogic::resetAllObjects,
+abort,Code/BF2/Game/GameLogic/GameLogic.cpp,2145,GameLogic::reset,
+abort,Code/BF2/Game/GameLogic/Player.cpp,1453,getCommanderCameraForPlayer,
+abort,Code/BF2/Game/GameLogic/Player.cpp,1954,Player::handleFrameUpdate,// [FRONTIER] Specialized weapon components remain incomplete (RW-6b);
+abort,Code/BF2/Game/GameLogic/SpawnSystem/SpawnManager.cpp,151,SpawnManager::getCreateSpawnGroup,
+abort,Code/BF2/Game/GameLogic/SquadManager/CommanderManager.cpp,338,commanderCameraInvariantFailure,
+abort,Code/BF2/Game/GameServer/GameServer.cpp,1913,GameServer::shutdown,
+abort,Code/BF2/Game/GameServer/GameServer.cpp,3687,GameServer::enterVehicle,
+abort,Code/BF2/Game/GameServer/GameServer.cpp,3927,GameServer::destroyPlayer,
+abort,Code/BF2/Game/GameServer/VoipServerConnection.cpp,59,voipPacketInvariantFailure,
+abort,Code/BF2/Game/Objects/Game/EngineBase.cpp,163,EngineBase::disableCachedObject,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,37,findTemplateChildsOfType,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,225,Kit::init,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,307,Kit::updateUnlockStatus,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,384,Kit::handlePickup,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,435,Kit::handleDrop,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,458,Kit::enableItem,
+abort,Code/BF2/Game/Objects/Game/Kit.cpp,533,Kit::initNetworkableComp,
+abort,Code/BF2/Game/Objects/Game/KitTemplate.cpp,117,KitTemplate::setAbilityRestoreRate,
+abort,Code/BF2/Game/Objects/Game/ObjectSpawner.cpp,266,ObjectSpawner::getCollisionMesh,
+abort,Code/BF2/Game/Objects/Game/PlayerControlObject.cpp,427,PlayerControlObject::disableCachedObject,
+abort,Code/BF2/Game/Objects/Game/PlayerControlObject.cpp,1709,PlayerControlObject::updateTeam,
+abort,Code/BF2/Game/Objects/Game/PlayerControlObject.cpp,2268,PlayerControlObject::enter,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,782,Soldier::disableCachedObject,resetInstance(); // [FRONTIER]
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,819,Soldier::initNetworkableComp,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,1271,Soldier::getPoseCameraPosition,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,1463,Soldier::getMovementMatrix,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,1701,Soldier::resetInstance,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,2065,Soldier::handleUpdate,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,2841,Soldier::pickupKit,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,2909,Soldier::dropKit,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,3362,Soldier::handleMessage,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,3570,Soldier::updateSpeedState,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,3645,Soldier::getMouseSpeedMod,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,3838,Soldier::updateSoldierSpeed,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,3933,Soldier::updateCameraTransformation,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,4016,Soldier::handlePlayerInput,
+abort,Code/BF2/Game/Objects/Game/Soldier.cpp,4397,Soldier::onEnter,findInverseKinamaticObject(); // [FRONTIER]
+abort,Code/BF2/Game/Objects/Game/TriggerableTarget.cpp,99,TriggerableTarget::initNetworkableComp,
+abort,Code/BF2/Game/Objects/GameLogicComp/ArmorGLComp.cpp,1939,ArmorGLComp::setSoldierIsRevived,
+abort,Code/BF2/Game/Objects/MaskObjectTemplate.cpp,45,MaskObjectTemplate::makeScript,
+abort,Code/BF2/Game/Objects/Networkables/PlayerControlObjectNetworkable.cpp,216,PlayerControlObjectNetworkable::getNetUpdate,
+abort,Code/BF2/IO/Network/NetworkManager.cpp,94,NetworkManager::clear,
+abort,Code/BF2/IO/Network/ProtocolLayer/NetClient.cpp,1020,NetClient::stopReceiveThread,
+abort,Code/BF2/Menu/ProfileConsoleBindings.cpp,260,ProfileConsoleBinding::isObjectActive,
+abort,Code/BF2/Physics/CollisionMeshTemplate.cpp,232,CollisionMeshTemplate::load,
+abort,Code/BF2/Physics/Heightmap.cpp,250,Heightmap::getMaterialFromGrid,
+abort,Code/BF2/Physics/IPhysicsNode.cpp,26,IPhysicsNode::~IPhysicsNode,
+abort,Code/BF2/Physics/MaterialManager.cpp,102,MaterialManager::removeMaterial,
+abort,Code/BF2/Physics/MaterialManager.cpp,315,MaterialManager::setAttMaterial,
+abort,Code/BF2/Physics/MaterialManager.cpp,338,MaterialManager::setDefMaterial,
+abort,Code/BF2/Physics/ResponsePhysicsManager.cpp,437,ResponsePhysicsManager::checkPointObjectVsObjects,
+abort,Code/BF2/Physics/SoldierResponse.cpp,1163,SoldierResponsePhysics::checkSoldierVsPoint,
+abort,Code/BF2/Scene/Object/Object.cpp,119,objectLifecycleInvariantFailure,
+abort,Code/BF2/Scene/Object/Object.cpp,1181,Object::getVisualBoundingRadius,
+abort,Code/BF2/Scene/Object/ObjectCache.cpp,29,ObjectCache::pushObject,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,591,ObjectManager::initGrid,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,1277,ObjectManager::getObjectsFromGridWithLatency,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2258,ObjectManager::destroyObject,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2330,ObjectManager::deleteAllRegisteredObjects,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2566,ObjectManager::addObjectToDestroyList,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2678,ObjectManager::createObject,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2822,ObjectManager::addObjectToCuller,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2877,ObjectManager::updateObjectInCuller,
+abort,Code/BF2/Scene/Object/ObjectManager.cpp,2930,ObjectManager::~ObjectManager,
+abort,Code/BF2/Scene/Object/QuadTreeCuller.cpp,140,QuadTreeCuller::initQuadTree,
+decl,Code/BF2/Animation/BoneAnimation/BoneAnimation.h,36,BoneAnimation::load,defined at Code/BF2/Animation/BoneAnimation/BoneAnimation.cpp:104
+decl,Code/BF2/Animation/BoneAnimation/BoneAnimation.h,37,BoneAnimation::reload,defined at Code/BF2/Animation/BoneAnimation/BoneAnimation.cpp:211
+decl,Code/BF2/Animation/BoneAnimation/BoneAnimation.h,57,BoneAnimation::getValue,defined at Code/BF2/Animation/BoneAnimation/BoneAnimation.cpp:279
+decl,Code/BF2/Animation/BoneAnimation/RagDoll.h,87,RagDoll::drawDebugLine,defined at Code/BF2/Animation/BoneAnimation/RagDoll.cpp:910
+decl,Code/BF2/Animation/BoneAnimation/RagDoll.h,93,RagDoll::drawConstraints,defined at Code/BF2/Animation/BoneAnimation/RagDoll.cpp:917
+decl,Code/BF2/Game/Common/GameEventManager.h,52,GameEventManager::transmit,defined at Code/BF2/Game/Common/GameEventManager.cpp:178
+decl,Code/BF2/Game/Common/GameEventManager.h,55,GameEventManager::setConnectionId,defined at Code/BF2/Game/Common/GameEventManager.cpp:368
+decl,Code/BF2/Game/GameLogic/Player.cpp,104,PlayerVOHelp::PlayerVOHelp,defined at Code/BF2/Game/GameLogic/PlayerVOHelp.cpp:177
+decl,Code/BF2/Game/GameLogic/Player.h,129,Player::setFreeCameraEnabled,defined at Code/BF2/Game/GameLogic/Player.cpp:1643
+decl,Code/BF2/Game/GameLogic/Player.h,312,Player::setNetUpdate,defined at Code/BF2/Game/GameLogic/Player.cpp:795
+decl,Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.h,72,SpawnGroup::updateStateMask,defined at Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.cpp:280
+decl,Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.h,73,SpawnGroup::getNetUpdate,defined at Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.cpp:317
+decl,Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.h,74,SpawnGroup::setNetUpdate,defined at Code/BF2/Game/GameLogic/SpawnSystem/SpawnGroup.cpp:374
+decl,Code/BF2/Game/Objects/Base/Camera.h,89,Camera::disableCachedObject,defined at Code/BF2/Game/Objects/Base/Camera.cpp:1563
+decl,Code/BF2/Game/Objects/DestroyableObjectTemplate.h,25,DestroyableObjectTemplate::createObject,defined at Code/BF2/Game/Objects/DestroyableObjectTemplate.cpp:78
+decl,Code/BF2/Game/Objects/FreeCameraTemplate.h,25,FreeCameraTemplate::createObject,defined at Code/BF2/Game/Objects/PerClassTemplateBodies.cpp:268
+decl,Code/BF2/Game/Objects/Game/DestroyableObject.h,38,DestroyableObject::initNetworkableComp,defined at Code/BF2/Game/Objects/Game/DestroyableObject.cpp:77
+decl,Code/BF2/Game/Objects/Game/Soldier.h,130,Soldier::addItem,"defined at Code/BF2/Game/Objects/Game/Soldier.cpp:2477, Code/BF2/Game/Objects/Game/Soldier.cpp:2498"
+decl,Code/BF2/Game/Objects/Game/Soldier.h,145,Soldier::disableItem,defined at Code/BF2/Game/Objects/Game/Soldier.cpp:2588
+decl,Code/BF2/Game/Objects/SpawnPoint.h,39,SpawnPoint::spawn,defined at Code/BF2/Game/Objects/SpawnPoint.cpp:172
+decl,Code/BF2/Game/Objects/SpawnPoint.h,43,SpawnPoint::getActive,defined at Code/BF2/Game/Objects/SpawnPoint.cpp:236
+decl,Code/BF2/Game/Objects/Visual/LightSource.h,66,LightSource::copySettings,defined at Code/BF2/Game/Objects/Visual/LightSource.cpp:471
+decl,Code/BF2/Menu/BF2HudManager.h,324,BF2HudManager::applyModeTransition,defined at Code/BF2/Menu/BF2HudManagerEvents.cpp:206
+decl,Code/BF2/Menu/Bf2ButtonNode.h,22,Bf2ButtonNode::updateSelf,defined at Code/BF2/Menu/Bf2ButtonNode.cpp:198
+decl,Code/BF2/Menu/Bf2ButtonNode.h,23,Bf2ButtonNode::paintSelf,defined at Code/BF2/Menu/Bf2ButtonNode.cpp:258
+decl,Code/BF2/Menu/Bf2MenuMapNode.h,248,Bf2MenuMapNode::updateViewBounds,defined at Code/BF2/Menu/Bf2MenuMapNode.cpp:1534
+decl,Code/BF2/Menu/Bf2MenuMapNode.h,414,Bf2MenuMapNode::collectAirstrikeIcon,defined at Code/BF2/Menu/Bf2MenuMapNode.cpp:4650
+decl,Code/BF2/Menu/Bf2MenuMapNode.h,415,Bf2MenuMapNode::collectSuppliesIcon,defined at Code/BF2/Menu/Bf2MenuMapNode.cpp:4672
+decl,Code/BF2/Menu/Bf2MenuMapNode.h,416,Bf2MenuMapNode::collectVehicleDropIcon,defined at Code/BF2/Menu/Bf2MenuMapNode.cpp:4695
+decl,Code/BF2/Menu/BfEditNode.h,17,BfEditNode::getType,defined at Code/BF2/Menu/BfEditNode.cpp:129
+decl,Code/BF2/Menu/BfNewListBoxNode.h,22,BfNewListBoxNode::onEvent1,defined at Code/BF2/Menu/BfNewListBoxNode.cpp:853
+free,Code/BF2/Animation/BoneAnimation/RagDollTemplate.cpp,3,,// Every registered instance. writeConstraints remains a declaration-only [FRONTIER].
+free,Code/BF2/Animation/BoneAnimation/RagDollTemplate.cpp,564,,// [FRONTIER] [RETIRE-WHEN: ragdoll-write-constraints]
+free,Code/BF2/Game/GameClient/GameClient.h,4,,// Live [FRONTIER] stops remain at unrecovered calls; preserve interface declaration order.
+free,Code/BF2/Game/GameClient/GameClient.h,26,,// [FRONTIER] IO/Network/ProtocolLayer/NetClient.cpp is
+free,Code/BF2/Game/GameLogic/Player.h,4,,// [FRONTIER] Unimplemented declarations remain explicit boundaries at their methods.
+free,Code/BF2/Game/Objects/EngineTemplate.h,21,,"// [FRONTIER] - declared, not modelled"
+free,Code/BF2/Game/Objects/Game/RotationalBundle.cpp,469,,// [FRONTIER] rotation machine).
+free,Code/BF2/Game/Objects/Game/Soldier.cpp,4,,"// Keep camera, kit and animation order; remaining [FRONTIER] bodies stay explicit."
+free,Code/BF2/Game/Objects/Game/Soldier.cpp,652,,"// . [FRONTIER] - it unwinds the animation systems, the sound voice, the item"
+free,Code/BF2/Game/Objects/Projectiles/GenericProjectile.cpp,5,,// Specialized client/effect branches retain named [FRONTIER] boundaries.
+free,Code/BF2/Game/Objects/Projectiles/IProjectileObject.h,4,,"// Until then use the primary table, typed owner/lifetime seams or a named [FRONTIER]."
+free,Code/BF2/Game/Objects/RotationalBundleLeaves.h,13,,// ctor 139 B. createObject: new(0x1B8) Wing(this) [FRONTIER].
+free,Code/BF2/Game/Objects/RotationalBundleLeaves.h,40,,// ctor 114 B. createObject: new(0x1B4) FloatingBundle(this) [FRONTIER].
+free,Code/BF2/Game/Objects/SpawnPoint.cpp,211,,"// [FRONTIER] - the spawn-selection engine: getActive (862 B), getObjectToEnter (224 B),"
+free,Code/BF2/Game/Objects/TemplateLeaves.cpp,128,,// size is the ELF's. Declared-unwritten [FRONTIER]: the body would need the object class.
+free,Code/BF2/Game/Objects/Weapons/GenericFireArm.cpp,3,,// Unimplemented reachable behavior stops at a named [FRONTIER].
+free,Code/BF2/Game/SingletonServer.h,3,,// [FRONTIER] [RETIRE-WHEN: nametag-interface-tail] The null implementation's tail differs
+free,Code/BF2/IO/Network/NetworkManager.h,5,,// [FRONTIER] markers identify incomplete paths; registration alone does not prove replication.
+free,Code/BF2/IO/Network/ProtocolLayer/NetClient.cpp,1,,// Client protocol connection. Integer obfuscation is omitted; PunkBuster activation retains a named [FRONTIER] stop.
+free,Code/BF2/Menu/HudVoip.h,41,,"// still a [FRONTIER]): cleared at 750587, set at 750879. Until that lands"
+free,Code/BF2/Physics/Bsp.h,4,,// Loaded and built trees use V8; legacy query arms remain [FRONTIER] where marked.
+free,Code/BF2/Physics/Bsp.h,55,,// [FRONTIER] Legacy closest-face traversal requires its shared Context.
+free,Code/BF2/Physics/Bsp.h,56,,// [FRONTIER] Legacy tree building and persistence remain unimplemented.
+free,Code/BF2/Physics/BspBuilder.h,87,,// [FRONTIER] build2/classification/clipping helpers remain outside the constructor path.
+free,Code/BF2/Physics/CollisionManager.cpp,630,,// (formerly [FRONTIER]); deferred mode only registers. The debug variable controlling eager requests is [UNRESOLVED].
+free,Code/BF2/Physics/CollisionManager.cpp,718,,// The optional pre-v8 save-as-.new tool branch remains [FRONTIER].
+free,Code/BF2/Physics/CollisionMesh.cpp,1,,// Collision-mesh handle implementation. [FRONTIER] Remaining geometry operations
+free,Code/BF2/Physics/GeomUtil.h,3,,// checkSphereAndEdgeCollision remains [FRONTIER]; checkFaceAndSphereCollision remains [FRONTIER].
+free,Code/BF2/Physics/HeightmapConsole.cpp,170,,// [FRONTIER] compileWaterMeshesIntoHeightmap (BF2.exe 0x6DF674/0x6DF6D2) stays
+free,Code/BF2/Physics/PhysicsFloatingBundle.h,4,,// No [FRONTIER] body remains in this class.
+free,Code/BF2/Physics/PhysicsSpring.h,5,,// The constructor clears fix-to-parent so suspension can move. No [FRONTIER] body remains here.
+free,Code/BF2/Scene/Object/ObjectManagerConsole.cpp,3,,// Unimplemented bindings remain [FRONTIER] where marked.
+free,Code/BF2/Scene/Object/ObjectPredicator.h,3,,// Flag filters require all requested bits. Additional unrecovered predicates remain [FRONTIER].
+free,Code/BF2/Scene/Object/QuadTreeCuller.cpp,639,,// This former [FRONTIER] now has its silhouette construction implemented; preserve those limits.
+free,Code/BF2/Scene/Object/ToolObject/ModuleToolObject.cpp,3,,// [FRONTIER] Unimplemented editor bindings remain marked at their declarations/bodies.
+free,Code/BF2/Scene/Object/ToolObject/ObjectTemplateAdm.cpp,2,,// Unimplemented editor save/list/print/layer operations remain [FRONTIER] at their declarations.
+free,Code/BF2/Scene/Object/ToolObject/ObjectTemplateAdm.h,4,,// Header name [INFERRED]; source path is attested. Unimplemented operations remain [FRONTIER].
+free,Code/BF2/Scene/Object/ToolObject/ObjectTemplateAdm.h,94,,// [FRONTIER] Remaining editor object/template persistence and layer operations require their
+free,Code/BF2/Sound/BfSound.cpp,2,,// [FRONTIER] Sound debug overlays and remaining sound paths stop where their implementation is missing.
+partial,Code/BF2/Core/ModuleRegistry.cpp,492,ModuleNetworkables::getClassList,// Client prediction and interpolation retain their named [FRONTIER] boundaries.
+partial,Code/BF2/Game/Common/ClientConnection.cpp,96,ClientConnection::ClientConnection,// [FRONTIER] ds:0x8AAB7A0's demoQuality. The three derived values are recorded in the
+partial,Code/BF2/Game/Common/ClientConnection.cpp,285,ClientConnection::debugShowActiveGhosts,// [FRONTIER] - the body is unwritten
+partial,Code/BF2/Game/Common/ClientConnection.cpp,455,ClientConnection::handlePacketStatusNotification,// [FRONTIER] Local auto-ping adjustment requires m_useAutoPingAdjust. It averages
+partial,Code/BF2/Game/Common/GameEventManager.cpp,497,GameEventManager::processReceivedPacket,GameEvent* const event = readGameEvent(stream); // [FRONTIER]
+partial,Code/BF2/Game/Common/GhostManager.cpp,1702,GhostManager::readData,return false; // [FRONTIER]; no m_error on this arm
+partial,Code/BF2/Game/GameEvents/KilledByEvent.cpp,50,KilledByEvent::executeClient,"// NOT a [FRONTIER] shim pair: both slots are already declared, at these exact offsets, in"
+partial,Code/BF2/Game/GameEvents/StickyProjectileEvent.cpp,196,StickyProjectileEvent::executeClient,"world::CID_RotationalBundleTemplate, out); // [FRONTIER]"
+partial,Code/BF2/Game/GameLogic/GameLogic.cpp,318,loadCallback,// [FRONTIER] BF2.exe 0x4EBF0F calls 0x4013E0 -> 0x401350 unconditionally.
+partial,Code/BF2/Game/GameLogic/ServerGameLogic.cpp,878,ServerGameLogic::restartMap,gameServer->getAutoRecorder()->roundFinished(); // [FRONTIER] 0x80A05C0
+partial,Code/BF2/Game/GameLogic/ServerGameLogic.cpp,1667,ServerGameLogic::toggleEntryPoint,->checkForEntry(player); // [FRONTIER] - 0x81D2509
+partial,Code/BF2/Game/GameServer/GameServer.cpp,3288,GameServer::isRecordingDemo,return m_demoRecorder->isOpenForRecord(); // [FRONTIER] - DemoRecorder is declaration-only
+partial,Code/BF2/Game/Main/BF2Engine.cpp,2111,BF2Engine::mainLoop,"bf2Render->render(frameTime, demo->recorder()); // vslot +0x18, 0x453270 [FRONTIER] body"
+partial,Code/BF2/Game/Objects/Game/FloatingBundle.cpp,47,FloatingBundle::handleUpdate,"calculateAndClipAngle(t, 1, dt); // [FRONTIER]"
+partial,Code/BF2/Game/Objects/Game/PlayerControlObjectHelpers.cpp,204,postInitCameras,"findCameras(pcoObject, pcoInterface->getPcoId(), *ownCameras); // [FRONTIER]"
+partial,Code/BF2/Game/Objects/Game/RotationalBundle.cpp,219,RotationalBundle::handleMessage,"updateRotationalSound(false, 0.0f); // [FRONTIER]"
+partial,Code/BF2/Game/Objects/Game/Soldier.cpp,498,Soldier::Soldier,initAnimation(); // [FRONTIER]
+partial,Code/BF2/Game/Objects/Game/Soldier.cpp,727,Soldier::destroy,resetInstance(); // [FRONTIER]
+partial,Code/BF2/Game/Objects/Game/Soldier.cpp,1529,Soldier::setIsSkyDiving,executePoseChange(); // [FRONTIER]
+partial,Code/BF2/Game/Objects/Game/Soldier.cpp,3147,Soldier::setCharacterMode,"applyAnimationsOnSkeleton(0.0f, true); // [FRONTIER]"
+partial,Code/BF2/Game/Objects/Game/Soldier.cpp,3801,Soldier::updateTransformation,"setRotateYDeg(yaw, m_facingDegrees); // +0x1F0 [FRONTIER]"
+partial,Code/BF2/Game/Objects/Game/Wing.cpp,63,Wing::handleUpdate,"calculateAndClipAngle(wingTemplate, 1, deltaTime); // [FRONTIER] - 2,074 B"
+partial,Code/BF2/IO/Network/NetworkManager.cpp,541,NetworkManager::removeNetworkable,removeDescriptors(objectOfNetworkableObject(networkableObject)); // [FRONTIER]
+partial,Code/BF2/Physics/Bsp.cpp,257,Bsp::getClosestFace,"// BspNode::getClosestFace(ctx, box) - [FRONTIER] with the rest of the legacy walkers; on a server"
+partial,Code/BF2/Physics/CollisionManager.cpp,725,CollisionManager::load,"// CollisionMeshTemplate::save - [FRONTIER], the cell is dormant, the arm is banked)"
+partial,Code/BF2/Physics/CollisionMeshTemplate.cpp,1146,CollisionMeshTemplate::getDistanceToCapsules,// sphere descriptor at radius 0.1) - a client debug renderer [FRONTIER]; then the
+partial,Code/BF2/Physics/MMCell.cpp,113,MMCell::setSoundTemplate,soundTemplateOnBound(t); // PE 0x5ECA74 [FRONTIER]
+partial,Code/BF2/Physics/MMCell.cpp,161,MMCell::getSound,cs->sound = soundInstanceCreate(cs->soundTemplate); // PE 0x5ECAD8 [FRONTIER]
+stale,Code/BF2/Animation/BoneAnimation/AnimationSystem.cpp,529,AnimationSystem::createBundlePlayer,// it does not ADD the player to m_players. The caller does; playBundle is [FRONTIER] and is where
+stale,Code/BF2/Game/Main/BF2Engine.cpp,200,CheckServerAliveThread::run,// [FRONTIER] CheckServerAliveThread::run remains unwritten; the recovered watchdog algorithm

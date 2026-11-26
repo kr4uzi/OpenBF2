@@ -13,6 +13,7 @@ successful compilation or a diagnostic executable does not establish a playable 
 - [Engine architecture](docs/architecture.md): image boundaries, source layout, and lifecycle.
 - [Development guide](docs/development.md): recovery evidence, code conventions, and validation.
 - [Documentation index](docs/README.md): public engineering guides and contribution workflow.
+- [Reconstruction progress](docs/progress.md): generated function inventories and client review coverage.
 
 ## Contributing
 
