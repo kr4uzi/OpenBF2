@@ -2456,14 +2456,18 @@ if(BF2_LINUX_CLIENT)
         USES_TERMINAL VERBATIM)
 endif()
 
-# [TEMP] [CHOSEN, not recovered] Headless terrain colour-pass bias check; no graphics device.
-add_executable(bf2_terrain_colour_pass_bias_check EXCLUDE_FROM_ALL
-    Code/Tests/terrain_colour_pass_bias.cpp)
-bf2_configure_cpp_target(bf2_terrain_colour_pass_bias_check)
-bf2_set_platform_compat(bf2_terrain_colour_pass_bias_check)
-bf2_set_image(bf2_terrain_colour_pass_bias_check 0)
+# [TEMP] [CHOSEN, not recovered] Content-free terrain shader source and native cache-key checks.
+add_executable(bf2_terrain_shader_source_check EXCLUDE_FROM_ALL
+    Code/Tests/terrain_shader_source.cpp)
+bf2_configure_cpp_target(bf2_terrain_shader_source_check)
+bf2_set_platform_compat(bf2_terrain_shader_source_check)
+bf2_set_image(bf2_terrain_shader_source_check 0)
+if(APPLE OR BF2_LINUX_CLIENT)
+    target_compile_definitions(bf2_terrain_shader_source_check PRIVATE BF2_SHADER_SOURCE_CACHE_CHECK=1)
+    target_link_libraries(bf2_terrain_shader_source_check PRIVATE bf2_fx_runtime)
+endif()
 if(BUILD_TESTING)
-    add_test(NAME bf2_terrain_colour_pass_bias_check COMMAND bf2_terrain_colour_pass_bias_check)
+    add_test(NAME bf2_terrain_shader_source_check COMMAND bf2_terrain_shader_source_check)
 endif()
 
 # [TEMP] Issue #33: content-free policy checks, with no renderer or gameplay claim.

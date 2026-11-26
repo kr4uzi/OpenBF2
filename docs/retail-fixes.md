@@ -148,44 +148,36 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Retail:** `Terrain::drawMain` writes the terrain's depth in pass 0 (`ZFillLightmap`, ZFUNC LESS)
   and `Terrain::drawFinal` then draws the colour passes (`LowDiffuse`, `FullDetail`,
   `FullDetailMounten`, `FullDetailWithEnvMap`) with ZFUNC LESSEQUAL and no depth writes,
-  `FullDetail` additively onto a cleared target. The two kinds of pass use different vertex shaders
-  in `TerrainShader_Hi.fx`, and they spell the position differently: only the `FullDetail` family
-  adds `vScaleTransY.zw`. Where a colour pass lands a few depth units behind the depth pass 0
-  wrote (the exact source of the difference has not been isolated), that pixel fails the test and
-  keeps the cleared back buffer: flat, exactly black, ragged patches
-  on the ground in the middle distance, which change with every small turn of the view.
-  Retail shows them on DX10-class and AMD GPUs ("flickering black hexagons"), and OpenBF2 shows
-  them on macOS (Metal). Turning `D3DRS_ZFUNC` to ALWAYS for these draws removes them. On an Intel
-  Mac the gap lies between 1e-7 and 1e-6 in D3D9 depth units.
-- **OpenBF2:** Each terrain node drawn by `drawFinal` carries `D3DRS_DEPTHBIAS` = -1e-6 within
-  60 m of the camera (D3D9 depth units, about 17 steps of a 24-bit depth buffer). The colour passes
-  now run immediately after the depth and light pass and the water in
-  `Terrain::renderWorldPassBegin`, before world objects, overgrowth and undergrowth.
-  Retail runs `drawMain` and `drawWater` in `renderWorldPassBegin` (RendDX9 PE `0x100E0E50`),
-  then draws objects before `renderWorldPassEnd` (`0x100E10C0`) calls `drawFinal` and
-  `drawSurrounding`. With the bias, additive terrain colour could land on object pixels within
-  the bias of the ground, leaving thin bright lines at bush and tree bases and grass that has
-  sunk flat at its fade distance. Drawing colour first lets objects cover the finished terrain
-  with their normal depth test against the unbiased depth passes; colour passes never write
-  depth. The cost is computing terrain colour also where objects later cover it.
-  `drawSurrounding` stays after world objects. Beyond 60 m the bias is
-  scaled by `(60/d)^2`, where `d` is the distance from the frame's terrain camera position to the
-  nearest point of the node's world bounds. A constant depth-buffer bias corresponds to a world
-  distance that grows roughly with distance squared. Scaling keeps approximately the world-space
-  offset used at 60 m; the draw order prevents terrain colour from adding to world objects.
-  Measurements on an Intel Mac: -1e-7 leaves smaller black patches, -5e-7 still leaves some white
-  specks, and -1e-6 removes the middle-distance black patches; slope -1 with constant 0 is worse.
-  Every colour pass uses the node's bias; lower-LOD batches merge only nodes with equal bias,
-  while the debug detail merge uses the first node's value. Redundant state sets are skipped
-  across patches and layers for the frame. The bias is reset to the world value 0 after them, so
-  pass 0, pass 7, the light passes, the surrounding ring, roads, decals and water are unchanged. The
-  Metal backend applies `D3DRS_DEPTHBIAS` as `setDepthBias` scaled by 2^24-1. That is exact for a
-  24-bit depth buffer. For Apple silicon's Depth32Float_Stencil8 it is exact near depth 1, where
-  mid-range terrain lies, and smaller closer in, so the bias still applies there. A larger bias
-  (-1e-5) let the terrain cover coplanar road and track decals.
-- **Applies to:** Client; all platforms.
-- **Source:** `Code/BF2/Geom/TerrainDraw.cpp`, `Code/BF2/Geom/QuadPatch.cpp`,
-  `Code/BF2/Geom/TerrainColourPassBias.h`
+  `FullDetail` additively onto a cleared target. In the shipped `TerrainShader_Hi.fx`,
+  `Hi_VS_FullDetail` and `Hi_VS_FullDetailWithEnvMap` add `vScaleTransY.zw` after the height
+  multiply. `Shared_VS_ZFillLightmap` in `TerrainShader_Shared.fx` and every other terrain pass,
+  including `Hi_VS_FullDetailMounten`, omit that term. The engine always supplies
+  `vScaleTransY = (yScale, 1, 0, 0)`, so the addition is mathematically zero. On GPUs that merge
+  multiply-add operations, the extra operation changes which pair can be merged, introducing
+  one different rounding step. The colour and depth positions then differ in their last bits.
+  Colour pixels that land behind the filled depth fail LESSEQUAL and expose the cleared target
+  as black patches. The geomorph band exposes this because its subtracted morph delta is nonzero.
+  The same mechanism occurs with Metal and Linux DXVK, and affects retail on GPUs that merge
+  multiply-add operations.
+  Measurements with a real frame's constants on Intel Iris Plus 655, invariant positions and no
+  depth offset: the two affected colour shaders fail at 748 of 45,528 pixels with float depth
+  and 292 of 17,791 with 24-bit depth. Disabling fast math leaves those counts unchanged.
+  Removing the two zero additions gives zero failures in both cases; `LowDiffuse` and
+  `FullDetailMounten`, which never had the term, also give zero.
+- **OpenBF2:** Corrects those assignments in memory after source decoding, for any mod's file
+  whose base name is `TerrainShader_Hi.fx` (case-insensitive). Matching tolerates spaces and tabs
+  between tokens. Files without the assignment remain unchanged, silently. The root and include
+  loaders share source preparation before Windows D3DX compilation or native effect request
+  capture. Native effect cache keys include the corrected root and include bytes, so entries
+  built from the uncorrected text are not reused. The terrain effect has no other compiled cache.
+  Content files on disk remain untouched.
+  Terrain colour passes leave `D3DRS_DEPTHBIAS` untouched and retain retail ordering:
+  `renderWorldPassBegin` draws main terrain and water (RendDX9 PE `0x100E0E50`); after world
+  objects, `renderWorldPassEnd` draws terrain colour and the surrounding ring (`0x100E10C0`).
+- **Applies to:** Every client platform. Rendering only; retail servers, unmodified retail clients,
+  network protocols and content file formats are unaffected.
+- **Source:** `Code/BF2/RendDX9/ShaderSource.h`, `Code/BF2/RendDX9/ShaderManager.cpp`,
+  `Code/BF2/RendDX9/Effect.cpp`
 
 ### The effect parameter snapshot zeroes its description before the query
 

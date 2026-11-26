@@ -3,6 +3,8 @@
 
 #ifdef BF2_IMAGE_RENDDX9
 
+#include "ShaderSource.h"
+
 #include "../../RendDX9Abi/ThunkAbi.h"
 #include "../../RendDX9Abi/HfeAbi.h"
 #include "../../RendDX9Abi/ModuleCommon.h"
@@ -1309,8 +1311,7 @@ static ID3DXEffect* compileEffectFile(const char* rawPath, ID3DXBuffer** errors)
     static int s_loadObfuscated = -1;
     if (s_loadObfuscated < 0)
         s_loadObfuscated = readBoolSetting("GSLoadObfuscated", true) ? 1 : 0;
-    if (s_loadObfuscated)
-        deobfuscateShader(file.data, file.size);
+    prepareShaderSource(path, file.data, file.size, s_loadObfuscated != 0);
 
     // The macro array, flattened from the ShaderManager's vector of 28-byte strings.
     std::vector<const char*> macros;
