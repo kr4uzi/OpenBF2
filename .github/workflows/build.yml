@@ -17,7 +17,7 @@ permissions:
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+  LINUX_SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
 
 jobs:
   windows:
@@ -291,7 +291,7 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+      SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
       BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     defaults:
       run:
@@ -835,7 +835,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+      SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app
