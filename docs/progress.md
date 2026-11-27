@@ -27,10 +27,10 @@ Recorded ledger revisions (generation hashes, not a claim of current-source cove
 
 | Part | Recorded revision |
 | --- | --- |
-| Bot AI | `6f2fb0c1` |
-| Renderer | `6f2fb0c1` |
+| Bot AI | `327274d9` |
+| Renderer | `327274d9` |
 | Menu player | unknown |
-| Server network, files, console | `6f2fb0c1` |
+| Server network, files, console | `327274d9` |
 | Client program | `e976b82b` |
 
 ## Renderer open rows by attribution

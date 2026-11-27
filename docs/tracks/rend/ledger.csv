@@ -4683,7 +4683,7 @@ RendDX9.dll,0x100E1F91,9,Catch@100e1f91,,todo,,,
 RendDX9.dll,0x100E2090,548,FUN_100e2090,,todo,,,
 RendDX9.dll,0x100E2201,9,Catch@100e2201,,todo,,,
 RendDX9.dll,0x100E22D0,80,FUN_100e22d0,,todo,,,
-RendDX9.dll,0x100E2320,241,FUN_100e2320,Code/BF2/Geom/TerrainDraw.cpp,todo,,1,Code/BF2/Geom/TerrainDraw.cpp:1062
+RendDX9.dll,0x100E2320,241,FUN_100e2320,Code/BF2/Geom/TerrainDraw.cpp,todo,,1,Code/BF2/Geom/TerrainDraw.cpp:1056
 RendDX9.dll,0x100E2414,9,Catch@100e2414,,todo,,,
 RendDX9.dll,0x100E2430,167,FUN_100e2430,,todo,,,
 RendDX9.dll,0x100E24E0,105,FUN_100e24e0,,todo,,,
