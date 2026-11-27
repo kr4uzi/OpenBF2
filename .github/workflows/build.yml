@@ -17,7 +17,7 @@ permissions:
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
+  LINUX_SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
 
 jobs:
   windows:
@@ -291,7 +291,7 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
+      SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
       BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     defaults:
       run:
@@ -835,7 +835,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: a451dc3483b697827a37885bf4eab95a6cf0deac # 0.5.0 candidate: an existing Battlefield 2 installation can be used in place
+      SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app
