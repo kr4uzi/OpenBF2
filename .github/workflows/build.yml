@@ -432,6 +432,7 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           if ($tag -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>" }
+          "SETUP_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
           "SETUP_VERSION_OPTION=-Version $($Matches[1])" >> $env:GITHUB_ENV
 
       # with -Sign (signed release runs), the setup's sign.ps1 takes the signtool, the certificate and Certum's
@@ -592,6 +593,18 @@ jobs:
           path: ${{ runner.temp }}/openbf2-linux-sdk.oci
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
 
+      # The OpenBF2 release that the application carries as its version: the tag without its "v" on a tag or
+      # release run, so v0.3.0-rc2 gives 0.3.0-rc2. Other runs set nothing, and the setup uses its fallback.
+      - name: Take the application's version from the tag
+        if: matrix.role == 'client' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          tag=$GITHUB_REF_NAME
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>"; exit 1
+          fi
+          echo "SETUP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+
+      # `--env SETUP_VERSION` hands the variable on only when the step above set it.
       - name: Build, audit and package the Linux application
         if: matrix.role == 'client'
         env:
@@ -603,6 +616,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work/engine:rw" \
             --volume "$RUNNER_TEMP/linux-release:/work/release:rw" \
             --env BF2_RELEASE_JOBS=2 \
+            --env SETUP_VERSION \
             "$SDK_IMAGE" bash /work/engine/tools/linux/release/build-client.sh \
             /work/engine /work/engine/out/linux-setup /work/release/result "$SDK_REFERENCE"
 
@@ -920,6 +934,17 @@ jobs:
         run: |
           bash out/openbf2/tools/macos/ci/release-signing.sh import
           bash out/openbf2/tools/macos/ci/release-signing.sh notary-key
+
+      # The OpenBF2 release that the app carries as its version (see the Windows installer job): the tag
+      # without its "v" on a tag or release run. Other runs set nothing, and the setup uses its fallback.
+      - name: Take the app's version from the tag
+        if: env.BF2_RELEASE_SIGNING == 'true'
+        run: |
+          tag=$GITHUB_REF_NAME
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>"; exit 1
+          fi
+          echo "SETUP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
 
       # SETUP_SIGN_IDENTITY unset means ad-hoc. In release runs the setup scripts sign with the
       # imported identity, the hardened runtime, a timestamp and the two entitlements files.
