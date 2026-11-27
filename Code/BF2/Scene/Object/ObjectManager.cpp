@@ -21,6 +21,9 @@
 #endif
 #include "../../Geom/GeometryInstanceData.h"
 #include "../../Geom/IGeometryTemplate.h"
+#include "../../GeomMisc/DebugTextWriter.h"
+#include "ObjectTypes/Base/ObjectTemplateManager.h"
+#include "../../Core/StringUtil.h"
 #include "ICuller.h"
 #include "ObjectPredicator.h"
 #include "../../Core/ClassManager.h"  // classManager - the ctor builds its cullers through it
@@ -228,8 +231,7 @@ inline void expandByVisualSphere(IObject* object, LocalBoundingBox& bounds)
 
 // ds:0x8AB0A64 in bf2.i64 / dword_A0F740 in BF2.exe.  The name is [INFERRED].  All four
 // render-query internals add the wholly-visible-list count; notably the sphere overload still
-// adds zero because its culler only receives the ordinary visible list.  drawStats is its retail
-// consumer; that larger body remains outside this recovery.
+// adds zero because its culler only receives the ordinary visible list.
 unsigned int g_rendWhollyVisibleCount = 0;
 
 inline Vec3 objectPosition(IObject* object)
@@ -2712,7 +2714,110 @@ IObject* ObjectManager::createObject(const IObjectTemplate* objectTemplate, unsi
 }
 
 // The four non-virtual helpers the recovered bodies call.
-void ObjectManager::drawStats() {}
+// PE 0x00726140; dedicated PE 0x006E2560; ELF 0x08311D00.
+// The writer is optional. Level one groups enabled objects by class; level two lists cached templates.
+void ObjectManager::drawStats()
+{
+    geom::IDebugTextWriter* const writer = static_cast<geom::IDebugTextWriter*>(
+        classManager->getSingleton("DebugTextWriterFixed"));
+    if (!writer)
+        return;
+    if (m_drawStats == 1)
+    {
+        const unsigned int registered = static_cast<unsigned int>(m_allRegisteredObjects.size());
+        const unsigned int updating = static_cast<unsigned int>(m_updateObjects.size());
+        const unsigned int frameUpdating = static_cast<unsigned int>(m_frameUpdateObjects.size());
+        const unsigned int referenced = static_cast<unsigned int>(m_objectsToUpdateInGrid.size());
+        const int noCollisionDynamic = m_noCollisionQuadTreeCuller->getNumberOfObjects();
+        const int noCollision = m_noCollisionGridCuller->getNumberOfObjects();
+        const int dynamic = m_gridCuller->getNumberOfObjects();
+        const int quad = m_quadTreeCuller->getNumberOfObjects();
+        writer->queueText(10, 20, formatString(
+            "ObjManStats. %d Upd:%d FUpd:%d Ref:%d DynC:%d NoColC:%d NoColDynC:%d LatC:%d",
+            registered, updating, frameUpdating, referenced, quad, dynamic, noCollision, noCollisionDynamic), 0);
+
+        // ELF names this local record objectManagerStat::StatInfo; member names follow the headings.
+        struct StatInfo {
+            unsigned int total = 0, on = 0, updating = 0, frameUpdating = 0, root = 0;
+            unsigned int networked = 0, grid = 0, physics = 0, sleeping = 0;
+        };
+        std::map<unsigned int, StatInfo> stats;
+        unsigned int width = 0;
+        for (const auto& entry : m_allRegisteredObjects)
+        {
+            IObject* const object = entry.second;
+            if ((object->getFlags() & 1u) != 0)
+                continue;
+            const unsigned int classId = object->getTemplate()->getClassID();
+            width = std::max(width, static_cast<unsigned int>(
+                objectTemplateManager->getClassNameFromTemplateClassID(classId).size()));
+            StatInfo& info = stats[classId];
+            ++info.total;
+            ++info.on;
+            if (object->getFlags() & 0x800u) ++info.updating;
+            if (object->getFlags() & 0x2000u) ++info.frameUpdating;
+            IPhysicsNode* const physics = static_cast<IPhysicsNode*>(object_detail::LayoutAccess::physicsNode(object));
+            if (physics)
+            {
+                ++info.physics;
+                if (physics->getIsSleeping()) ++info.sleeping;
+            }
+            if (object->getNetworkable()) ++info.networked;
+            if (!object->getParent()) ++info.root;
+            if (object->getGridCullerObject()) ++info.grid;
+        }
+        const int padding = -static_cast<int>(width + 2);
+        writer->queueText(10, 35, formatString(
+            "%*sTot  On   Root Grid Upd  FUpd Net  Phy  Sleep", padding, "Template name"), 0);
+        int y = 45;
+        for (const auto& entry : stats)
+        {
+            const StatInfo& info = entry.second;
+            const std::string& name = objectTemplateManager->getClassNameFromTemplateClassID(entry.first);
+            writer->queueText(10, y, formatString("%*s%-5u%-5u%-5u%-5u%-5u%-5u%-5u%-5u%-5u",
+                padding, name.c_str(), info.total, info.on, info.root, info.grid, info.updating,
+                info.frameUpdating, info.networked, info.physics, info.sleeping), 0);
+            y += 10;
+        }
+    }
+    if (m_drawStats == 2)
+    {
+        unsigned int cached = 0;
+        int x = 10, y = 35, row = 0, lastColumnY = 0;
+        for (const auto& pool : m_objectCache->m_pools)
+        {
+            std::string name = objectTemplateManager->getTemplate(pool.first)->getName();
+            if (name.size() > 15)
+                name = name.substr(0, 15);
+            const unsigned int count = static_cast<unsigned int>(pool.second.size());
+            writer->queueText(x, y, formatString("%-5u %s", count, name.c_str()), 0);
+            cached += count;
+            y += 10;
+            if (row > 50)
+            {
+                lastColumnY = y;
+                row = 0;
+                x += 200;
+                y = 35;
+            }
+            ++row;
+        }
+        unsigned int used = 0;
+        for (const auto& entry : m_allRegisteredObjects)
+        {
+            IObject* const object = entry.second;
+            const unsigned int id = object->getObjectCacheID();
+            if (id)
+            {
+                IObject* const parent = object->getParent();
+                if ((!parent || id != parent->getObjectCacheID()) && !(object->getFlags() & 0x20u))
+                    ++used;
+            }
+        }
+        writer->queueText(10, lastColumnY + 10,
+            formatString("Incache: %-10u Used:%-10u", cached, used), 0);
+    }
+}
 // PE 0x00721790; ELF 0x08312990. Existing membership is a shipped invariant failure.
 void ObjectManager::addObjectToCuller(IObject* object)
 {

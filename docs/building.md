@@ -125,6 +125,20 @@ integration are described in [Linux client distribution](linux-client-distributi
 The recorded x86-64 local-bot playtest does not establish full Linux ARM64 graphics
 or broader platform acceptance under issue #36.
 
+Local client builds must use native effect libraries built from the current repository
+patches. A missing `vkd3d-src/.bf2-patches` record or a mismatched patch set blocks
+`bf2_client`; dedicated targets (`bf2`, `bf2_aidll`, `dice_py`) remain available.
+Build a matching set from local pristine sources into a new directory, keeping the
+existing set:
+
+```bash
+python3 tools/linux/build-nativefx.py --vkd3d-source /path/to/vkd3d-2.1 --mojo-source /path/to/mojoshader --output out/build/nativefx-linux-current
+cmake --preset linux-client -DBF2_FX_NATIVE_DEPS="$PWD/out/build/nativefx-linux-current"
+```
+
+The builder applies the shared patches and writes the patch record. See the Linux
+client guide for its other dependencies.
+
 Use Linux x86-64 with CMake 3.21 or newer, Ninja, GCC or Clang, and ncurses development
 headers (`libncurses-dev` on Debian). From the repository root:
 
@@ -164,19 +178,22 @@ in one command from the repository root (`NATIVEFX_DIR` is the bundle's director
 with `sh tools/macos/nativefx/build.sh`):
 
 ```bash
-cmake --preset macos-x64 -B out/build/local-macos -DBF2_MACOS_LINK_RENDDX9=ON -DBF2_FX_NATIVE_DEPS="$NATIVEFX_DIR" && cmake --build out/build/local-macos --target bf2_client bf2 -j4
+cmake --preset macos-x64 -B out/build/local-macos -DBF2_FX_NATIVE_DEPS="$NATIVEFX_DIR" && cmake --build out/build/local-macos --target bf2_client bf2 -j4
 ```
 
 `BF2_FX_NATIVE_DEPS` names a directory with `vkd3d/.libs/libvkd3d-shader.a`,
 `vkd3d/.libs/libvkd3d-common.a`, `vkd3d-src/include/vkd3d_shader.h`,
 `mojo/libmojoshader.a` and `mojo-src/mojoshader.h`. The libraries must contain every
-requested architecture and use the repository's vkd3d/MojoShader patches. CMake
-checks all three archives with `lipo -verify_arch`. The default directory is
+requested architecture and be built from the repository's current vkd3d/MojoShader patches.
+Local builds must rebuild their library set when those patches change; a missing
+`vkd3d-src/.bf2-patches` record or a mismatched patch set blocks `bf2_client`.
+CMake checks all three archives with `lipo -verify_arch`. The default directory is
 `out/build/nativefx` for x86_64, `out/build/nativefx-arm64` for arm64, or
-`out/build/nativefx-universal` for both; if dependencies are absent or incompatible,
-renderer-enabled configuration fails with instructions instead
-of building a cache-only client. Local dependency sources are not vendored in this
-checkout. If already supplied under `out/third_party/vkd3d` (vkd3d 2.1) and
+`out/build/nativefx-universal` for both. If dependencies are absent, incompatible or
+stale, configuration prints instructions and building `bf2_client` fails before
+client compilation. Dedicated targets (`bf2`, `bf2_aidll`, `dice_py`) remain available.
+Local dependency sources are not vendored in this checkout. If already supplied
+under `out/third_party/vkd3d` (vkd3d 2.1) and
 `out/third_party/mojoshader`, `sh tools/macos/nativefx/build.sh` builds the dependencies
 offline there. That optional source build also needs the native autotools/libtool,
 flex, bison and MinGW widl tools expected by `build-vkd3d.sh`; nothing is downloaded
@@ -186,6 +203,10 @@ does not invoke Wine, D3DX or an oracle tool. Pass `arm64` or `universal` to
 the historical x86_64 output. All use the same patched sources and default to
 `MACOSX_DEPLOYMENT_TARGET=11.0`. Cross builds use host-native generators and never
 execute the arm64 harness.
+
+Keep an existing dependency set when rebuilding: use a fresh worktree's `out/` with
+the local sources above, then point `BF2_FX_NATIVE_DEPS` at its rebuilt directory.
+Do not copy or invent a patch record for old archives.
 
 The client compiles effects with vkd3d-shader, the D3D9 asm assembler, the effect
 parser and MojoShader to MSL, caching under `@HOME@/FxNative`. No Wine, Windows DLL,
@@ -216,7 +237,7 @@ With the local sources and generator tools above available, this single command
 builds the native dependencies, Metal client, dedicated server and AI library:
 
 ```bash
-sh tools/macos/nativefx/build.sh universal && cmake --preset macos-universal -B out/build/local-universal -DBF2_MACOS_LINK_RENDDX9=ON && cmake --build out/build/local-universal --target bf2_client bf2 bf2_aidll -j4
+sh tools/macos/nativefx/build.sh universal && cmake --preset macos-universal -B out/build/local-universal && cmake --build out/build/local-universal --target bf2_client bf2 bf2_aidll -j4
 lipo -archs out/build/local-universal/bin_macos/bf2
 ```
 
@@ -225,7 +246,7 @@ other configured widths are shared. No host Python or additional software is nee
 For an arm64-only compile measurement, use a separate directory:
 
 ```bash
-sh tools/macos/nativefx/build.sh arm64 && cmake --preset macos-x64 -B out/build/local-arm64 -DCMAKE_OSX_ARCHITECTURES=arm64 -DBF2_MACOS_LINK_RENDDX9=ON && cmake --build out/build/local-arm64 --target bf2_client bf2 bf2_aidll -j4
+sh tools/macos/nativefx/build.sh arm64 && cmake --preset macos-x64 -B out/build/local-arm64 -DCMAKE_OSX_ARCHITECTURES=arm64 && cmake --build out/build/local-arm64 --target bf2_client bf2 bf2_aidll -j4
 ```
 
 Cross-compiling and linking arm64 does not establish native runtime behavior. See
@@ -236,16 +257,10 @@ or server. On an Intel host the arm64 vtable probes compile but their executable
 checks are left for the M2; universal executable checks use the host slice.
 
 `bf2_client` is the macOS client target ([CHOSEN, not recovered], package S2.0). Its
-renderer, movie and audio plugins are static libraries linked into the executable. The
-Metal renderer is enabled with `BF2_MACOS_LINK_RENDDX9=ON`; OFF retains the earlier
-renderer-free diagnostic client. Native effect dependencies are required at configure time
-when the renderer is enabled. The
-renderer-excluded x86_64 client compiles and links strictly after the
-PR #55 integration (`--target bf2_client -j4`). Renderer-free
-startup reaches the main loop; see [S2.12](macos-port.md#renderer-free-startup-end-s212).
-Run it only through the sandboxed offline harness, with HOME and cloned content under
-`out/`. Build `bf2_renddx9_static` separately with `-- -k` to measure the remaining
-renderer compile blockers.
+renderer (Metal), movie and audio plugins are static libraries that are always linked into the
+executable; there is no build switch for them. Building `bf2_client` needs the native effect
+dependencies (`BF2_FX_NATIVE_DEPS`, above); without them the build of that target stops with
+instructions, while the server targets (`bf2`, `bf2_aidll`) still configure and build.
 
 Run the server from a content root as on Linux. Pass `+config` and `+mapList` paths
 **relative to the content root**: with an absolute `+config` path the macOS smoke run
@@ -602,6 +617,16 @@ so the hosts file can also point the names at a replacement service.
 The SDK's stand-alone CD-key server `key.gamespy.com` is never looked up (keys are validated at
 the heartbeat address), so it has no key. Dedicated servers link neither the server list nor
 the presence code and show no menu, so they never look up the names marked "(client)".
+
+The client's RankManager and ClanManager expose lifetime and interface lookup only.
+NewsManager forwards a descriptor to AutoPatch, whose shipped `checkForPatch` always
+returns false without contacting a patch server. Persistence copies the shared SDK
+identity strings when constructed; `connect` checks only for a current online profile,
+and its update does nothing. These five classes are absent from the dedicated image.
+They add no service-name lookups or provider configuration keys.
+`bf2_online_services_check` exercises their offline lifetime, forwarding and singleton
+creation. `Code/Tests/online_services_registration.py --build-dir <build> --server <bf2>`
+checks the production registrations in both image configurations and dedicated symbols.
 
 #### The provider file: `+onlineProviderConfig <path>`
 

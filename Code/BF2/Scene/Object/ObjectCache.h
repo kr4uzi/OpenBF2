@@ -32,6 +32,7 @@ public:
     void deleteAll();
 
 private:
+    friend class ObjectManager;
     void markObjectAsCreatedInCache_internal(IObject* object);
 
     typedef std::map<unsigned int, IObject*> Pool;      // key: networkableId, or objectId + 0xFFFF

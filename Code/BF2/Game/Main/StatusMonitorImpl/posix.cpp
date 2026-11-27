@@ -148,14 +148,17 @@ void StatusMonitorImpl_posix::clearScreen()
         werase(m_window);
 }
 
-// . width first, height second; ncurses' _maxx/_maxy are inclusive maxima so
+// 0x8304470. width first, height second; ncurses' _maxx/_maxy are inclusive maxima so
 // both get +1. -1 when there is no window.
 void StatusMonitorImpl_posix::getDimensions(int& width, int& height)
 {
-    // getmaxy/getmaxx read the same _maxy/_maxx the ELF reads directly; modern ncurses builds keep
-    // window opaque (NCURSES_OPAQUE), so the member access is spelled through the accessors.
-    height = m_window ? getmaxy(m_window) + 1 : -1;
-    width  = m_window ? getmaxx(m_window) + 1 : -1;
+    // The ELF loads window._maxy/_maxx (0x8304482 / 0x830449A) and adds 1. Modern ncurses builds
+    // keep WINDOW opaque (NCURSES_OPAQUE), so the members are read through getmaxy/getmaxx, which
+    // already answer _maxy + 1 / _maxx + 1 (curses.h). Adding 1 again made the height one row too
+    // large: StatusMonitor::update then put the console's last line, the "> " input line, one row
+    // below the screen, where wmove refuses it, so typed characters never showed (B2BF #15).
+    height = m_window ? getmaxy(m_window) : -1;
+    width  = m_window ? getmaxx(m_window) : -1;
 }
 
 // . x first, y second - wmove takes them the other way round.
@@ -171,7 +174,7 @@ void StatusMonitorImpl_posix::outputString(int x, int y, const std::string& text
     waddnstr(m_window, text.c_str(), -1);   // 1 = the whole string
 }
 
-// . Nine incremental refreshes, then one that scrubs the whole screen.
+// 0x8304530. Nine incremental refreshes, then one that scrubs the whole screen.
 void StatusMonitorImpl_posix::flushToScreen()
 {
     if (!m_window)
@@ -180,7 +183,8 @@ void StatusMonitorImpl_posix::flushToScreen()
     if (++m_refreshCount > 9)
     {
         m_refreshCount = 0;
-        wtouchln(m_window, 0, getmaxy(m_window) + 1, 1); // mark every line dirty (_maxy + 1 in the ELF)
+        wtouchln(m_window, 0, getmaxy(m_window), 1);     // every line dirty: the ELF's _maxy + 1
+                                                         // (0x830455C), which getmaxy already is
         wrefresh(curscr);                                // repaint from the current screen
     }
     else

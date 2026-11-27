@@ -119,9 +119,6 @@
 // [CHOSEN, not recovered] macOS: the cursor, minimize, URL and relaunch counterparts.
 #include "../../Platform/Host/ClientHost.h"
 #include "../../Platform/macOS/MacSystem.h"
-#if defined(__APPLE__)
-#include "../../Platform/macOS/RestartInFront.h"   // [CHOSEN] restartBF2: the restart marker
-#endif
 #include "../../Platform/macOS/ClientPaths.h"
 #include <unistd.h>
 #endif
@@ -206,13 +203,21 @@ void CheckServerAliveThread::run()
 
 // File-scope helpers, all attested in the ELF symbol table. See the notes further down.
 void bf2ExitCallback(void*);                    // _ZN4dice3hfe15bf2ExitCallbackEPv    0x8138B50
-// Sends an unthrottled watchdog heartbeat for each load increment. Does nothing
-// when the engine is absent; this callback does not repaint loading progress.
+// Sends an unthrottled watchdog heartbeat for dedicated-server load increments.
+// Does nothing when the engine is absent; this callback does not repaint loading progress.
 void atIncLoadCallback();                       // _ZN4dice3hfe17atIncLoadCallbackEv   0x812E8D0
 void atIncLoadCallback()
 {
     if (bf2Engine)
+    {
+#if !DEDICATED
+        // BF2.exe 0x403ACB..0x403AD2 skips the heartbeat on a normal client.
+        // Dedicated PE 0x402A20 / ELF 0x812E8D0 have no runtime mode test.
+        if (!isDedicated())
+            return;
+#endif
         bf2Engine->markAsStillRunning();
+    }
 }
 extern EventManager*         eventManager;   //  = _ZN4dice3hfe12eventManagerE
 extern SettingsRepostitory*  settings;       // Shared settings repository.
@@ -2941,7 +2946,11 @@ bool BF2Engine::playDemo(bool fromConfigName, const std::string& name)
 
         if (started)
         {
-            // (*(void*)0)[9](0, 0);                      // 0x8137D91 - see the header block
+#if !DEDICATED
+            // BF2.exe 0x40653A..0x406544: successful playback disables HUD paint
+            // and update through the unguarded manager call.
+            hudManager->setPaint(false);
+#endif
             return true;
         }
     }
@@ -3364,14 +3373,9 @@ void BF2Engine::restartBF2()
 #if !DEDICATED
 #if (defined(__APPLE__) || defined(BF2_LINUX_CLIENT))
     // [CHOSEN, not recovered] GetModuleFileNameA + ShellExecuteA(exe, commandLine).
-    // [CHOSEN, not recovered] macOS: a game that restarts itself while it is the active
-    // application hands its place in front to the new instance; one that restarts in the
-    // background does not (Platform/macOS/RestartInFront.h).
-    bool inFront = false;
-#if defined(__APPLE__)
-    inFront = macos::clientHoldsFront();
-#endif
-    if (!macos::relaunchExecutable(commandLine, inFront))
+    // On macOS the running instance hands its place in front to the new one after its last
+    // frame (BF2.cpp); a background restart hands nothing over.
+    if (!macos::relaunchExecutable(commandLine))
         return;
 #else
     char fileName[MAX_PATH];

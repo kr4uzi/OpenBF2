@@ -14,6 +14,7 @@
 #include <cfloat>
 
 #include "../IGame.h"                             // game - createObjectOnAllClients (+0x78), the event sends
+#include "../Main/Game.h"
 #include "../IGameServer.h"                       // resetConnections (+0x4C) through game->queryInterface
 #include "../../Core/EventManager.h"              // eventManager->postEvent(cat, id, void*, float)
 #include "../../Core/Ids.h"                       // IID_IGameServer
@@ -184,6 +185,36 @@ void ServerGameLogic::suicide()
     }
     if (player)                                     // ELF retains this second test
         killPlayer(player, true, true);
+}
+
+// BF2.exe 0x4DBF80 / dedicated PE 0x455140 / ELF 0x81049E0. The cached physics node is read after
+// moving the vehicle; reset(true) is conditional, and does not query another interface.
+void ServerGameLogic::moveLocalHumanPlayerToPoint(const Vec3& position)
+{
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player)
+        return;
+    world::IObject* vehicle = player->getVehicle();
+    if (!vehicle)
+        return;
+    vehicle->setAbsolutePosition(position);
+    world::IPhysicsNode* physics = static_cast<world::IPhysicsNode*>(
+        world::object_detail::LayoutAccess::physicsNode(vehicle));
+    if (physics)
+        physics->reset(true);
+}
+
+// BF2.exe 0x4DBFD0 / dedicated PE 0x455190 / ELF 0x8104A50. getCamera selects the current view;
+// only the player and camera are guarded, not the IObject query result.
+void ServerGameLogic::moveLocalHumanCameraToPoint(const Vec3& position)
+{
+    world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
+    if (!player)
+        return;
+    world::ICameraObject* camera = player->getCamera();
+    if (camera)
+        static_cast<world::IObject*>(camera->queryInterface(world::IID_IObject))
+            ->setAbsolutePosition(position);
 }
 
 //  / PE 0x4558A0 (helper inlined).
@@ -546,6 +577,11 @@ void ServerGameLogic::uPlaying(float deltaTime)
     world::GameLogicExplosion::serverUpdateExplosionDamage();
     uPlayingInsideGameArea(deltaTime);
 
+#if !DEDICATED
+    // BF2.exe 0x4E0A24..0x4E0A4E: rendering workers skip the entire ticket gate.
+    // The dedicated PE 0x45983C and ELF 0x80FE962 start directly at the state test.
+    if (!isLightmapRenderingNode())
+#endif
     if (getBeginRoundState() == 3 && m_shouldUpdateTicketSystem)                     // +0x28C
         uPlayingTicketSystem(deltaTime);
 
@@ -2297,7 +2333,7 @@ void ServerGameLogic::setNumberOfTickets(unsigned int team, unsigned int tickets
     }
 }
 
-// getNumberOfTickets - 0x8103760, 57 B: the TeamScore +0x84 field, raw as shipped.
+// ELF 0x8103760 / BF2.exe 0x4DBB60 / dedicated PE 0x454CE0: TeamScore +0x84, raw as shipped.
 unsigned int ServerGameLogic::getNumberOfTickets(unsigned int team) const
 {
     if (team - 1 <= 1)
@@ -4011,7 +4047,10 @@ bool ServerGameLogic::resurrect(world::IProjectileObject* projectile, world::IOb
     if (player && L::objectTemplate(object)->getClassID() == world::CID_SoldierTemplate)
     {
         char voiceMessage[36];
-        std::strcpy(voiceMessage, "get_up");                           // leaves the stack tail untouched
+        std::strcpy(voiceMessage, "get_up");                           // leaves the padding untouched
+        // BF2.exe 0x4E1269 / ELF 0x08103249: the remote HUD payload ends with its channel.
+        const TargetChannel channel = TCLocal;
+        std::memcpy(voiceMessage + 32, &channel, sizeof channel);
 
         if (player->getIsAIPlayer())
         {

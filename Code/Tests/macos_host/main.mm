@@ -6,7 +6,8 @@
 // The run ends by clicking the window's close button programmatically.
 //
 //   macos_host_test [--seconds N] [--exclusive] [--fullscreen-cycle] [--no-synthetic]
-//                   [--simulate-focus]
+//                   [--simulate-focus] [--fullscreen-start]
+// --fullscreen-start enters the window's own Space during createWindow and logs its elapsed time.
 //
 // --simulate-focus reports focus through the host's test seam when AppKit cannot activate the
 // application (a locked screen); without it, input is only routed while the window really has
@@ -208,10 +209,12 @@ int main(int argc, char** argv)
     std::setvbuf(stdout, 0, _IONBF, 0);
     double seconds = 3.0;
     bool exclusive = false, fullscreenCycle = false, synthetic = true, simulateFocus = false;
+    bool fullscreenStart = false;
     for (int i = 1; i < argc; ++i)
     {
         if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
+        else if (!std::strcmp(argv[i], "--fullscreen-start")) fullscreenStart = true;
         else if (!std::strcmp(argv[i], "--fullscreen-cycle")) fullscreenCycle = true;
         else if (!std::strcmp(argv[i], "--no-synthetic")) synthetic = false;
         else if (!std::strcmp(argv[i], "--simulate-focus")) simulateFocus = true;
@@ -220,6 +223,11 @@ int main(int argc, char** argv)
     g_keyboardType = static_cast<SInt16>(LMGetKbdType());
     ClientHost& host = ClientHost::instance();
     if (!host.initApplication()) { std::printf("FAIL initApplication\n"); return 1; }
+
+    const bool launched = [NSRunningApplication currentApplication].finishedLaunching;
+    const bool regular = [NSApp activationPolicy] == NSApplicationActivationPolicyRegular;
+    std::printf("[launch] finished=%d regular=%d\n", launched, regular);
+    if (!launched || !regular) { std::printf("FAIL launch completion or activation policy\n"); return 1; }
 
     const host::HostDisplayModeInfo desktop = host.desktopMode();
     std::printf("[display] desktop %dx%d@%d, %zu modes, keyboard type %d ISO=%d, gamepads=%d\n",
@@ -231,28 +239,20 @@ int main(int argc, char** argv)
     host::HostWindowDesc desc;
     desc.title = "OpenBF2 S2.4 host test";
     desc.width = 800; desc.height = 600; desc.x = 50; desc.y = 50;
-    desc.fullscreen = false; desc.hideCursor = false;
+    desc.fullscreen = fullscreenStart; desc.hideCursor = false;
+    const double creationStart = now();
     if (!host.createWindow(desc)) { std::printf("FAIL createWindow\n"); return 1; }
-    // createWindow runs the pump once before it returns, and the host must take that run for
-    // "the look inside createWindow": an activation period's ten seconds count from the first
-    // look after it, the first frame's, and not from this one. The headless test (macos_input)
-    // makes that look through a test hook and never calls createWindow, so the two call sites in
-    // the host are checked only here: createWindow marks the time it runs, and the pump makes
-    // its look through the member that counts it. No pump runs before createWindow in this
-    // program, so every look so far must be one made inside it, and there must be one. A period
-    // that is still running must not have had its ten seconds started. A request that was
-    // granted inside createWindow leaves no period running; the two totals still decide then.
     {
-        const CocoaHostTestHooks::ActivationStats activation = CocoaHostTestHooks::activationStatsForTest(host);
-        std::printf("[activation] createWindow made %u look(s), %u of them marked as inside createWindow; "
-                    "activation period %s\n", activation.looks, activation.looksInsideCreateWindow,
-                    !activation.pending ? "not running"
-                                        : activation.lookCounted ? "running, its ten seconds started"
-                                                                 : "running, its ten seconds not started");
-        if (activation.looks == 0 || activation.looksInsideCreateWindow != activation.looks ||
-            (activation.pending && activation.lookCounted))
+        NSWindow* window = (__bridge NSWindow*)CocoaHostTestHooks::nativeWindow(host);
+        const bool active = [NSApp isActive];
+        const bool inSpace = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+        std::printf("[window] createWindow after %d ms: active=%d key=%d own Space=%d focus=%d\n",
+                    static_cast<int>((now() - creationStart) * 1000.0), active,
+                    window.isKeyWindow ? 1 : 0, inSpace, host.hasFocus());
+        if (active && (fullscreenStart ? !inSpace : (!window.isKeyWindow || !host.hasFocus())))
         {
-            std::printf("FAIL createWindow: its own pump was not taken for the look inside createWindow\n");
+            std::printf("FAIL createWindow: active application lacks %s\n",
+                        fullscreenStart ? "its full-screen Space" : "a focused key game window");
             return 1;
         }
     }
@@ -307,8 +307,13 @@ int main(int argc, char** argv)
             fullscreenAt = now();
             std::printf("[window] fullscreen=%d drawable=%dx%d\n", host.isFullscreen(), host.clientWidth(), host.clientHeight());
         }
-        if (fullscreenOn && now() - fullscreenAt > 0.7)
+        // [CHOSEN] Native full screen is asynchronous (NativeFullscreen.h): the window animates into
+        // its own Space after the request, so the cycle waits up to 3 s for it before switching back.
+        NSWindow* const nativeWindow = (__bridge NSWindow*)CocoaHostTestHooks::nativeWindow(host);
+        const bool inSpace = nativeWindow && (nativeWindow.styleMask & NSWindowStyleMaskFullScreen);
+        if (fullscreenOn && (inSpace || now() - fullscreenAt > 3.0))
         {
+            std::printf("[window] own Space=%d after %.1f s\n", inSpace ? 1 : 0, now() - fullscreenAt);
             host.setFullscreen(false);
             fullscreenOn = false;
             fullscreenDone = true;

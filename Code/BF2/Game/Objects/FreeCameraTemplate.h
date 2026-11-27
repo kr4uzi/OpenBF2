@@ -23,6 +23,7 @@ public:
     virtual ~FreeCameraTemplate();
     virtual void* queryImplementation(unsigned int);
     virtual IObject* createObject() const;           // new(0x294) FreeCamera [FRONTIER]
+    virtual bool makeScript(io::IStream* stream);
 
 protected:
     // The object reads its two FOVs directly, the same arrangement OverheadCameraTemplate has

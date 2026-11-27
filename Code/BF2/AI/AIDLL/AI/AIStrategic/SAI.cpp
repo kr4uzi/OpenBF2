@@ -453,12 +453,17 @@ void SAI::addStrategy(Strategy* strategy)
     m_activeStrategy = &m_strategies[0];
 }
 
-// One resumable pass, with a budget check after each
+// ELF 0x327E90. One resumable pass, with a budget check after each
 // advancing stage. Equality and NaN pass the budget check; state 4's frequency gate instead
 // requires an ordered strict greater-than. The prefix always runs, even for exhausted budgets.
 // State 5 and 16..18 are holes. The scheduled helpers retain their own named frontiers.
 void SAI::update(double budget)
 {
+    // [CHOSEN, not recovered] "AI control-point queries reject missing IDs" in
+    // docs/retail-fixes.md: filtering may leave no areas for strategies or bot orders.
+    if (AIStrategicObjectManager::getInstance()->getStrategicObjects().empty())
+        return;
+
     IBFTimer* const timer = static_cast<IBFTimer*>(CommonSingletonServer::m_iBFTimer);
     const double start = timer->getUpdateTime();
     updateRequestDenyTimers();
@@ -690,7 +695,9 @@ void SAI::setBotIsAlive(int botId)
     const Vec3& position = information->getPosition();
     AIStrategicObject* const object =
         AIStrategicObjectManager::getInstance()->getClosestObject(position, equipment, vehicle, m_side);
-    m_bots[botId]->respawn(object, this);
+    // [CHOSEN, not recovered] Same retail fix: no strategic spawn assignment without an area.
+    if (object)
+        m_bots[botId]->respawn(object, this);
     for (std::map<int, std::pair<int, int> >::iterator it = m_map5C.begin(); it != m_map5C.end(); ++it)
     {
         if (it->first == botId)
@@ -802,6 +809,9 @@ void SAI::handleChangingBot(int botId)
     const int equipment = information->getUnit()->getEquipmentType();
     AIStrategicObject* const closest =
         manager->getClosestObject(information->getPosition(), equipment, vehicle, m_side);
+    // [CHOSEN, not recovered] Same retail fix: every scripted area may have been rejected.
+    if (!closest)
+        return;
     if (closest->getIndex() == m_bots[botId]->m_currentlyOccupiedSquare)
         return;
     m_bots[botId]->occupy(manager->getStrategicObject(m_bots[botId]->m_currentlyOccupiedSquare), closest, this);
@@ -1117,6 +1127,9 @@ bool SAI::isPosInsideOwnedControlPoint(AIStrategicObject*& object, Vec3 position
 {
     bool inside = false;
     AIStrategicObject* const closest = AIStrategicObjectManager::getInstance()->getClosestObject(position, m_side);
+    // [CHOSEN, not recovered] Same retail fix: an empty area roster has no owned control point.
+    if (!closest)
+        return inside;
     if (!closest->hasObjectTypeFlag(AIStrategicObject::ControlPoint) || closest->getStatus(m_side) != StatusMap::Owned)
         return inside;
     float radius = 0.0f;

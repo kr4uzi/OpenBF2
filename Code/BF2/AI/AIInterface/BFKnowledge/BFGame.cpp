@@ -242,7 +242,10 @@ int BFGame::getNumberOfControlPoints(int team) const
 }
 
 // Control-point queries borrow the game logic's map.
-// The game logic and requested control-point ID must be valid.
+// The game logic must be valid. Missing IDs return neutral ownership, zero capture progress,
+// or false with zeroed info outputs.
+// [CHOSEN, not recovered] The end checks below implement docs/retail-fixes.md:
+// "AI control-point queries reject missing IDs". Retail dereferences find's result unchecked.
 
 // Map lookup, then vtable slot +0x1A0 on the object's primary table - which
 // `SpawnPoint::getActive` already recorded as `ControlPoint::getTeam`, with the warning that
@@ -253,8 +256,9 @@ int BFGame::getOwnerOfControlPoint(unsigned int index) const
 
     ControlPointMap* const points = gameLogic->getControlPointMap();
 
-    // no `end` check. See the block above.
     const ControlPointMap::iterator found = points->find(index);
+    if (found == points->end())
+        return 0;
 
     return static_cast<world::ControlPoint*>(found->second)->getTeam();
 }
@@ -262,27 +266,38 @@ int BFGame::getOwnerOfControlPoint(unsigned int index) const
 // The result is the
 // control point's float capture progress, forwarded in ST0 without conversion.
 // ELF calls the primary +0x1AC slot; PE adjusts to IControlPoint and calls +0x5C.
-// Like getOwnerOfControlPoint, neither the game/map nor find's result is guarded.
+// Missing IDs return zero capture progress.
 float BFGame::getControlPointTakeOverCounter(unsigned int index) const
 {
     typedef std::map<unsigned int, world::IObject*> ControlPointMap;
 
     ControlPointMap* const points = gameLogic->getControlPointMap();
     const ControlPointMap::iterator found = points->find(index);
+    if (found == points->end())
+        return 0.0f;
 
     return static_cast<world::ControlPoint*>(found->second)->getTakeOverCounter();
 }
 
-// Returns whether the control point can change teams and writes that value to active.
-// Writes the live position and template radius. The control-point ID must exist.
+// [CHOSEN, not recovered] Same retail fix: return ID existence, independently of active
+// (whether the point can change teams). Existing production callers discarded the return.
+// Writes the live position and template radius, or zeros all outputs for a missing ID.
 bool BFGame::getControlPointInfo(unsigned int index, Vec3& position, float& radius, bool& active) const
 {
     typedef std::map<unsigned int, world::IObject*> ControlPointMap;
 
     ControlPointMap* const points = gameLogic->getControlPointMap();
 
-    // no `end` check. See the block above.
     const ControlPointMap::iterator found = points->find(index);
+    if (found == points->end())
+    {
+        position.x = 0.0f;
+        position.y = 0.0f;
+        position.z = 0.0f;
+        radius = 0.0f;
+        active = false;
+        return false;
+    }
 
     world::IObject* const object = found->second;
 
@@ -295,7 +310,7 @@ bool BFGame::getControlPointInfo(unsigned int index, Vec3& position, float& radi
 
     active = !controlPointTemplate->getUnableToChangeTeam();
 
-    return active;
+    return true;
 }
 
 // bf2 0x83FF350. The id of the first control point (key order) whose XZ position lies in the box

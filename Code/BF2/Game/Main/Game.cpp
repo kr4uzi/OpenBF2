@@ -96,6 +96,7 @@
 #include "../../Core/Debug.h"            // the client chat display's unknown-type error
 #if !DEDICATED
 #include "../../Menu/BF2HudManager.h"    // the chat display and the radio speech localisation
+#include "../../Core/Random.h"          // failedExitVehicle's player-local seed
 #endif
 
 #include "../Objects/Game/TriggerManager.h"
@@ -141,6 +142,16 @@ world::IPlayerControlObject* findPlayerControlObject(world::IObject* object)
     return 0;
 }
 
+#if !DEDICATED
+// BF2.exe 0x00440030, using the raw draw at 0x0043FFA0.
+// [INFERRED] Local helper name; preserves the signed shift and range arithmetic.
+float failedExitRandomRange(Random& random, float minimum, float maximum)
+{
+    const int value = (static_cast<int>(random.getRaw() | 0x80u) >> 7) + 1;
+    return (static_cast<float>(value) * (maximum - minimum)) * 5.960464477539063e-8f + minimum;
+}
+#endif
+
 }
 
 Game::Game()
@@ -153,7 +164,7 @@ Game::Game()
     m_currentChannel = static_cast<TargetChannel>(0);
     m_currentType = static_cast<ChannelMessageType>(1);
     m_currentFlags = 0;
-    m_failedExitVehicleSoundId = 0;
+    m_failedExitVehicleSoundId = 0; // BF2.exe 0x004448AA: zero, despite the lookup's -1 sentinel.
     m_abortLoadingLevel = false;
 }
 
@@ -313,6 +324,7 @@ void Game::leaveSquad(int squad)
             player->getTeam(), squad, player->getId(), false);
 }
 
+// BF2.exe 0x441D20; dedicated PE 0x4340C0; ELF 0x805BAB0.
 std::string Game::listSquadMembers(int team, int squad)
 {
     std::string result;
@@ -329,6 +341,7 @@ std::string Game::listSquadMembers(int team, int squad)
     return result;
 }
 
+// BF2.exe 0x440740; dedicated PE 0x433A10; ELF 0x805B900.
 std::string Game::listSquads(int team)
 {
     std::string result;
@@ -350,14 +363,19 @@ std::string Game::listSquads(int team)
     return result;
 }
 
+// BF2.exe 0x441CB0; dedicated PE 0x434050; ELF 0x805B4B0.
 void Game::changeSquadName(const std::string& name, bool)
 {
     world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
     if (!player || !squadManager)
         return;
 
+    // Preserve the player-query order independently of argument evaluation order.
+    const int playerId = player->getId();
+    const int squadId = player->getSquadId();
+    const int team = player->getTeam();
     if (!static_cast<ISquadManager*>(squadManager)->setSquadName(
-            player->getTeam(), player->getSquadId(), player->getId(), name, false))
+            team, squadId, playerId, name, false))
         eventManager->postEvent(ECHud, 15, 0, 0.0f);
 }
 
@@ -586,10 +604,36 @@ void Game::setCurrentMapSize(unsigned int mapSize)
     m_currentMapSize = mapSize;
 }
 
-void Game::failedExitVehicle(int)
+// BF2.exe 0x00440E00. Dedicated PE 0x00433FC0 / ELF 0x0805D2D0 are empty.
+void Game::failedExitVehicle(int playerId)
 {
-    // The dedicated-server implementation is intentionally empty. The shared field is consumed
-    // only by the retail client, which lazily resolves and plays the failed-exit sound.
+#if !DEDICATED
+    world::IPlayer* const player = world::playerManager->getLocalHumanPlayer();
+    if (!player || world::playerManager->getPlayerFromId(playerId) != player)
+        return;
+    if (!player->hasFirstPersonView())
+        return;
+    if (world::object_detail::LayoutAccess::objectTemplate(player->getVehicle())->getClassID()
+            != world::CID_PlayerControlObjectTemplate)
+        return;
+
+    // Both tick loads are interpreted unsigned. Retail stores the sum as float
+    // before comparing, without wrapping the addition at UINT_MAX.
+    const float retryAtTick =
+        static_cast<float>(static_cast<double>(player->getFailedExitAtTick()) + 90.0);
+    if (!(static_cast<double>(static_cast<unsigned int>(WorldPref::getTickCount())) > retryAtTick))
+        return;
+
+    if (m_failedExitVehicleSoundId == -1)
+        m_failedExitVehicleSoundId = g_bfSound->getSoundId("failedExitVehicle");
+    g_bfSound->playSound(m_failedExitVehicleSoundId);
+
+    // BF2.exe 0x00440EF1: this seed is local to each refusal; global Rand is untouched.
+    Random random;
+    random.m_seed = static_cast<unsigned int>(playerId) & 0x7FFFFFFFu;
+    const int backoff = static_cast<int>(failedExitRandomRange(random, 0.0f, 1.5f) * 30.0f);
+    player->setFailedExitAtTick(static_cast<unsigned int>(WorldPref::getTickCount()) - backoff);
+#endif
 }
 
 bool Game::getAbortLoadLevel() const
@@ -1173,6 +1217,42 @@ bool Game::registerGameEvents()
     gameEventRegistry->registerEventMaker(GESetNightVisionEvent, "SetNightVisionEvent",      &g_setNightVisionEventMaker);
     gameEventRegistry->registerEventMaker(GEVerifyPlayerTeam,    "VerifyPlayerTeamEvent",    &g_verifyPlayerTeamEventMaker);
     gameEventRegistry->registerEventMaker(GEFixPlayerTeam,       "FixPlayerTeamEvent",       &g_fixPlayerTeamEventMaker);
+
+    // BF2.exe 0x443CAA..0x4441BA, DED PE 0x435812..0x435D28,
+    // ELF 0x805A01A..0x805AAAC: notification names follow the network makers
+    // in the same order under this function's one-time guard in every image
+    // (DED PE 0x434A79 / ELF 0x8057AFC), before GameClient/GameServer construction.
+    eventManager->registerEvent(ECNetwork, 1, "ECNetworkNEDataBlockReady");
+    eventManager->registerEvent(ECNetwork, 11, "ECNetworkNEStringReceived");
+    eventManager->registerEvent(ECNetwork, 2, "ECNetworkNELoadComplete");
+    eventManager->registerEvent(ECNetwork, 3, "ECNetworkNEStartSimulation");
+    eventManager->registerEvent(ECNetwork, 4, "ECNetworkNEDatabaseComplete");
+    eventManager->registerEvent(ECNetwork, 5, "ECNetworkNEReset");
+    eventManager->registerEvent(ECNetwork, 6, "ECNetworkNESelectSpawnGroup");
+    eventManager->registerEvent(ECNetwork, 7, "ECNetworkNESelectTeam");
+    eventManager->registerEvent(ECNetwork, 8, "ECNetworkNESelectKit");
+    eventManager->registerEvent(ECNetwork, 9, "ECNetworkNEPlayerSpawned");
+    eventManager->registerEvent(ECNetwork, 10, "ECNetworkNEPlayerDead");
+    eventManager->registerEvent(ECNetwork, 12, "ECNetworkNESuicide");
+    eventManager->registerEvent(ECNetwork, 13, "ECNetworkNERadioMessageReceived");
+    eventManager->registerEvent(ECNetwork, 14, "ECNetworkNETraceComplete");
+    eventManager->registerEvent(ECNetwork, 15, "ECNetworkNETraceFailed");
+    eventManager->registerEvent(ECNetwork, 16, "ECNetworkNETraceResourceConnect");
+    eventManager->registerEvent(ECNetwork, 17, "ECNetworkNENetworkableDestroyed");
+    eventManager->registerEvent(ECNetwork, 18, "ECNetworkNERemoteConsoleCommand");
+    eventManager->registerEvent(ECNetwork, 19, "ECNetworkNERemoteConsoleFeedback");
+    eventManager->registerEvent(ECNetwork, 20, "ECNetworkNEEndOfRoundGuard");
+    eventManager->registerEvent(ECGame, 1, "ECGameGNDestroyObject");
+    eventManager->registerEvent(ECGame, 2, "ECGameGNDestroyPlayer");
+    eventManager->registerEvent(ECGame, 3, "ECGameGNCreateObject");
+    eventManager->registerEvent(ECGame, 4, "ECGameGNCreatePlayer");
+    eventManager->registerEvent(ECGame, 5, "ECGameGNImmediateCreatePlayer");
+    eventManager->registerEvent(ECGame, 6, "ECGameGNPlayerSpawned");
+    eventManager->registerEvent(ECGame, 7, "ECGameGNSelectSpawnGroup");
+    eventManager->registerEvent(ECGame, 8, "ECGameGNPlayerDead");
+    eventManager->registerEvent(ECGame, 9, "ECGameGNEnterVehicle");
+    eventManager->registerEvent(ECGame, 11, "ECGameGNExitVehicle");
+    eventManager->registerEvent(ECGame, 10, "ECGameGNFreeCameraFire");
 
     return true;
 }

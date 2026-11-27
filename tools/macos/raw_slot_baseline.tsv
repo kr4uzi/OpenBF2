@@ -4,6 +4,7 @@
 # inventoried, not individually re-proven, in c-raw-slots (docs/macos-c-raw-slots.md).
 Code/BF2/Core/DebugCounterManager.cpp	return reinterpret_cast<Fn>((*reinterpret_cast<void***>(object))[byteOffset / 4]);	debug-only: renderer debug objects (DebugTextWriterFixed/DebugLineGraphRenderer) through ELF-shaped offsets; providers are positional stubs - UNVERIFIED
 Code/BF2/Game/GameLogic/GameLogic.cpp	void** const vtbl = *reinterpret_cast<void***>(framework);	explicit PE-order table: PostProductionFrameWork +0x24 = native_post ordinal 9 (setFog, a1-audited) - correct on macOS
+Code/BF2/Game/GameLogic/Player.cpp	return reinterpret_cast<Function>((*static_cast<void***>(post))[ordinal]);	commanderPostSlot: BF2.exe 4FC6F3/4FC726/4FC870 fog slots 10/9; explicit PE-order PostProductionFrameWork table on MSVC and native providers, no destructor shift
 Code/BF2/Game/Objects/Base/SimpleObject.cpp	(*reinterpret_cast<void***>(manager))[0x18 / 4])(manager, geometry));	non-macOS arm only (non-static non-MSVC client); macOS uses the typed IGeometryTemplateManager
 Code/BF2/Game/Objects/Base/SimpleObjectTemplate.cpp	void** managerVtable = *reinterpret_cast<void** volatile*>(0);	dedicated shipped null-receiver fault reproduction
 Code/BF2/Game/Objects/Base/SimpleObjectTemplate.cpp	(*reinterpret_cast<void***>(geometry))[0xA8 / 4])(geometry, getAnchor());	dedicated arm after the shipped null-receiver fault (unreachable)
@@ -151,3 +152,4 @@ Code/BF2/Scene/Object/ObjectPriorityCalculator.cpp	void** renderVtable = *reinte
 Code/BF2/Scene/Object/ObjectPriorityCalculator.cpp	renderVtable = *reinterpret_cast<void** volatile*>(0);	dedicated null-receiver reproduction / IResourcePriority has no native provider (queryComponent answers null)
 Code/BF2/Scene/Object/ObjectPriorityCalculator.cpp	reinterpret_cast<SetPriority>((*reinterpret_cast<void***>(priority))[0x10 / 4])(	dedicated null-receiver reproduction / IResourcePriority has no native provider (queryComponent answers null)
 Code/BF2/Scene/Object/ObjectPriorityCalculator.cpp	reinterpret_cast<SetPriority>((*reinterpret_cast<void***>(priority))[0x10 / 4])(	dedicated null-receiver reproduction / IResourcePriority has no native provider (queryComponent answers null)
+Code/BF2/Game/GameLogic/Player.cpp	return reinterpret_cast<Function>((*static_cast<void***>(object))[ordinal]);	explicit PE-order table: native_post::slot ordinals 13/21/22/23 (same adapter as ExplosionEffectFlashBang; RendDX9 PostProductionFrameWork.cpp table)

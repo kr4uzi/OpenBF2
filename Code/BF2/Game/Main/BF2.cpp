@@ -2,6 +2,8 @@
 
 #if defined(__APPLE__) && !DEDICATED
 #include "../../Platform/macOS/Warmup.h"   // [CHOSEN] +warmupLevel (port addition)
+#include "../../Platform/macOS/NativeFullscreen.h"
+#include "BF2ClientSeams.h"
 #endif
 #include "BF2.h"
 
@@ -59,6 +61,10 @@ namespace memory { void memory_update_modules(const char*) { } }
 #  include "../../Menu/IMenuLogic.h"                 // menuLogic - the active menu
 #  include "BF2Console.h"                            // IMenuLogic::getConsole()->getConsoleActive()
 #  include "../../Platform/Host/ClientHost.h"
+#  include "../../Platform/macOS/MacSystem.h"
+#  if defined(__APPLE__)
+#    include "../../Platform/Gfx/Metal/EffectShaders.h"
+#  endif
 #endif
 
 namespace dice {
@@ -256,6 +262,22 @@ void BF2::handleInGameWinMessages()
         exit(0);                                    // no engine shutdown, as on Win32
     }
 
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] Completed effects must feed Metal prebuild even when focus loss
+    // skips menu/world rendering and Present. No drawable or focused window is needed here.
+    bf2metal::createFinishedEffectShaders();
+
+    // [CHOSEN, not recovered] Native full-screen controls and live GSFullScreen changes use
+    // the same renderer reset, settings update and event as Alt+Enter. Startup pumps can run
+    // before the renderer exists; synchronize only after its initialization.
+    if (m_engine && m_engine->getWindow() && m_engine->getBF2Render()
+        && m_engine->getBF2Render()->getRenderer())
+        macos::reconcileFullscreen(m_engine->getWindow()->getFullscreen(),
+                                  settings->boolGet("GSFullScreen", false),
+                                  host::ClientHost::instance().isFullscreen(),
+                                  [this] { m_engine->getBF2Render()->toggleFullscreen(); });
+#endif
+
     unsigned int deviceMask = static_cast<unsigned int>(-1);
     if (menuLogic)
         deviceMask = static_cast<unsigned int>(-2);
@@ -451,6 +473,13 @@ static int bf2NativeMain(const std::string& commandLine)
         bf2->handleInGameWinMessages();
     }
     while (bf2Engine->mainLoop());
+
+#if defined(__APPLE__)
+    // [CHOSEN, not recovered] A game that restarted itself (BF2Engine::restartBF2) hands its place
+    // in front to the instance it started, after its own last frame (Platform/macOS/MacSystem.h).
+    // Nothing happens when no instance was started.
+    macos::handOverActivation(macos::relaunchedProcessId());
+#endif
 
     Vars::enableProfiling(false);
     if (Window* window = bf2Engine->getWindow())

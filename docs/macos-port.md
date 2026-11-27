@@ -38,6 +38,215 @@ These rules apply to every native (non-MSVC-x86) arm; source comments cite them.
   audited adapter; see [c-raw-slots](macos-c-raw-slots.md) and the gate
   `tools/macos/raw_slot_scan.py`.
 
+## Native full screen
+
+`[CHOSEN, not recovered]` Retail is Windows-only: a full-screen start creates a `WS_POPUP`
+window and the renderer switches the display mode. The Cocoa host instead uses AppKit's native
+full screen (`-[NSWindow toggleFullScreen:]`): with `+fullscreen 1` (retail's default,
+`GSFullScreen`) or after the system's full-screen command (Ctrl+Cmd+F, the window's green button
+or View > Toggle Full Screen) the game window moves into its own Space. Retail's Alt+Enter toggle
+(`GIAltEnter`) stays behind `game.allowToggleFullscreen`, which is off by default as in retail;
+the host adds no Option+Return shortcut. It covers the
+display, the menu bar and the Dock hide and reappear at the screen edges as for any full-screen
+Mac application, the Space can be left and re-entered with a swipe, Mission Control or Cmd-Tab,
+and the title bar shows when the pointer reaches the top of the screen. It replaces a borderless
+screen-size window with hidden Dock and menu bar (`NSApplicationPresentationHideDock |
+HideMenuBar`), which stayed on the desktop's Space. The rules are in
+`Code/BF2/Platform/macOS/NativeFullscreen.h`; `CocoaHost.mm` starts the transitions it answers.
+
+- **Display mode and drawable.** Unchanged: the display mode is never switched, the drawable
+  keeps the back-buffer size the engine set (`resizeClient` -> `updateDrawable`) and Core
+  Animation scales it to the Space's view, nearest-neighbour at whole-number factors and linear
+  otherwise (`updateMagnification`, re-run when the window's size or backing scale changes). On a
+  display with a camera housing the view ends below the menu-bar strip, as AppKit lays out
+  full-screen windows by default.
+- **Asynchronous.** `setFullscreen` sets what `isFullscreen()` reports at once (the engine's
+  window code reads it back) and the window follows: the toggle is queued for the run loop, the
+  animation takes about half a second, and AppKit reports its end to the window delegate. One
+  transition at a time; a switch made during one is applied when it ends. A switch at run time
+  does not wait for the transition, the frame loop keeps pumping. `createWindow` does wait for a
+  full-screen start's transition, three seconds at most (next item).
+- **The start.** The engine owns the main loop and does not read AppKit's event queue while it
+  initialises, for seconds before and after the window is created. The host therefore does
+  three things itself, each with a limit:
+  1. *Launch.* `initApplication` creates the application, the delegate and the menu and
+     completes AppKit's launch in a real run-loop pass: `[NSApp run]`, which
+     `applicationDidFinishLaunching:` stops (five seconds at most). Only then does the process
+     become a regular application (Dock icon, `setActivationPolicy:`): set before the launch has
+     finished, an unbundled program's menu bar stays dead until the next application switch.
+  2. *Activation at launch.* `[NSApp activate]` on macOS 14 and later, where activation is
+     cooperative (the launcher yields to the game it started). The host runs the event loop
+     until AppKit reports the application active, one second at most. An unanswered request
+     can be repeated when the window appears; it never falls back to force-activation on
+     these systems. On macOS 11 to 13 only, `activateIgnoringOtherApps:YES` is requested once
+     at launch and never repeated. Scripted runs with forced focus never ask.
+  3. *Window.* `createWindow` first reads the queue once, so an activation that arrived while
+     the engine started, or its loss, counts. On macOS 14+ it makes another cooperative request
+     when the inactive application's window is ordered in, then one per second while the
+     window remains visible and not minimized, for at most five seconds after order-in. This
+     includes an application that was active at launch and lost the activation before it had
+     a window: a launch activation is not the player's game window yet. Requests run with the
+     event loop, without another blocking wait; an engine stall does not
+     produce a burst of overdue requests or extend the deadline. Activation after order-in ends
+     these requests permanently, so switching away afterwards never restarts them. The
+     activation makes the game window the key window (`makeKeyAndOrderFront:`, as AppKit
+     restores a key window on activation) and starts the waiting Space entry. A full-screen start of an active
+     application goes into its Space at once while the host runs the event loop until the
+     transition has ended and that Space is the active one. On screen that is one standard
+     full-screen animation at window creation instead of a window that sits on the desktop
+     until the first frame.
+  A full-screen request made while the application is inactive still waits for its activation:
+  going into a new Space switches the user there. While another application remains in front,
+  the system decides whether to grant a cooperative request. If it refuses them all, the client
+  stays windowed until clicked or switched to. An activation received later, including after
+  a permission prompt or after all bounded waits and requests have expired, immediately starts
+  the pending Space entry. A queued entry is not made when the application has become inactive
+  meanwhile.
+
+  An owner-run Intel macOS 15.7 start of `e976b82b` through the test kit's start application
+  showed the gap this closes: the launch request was answered after 32 ms, the start
+  application's hand-over saw the game active and stopped, and the application was inactive
+  again when `createWindow` ordered the window in, about two seconds later. The host then made
+  no further request (an earlier activation had ended them), and the window waited on the
+  desktop until it was clicked. Which process took the activation is not in that log; the
+  order-in line now names the frontmost application.
+
+  Owner-run Intel macOS 15.7 starts of `bfeab3d5` showed why one early request is insufficient:
+  the shell start logged an unanswered launch request after 1020 ms and stayed inactive and
+  windowed. A LaunchServices start met the start application's first local-network permission
+  prompt and also stayed inactive. These runs did not establish which request macOS would
+  accept later. The bounded cooperative repeats address that timing; their on-screen result
+  still needs the coordinator's next starts.
+- **A refused entry.** AppKit refuses a transition during another animation or a gesture. An
+  entry is then tried again while the application is active, three attempts in all, 0.3 s
+  apart; with an inactive application it waits for the activation. AppKit reports a refused
+  entry as `windowDidFailToEnterFullScreen`, as `windowDidExitFullScreen` while the entry
+  runs, or as both in that order; the host counts that as one refusal. `-toggleFullScreen:` has
+  no direction, so the queued toggle is made only while the window is not yet where the
+  transition leads. A transition that AppKit has not announced by the end of `createWindow`'s
+  wait is given up; the game stays windowed until the next switch or activation.
+- **A game that restarts itself** (mod switch, `BF2Engine::restartBF2`). After its last frame
+  the old instance, when it is the active application, waits until the new process is a regular
+  running application (two seconds at most) and hands the front over as the launcher does:
+  `yieldActivationToApplication:` and `activateFromApplication:options:` (macOS 11 to 13:
+  `activateWithOptions:`). A restart made in the background hands nothing over.
+- **Windowed full-screen controls.** A windowed game window remains
+  `NSWindowCollectionBehaviorFullScreenPrimary` and is not resizable. Its green button and
+  View > Toggle Full Screen (Ctrl+Cmd+F) request either mode. Only the full-screen transition
+  adds the resizable style; returning removes it. A resolution change made in full screen
+  applies to the restored window.
+- **Window size and Retina.** `[CHOSEN, not recovered]` Windowed content keeps one point per
+  back-buffer pixel when it fits. Otherwise it scales proportionally to the largest size that
+  fits the screen's visible area after window decorations are subtracted. The Retina backing
+  scale does not divide the window size; a 1440x900 buffer on a 1440x900-point desktop nearly
+  fills the available area instead of becoming a 720x450-point window. The drawable retains
+  the selected pixel dimensions.
+- **Resolution choices.** `[CHOSEN, not recovered]` macOS lists GUI-usable CoreGraphics modes
+  by their logical point sizes: the HiDPI "looks like" size, or the pixel size for 1x modes.
+  When HiDPI modes exist, sizes exceeding the largest HiDPI logical size in either dimension
+  are omitted; non-Retina displays keep all usable sizes. The list is deduplicated and sorted
+  by width, height and refresh rate; a reported 0 Hz uses the panel rate. Listed modes are
+  internal render sizes; they do not switch the display. On the 2560x1600 MacBook Pro panel
+  this yields 720x450, 800x600, 825x525, 1024x640, 1024x768, 1152x720, 1280x800, 1440x900,
+  1650x1050 and 1680x1050. The M2's 2560x1664 panel offers 1024x665, 1280x832, 1470x956 and
+  1710x1112. New M2 profiles select the listed desktop point size (1470x956 at that desktop
+  setting), rather than its 2940x1912 backing size.
+  VideoOptions retains 32-bit modes at least 800 pixels wide, and the menu copies that list
+  without an aspect-ratio, maximum-size or desktop-size filter. Medium and Low explicitly
+  select 800x600, High selects 1024x768, AA is Off and view-distance scales are 0.9, 0.75 and
+  1.0 respectively, as recorded for retail `RendDX9.dll` 0x1000F390. This preset behavior is
+  shared across platforms. Selecting a listed resolution afterwards selects that exact entry.
+  Headless checks: `bf2_display_mode_policy_check` covers logical mode selection and window fitting;
+  `python3 Code/Tests/macos_resolution_list.py out/build/client-effects` checks the real
+  renderer/options list and Medium preset using an adapter metadata fixture controlled by the
+  paired display-mode environment hooks, after building `bf2_client`. Neither check creates
+  a window or starts the game. With the ten Intel logical modes at 60 Hz and a 1680x1050
+  desktop, the nine sizes at least 800 wide reach the options list, including 1680x1050.
+- **Run-time mode and layout.** `[CHOSEN, not recovered]` A full-screen switch takes the
+  renderer's applied video settings, including MSAA, depth and vsync. The startup carrier can
+  still contain 800x600 at 85 Hz after a profile has applied 1680x1050 at 60 Hz with 8x MSAA;
+  it is refreshed before each switch. Entry preserves a mode listed by the adapter, including
+  its refresh rate. An unlisted mode takes `DisplayModePolicy::preferredMode`, as for the
+  full-screen start policy; window-only sizes added by `injectRequestedMode` do not count as
+  display modes. Unsupported full-screen MSAA selects Off. Leaving keeps the applied mode.
+  Both directions resize the host before device reset and send the same pre-change and packed
+  resolution events as video-options apply. The drawable, restored window, menu movie scale,
+  Swiff viewport and pointer mapping therefore use the same render dimensions. The layer keeps
+  `kCAGravityResize` and `updateMagnification` scaling.
+
+  Retail `BF2.exe` (1.50, x86) at 0x453130–0x4531AB reuses the carrier and posts only renderer
+  event 1, with height alone. Its engine handler at 0x4097DB–0x409860 resizes the movie and
+  Swiff viewport only for event 2, whose payload packs width and height. Those shared recovered
+  bodies retain their behavior; Cocoa adds the mode selection and resolution notifications.
+  `macos_resolution_list.py` also runs the production toggle with window/reset/event fixtures:
+  desktop and smaller listed profiles, an unlisted refresh, an injected window size, supported
+  and unsupported MSAA, leaving after an options change, and both switch directions. It checks
+  host resize before reset and the packed layout notification afterwards. These are headless
+  contract checks; AppKit animation and rendered menu appearance still need an on-screen check.
+- **The user leaving the Space.** The title bar's button and the system's full-screen shortcut
+  can take the window out of its Space. At the next engine message pump, native requests and
+  completed AppKit transitions run through `BF2Render::toggleFullscreen`, the path of retail's
+  Alt+Enter toggle: window flag, renderer reset, `GSFullScreen` and renderer event all follow.
+  One more full-screen command then returns to full screen. Entry through the green button or
+  shortcut follows the same rules. A live `SettingsManager.boolSet GSFullScreen 0` or `1` also uses this path; an
+  explicit settings change takes precedence over the host when both differ from the engine.
+  Video options expose resolution and quality rather than a separate full-screen setting.
+  `+fullscreen` still selects the startup mode. Synchronization waits for the renderer to exist
+  and runs outside AppKit callbacks; it uses the applied or preferred back-buffer mode described
+  above and the existing focus and mouse rules. Pending, refused and timed-out Space transitions
+  retain the requested mode and the retry/activation policy above.
+- **Focus and mouse.** The engine's focus is what AppKit reports: the game window is the key
+  window, the application is active, and the window's full-screen Space is the active one
+  (`syncFocus`, called from the delegate's callbacks, the active-Space notification and once per
+  pump, so a change no callback reported lasts one frame). Leaving the Space for another
+  application deactivates the game as any application switch does: the focus gate closes, the
+  cursor is shown and re-associated, and returning restores capture. Leaving it for an empty
+  desktop Space can leave the application active with its window key; the host asks
+  `window.isOnActiveSpace` and treats a Space that is not the active one as unfocused
+  (`spaceHidden`), so the mouse is released there too. Apart from the activation making the
+  game window key (The start, item 3), nothing in the host asks for key status
+  or repairs focus; input that the gate drops while the application is in front is reported
+  (`[host] input dropped: ...`, once a second at most).
+- **What this replaced.** Until this sequence the host asked for activation when the window was
+  shown and noticed the answer with the first frame, seconds later; the window sat on the
+  desktop as a window until then. Around that it had a ten-second activation period with
+  repeated requests, an accounting of when the host first looked at it, a launcher-or-bystander
+  rule by process ancestry, a list of clicked-away applications, a restart marker in the
+  environment, a reset through the Dock, a fallback to the system's state and a focus
+  self-repair. Those mechanisms are gone. Startup requests now have only a number, timestamps
+  and a five-second deadline; none use ancestry, clicks, the Dock or a forced fallback on
+  macOS 14+. What remains is listed above: `syncFocus`, the wait of an inactive application's full-screen request, the
+  dropped-input report, and three bounded waits in which the host runs the event loop itself
+  (activation 1 s, Space entry 3 s, restart hand-over 2 s). In those waits events go to AppKit
+  only; input made then does not reach the engine. Any events held by the loading service go
+  to AppKit first, before newer queued events, without being routed to game input.
+- **Log.** `[host] launch: finished after N ms (activation policy at the start: ...)`,
+  `[host] launch frontmost: ...` and
+  `[host] activation requested at launch (#1, 0 ms since the first request)`, then
+  `[host] application active after N ms` or `[host] application not activated within N ms ...`
+  An inactive start on macOS 14+ continues with
+  `[host] window ordered in while the application is inactive (frontmost: NAME pid N)` when
+  the launch activation was answered and then lost, and with
+  `[host] activation requested at window order-in (#2, N ms since the first request)` and
+  `[host] activation requested at visible window (#3, N ms since the first request)` (and so
+  on, at least a second apart, within five seconds of order-in). Activation logs
+  `[host] application active N ms after the first request (last request #K, M ms ago)` once,
+  including an activation after requests have ended. The last request number and its age show
+  which request preceded AppKit's answer; they do not prove that request caused the activation.
+  `[host] full screen: ...` lines mark each step: entering, in the Space after N ms, windowed,
+  left through the system, waiting for the activation, a refused transition and its retries,
+  the Space off or on screen. `[host] restart: ...` says what a restart handed over.
+
+The revised requests were compiled and checked headless (`Code/Tests/macos_input`: request
+spacing and deadline, visibility, single requests on 11-13, forced focus, and delayed activation
+starting the pending full-screen entry, a launch activation lost before the window exists and
+renewed at order-in, alongside focus, dropped input and refusal checks).
+Nothing that opens a window was run for this revision. `Code/Tests/macos_host`, including its
+launch checks and `--fullscreen-start`, was compiled only. Actual cooperative activation after
+a prompt, full-screen animation, restart hand-over and active-Space focus remain unverified for
+this revision. The macOS 11 to 13 branches were simulated only; no such system was at hand.
+Apple silicon has not run this sequence.
+
 ## PR #55 integration
 
 The owner-requested PR #55 integration replaces S2.7's
@@ -57,6 +266,63 @@ has been tested.
 S2.10 rules 5, 6 and 8 (POSIX publication, UTF-16 file boundaries and packed data)
 were documented in the S2.10 threads notes, including the
 complete volatile/Interlocked inventory, Intel checks and owner-run M2 TSan bundle.
+
+## Loading without the spinning wait cursor
+
+`[CHOSEN, not recovered]` A level load runs on the main thread for tens of seconds without a
+pump. Windows queues a busy application's messages and animates its cursor (the menu's
+`cursor_busy.ani`) by itself; macOS shows the spinning wait cursor over an application that leaves
+the window server's events unread for a few seconds, and only the host animates the game's `.ani`
+cursor. Retail repaints its loading screen at every throttled load step (`GameLogic`'s load
+callback, 1/30 s) and at every effect load (`shaderLoadingEvent`), both through
+`ECMenuMenuEvent_UpdateLoadingScreen`. There `ModuleGame::handleEvent` now also calls
+`ClientHost::serviceWhileBusy()` (at most every 50 ms, whether or not the screen is repainted):
+the Cocoa host takes the queued events from the window server and holds them, and moves the cursor
+on. The next pump delivers the held events first, in order, so focus changes, key equivalents and
+game input reach the engine when they did before; a press outside the game view made during the
+load (title bar, menu bar) is not handed to AppKit late, consecutive pointer moves are kept as the
+last one, and a quit request (the Dock's Quit) is made by the next pump. A focus callback made by
+the busy run loop leaves focus unchanged until the next pump. Busy servicing pauses while a
+full-screen transition is queued or running, so its toggles and callbacks remain with the real
+pump or the host's bounded waits. Those AppKit-only waits drain held events first without routing
+them to the engine (see Native full screen above). Stretches of a load that
+neither step the load counter, load an effect nor wait for an effect build (next paragraph) are
+not covered. The SDL host does nothing.
+
+The longest stretches of a first load (no cached effects yet) are waits for native effect builds:
+`RaShader::build` begins a pass of every effect it loads, the pass needs the effect's shaders
+(`Effect::ensureShaders`), and one build takes up to seconds. On the macOS main thread the effect
+facade therefore waits with a service (`bf2fx::native::wait`, `Service`) that calls
+`ClientHost::serviceWhileBusy()` about every 50 ms. The main thread then never runs the build
+itself: a job that no queue worker has started gets a thread of its own at once, with the main
+thread's stack size and QoS class (what the build had on the main thread), and a job that a worker
+is running is waited for in the same timed waits. The synchronous build of a source that the
+refusal table does not know (`bf2fx::native::compile`) runs the same way. Entries, cache writes
+and compiler diagnostics are unchanged; other threads and the Linux client wait as before.
+The service is supplied by the facade, so the effect library has no host dependency. The
+completion callback stays on the build thread before its future becomes ready: its captured
+cache inputs, locked pending map/trace and synchronized warm-up counters are worker-safe.
+If starting a serviced build thread fails, its future carries the exception instead of
+compiling inline. A build/completion exception on that thread also settles the shared future
+and retires the job; a throwing service leaves the owned build running for another waiter.
+Headless check: `bf2_fx_wait_check` (built on request) covers queue bypass, repeated servicing,
+duplicate submissions/concurrent waiters, completion/service exceptions, refusals and identical
+compiled entries. It uses real compilation; a held completion callback makes the long wait
+deterministic. On-screen loading, cursor animation and the absence of the spinning wait cursor
+still need a client run.
+
+### Shader compilation while the window is in the background
+
+`[CHOSEN, not recovered]` Native effect compilation and the Metal library and pipeline builds
+run on worker threads; they do not advance once per frame and need no drawable. Deactivating a
+full-screen window closes the engine's frame gate: it sleeps 100 ms and skips menu and world
+rendering. Completed effects used to create their device shader objects only at `Present`, so
+an inactive client could finish its effect cache but leave those effects out of the Metal
+prebuild queue until it rendered again, and the build stood still. The message pump now also
+publishes completed effects (`bf2metal::createFinishedEffectShaders`, a few per call), without
+drawing or changing focus. The workers' priorities are unchanged and the client declares no
+activity to the system for these builds; whether background throughput needs either has not
+been measured.
 
 ## G2 graphics subset
 
@@ -134,6 +400,23 @@ It replaces the earlier callback wrapper, which did not fire in the owner captur
 This intentional client policy applies on every rebuilt platform; profile status,
 movie files, native joining and packet behavior are unchanged. Live dialog/join
 validation remains coordinator work.
+
+## Overlays without multisampling
+
+Under multisampling, RendDX9 draws its overlays (the HUD, name tags, debug text, the frame
+counter and the console) with `D3DRS_MULTISAMPLEANTIALIAS` off (`Renderer::render`, PE
+0x100306D2). D3D9 then writes every sample with the pixel centre's coverage and colour: the
+overlays come out aliased, as without multisampling. Their quads use the D3D9 pixel-centre
+convention, so their edges run through pixel centres; `Font::Ported` relies on that for its
+half-texel coordinates. The Metal backend used to ignore the state. With the standard sample
+positions every edge pixel was then half covered: at 8x every glyph of the console font got a
+half-intensity column on each side, and the right-hand one showed the first column of the next
+atlas cell (the font has no gutter). `[CHOSEN, not recovered]` emulation in
+`Platform/Gfx/Metal/DrawBridge.inc` (`passFor`): a draw with the state off on a multisampled target
+runs in a render pass whose sample positions all lie on the pixel centre. A change of the state
+starts a new pass. A GPU without programmable sample positions keeps the standard positions. The
+GPU check `macos_metal_device` (`msaaAliasedGlyphChecks`) draws a glyph quad on the 4x back buffer
+with the state on and off.
 
 ## Offline shader coverage (S1c)
 
@@ -410,7 +693,7 @@ compile result of this tree, not an estimate, unless it says otherwise.
 | Client objects | `bf2_client_objects`, DEDICATED=0, now with `BF2_PLATFORM_POSIX`, `_MACOSX` and `BF2_STATIC_PLUGINS=1` on macOS. 886 TUs, 763 compile. |
 | Plugin images | Static libraries: `bf2_renddx9_static` (120 TUs), `bf2_swiffplayer_static` (40), `bf2_bf2audio_static` (16), plus `bf2_plugin_kit_static` (the RendDX9Abi heap/vc71-string/frontier kit, 4) and `bf2_vorbis_static` (Ogg/Vorbis, 23 C). Manifests copied from `Code/Build/{renddx9,swiffplayer,bf2audio}.cmd`; keep them in step. |
 | Plugin loading | `Code/StaticPlugins/StaticPlugins.cpp` holds a name table (`RendDX9`, `SwiffPlayer`, `BF2Audio`). The POSIX `LoadLibrary`/`GetProcAddress`/`FreeLibrary` wrappers in `Core/PluginDll.cpp` consult it before `dlopen`, so `LoadLibraryBf("SwiffPlayer.dll")` and `BfSoundModule::init`'s BF2Audio lookup work unchanged. The per-image `initDll`/`deinitDll` pairs are renamed by compile definition (`bf2_renddx9_initDll`, `bf2_swiffplayer_initDll`); BF2Audio's `getSoundEngine`/`shutdownSoundEngine` keep their names. |
-| Renderer | Not linked by default (`BF2_MACOS_LINK_RENDDX9=OFF`): the image is Direct3D 9 throughout. Without its row, `LoadLibraryBf("RendDX9.dll")` returns null and `BF2Render::init` takes its shipped failure return. That is the honest null renderer until stage 3; no fake renderer is registered. |
+| Renderer | Always linked into `bf2_client` (Metal). The former `BF2_MACOS_LINK_RENDDX9` switch, OFF in the renderer-free stages described below, was removed on 2026-11-23. |
 | Input | Since S2.7's wiring: `MacInputDeviceManager` (package S2.4) is registered under the DX8 CID and name in `InputDX8Module::getClassList` on macOS; the five DirectInput TUs (`DX8InputDeviceManager`, `KeyboardDevice`, `MouseDevice`, `GameControllerDevice`, `FalconDevice`) are removed from the macOS client manifest; `CocoaHost.mm` and `MacGamepad.mm` build as ARC Objective-C++ in `bf2_client` (`OBJCXX` enabled on Darwin) and the target links AppKit, QuartzCore, Metal, GameController, Carbon and IOKit. All S2.4 TUs and `ModuleRegistry.cpp` compile in the `macos-x64` client build. |
 | TextureAtlasBuilder | Not built. Its only caller is the renderer. |
 | Server regression check | After these changes `bf2` (macOS server) rebuilt from clean in the same tree and linked strictly. Not run. Linux and MSVC were not built (no toolchain on this machine); every shared-source change is behind `!defined(_WIN32)`, `BF2_STATIC_PLUGINS` or `BF2_BUILD_MACOS`, or is toolchain-neutral (`BF2.h`, `Bf2HudBuilder.cpp`). |
@@ -1306,6 +1589,29 @@ so its Bink stops were not exercised then. P2 supersedes those macOS stops; its
 report recorded the caller checks and focused tests.
 No client movie, menu or loading-screen runtime result is claimed for P2.
 
+The macOS voice client's capture device is the **system default input only**
+(`[CHOSEN, not recovered]`, owner-requested port policy). `VoipClient::initVoice`
+uses the SDK's `m_defaultDevice & GV_CAPTURE` flag, populated from CoreAudio's
+`kAudioHardwarePropertyDefaultInputDevice`, without the retail fallback to the
+first capture-capable device. An absent or failed default input makes voice
+initialization fail; another enumerated microphone is never selected as a fallback.
+An iPhone explicitly selected as the system default remains eligible. The SDK's
+macOS enumeration bounds also use the HAL array length for reads and the caller's
+capacity for writes. Enumeration reads properties; `gvStartDevice` starts input
+I/O through `AudioDeviceStart`. Voice capture does not use OpenAL capture.
+
+Session timing stays retail: BF2.exe 1.50 x86 `GameServer::startServer`
+0x4CB152..0x4CB1CC starts the listen server's voice client after loading and local
+player creation when server voice is enabled, including single player. The local
+settings default voice to enabled (0x4B4986). `GameLogic::startupVoipClient`
+0x4EC300 checks dedicated mode, running state and server voice; `BF2VoipClient::startSession`
+0x451B60 also checks the profile's voice-enabled flag before base `startSession`
+0x7374F0 calls `initVoice` 0x7376F0. That opens and starts devices immediately
+(0x7377CF / 0x73783E); push-to-talk 0x451360 changes the capture threshold,
+not the device lifecycle. A remote client starts from the voice-enabled ServerInfo
+block (0x4D5B45..0x4D5B58). Disabled server/profile voice prevents session capture;
+the explicit menu microphone test remains a separate capture path.
+
 ### Audio (S2.5)
 
 BF2Audio's engine already speaks OpenAL through 39 entry points resolved by name
@@ -1324,18 +1630,21 @@ Measured on this machine: Apple's OpenAL opens the default output for every devi
 seven provider rows pass (`DirectSound`, `DirectSound3D`, `MMSYSTEM`, `Default Device`, null),
 so no device-name mapping is needed. It has no EAX, so the "System OpenAL" rows are refused
 unless `allow-any-system-openal` is set, as on a Windows machine without Creative's OpenAL; the
-default "Software Audio" rows load `BF2OpenAL.dll`, which maps to the same framework.
+non-system Software Audio and Hardware Audio rows load `BF2OpenAL.dll`, which maps to
+the same framework.
 
 One Apple deviation needed a port arm: OpenAL.framework keeps buffers that were queued on a
 source attached after they are unqueued, so the music thread's `alDeleteBuffers` failed with
 `AL_INVALID_OPERATION` and leaked twelve buffers per stop. On Apple the thread clears the
 source's `AL_BUFFER` first (`Music.cpp`); for spec-conforming implementations that is a no-op.
 
-`Game/AudioSettings.cpp`'s physical-memory query emulates `GlobalMemoryStatus` for the
-large-address-aware 32-bit `BF2.exe` (its PE header has the flag): `hw.memsize` saturated to a
-32-bit `DWORD`, then the shipped `(dwTotalPhys + 0x7FFFF) >> 20` arithmetic in 32 bits. With
-4 GB or more that wraps to 0 MB, so the default sound quality is "Low", as the retail client
-picks on such a machine.
+`Game/AudioSettings.cpp` reads the full `hw.memsize` value and converts it to megabytes
+without the legacy 32-bit overflow, preserving retail's rounding and 768 MB low-memory
+guard. This all-platform [retail fix](retail-fixes.md#new-profiles-get-the-audio-quality-the-memory-check-intended)
+also uses full-width physical-memory queries on Windows and Linux. Separately, the
+`[CHOSEN, not recovered]` [client audio defaults](architecture.md#client-audio-defaults)
+select hardware on every platform, with High from 768 MB upward and Low below it.
+Existing profiles keep their saved provider and quality.
 
 `bf2_client` links CoreAudio and CoreFoundation; OpenAL.framework is loaded at run time, as the
 Win32 image loads `OpenAL32.dll`. OpenAL Soft was not needed and not installed.
@@ -1380,7 +1689,7 @@ Win32 call sites, all `[CHOSEN, not recovered]`:
 | --- | --- | --- |
 | `BF2Engine.cpp` mainLoop | `ShowCursor` | `CocoaHost::showCursor` (same counter) |
 | `BF2Engine::browseModHomepage` | `ShowWindow(SW_MINIMIZE)`, `ShellExecuteA(url)` | `CocoaHost::minimize`, `openURL` |
-| `BF2Engine::restartBF2` (and `activateMod`) | `GetModuleFileNameA` + `ShellExecuteA(exe, args)` | `macos::relaunchExecutable`: `_NSGetExecutablePath`, the command line split as `CommandLineToArgvW` splits it, `posix_spawn` in the current directory and environment (`Platform/macOS/MacSystem`). [CHOSEN] On macOS the new instance's environment gets `BF2_RESTARTED_IN_FRONT=1` when the game is the active application, and loses that variable otherwise ([macos-s2-4.md](macos-s2-4.md), Activation) |
+| `BF2Engine::restartBF2` (and `activateMod`) | `GetModuleFileNameA` + `ShellExecuteA(exe, args)` | `macos::relaunchExecutable`: `_NSGetExecutablePath`, the command line split as `CommandLineToArgvW` splits it, `posix_spawn` in the current directory and environment (`Platform/macOS/MacSystem`). [CHOSEN, not recovered] After its last frame the foreground instance waits up to 2 s for the new regular application, then yields and activates it; a background or forced-focus instance hands nothing over ([macos-s2-4.md](macos-s2-4.md), Start and activation) |
 | `HudAmmo.cpp`, `HudInformationAdapter.cpp`, `HudVehicleInformation.cpp` | `MessageBoxA` | `macos::showMessageBox`: a blocking `CFUserNotificationDisplayAlert` with one OK button, Windows-1252 text |
 | `BF2HudManagerSpotted.cpp` | `RegOpenKeyExA` (the Battlefield 2142 install probe) | key presence in `Registry.con`; see [macOS write paths](macos-write-paths.md#registrycon-syntax) |
 | `SwiffHost.cpp` | Winsock 1.1 (`WSAStartup`/`WSACleanup`, `gethostbyname`, `inet_addr`, `inet_ntoa`) | BSD sockets, no startup call. The address word is `uint32_t` (Winsock's 32-bit `u_long`): an LP64 `unsigned long` would read eight bytes from the four-byte `h_addr_list` entry. |

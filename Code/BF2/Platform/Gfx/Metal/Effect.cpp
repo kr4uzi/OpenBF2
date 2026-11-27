@@ -9,8 +9,10 @@
 #include "../D3DX9Subset.h"
 #include "../Effect/Runtime.h"
 #if defined(__APPLE__)
+#include "../../Host/ClientHost.h" // [CHOSEN, not recovered] macOS main-thread busy service
 #include "EffectShaders.h"
 #include "RefTrace.h" // [TEMP] [RETIRE-WHEN: rend-deinit-reftrace]
+#include <pthread.h>
 #endif
 #include "../Unsupported.h"
 #if !defined(BF2_FX_NATIVE)
@@ -193,6 +195,18 @@ struct RequestTrace {
 std::mutex gPendingMutex;
 std::map<std::string, std::pair<std::shared_ptr<const bf2fx::Entry>, std::shared_future<bf2fx::Entry>>> gPending;
 
+// [CHOSEN, not recovered] Keep the macOS main thread responsive during native effect builds.
+// The busy service holds window-server events for the next pump and advances the cursor without
+// dispatching engine input. AppKit may only be serviced on the main thread; other callers and
+// Linux keep the plain wait. Host symbols bind to the client, as in the Metal device seam.
+bf2fx::native::Service busyService()
+{
+#if defined(__APPLE__)
+    if (pthread_main_np()) return [] { dice::hfe::host::ClientHost::instance().serviceWhileBusy(); };
+#endif
+    return {};
+}
+
 HRESULT nativeEntry(const char* api, LPCVOID source, UINT size, const std::vector<bf2fx::Define>& defines,
                     ID3DXInclude* include, DWORD flags, bf2fx::Entry& entry, ID3DXBuffer** errors, Deferred& deferred)
 {
@@ -278,6 +292,8 @@ HRESULT nativeEntry(const char* api, LPCVOID source, UINT size, const std::vecto
                 bf2warmup::effectStarted();                   // [CHOSEN] +warmupLevel progress
                 const auto queued = std::chrono::steady_clock::now();
                 future = nt::submit(key, request, std::move(text), [root, request, key, queued](const bf2fx::Entry& e) {
+                    // Worker-safe: captured cache inputs, locked pending/trace state and atomic
+                    // warm-up counters only. A serviced wait also completes on a build thread.
                     // BF2_HITCH_TRACE: the build, from its submission (the queue wait included).
                     if (bf2hitch::enabled())
                         bf2hitch::build(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - queued).count(), key.c_str());
@@ -308,7 +324,7 @@ HRESULT nativeEntry(const char* api, LPCVOID source, UINT size, const std::vecto
     }
     // Unknown source (or a skeleton that does not build): compile now, D3DX-like errors.
     bf2warmup::effectStarted();
-    bf2fx::Entry built = nt::compile(request, text.empty() ? nullptr : &text);
+    bf2fx::Entry built = nt::compile(request, text.empty() ? nullptr : &text, busyService());
     ++nativeStats().synchronous;
     publish(built);
     bf2warmup::effectFinished(true);   // a synchronous build is the D3DX-like outcome either way
@@ -1055,7 +1071,7 @@ public:
         bf2fx::Entry full;
         {
             bf2hitch::Scope timed(bf2hitch::FxWait, deferred.key.c_str());
-            full = bf2fx::native::wait(deferred.key, deferred.future);
+            full = bf2fx::native::wait(deferred.key, deferred.future, busyService());
         }
         deferred = {};
         if (full.kind != bf2fx::EffectEntry) {

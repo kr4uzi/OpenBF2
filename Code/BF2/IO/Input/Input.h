@@ -189,6 +189,17 @@ public:
     virtual float buttonPressedSampleLatency(InputDeviceButtons button) const = 0; // +0x64
 };
 
+// [INFERRED] Name for the controller-specific extension of the advanced-device prefix.
+// PE GameControllerDevice table 0x00914E10 +0x68/+0x6C; readPOV 0x006D74A0.
+// ControlMap::povToAxis (PE 0x006AED10; ELF 0x08491AA0) calls the second slot.
+// Keep this tail off the mouse interface: its +0x68/+0x6C are init/window setup.
+class IPOVInputDevice : public IAdvancedInputDevice
+{
+public:
+    virtual int getNumPOVs() const = 0;
+    virtual int readPOV(InputDevicePOVs pov) const = 0;
+};
+
 // The bindings ControlMap::findDuplicate found for one device input: the axis or trigger id, whether
 // the clash is on the negative half of an axis pair, and whether it is the alternate binding. The
 // ELF mangles it as a class (_ZN...18DuplicateKeyVectorE); in ia-32 findDuplicate and mapNextInput

@@ -12,6 +12,7 @@
 #include "ObjectUtil.h"                         // Object.setIsDisabledRecursive - updateFlagsRecursive
 #include "../../Game/Objects/ObjectLayoutAccess.h"   // Object.togglePause - the raw +0x14 template read
 #include "../../Game/Objects/Fx/EffectBundle.h"      // Object.togglePause - EffectBundle::togglePause
+#include "../../Game/Objects/Visual/LightSource.h"
 #include "../../Core/Ids.h"                           // CID_EffectBundleTemplate
 #include "../../Math/Mat4.h"                     // get/setRotationZXY - Object.rotation
 #include "../../Math/Vec3.h"
@@ -28,6 +29,33 @@ namespace {
 // Stands in for the original's file-scope list (ELF 0x8B1B944). world::Module::init registers it.
 const char* const kObjectManagerConsoleTag = "world.objectManager";
 
+// BF2.exe 0x7156EC/0x7157A8: preserve manager order and the trailing newline per class.
+std::string consoleListTemplateClasses()
+{
+    std::list<std::pair<unsigned int, std::string> > classes;
+    objectTemplateManager->getTemplateClasses(classes);
+    std::string result;
+    for (const auto& entry : classes) result += entry.second + "\n";
+    return result;
+}
+std::string consoleListPlayerClasses()
+{
+    std::list<std::pair<unsigned int, std::string> > classes;
+    playerManager->getPlayerClasses(classes);
+    std::string result;
+    for (const auto& entry : classes) result += entry.second + "\n";
+    return result;
+}
+LightSource* activeSkyLight()
+{
+    IObject* object = objectManager->getActiveObject();
+    return object && object->getClassID() == CID_LightSource ? static_cast<LightSource*>(object) : 0;
+}
+// BF2.exe LightSource table 0x9096E8 +0x1E4 -> 0x67D990; ELF 0x82B18D0.
+void consoleSetAsSkyLight() { activeSkyLight()->setAsSkyLight(); }
+int consoleGetLightSourceMask() { return objectManager->getActiveObject()->getLightSourceMask(); }
+void consoleRefreshTerrainSampling() { objectManager->refreshTerrainSampling(); }
+
 // The create target: ConsoleClass353's executor (0x87F1C20) calls the manager's string,string
 // overload (+0x5C) and returns the template pointer - which createTemplate has already published
 // and made the active cursor on every path (including the already-exists path, which re-activates
@@ -39,6 +67,24 @@ IObjectTemplate* consoleObjectTemplateCreate(const std::string& className, const
 }
 
 } // namespace
+
+// BF2.exe 0x710F7A/0x711AB7: only lights accept setAsSkyLight; all active objects expose the mask.
+BF2_CONSOLE_OBJECT("Object", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(setAsSkyLight, consoleSetAsSkyLight, activeSkyLight() != 0,
+                                   kObjectManagerConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getLightSourceMask, consoleGetLightSourceMask, int,
+                                objectManager->getActiveObject() != 0, kObjectManagerConsoleTag)
+// BF2.exe 0x713A2E/0x714D49: file-static class listings have no receiver-availability guard.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(listTemplateClasses, consoleListTemplateClasses, std::string,
+                                       true, kObjectManagerConsoleTag)
+BF2_CONSOLE_OBJECT("Player", 2, 0)
+BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(listPlayerClasses, consoleListPlayerClasses, std::string,
+                                       true, kObjectManagerConsoleTag)
+// BF2.exe 0x715B67: the shipped object name is Terrain; the receiver is ObjectManager.
+BF2_CONSOLE_OBJECT("Terrain", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(refreshTerrainSampling, consoleRefreshTerrainSampling,
+                                   objectManager != 0, kObjectManagerConsoleTag)
 
 // Registers ObjectTemplate creation under category 11 (Flags).
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 11)
@@ -134,6 +180,39 @@ BF2_CONSOLE_METHOD_2_RET(create, consoleObjectTemplateCreate, IObjectTemplate*, 
 // object. Only `layer` null-checks it (its executor tests getActiveObject() before the vcall);
 // the others dereference the pointer isObjectActive already vouched for - as shipped.
 BF2_CONSOLE_OBJECT("Object", 2, 0)
+
+// BF2.exe 0x7110A1 / 0x71110B: read-only, dynamic pointer property of the active object.
+namespace {
+class ConsoleClassObjectTemplate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassObjectTemplate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "template";
+        m_type = 2;
+        m_minNoArgs = m_maxNoArgs = 0;
+        m_returnType = "const IObjectTemplate*";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+    BF2_CC_TAIL(0, kObjectManagerConsoleTag)
+    bool isObjectActive() const { return objectManager->getActiveObject() != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount != 0) return;
+        m_hasReturnValue = true;
+        m_returnValue = objectManager->getActiveObject()->getTemplate();
+    }
+    void setArgFromString(int, const std::string&) {}
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    const IObjectTemplate* m_returnValue;
+};
+static ConsoleClassObjectTemplate s_consoleObjectTemplate;
+}
 
 // Zero-argument pause command active only for an exact EffectBundleTemplate object.
 // Execution relies on availability checking and does not guard the receiver again.
@@ -341,6 +420,47 @@ private:
 static ConsoleClassPlayerActive s_consoleClassPlayerActive;
 } // namespace
 
+// BF2.exe 0x714A2D / 0x714AB9: always active, static method, two strings, id -1.
+BF2_CONSOLE_OBJECT("Player", 2, 0)
+namespace {
+class ConsoleClassPlayerCreate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassPlayerCreate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "create";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 2;
+        m_returnType = "IPlayer*";
+        m_hasReturnValue = false;
+        m_isDynamic = false;
+        m_argTypes[0] = "std::string";
+        m_argTypes[1] = "std::string";
+    BF2_CC_TAIL(2, kObjectManagerConsoleTag)
+    bool isObjectActive() const { return true; }
+    void executeObjectMethod()
+    {
+        if (m_argCount != 2) return;
+        m_hasReturnValue = true;
+        m_returnValue = playerManager->createPlayer(BF2_CC_ARG(std::string, 0),
+                                                     BF2_CC_ARG(std::string, 1), -1);
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(std::string, 1)
+        BF2_CC_CONVERT(std::string, 2)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    IPlayer* m_returnValue;
+};
+static ConsoleClassPlayerCreate s_consolePlayerCreate;
+}
+
 // windManager.globalWindSpeed / globalWindDirection - dedicated PE defaults 0x772E9E
 // ("WindManager", access 2, category 0); ctors 0x6C8BD0 / 0x6C8D80 (vtable off_7FC5A8 / off_7FC640,
 // set/get properties, m_isDynamic = 1). isObjectActive 0x6C8E80 is `dword_89AE54 != 0` (windManager);
@@ -394,10 +514,20 @@ std::string objectTemplateList(const std::string& filter)
 }
 } // namespace
 
+BF2_CONSOLE_OBJECT("objectTemplate", 2, 0)
+namespace {
+void objectTemplateWriteBinary(const std::string& file) { objectTemplateManager->writeBinary(file); }
+void objectTemplateReadBinary(const std::string& file) { objectTemplateManager->readBinary(file); }
+}
+// BF2.exe 0x713574 / 0x7135E5 and 0x713699 / 0x713716. Both manager methods
+// target the empty 0x5AB2A0 body in the client, as in the dedicated images.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(writeBinary, objectTemplateWriteBinary,
+                                   objectTemplateManager != 0, std::string, kObjectManagerConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(readBinary, objectTemplateReadBinary,
+                                   objectTemplateManager != 0, std::string, kObjectManagerConsoleTag)
 // ctor 0x6CE090 (vtable off_7FDCE0, m_type = 2, argc 0, returns std::string, m_isDynamic = 1).
 // isObjectActive 0x6CE130 = `getActiveObjectTemplate() != 0`; executor 0x6CE150 returns the active
 // template's name.
-BF2_CONSOLE_OBJECT("objectTemplate", 2, 0)
 namespace {
 class ConsoleClassObjectTemplateName : public ConsoleObjectBaseImpl
 {

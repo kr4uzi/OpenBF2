@@ -125,6 +125,7 @@ public:
 
     // Base no-op; destroyable-window templates override it.
     virtual void  setDestroyableWindowsTemplate(const std::string&);     // +0x10C
+    std::string getDestroyableWindowsTemplate() const;
 
     // Creates and returns a sound template marked with flag 0x400.
     virtual ObjectTemplate* addSoundTemplate(const std::string&);        // +0x110
@@ -153,6 +154,7 @@ public:
 protected:
     friend struct BaseTemplateConsoleAccess;      // recovered direct-field console executors
     friend class SimpleObject;
+    friend class DestroyableWindowsBundle;        // secondary geometry uses the authored mesh name
     friend class ai::BFObjectEnvironment;        // the spawner query reads m_aiTemplate directly
     friend class ai::AIObjectUnit;               // m_aiTemplate (+296) of a soldier's KIT - the
                                                 // AIObjectUnit reads the kit template directly.

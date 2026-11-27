@@ -47,9 +47,21 @@ bool untag(const void* data, size_t size, Request& request);
 
 // Background compile queue (one worker per core but one). wait() runs a job inline when no
 // worker has started it, so a pass that is drawn first never waits behind the queue.
+// Done runs on the build thread before the future becomes ready and must be safe on a worker.
 using Done = std::function<void(const Entry&)>;
 std::shared_future<Entry> submit(const std::string& key, const Request& request, std::string text, Done done);
-Entry wait(const std::string& key, const std::shared_future<Entry>& future);
+// [CHOSEN, not recovered] An optional caller service runs between 50 ms timed waits. Unclaimed
+// jobs start on a separate thread immediately; claimed jobs keep their existing worker. For
+// jobs this wait claims, build/Done exceptions and thread-start failures complete the shared
+// future with that exception.
+// An empty service preserves the original inline/plain wait. The macOS facade supplies a
+// service only on the main thread; this library has no host dependency. A throwing service
+// leaves the independently owned job running, with its future still usable by another wait.
+using Service = std::function<void()>;
+Entry wait(const std::string& key, const std::shared_future<Entry>& future, const Service& service = Service());
+// compile() for such a caller: the same build on a thread of its own, awaited in the same way.
+// An empty service is the plain compile().
+Entry compile(const Request& request, const std::string* text, const Service& service);
 size_t pending();
 
 // Shader-level memo (Native.cpp): the text a shader job of a D3DX-accepted request compiles,

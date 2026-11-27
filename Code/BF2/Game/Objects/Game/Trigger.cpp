@@ -21,6 +21,9 @@
 #include "../../IGameLogic.h"                     // gameLogic->isServer() - isValid's server arm
 #include "../IObject.h"
 #include "../../../Math/Vec3.h"
+#if !DEDICATED
+#include "../../Main/Game.h"
+#endif
 
 #include <cmath>
 #include <list>
@@ -386,7 +389,16 @@ void Trigger::executeTrigger(IBase* source, const Vec3& position, int effectorIn
         for (std::size_t i = 0; i < m_effectors.size(); ++i)
         {
             const IObjectTemplate* objectTemplate = object_detail::LayoutAccess::objectTemplate(m_effectors[i]);
-            if (const_cast<IObjectTemplate*>(objectTemplate)->queryImplementation(CID_AmbientEffectAreaTemplate))
+            const bool ambient = const_cast<IObjectTemplate*>(objectTemplate)->queryImplementation(
+                CID_AmbientEffectAreaTemplate) != 0;
+#if !DEDICATED
+            // BF2.exe 0x601D3D..0x601D8F: test mode after the template query on every effector.
+            if (!isDedicated() && !ambient)
+                m_effectors[i]->handleMessage(
+                    static_cast<TemplateMessage>(0), static_cast<IPlayer*>(source), false);
+            else
+#endif
+            if (ambient)
                 static_cast<AmbientEffectArea*>(m_effectors[i])->handleAmbientMessage(
                     static_cast<TemplateMessage>(0), static_cast<IPlayer*>(source), position);
         }

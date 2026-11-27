@@ -196,7 +196,9 @@ void BF2HudManager::toggleUAVState()
     if (getMode() == 23) {
         setMode(15, true);
     } else if (getUAVEnabled() && getUAVAvailability() > 0) {
-        if (hudMap && player->getOverheadCameraEnabled() && !hudMap->m_uavReloading) {
+        // BF2.exe 0x7B20DE..0x7B20F9: Player +0x118 is getUAVIsReady
+        // (0x4FA430), independent of the overhead-camera state.
+        if (hudMap && player->getUAVIsReady() && !hudMap->m_uavReloading) {
             setMode(23, true);
         } else {
             const std::string message("uav_in_use");
@@ -327,6 +329,11 @@ void BF2HudManager::setDone(bool done)
         setMode(0, true);
         world::IPlayer* player = world::playerManager->getLocalHumanPlayer();
         if (player && m_field228 && gameLogic) {
+            // [CHOSEN, not recovered] Retail fix "The kit shown on the spawn screen is requested
+            // with the spawn" (docs/retail-fixes.md). Retail (0x74F180) sends only the spawn
+            // group; the remembered kit reaches the server only after a death (onSpawn, 0x751560)
+            // or a click. selectKit sends nothing when the player already has that kit.
+            m_field11c->selectKit(m_field11c->m_selectedKit[m_field11c->m_selectedTeam]);
             gameLogic->selectSpawnGroup(player, m_field11c->m_selectedSpawnGroup[m_field11c->m_selectedTeam]);
             m_field2a8 = m_field2ac;
             hudManager->disableVOHelpMessage(60);

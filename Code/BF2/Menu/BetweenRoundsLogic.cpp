@@ -221,13 +221,13 @@ void BetweenRoundsLogic::endFrame()
 }
 
 // Queries menu input without clipboard handling.
-bool BetweenRoundsLogic::handleInput(io::GameInput&)
+void BetweenRoundsLogic::handleInput(io::GameInput&)
 {
     m_player->queueMouseState(m_mouseX, m_mouseY, m_mouseDown);               // +0x30
     io::IKeyboardDevice* keyboard = static_cast<io::IKeyboardDevice*>(
         static_cast<io::IInputDeviceManager*>(io::inputDeviceManager)->getInputDevice(io::IDFKeyboard));
     if (!keyboard)
-        return false;
+        return;
     for (unsigned int key = 1; key < 0xFF; ++key)
     {
         if (keyboard->keyPressed(static_cast<io::InputDeviceKeys>(key)))      // +0x34
@@ -250,7 +250,6 @@ bool BetweenRoundsLogic::handleInput(io::GameInput&)
             m_player->notifyKeyState(static_cast<int>(key), 0);
         }
     }
-    return true;
 }
 
 void BetweenRoundsLogic::setConsole(BF2Console* console) { m_console = console; }   // +0x18

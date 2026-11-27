@@ -7,6 +7,7 @@
 #ifndef GAME_OBJECTS_PARTICLESYSTEMTEMPLATES_H // [INFERRED] Guard style.
 #define GAME_OBJECTS_PARTICLESYSTEMTEMPLATES_H
 
+#include <iosfwd>
 #include <string>
 
 #include "../ObjectTemplate.h"
@@ -15,7 +16,7 @@
 namespace dice {
 namespace hfe {
 
-namespace geom { class IParticleSystemTemplate; }
+namespace geom { class IParticleSystemTemplate; enum GasCloudType : int; }
 
 namespace world {
 
@@ -26,6 +27,11 @@ extern const char* const ParticleDrawOrderNames[3];
 extern const char* const ParticleEmitPrioNames[3];
 extern const char* const SpriteParticleSystemTypeNames[3];
 
+// The console spelling of geom::GasCloudType: ELF 0x8211340 / 0x8211380 (world scope, as the
+// symbols). 0 = "None", 1 = "TearGas".
+std::ostream& operator<<(std::ostream& stream, geom::GasCloudType type);
+std::istream& operator>>(std::istream& stream, geom::GasCloudType& type);
+
 // ParticleSystemTemplateBase - the family root. +15 virtuals over ObjectTemplate (slot order
 // below); no CID of its own (queryImplementation in every leaf answers only the leaf CID and
 // CID_ObjectTemplate); no quartet (the leaves own theirs).
@@ -35,6 +41,7 @@ class ParticleSystemTemplateBase : public ObjectTemplate
 public:
     ParticleSystemTemplateBase();
     virtual ~ParticleSystemTemplateBase();
+    virtual bool makeScript(io::IStream* stream);
 
     // Base particle-system virtual methods.
     virtual void  setIsLocalSystem(bool);                            // +0xE8 impl-forward
@@ -116,6 +123,24 @@ public:
     void setTransparencyGraph(const Vec4& value);
     const Vec4& getTransparencyGraph() const;
 
+    // Gas-cloud authoring forwarders (xpack tear gas): ELF 0x8210270..0x8210560 /
+    // client PE 0x64F300..0x64F4E0, read in full. Setters keep the repeated impl test before the
+    // refresh; getters dereference the impl unguarded, as shipped.
+    void setGasCloudType(geom::GasCloudType value);
+    geom::GasCloudType getGasCloudType() const;
+    void setBlurryVisionTime(float value);
+    float getBlurryVisionTime() const;
+    void setBlurryVisionHoldTime(float value);
+    float getBlurryVisionHoldTime() const;
+    void setMinGasCloudRadius(float value);
+    float getMinGasCloudRadius() const;
+    void setMaxGasCloudRadius(float value);
+    float getMaxGasCloudRadius() const;
+    void setGasCloudRadiusTime(float value);
+    float getGasCloudRadiusTime() const;
+    void setGasCloudDamage(float value);
+    float getGasCloudDamage() const;
+
 protected:
     // layout, +0x30..+0x43. ObjectTemplate occupies 0x00..0x2F.
     // m_emitterType is NOT written by the constructor's stores - the tail call
@@ -140,6 +165,7 @@ class SpriteParticleSystemTemplateBase : public ParticleSystemTemplateBase
 public:
     SpriteParticleSystemTemplateBase();
     virtual ~SpriteParticleSystemTemplateBase();
+    virtual bool makeScript(io::IStream* stream);
 
     virtual void setIsStaticSystem(bool);             // +0x124 impl-forward
     virtual bool getIsStaticSystem() const;           // +0x128 impl-pull
@@ -163,6 +189,8 @@ public:
     float getRandomIntensity() const;
     void setAlphaCull(float value);
     float getAlphaCull() const;
+    void setLightAffectionFactor(float value);
+    float getLightAffectionFactor() const;
     // / 0x82112B0, 67 B / 27 B - Nonvirtual like the twelve
     // above; the mesh particle's `directionalScale` console binding (ConsoleClass387, a mesh-only
     // selector) is their only caller. Impl ELF +0x1BC / +0x1C0 = IParticleSpriteSystemTemplate
@@ -185,6 +213,7 @@ protected:
     virtual unsigned int getClassID() const;                                                \
     virtual void* queryImplementation(unsigned int classId);                                \
     virtual void  templateInitialize();                                                     \
+    virtual bool  makeScript(io::IStream* stream);                                           \
     virtual IObject* createObject() const
 
 // Concrete particle-system templates.
@@ -198,6 +227,8 @@ public:
     virtual void setDrawOrder(const std::string& name);            // +0x138 .cpp
     virtual std::string getDrawOrder() const;                      // +0x13C BY value
     virtual int  getParticleDrawOrderEnum() const;                 // +0x140 impl-pull
+    void setNearCullingEnable(bool value);
+    bool getNearCullingEnable() const;
     void setTextureName(const std::string& name);
     const std::string& getTextureName() const;
     void setRotationSpeed(float value);
@@ -224,6 +255,10 @@ public:
     unsigned int getAnimationFrameCountX() const;
     void setAnimationFrameWidthRelative(float value);
     void setAnimationFrameHeightRelative(float value);
+    void setWindSpeedAgeDistance(float value);
+    float getWindSpeedAgeDistance() const;
+    void setWindAgingFactor(float value);
+    float getWindAgingFactor() const;
 protected:
     /* +0x48 */ int         m_refCount;
     /* +0x4C */ std::string m_particleTypeName;       // setParticleType's copy of the parsed token

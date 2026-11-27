@@ -243,6 +243,14 @@ extern "C" void deinitDll()
 
     // neither classManager NOR the nineteen globals are cleared. Every one keeps pointing into
     // the host after teardown - harmless only because the image is about to be unmapped.
+#if defined(_WIN32)
+    // Ours, not dice's: the crash reporter leaves with the image. FreeLibrary follows this call, and a
+    // vectored handler left registered points into unloaded code. The next exception anywhere in the
+    // process, a harmless first-chance one included, then ends the process with an execute fault
+    // inside "RendDX9.dll_unloaded" (CrashReport.cpp).
+    renddx9abi::removeCrashReporter();
+    renddx9abi::logf("deinitDll: crash reporter removed");
+#endif
     renddx9abi::logf("deinitDll: done");
     renddx9abi::logClose();
 }

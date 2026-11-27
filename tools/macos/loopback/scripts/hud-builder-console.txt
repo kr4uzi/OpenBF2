@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] The ten hudBuilder console rows recovered in frontier batch 7, typed after spawning against the
 # live IngameHud on success paths only (builder error diagnostics are fatal debug assertions, as in
 # retail): tile, picture alpha mask, text outline, variable move effect, button, compass, search, delete.

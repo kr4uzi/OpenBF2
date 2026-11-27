@@ -21,6 +21,7 @@
 #include "../Core/SettingsRepostitory.h"
 #include "../GeomMisc/Debug.h"
 #include "../Core/EventManager.h"   // the renderer events the base registers and unregisters
+#include "../Core/LoadStat.h"       // loadStat - the callback suppression flag of the device-lost broadcasts
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -43,11 +44,9 @@
 namespace dice {
 namespace hfe {
 
-// PluginEntry.cpp, the host "LoadStat" singleton. initDll fetches it but does not
-// require it. The device-lost list's lost/reset broadcasts write its byte at +0x08 (see
-// setLoadStatDeviceLostByte below).
-class LoadStat;
-extern LoadStat* loadStat;   // the type Core/LoadStat.h and ShaderManager.cpp use (MSVC mangles it)
+// PluginEntry.cpp, the host "LoadStat" singleton (declared by Core/LoadStat.h, included above).
+// initDll fetches it but does not require it. The device-lost list's lost/reset broadcasts write
+// its callback suppression flag, PE +0x08 (see setLoadStatDeviceLostByte below).
 
 namespace geom { void destroyLightmapGenerationSingleton(); }   // Geom/LightmapGeneration - sub_100A8770
 
@@ -531,12 +530,15 @@ void sortDeviceLostResetList(DeviceLostResetList& list)
     list.dirty = 0;
 }
 
-// Suppresses host loading-screen callbacks while the device is lost.
-// Requires LoadStat; its flag at +8 is shared by native and compatibility layouts.
+// Suppresses host loading-screen callbacks while the device is lost. Requires LoadStat.
+// The shipped image stores a byte at LoadStat +0x08; that is LoadStat::m_unknown08, the flag
+// ShaderManager.cpp raises around effect loads. It is written through the member: byte 8 is that
+// flag only in the 32-bit layout. In a 64-bit image byte 8 is the low byte of m_atIncCallback, and
+// a raw store turned that (null on a client) into the address 1, which the next file opened by a
+// reset listener during a level load then called (LoadStat::executeLoadCallback).
 void setLoadStatDeviceLostByte(unsigned char value)
 {
-    unsigned char* const raw = static_cast<unsigned char*>(static_cast<void*>(::dice::hfe::loadStat));
-    raw[8] = value;
+    ::dice::hfe::loadStat->m_unknown08 = value != 0;
 }
 
 // [CHOSEN, not recovered] - diagnostics only: the shipped broadcasts log nothing. Naming every

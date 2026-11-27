@@ -1,6 +1,10 @@
 // Path:     [INFERRED] - beside its header. Contents: recovered from bf2.i64.
 
 #include "AirDraftEffectBundleTemplate.h"
+#if !DEDICATED
+#include "AirDraftEffectBundle.h"
+#include "../../Main/Game.h"
+#endif
 #include "../../../IO/Stream/IStream.h"
 #include <sstream>
 
@@ -47,9 +51,14 @@ void* AirDraftEffectBundleTemplate::queryImplementation(unsigned int classId)
     return 0;
 }
 
-// 7 bytes: return null - the air-draft object is spawned by the effect system, not the factory.
+// BF2.exe 0x646880 allocates/constructs the client object after the runtime dedicated
+// check. Dedicated PE 0x5FE490 / ELF 0x81F5180 return null.
 IObject* AirDraftEffectBundleTemplate::createObject() const
 {
+#if !DEDICATED
+    if (!isDedicated())
+        return new AirDraftEffectBundle(this);
+#endif
     return 0;
 }
 

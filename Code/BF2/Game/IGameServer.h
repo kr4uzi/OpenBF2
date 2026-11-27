@@ -6,6 +6,7 @@
 #define GAME_IGAMESERVER_H
 
 #include <string>
+#include <iosfwd>
 
 #include "../Core/IBase.h"
 #include "IGame.h"                                // TargetChannel, ChannelMessageType (its enums)
@@ -27,8 +28,20 @@ namespace io {
     class  NetServer;
     struct ConnectionStatus;                      // [UNRESOLVED] layout - getConnectionStatus's out
 }
-enum ConnectionType : int { ConnectionType_UNRECOVERED = 0 };   // [UNRESOLVED] enumerators; `: int` matches
-                                                                //   ClientConnection.h's opaque declaration
+// BF2.exe 0x4346CC / ELF 0x85704C0 establish the names and their integer values.
+enum ConnectionType : int
+{
+    CTConnecting = 0,
+    CTModem28Kbps = 1,
+    CTModem56Kbps = 2,
+    CTCable128Kbps = 3,
+    CTCable256Kbps = 4,
+    CTLanT1 = 5,
+    CTNumTypes = 6
+};
+
+std::istream& operator>>(std::istream& in, ConnectionType& type);
+std::ostream& operator<<(std::ostream& out, ConnectionType type);
 
 class IGameServer : public IBase
 {

@@ -52,6 +52,9 @@ struct DrawCall {
     float vertexFixup[4] = {}, fragmentAlpha[4] = {}, fragmentFactor[4] = {}; // factor: D3DRS_TEXTUREFACTOR
     float fragmentFog[8] = {}; // fog colour; table mode, end, 1/(end-start), density (Shaders.inc)
     Occlusion* occlusion = nullptr; // the active occlusion query, if any
+    // D3DRS_MULTISAMPLEANTIALIAS FALSE: on a multisampled target every sample takes the coverage
+    // and value of the pixel centre (D3D9's aliased drawing into a multisample buffer).
+    bool aliased = false;
     unsigned primitive = 0; // D3DPRIMITIVETYPE 1..5; fans arrive as indexed triangle lists
     unsigned count = 0, first = 0;
     int baseVertex = 0;

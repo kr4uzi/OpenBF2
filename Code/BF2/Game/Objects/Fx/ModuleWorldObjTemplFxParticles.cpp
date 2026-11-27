@@ -76,6 +76,18 @@ BF2_CONSOLE_PROPERTY(qualityLevel, std::string, activeParticleBase(), setQuality
 BF2_CONSOLE_PROPERTY(isLocalSystem, bool, activeParticleBase(), setIsLocalSystem, getIsLocalSystem, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(radialDirection, float, activeParticleBase(), setRadialDirection, getRadialDirection, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomRadialDirection, float, activeParticleBase(), setRandomRadialDirection, getRandomRadialDirection, kParticleConsoleTag)
+// Tear-gas cloud properties: ELF ConsoleClass293..299 (ObjectTemplate order 123..129) / client PE
+// ctor 0x56963D.. (executor 0x569782 -> 0x64F300/0x64F340). gasCloudType advertises the inclusive
+// integer range 0..1 (PE 0x5697CA) and clamps through it.
+BF2_CONSOLE_PROPERTY_FN_RANGED(gasCloudType, geom::GasCloudType, activeParticleBase() != 0,
+                               activeParticleBase()->getGasCloudType(),
+                               activeParticleBase()->setGasCloudType, 0, 1, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(blurryVisionTime, float, activeParticleBase(), setBlurryVisionTime, getBlurryVisionTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(blurryVisionHoldTime, float, activeParticleBase(), setBlurryVisionHoldTime, getBlurryVisionHoldTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(minGasCloudRadius, float, activeParticleBase(), setMinGasCloudRadius, getMinGasCloudRadius, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(maxGasCloudRadius, float, activeParticleBase(), setMaxGasCloudRadius, getMaxGasCloudRadius, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(gasCloudRadiusTime, float, activeParticleBase(), setGasCloudRadiusTime, getGasCloudRadiusTime, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(gasCloudDamage, float, activeParticleBase(), setGasCloudDamage, getGasCloudDamage, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRadius, Vec3, activeParticleBase(), setEmitRadius, getEmitRadius, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRangeX, RandomDistribution, activeParticleBase(), setEmitRangeX, getEmitRangeX, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(emitRangeY, RandomDistribution, activeParticleBase(), setEmitRangeY, getEmitRangeY, kParticleConsoleTag)
@@ -83,6 +95,9 @@ BF2_CONSOLE_PROPERTY(emitRangeZ, RandomDistribution, activeParticleBase(), setEm
 BF2_CONSOLE_PROPERTY(timeToLive, float, activeParticleBase(), setTimeToLive, getTimeToLive, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomTimeToLive, float, activeParticleBase(), setRandomTimeToLive, getRandomTimeToLive, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(windAffectionFactor, float, activeParticleBase(), setWindAffectionFactor, getWindAffectionFactor, kParticleConsoleTag)
+// BF2.exe 0x570A33/0x570B48: only the sprite-system template accepts these shared properties.
+BF2_CONSOLE_PROPERTY(windAgingFactor, float, activeSpriteParticle(), setWindAgingFactor, getWindAgingFactor, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(windSpeedAgeDistance, float, activeSpriteParticle(), setWindSpeedAgeDistance, getWindSpeedAgeDistance, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(rotationGraph, Vec4, activeParticleBase(), setRotationGraph, getRotationGraph, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(gravityGraph, Vec4, activeParticleBase(), setGravityGraph, getGravityGraph, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(airResistanceGraph, Vec4, activeParticleBase(), setAirResistanceGraph, getAirResistanceGraph, kParticleConsoleTag)
@@ -114,6 +129,15 @@ BF2_CONSOLE_PROPERTY(sizeGraph, Vec4, activeParticleSpriteBase(), setSizeGraph, 
 BF2_CONSOLE_PROPERTY(randomSize, float, activeParticleSpriteBase(), setRandomSize, getRandomSize, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(randomIntensity, float, activeParticleSpriteBase(), setRandomIntensity, getRandomIntensity, kParticleConsoleTag)
 BF2_CONSOLE_PROPERTY(alphaCull, float, activeParticleSpriteBase(), setAlphaCull, getAlphaCull, kParticleConsoleTag)
+// BF2.exe 0x56802A/0x568143, executors 0x5680E8/0x568213: ObjectTemplate, access 2,
+// category 21. Static systems use the sprite base; near culling uses only ordinary sprites.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 21)
+BF2_CONSOLE_PROPERTY(isStaticSystem, bool, activeParticleSpriteBase(), setIsStaticSystem, getIsStaticSystem, kParticleConsoleTag)
+BF2_CONSOLE_PROPERTY(nearCullingEnable, bool, activeSpriteParticle(), setNearCullingEnable, getNearCullingEnable, kParticleConsoleTag)
+// BF2.exe constructor/converter/executor 0x56D208/0x56D279/0x56D2C6; shared four-class receiver.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 19)
+BF2_CONSOLE_PROPERTY(LightAffectionFactor, float, activeParticleSpriteBase(), setLightAffectionFactor, getLightAffectionFactor, kParticleConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
 // Ordinary sprites have their own retail overloads and descriptor-tail slots.
 // ELF ConsoleClass312/313 (86F8C60/86F9310); client PE 56A591/56A70E.

@@ -10,13 +10,19 @@
 #include "../ObjectLayoutAccess.h"                // handleCollision's template read (+0x14)
 #include "../ObjectTemplate.h"                    // getClassID on the read template
 #include "../../IGame.h"                          // game - sendGameEventIfPlaying (+0x88)
+#include "../../Main/Game.h"
 #include "../../Common/GameEvent.h"               // PostRemoteEvent
+#include "../../../Core/EventManager.h"
 #include "../../../Scene/Object/ObjectManager.h"  // objectManager - postMessage/removeAllMessagesTo
 #include "../../../Scene/Object/PlayerManager.h"  // playerManager->getPlayers(int) (+0x48), IPlayer
 #include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 #include "../../../Physics/IPhysicsNode.h"
 #include "../RemoteControlledObjectTemplate.h"
 #include "../Projectiles/GenericProjectile.h"
+
+#if !DEDICATED
+#include "../../SingletonServer.h"
+#endif
 
 #include <string>
 
@@ -34,7 +40,7 @@ UAVVehicle::UAVVehicle(const UAVVehicleTemplate* objectTemplate)
 
 UAVVehicle::~UAVVehicle() {}
 
-// Notifies connected teammates that the UAV is gone, cancels pending messages and destroys the object.
+// Notifies teammates that the UAV is gone, cancels pending messages and destroys the object.
 void UAVVehicle::destroy(bool force)
 {
     const std::list<IPlayer*>& players = playerManager->getPlayers(m_team);
@@ -47,6 +53,15 @@ void UAVVehicle::destroy(bool force)
             game->sendGameEventIfPlaying((*it)->getId(), event);
         }
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5C610C..0x5C6151: notify the hosting teammate after the remote sends.
+    if (!isDedicated() && playerManager->getLocalHumanPlayer()
+        && playerManager->getLocalHumanPlayer()->getTeam() == m_team)
+    {
+        eventManager->postEvent(ECHud, 82u, 0, 0.0f);
+    }
+#endif
 
     objectManager->removeAllMessagesTo(this);
     SimpleObject::destroy(force);
@@ -92,8 +107,7 @@ bool UAVVehicle::handleCollision(IObject* object, const Vec3& a, const Vec3& b, 
     return false;
 }
 
-// destroyUAVVehicle - 0x81CCC20, 81 B. If the manager exists and either team slot is this drone,
-// remove it from that slot. Null manager (this tree, today) -> no-op, as shipped.
+// Removes matching team slots, then the client marker even when no slot owns this drone.
 void UAVVehicle::destroyUAVVehicle()
 {
     if (uavVehicleManager)
@@ -103,6 +117,11 @@ void UAVVehicle::destroyUAVVehicle()
         if (uavVehicleManager->getUAVVehicleForTeam(2) == this)
             uavVehicleManager->removeUAVVehicle(2);
     }
+#if !DEDICATED
+    // BF2.exe 0x005C63DA, 0x005C651B, 0x005C6574: final cleanup is outside the manager guards.
+    if (SingletonServer::m_iNametagManager)
+        SingletonServer::m_iNametagManager->removeItem(2, this);
+#endif
 }
 
 // . `deltaTime` is unused: the manager drives one fixed velocity/turn update per

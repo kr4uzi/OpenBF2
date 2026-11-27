@@ -29,7 +29,7 @@ public:
     bool         beginFrame() override;
     void         display() override;                              // 0x4A2C50 (shared)
     void         endFrame() override;                             // 0x4A4530 (shared)
-    bool         handleInput(io::GameInput& input) override;
+    void         handleInput(io::GameInput& input) override;
     void         setConsole(BF2Console* console) override;        // 0x4A2C60 (shared)
     BF2Console*  getConsole() const override;                     // 0x80D430 - `return 0`, see .cpp
     void         onResize(unsigned int width, unsigned int height) override;

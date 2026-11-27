@@ -3,6 +3,8 @@
 // <iostream>'s ios_base::Init object is this TU's static initialisation and teardown (ELF
 // 0x34A400, __tcf_0 0x34A460, _GLOBAL__I 0x34A490).
 #include <iostream>
+#include <algorithm>
+#include <cstdio>
 
 #include "AIStrategicArea.h"                          // createFromControlPoint constructs one
 #include <cmath>
@@ -238,6 +240,97 @@ AIStrategicObjectManager::~AIStrategicObjectManager()
 // ELF 0x347CF0.
 void AIStrategicObjectManager::postLoadInitAreas()
 {
+    // [CHOSEN, not recovered] "AI control-point queries reject missing IDs" in
+    // docs/retail-fixes.md. Reject before post-load initialization, planning or bot orders.
+    // Remove every reference and compact indices together; null roster holes are unsafe.
+    std::set<AIStrategicObject*> rejected;
+    for (auto entry = m_strategicAreaMap.begin(); entry != m_strategicAreaMap.end();)
+    {
+        AIStrategicArea* const area = entry->second;
+        Vec3 position = {};
+        float radius = 0.0f;
+        if (!area->m_fromControlPoint || area->getControlPointPosAndRadius(position, radius))
+        {
+            ++entry;
+            continue;
+        }
+        std::fprintf(stderr, "[AI] Skipping strategic area %s: control point %u is missing\n",
+                     entry->first.c_str(), area->m_controlPointId);
+        std::fflush(stderr);
+        rejected.insert(area);
+        m_areaNames.erase(area);
+        if (m_activeArea == entry)
+            m_activeArea = m_strategicAreaMap.end();
+        entry = m_strategicAreaMap.erase(entry);
+    }
+
+    if (!rejected.empty())
+    {
+        // Debug primitives are indexed by the old roster. Clear them before reindexing.
+        if (AIRenderUtil::m_instance)
+        {
+            for (const auto& entry : m_strategicAreaMap)
+                AIRenderUtil::m_instance->unrenderStrategicArea(entry.second);
+            for (AIStrategicObject* area : rejected)
+                AIRenderUtil::m_instance->unrenderStrategicArea(static_cast<AIStrategicArea*>(area));
+        }
+        const auto isRejected = [&rejected](AIStrategicObject* object) {
+            return rejected.count(object) != 0;
+        };
+        for (const auto& entry : m_strategicAreaMap)
+        {
+            auto& neighbours = entry.second->m_neighbours;
+            neighbours.erase(std::remove_if(neighbours.begin(), neighbours.end(), isRejected), neighbours.end());
+            auto& objects = entry.second->m_neighbouringObjects;
+            objects.erase(std::remove_if(objects.begin(), objects.end(), isRejected), objects.end());
+        }
+
+        std::vector<int> indices(m_strategicObjects.size(), -1);
+        int next = 0;
+        for (std::size_t old = 0; old < m_strategicObjects.size(); ++old)
+        {
+            if (!isRejected(m_strategicObjects[old]))
+                indices[old] = next++;
+        }
+        for (auto& category : m_objectsPerCategory)
+        {
+            for (std::size_t old = indices.size(); old-- > 0;)
+            {
+                if (indices[old] == -1)
+                    category.erase(category.begin() + old);
+            }
+        }
+        m_strategicObjects.erase(std::remove_if(m_strategicObjects.begin(), m_strategicObjects.end(), isRejected),
+                                 m_strategicObjects.end());
+        for (std::size_t index = 0; index < m_strategicObjects.size(); ++index)
+            m_strategicObjects[index]->m_index = static_cast<int>(index);
+
+        const auto remap = [&indices](int index) {
+            return index >= 0 && static_cast<std::size_t>(index) < indices.size() ? indices[index] : -1;
+        };
+        std::map<std::pair<int, int>, WPContainer> waypoints;
+        for (auto& entry : m_waypointMap)
+        {
+            const int first = remap(entry.first.first);
+            const int second = remap(entry.first.second);
+            if (first != -1 && second != -1)
+                waypoints.emplace(std::make_pair(first, second), entry.second);
+            else
+            {
+                for (int type = 0; type < 2; ++type)
+                    for (SAWayPoint* point : entry.second.getWayPoints(type))
+                        delete point;
+            }
+        }
+        m_waypointMap.swap(waypoints);
+        m_wayPointsToDrawFirst = remap(m_wayPointsToDrawFirst);
+        m_wayPointsToDrawSecond = remap(m_wayPointsToDrawSecond);
+        for (AIStrategicObject* area : rejected)
+            delete area;
+        if (AIRenderUtil::m_instance)
+            AIRenderUtil::m_instance->updateNumberOfStrategicAreas();
+    }
+
     WPContainer prototype;
 
     for (std::map<std::string, AIStrategicArea*>::iterator entry = m_strategicAreaMap.begin();

@@ -5,6 +5,7 @@
 
 #include "../../../Core/Ids.h"
 #include "../../../Sound/SoundObjectTemplate.h"    // templateInitialize configures the impl
+#include "../../Main/Game.h"
 #include <sstream>
 
 namespace dice {
@@ -81,12 +82,18 @@ IObject* EffectBundleTemplate::createObject() const
 }
 #endif
 
-// the already-precached bit gates an explicit ObjectTemplate::preCache call - the
-// grandparent's, not Bundle's. As shipped.
+// BF2.exe 0x642250: the precached bit gates the whole body.
+// The client warms child mesh geometries after the ObjectTemplate base call.
 void EffectBundleTemplate::preCache() const
 {
     if ((getFlags() & 0x20) == 0)
+    {
         ObjectTemplate::preCache();
+#if !DEDICATED
+        if (!isDedicated())
+            preCacheGeoms();
+#endif
+    }
 }
 
 // Dedicated ELF81FC410 / PE5F9250 and client BF2.exe 0x6416E0 (table 0x8FF850 +0xF8), read in

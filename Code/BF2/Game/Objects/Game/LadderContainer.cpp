@@ -17,6 +17,9 @@
 #include "../TemplateLeaves.h"                    // LadderContainerTemplate lives there
 #include "RotationalBundle.h"
 #include "Soldier.h"
+#if !DEDICATED
+#include "../../Main/Game.h"
+#endif
 
 #include <cmath>
 
@@ -355,6 +358,10 @@ void LadderContainer::handleUpdate(float deltaTime, unsigned int flags)
         return;
 
     PlayerControlObject::handleUpdate(deltaTime, flags);
+#if !DEDICATED
+    // BF2.exe 0x5C3514..0x5C3525: client animation belongs to the visual phase.
+    if (isDedicated())
+#endif
     updateClimbAnimation(deltaTime);
 
     IObject* occupant = weakTarget<IObject>(m_occupyingObject);
@@ -455,6 +462,11 @@ void LadderContainer::handleVisualUpdate(float deltaTime, float interpolation)
 {
     if (!m_ladder)
         return;
+#if !DEDICATED
+    // BF2.exe 0x5C3920..0x5C3937: keep both consecutive calls on non-dedicated clients.
+    if (!isDedicated())
+        updateClimbAnimation(deltaTime);
+#endif
     updateClimbAnimation(deltaTime);
     SimpleObject::handleVisualUpdate(deltaTime, interpolation);
 }

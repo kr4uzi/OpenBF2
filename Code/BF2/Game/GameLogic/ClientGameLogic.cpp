@@ -3,6 +3,7 @@
 // [INFERRED] File placement.
 
 #include "ClientGameLogic.h"
+#include "../Main/Game.h"                                  // isLightmapRenderingNode
 
 #include <cfloat>
 #include <cmath>
@@ -229,6 +230,11 @@ bool ClientGameLogic::selectSpawnGroup(world::IPlayer* player, int spawnGroup)
 {
     if (!player)
         return false;
+#if !DEDICATED
+    // BF2.exe 0x4E1C42..0x4E1C49: lightmap workers accept without posting a request.
+    if (isLightmapRenderingNode())
+        return true;
+#endif
     sendPlayerRequest(player, 6, &spawnGroup, 4);
     return true;
 }

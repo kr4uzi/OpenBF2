@@ -152,10 +152,35 @@ void Bf2MenuMapNode::setUAVMarker(hfe::Vec3 position, float duration)
     m_uavRadius = radius >= -2147483648.0 && radius < 2147483648.0
         ? static_cast<int>(radius) : (std::numeric_limits<int>::min)();
     m_uavReloading = true;
-    const unsigned int sentinel = 0xffffffffu;
-    if (m_uavObjects.find(sentinel) == m_uavObjects.end())
-        m_uavObjects.insert(std::make_pair(sentinel,
-                                           static_cast<hfe::world::IObject*>(nullptr)));
+    addUavObject(nullptr);
+}
+
+// BF2.exe 0x77A030: insert without replacing an existing entry or retaining the object.
+void Bf2MenuMapNode::addUavObject(hfe::world::IObject* object)
+{
+    const unsigned int id = object ? object->getObjectId() : 0xffffffffu;
+    if (m_uavObjects.find(id) == m_uavObjects.end())
+        m_uavObjects.insert(std::make_pair(id, object));
+}
+
+// BF2.exe 0x77BFE0: the view-distance lookup precedes the player/vehicle tests,
+// even though its result does not participate in the radar-radius decision.
+void Bf2MenuMapNode::addVehicleRadar(hfe::world::IObject* object)
+{
+    hfe::settings->intGet("GSViewDistance", 500);
+    hfe::world::IPlayer* const local = hfe::world::playerManager->getLocalHumanPlayer();
+    if (!local || !local->getVehicle() || !object)
+        return;
+    hfe::world::IAbilityGLComp* const ability = static_cast<hfe::world::IAbilityGLComp*>(
+        hfe::world::object_detail::LayoutAccess::abilityGLComponent(object));
+    if (ability && ability->getGLInfo()->radarRadius > 0)
+        addUavObject(object);
+}
+
+// BF2.exe 0x77C060: erasure uses the object's ID, without a null check.
+void Bf2MenuMapNode::removeVehicleRadar(hfe::world::IObject* object)
+{
+    m_uavObjects.erase(object->getObjectId());
 }
 // Enables a supplies marker for a positive duration, otherwise disables it.
 // An active marker stores position and duration and resets its transition state.
@@ -6077,8 +6102,9 @@ void Bf2MenuMapNode::update(float delta)
         hfe::eventManager->postEvent(hfe::ECHud, 0x4D, 0, 0.0f);   // PE +0x10 overload
     }
 
-    // Send size-change events on either transition while the commander screen is hidden.
-    if ((!m_field776 && sizeReached && !hfe::hudManager->isCommanderShown())
+    // BF2.exe 0x77C85D..0x77C8AE: arrival posts MapChangeComplete while commander
+    // is shown (the HUD enables its overhead camera); departure posts while hidden.
+    if ((!m_field776 && sizeReached && hfe::hudManager->isCommanderShown())
         || (m_field776 && !sizeReached && !hfe::hudManager->isCommanderShown()))
     {
         hfe::eventManager->postEvent(hfe::ECHud, 0x4C, 0, 0.0f);

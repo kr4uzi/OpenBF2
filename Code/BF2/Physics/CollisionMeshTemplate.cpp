@@ -14,6 +14,9 @@
 #include "../Game/Objects/ObjectTemplate.h"      // getMaterialVector (+0xBC) - createMaterialMapping
 #include "../Game/Utility/Vars.h"                 // the load tail's two debug-mesh cells
 #include "../Geom/IGeometryTemplate.h"
+#if !DEDICATED
+#include "../Game/Main/Game.h"
+#endif
 #if !DEDICATED && defined(_M_IX86)
 #include "../Geom/GeometryTemplateManager.h"
 #endif
@@ -282,10 +285,20 @@ bool CollisionMeshTemplate::load(io::INonlinearStream* stream, const IObjectTemp
         if (!v7)
             giveVerticesMaterial();
 
+#if !DEDICATED
+        // BF2.exe 0x00707D8E..0x00707DAC, shared by file and capsule tails.
+        const bool buildAdjacency = !isDedicated() && m_versionToLoad == 0 &&
+            static_cast<unsigned short>(m_versionToLoad2) < 10;
+#endif
         const int loadDebugMeshes = *hfe::Vars::getInt("coll-load-debugmeshes", 0);
         const int forceOffDebugMeshes = *hfe::Vars::getInt("coll-forceOff-debugmeshes", 0);
         if (loadDebugMeshes && !forceOffDebugMeshes)
             buildDebugMeshes(false);
+#if !DEDICATED
+        // BF2.exe 0x00707DD8..0x00707DE5: visible meshes precede adjacency.
+        if (buildAdjacency && !forceOffDebugMeshes)
+            buildDebugMeshes(true);
+#endif
         return true;
     }
 
@@ -437,10 +450,20 @@ bool CollisionMeshTemplate::load(io::INonlinearStream* stream, const IObjectTemp
     if (!v7)
         giveVerticesMaterial();                         // pre-v7: material was per face
 
+#if !DEDICATED
+    // BF2.exe 0x00707D8E..0x00707DAC: old files have no serialized adjacency.
+    const bool buildAdjacency = !isDedicated() && m_versionToLoad == 0 &&
+        static_cast<unsigned short>(m_versionToLoad2) < 10;
+#endif
     const int loadDebugMeshes  = *hfe::Vars::getInt("coll-load-debugmeshes", 0);
     const int forceOffDebugMeshes = *hfe::Vars::getInt("coll-forceOff-debugmeshes", 0);
     if (loadDebugMeshes && !forceOffDebugMeshes)
         buildDebugMeshes(false);
+#if !DEDICATED
+    // BF2.exe 0x00707DD8..0x00707DE5; independent of coll-load-debugmeshes.
+    if (buildAdjacency && !forceOffDebugMeshes)
+        buildDebugMeshes(true);
+#endif
 
     return true;
 }

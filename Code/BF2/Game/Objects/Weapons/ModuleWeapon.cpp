@@ -30,6 +30,7 @@
 #include "TargetComponents/SimpleTargetComp.h"
 #include "ZoomComponents/DefaultZoomComp.h"
 #include "ZoomComponents/ToggleCameraComp.h"
+#include "../ICameraObject.h"
 #include "../../../Core/ConsoleObjectMacro.h"
 #include "../../../Core/Ids.h"
 #include "../../../Core/StringUtil.h"
@@ -38,6 +39,34 @@
 namespace dice {
 namespace hfe {
 namespace world {
+
+// BF2.exe 0x506AD7/0x509B12: one-character numbers normalize through the writer;
+// unknown names leave the destination untouched. The comparison is case-insensitive.
+std::ostream& operator<<(std::ostream& stream, CameraViewMode mode)
+{
+    static const char* const names[] = {"CVMFirstPerson", "CVMInside", "CVMNose", "CVMChase",
+        "CVMFrontChase", "CVMFlyBy", "CVMTrace", "CVMExternTrace"};
+    const unsigned int index = static_cast<unsigned int>(mode);
+    if (index < 8) stream << names[index];
+    return stream;
+}
+
+std::istream& operator>>(std::istream& stream, CameraViewMode& mode)
+{
+    std::string token;
+    stream >> token;
+    if (token.size() == 1)
+    {
+        std::ostringstream text;
+        text << static_cast<CameraViewMode>(std::atoi(token.c_str()));
+        token = text.str();
+    }
+    static const char* const names[] = {"CVMFirstPerson", "CVMInside", "CVMNose", "CVMChase",
+        "CVMFrontChase", "CVMFlyBy", "CVMTrace", "CVMExternTrace"};
+    for (int i = 0; i < 8; ++i)
+        if (equalsIgnoreCase(token, names[i])) { mode = static_cast<CameraViewMode>(i); break; }
+    return stream;
+}
 
 // /0x8580020 and 0x85803F0/0x8580450.  These enum stream pairs are part of this
 // weapons-vocabulary TU in retail.  The readers intentionally leave an unknown token unchanged
@@ -411,6 +440,21 @@ void objTemplOverheatPenaltySet(float v) { activeFireArm()->setOverheatPenalty(v
 // The retail defaults for this property block: ("ObjectTemplate", access 2, category 0x10).
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 16)
 
+// BF2.exe 0x50D2AE: the obsolete Item yaw property only selects the template.
+namespace {
+float objectTemplateGetYawSpeed()
+{
+    getActiveTemplate(CID_ItemTemplate);
+    return 0.0f;
+}
+void objectTemplateSetYawSpeed(float)
+{
+    getActiveTemplate(CID_ItemTemplate);
+}
+}
+BF2_CONSOLE_PROPERTY_FN(yawSpeed, float, getActiveTemplate(CID_ItemTemplate) != 0,
+                        objectTemplateGetYawSpeed(), objectTemplateSetYawSpeed, kWeaponConsoleTag)
+
 // GenericFireArmTemplate's item identity properties. The generated executors are attested in the
 // PE at 0x489AF0 (itemIndex) and the adjacent itemType class; the ELF accessors are
 // ..0x8256D40. These are load-bearing for Kit::init: without itemIndex registration every
@@ -781,17 +825,21 @@ BF2_CONSOLE_PROPERTY(zoom.disableMuzzleWhenZoomed, bool, activeDefaultZoomCompTe
                      setDisableMuzzleWhenZoomed, getDisableMuzzleWhenZoomed, kWeaponConsoleTag)
 
 // ToggleCameraCompTemplate's six camera-switch properties (IID 50440/CID 38118).
-// [CHOSEN, not recovered] The shipped metadata registers both view modes as CameraViewMode, but the
-// accessors store them as int (and the sibling cameraId commands are int). int is kept so each
-// command binds the accessor it calls; the enum's identifiers remain unresolved.
+// BF2.exe 0x51688F/0x516C28 binds the two view modes with CameraViewMode metadata.
+namespace {
+CameraViewMode getChangeViewMode() { return static_cast<CameraViewMode>(activeToggleCameraCompTemplate()->getChangeCameraViewMode()); }
+void setChangeViewMode(CameraViewMode value) { activeToggleCameraCompTemplate()->setChangeCameraViewMode(value); }
+CameraViewMode getStartViewMode() { return static_cast<CameraViewMode>(activeToggleCameraCompTemplate()->getStartCameraViewMode()); }
+void setStartViewMode(CameraViewMode value) { activeToggleCameraCompTemplate()->setStartCameraViewMode(value); }
+}
 BF2_CONSOLE_PROPERTY(zoom.changeCameraId, int, activeToggleCameraCompTemplate(),
                      setChangeCameraId, getChangeCameraId, kWeaponConsoleTag)
-BF2_CONSOLE_PROPERTY(zoom.changeCameraViewMode, int, activeToggleCameraCompTemplate(),
-                     setChangeCameraViewMode, getChangeCameraViewMode, kWeaponConsoleTag)
+BF2_CONSOLE_PROPERTY_FN_RANGED(zoom.changeCameraViewMode, CameraViewMode, activeToggleCameraCompTemplate() != 0,
+                               getChangeViewMode(), setChangeViewMode, 0, 8, kWeaponConsoleTag)
 BF2_CONSOLE_PROPERTY(zoom.startCameraId, int, activeToggleCameraCompTemplate(),
                      setStartCameraId, getStartCameraId, kWeaponConsoleTag)
-BF2_CONSOLE_PROPERTY(zoom.startCameraViewMode, int, activeToggleCameraCompTemplate(),
-                     setStartCameraViewMode, getStartCameraViewMode, kWeaponConsoleTag)
+BF2_CONSOLE_PROPERTY_FN_RANGED(zoom.startCameraViewMode, CameraViewMode, activeToggleCameraCompTemplate() != 0,
+                               getStartViewMode(), setStartViewMode, 0, 8, kWeaponConsoleTag)
 BF2_CONSOLE_PROPERTY(zoom.useProjectileCamera, bool, activeToggleCameraCompTemplate(),
                      setUseProjectileCamera, getUseProjectileCamera, kWeaponConsoleTag)
 BF2_CONSOLE_PROPERTY(zoom.allowUntoggledFire, bool, activeToggleCameraCompTemplate(),

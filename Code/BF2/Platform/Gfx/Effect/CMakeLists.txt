@@ -79,10 +79,11 @@ if(EXISTS "${_nd}/vkd3d/.libs/libvkd3d-shader.a" AND EXISTS "${_nd}/vkd3d/.libs/
 endif()
 # [CHOSEN, not recovered] A deps build made before the current vkd3d patches still links, but its
 # compiler refuses what the patches fixed (macos_metal_device closureHigherProfileChecks fails with
-# E5017 against one without 0011). build-vkd3d.sh records the applied patch names; say so loudly
-# when they are missing or differ. Rebuild with tools/macos/nativefx/build.sh into a new directory.
+# E5017 against one without 0011). Both platform builders record the applied patch names.
+# Refuse a stale client build while leaving server-only targets available.
 if(BF2_FX_NATIVE_AVAILABLE)
-    file(GLOB _want_patches RELATIVE "${BF2_FX_REPO}/tools/macos/vkd3d-patches" "${BF2_FX_REPO}/tools/macos/vkd3d-patches/*.patch")
+    file(GLOB _want_patches CONFIGURE_DEPENDS RELATIVE "${BF2_FX_REPO}/tools/macos/vkd3d-patches" "${BF2_FX_REPO}/tools/macos/vkd3d-patches/*.patch")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_nd}/vkd3d-src/.bf2-patches")
     list(SORT _want_patches)
     set(_have_patches)
     if(EXISTS "${_nd}/vkd3d-src/.bf2-patches")
@@ -94,16 +95,30 @@ if(BF2_FX_NATIVE_AVAILABLE)
         if(_have_patches)
             list(REMOVE_ITEM _missing ${_have_patches})
         endif()
-        message(WARNING "BF2_FX_NATIVE_DEPS=${_nd} was not built from the current tools/macos/vkd3d-patches "
-            "(no vkd3d-src/.bf2-patches record, or missing: ${_missing}). Native effect builds can refuse what "
-            "those patches fix. Rebuild with the platform's nativefx builder into a new directory, "
-            "keeping the existing one; see docs/building.md and docs/linux-vulkan-client.md.")
+        if(NOT EXISTS "${_nd}/vkd3d-src/.bf2-patches")
+            set(_patch_problem "no vkd3d-src/.bf2-patches record")
+        elseif(_missing)
+            string(JOIN ", " _missing_text ${_missing})
+            set(_patch_problem "missing patches: ${_missing_text}")
+        else()
+            set(_patch_problem "vkd3d-src/.bf2-patches does not match the current patch set")
+        endif()
+        string(CONCAT _fx_stale_message
+            "bf2_client requires native effect libraries built from the current tools/macos/vkd3d-patches.\n"
+            "BF2_FX_NATIVE_DEPS=${_nd}: ${_patch_problem}.\n"
+            "Rebuild with sh tools/macos/nativefx/build.sh [x86_64|arm64|universal] (macOS), or\n"
+            "python3 tools/linux/build-nativefx.py --vkd3d-source <local-vkd3d-2.1> "
+            "--mojo-source <local-mojoshader> --output <new-directory> (Linux).\n"
+            "Keep the existing library set; configure with -DBF2_FX_NATIVE_DEPS=<rebuilt-directory>. "
+            "See docs/building.md.")
+        message(WARNING "${_fx_stale_message}")
     endif()
 endif()
 set(BF2_FX_NATIVE_AVAILABLE ${BF2_FX_NATIVE_AVAILABLE} PARENT_SCOPE)
-# Only the renderer-linked client needs the compiler; server-only builds (bf2, bf2_aidll) do not.
-if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_MACOS_LINK_RENDDX9)
-    message(FATAL_ERROR
+# Only the client needs the compiler; server-only builds (bf2, bf2_aidll) configure and build
+# without it. Building bf2_client without it stops at once with this message.
+if(NOT BF2_FX_NATIVE_AVAILABLE AND TARGET bf2_client AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    string(CONCAT _fx_missing_message
         "The macOS client requires native effect compilation (BF2_FX_NATIVE).\n"
         "Missing or incompatible ${CMAKE_OSX_ARCHITECTURES} vkd3d-shader/MojoShader dependencies at: ${_nd}\n"
         "Build offline with: sh tools/macos/nativefx/build.sh [x86_64|arm64|universal]\n"
@@ -113,6 +128,13 @@ if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_MACOS_LINK_RENDDX9)
         "vkd3d/.libs/libvkd3d-{shader,common}.a, vkd3d-src/include/vkd3d_shader.h, "
         "mojo/libmojoshader.a and mojo-src/mojoshader.h.\n"
         "All libraries must contain every requested architecture. There is no Wine cache fallback.")
+    message(WARNING "${_fx_missing_message}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt" "${_fx_missing_message}\n")
+    add_custom_target(bf2_client_requires_fx_native
+        COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt"
+        COMMAND "${CMAKE_COMMAND}" -E false
+        VERBATIM)
+    add_dependencies(bf2_client bf2_client_requires_fx_native)
 endif()
 if(NOT BF2_FX_NATIVE_AVAILABLE AND BF2_LINUX_EFFECT_CHECKS)
     message(FATAL_ERROR "Linux effect checks require toolchain-compatible native dependencies at ${_nd}. "
@@ -216,6 +238,32 @@ if(BF2_FX_NATIVE_AVAILABLE)
             -Wall -Wextra -Werror $<$<CXX_COMPILER_ID:GNU>:-Wno-misleading-indentation>)
         target_link_libraries(bf2_dxvk_effect PUBLIC bf2_fx_native_compiler)
     endif()
+    # [CHOSEN, not recovered] Headless check of a wait for a build with a caller service (Native.h,
+    # Service; the macOS client is its user): no game, window, GPU or effect cache is started.
+    if(APPLE)
+        add_executable(bf2_fx_wait_check EXCLUDE_FROM_ALL "${BF2_FX_REPO}/Code/Tests/macos_fx_runtime/native_wait.cpp")
+        target_link_libraries(bf2_fx_wait_check PRIVATE bf2_fx_native_compiler)
+        target_compile_definitions(bf2_fx_wait_check PRIVATE DEDICATED=0 BF2_IMAGE_RENDDX9=1)
+        target_compile_options(bf2_fx_wait_check PRIVATE
+            "SHELL:-include ${BF2_ROOT}/Core/BuildConfig.h" -Wall -Wextra -Werror)
+        if(BUILD_TESTING)
+            add_test(NAME bf2_fx_wait_check COMMAND bf2_fx_wait_check)
+            set_tests_properties(bf2_fx_wait_check PROPERTIES TIMEOUT 250)
+        endif()
+    endif()
+endif()
+# [CHOSEN, not recovered] Declare the stale-library guard after the compiler targets so Make
+# visits it before compiling effect dependencies. Match the missing-library guard above.
+if(_fx_stale_message AND TARGET bf2_client)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt" "${_fx_stale_message}\n")
+    add_custom_target(bf2_client_requires_fx_native
+        COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_CURRENT_BINARY_DIR}/fx-native-missing.txt"
+        COMMAND "${CMAKE_COMMAND}" -E false
+        VERBATIM)
+    add_dependencies(bf2_client bf2_client_requires_fx_native)
+endif()
+if(TARGET bf2_client_requires_fx_native)
+    add_dependencies(bf2_client_objects bf2_client_requires_fx_native)
 endif()
 option(BF2_FX_DEVELOPER_ORACLE "Enable optional developer oracle tools/tests, not used by the client" OFF)
 if(BF2_FX_DEVELOPER_ORACLE)

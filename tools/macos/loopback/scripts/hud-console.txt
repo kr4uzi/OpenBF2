@@ -1,3 +1,4 @@
+# Console full access (BF2_CLIENT_CONSOLE_FULL_ACCESS) exists in debug builds only; a release build ignores it.
 # [TEMP] The HUD console rows no retail script uses (frontier closure batch 7): each typed once after
 # spawning. Needs --client-env BF2_CLIENT_CONSOLE_FULL_ACCESS=1 (the rows are access 2).
 include join-and-spawn

@@ -15,6 +15,7 @@
 #include "../../../Physics/PhysicsType.h"                 // symbolic Point/Mesh vocabulary
 #include "../../../Core/Ids.h"                            // CID_SimpleObjectTemplate
 #include <string>
+#include <cstdio>
 
 namespace dice {
 namespace hfe {
@@ -26,11 +27,52 @@ namespace world {
 typedef Math::Vec3 Vec3ColorFloatIntensity;
 typedef unsigned int uint;
 
-// [CHOSEN, not recovered] Retail's console metadata spelling. The generated executor stores the
-// parsed value as one unsigned dword and all 201 stock uses are numeric; keeping the alias local
-// preserves that exact content path without inventing a new public engine type or an unread
-// symbolic-token vocabulary.
-typedef unsigned int PhysicsGripFlags;
+// BF2.exe 0x54FC10/0x54FF4E: the console vocabulary names individual bits, not combinations.
+enum PhysicsGripFlags : unsigned int
+{
+    PGFNoGrip = 1, PGFContactGrip = 2, PGFRollGrip = 4, PGFEngineGrip = 8,
+    PGFRollGripWhenOccupied = 16, PGFDummyGrip = 32, PGFStaticFriction = 64,
+    PGFEngineDummyGrip = 128
+};
+
+std::ostream& operator<<(std::ostream& stream, PhysicsGripFlags value)
+{
+    switch (value)
+    {
+    case PGFContactGrip: return stream << "PGFContactGrip";
+    case PGFRollGrip: return stream << "PGFRollGrip";
+    case PGFEngineGrip: return stream << "PGFEngineGrip";
+    case PGFRollGripWhenOccupied: return stream << "PGFRollGripWhenOccupied";
+    case PGFDummyGrip: return stream << "PGFDummyGrip";
+    case PGFStaticFriction: return stream << "PGFStaticFriction";
+    case PGFEngineDummyGrip: return stream << "PGFEngineDummyGrip";
+    default: return stream << "PGFNoGrip";
+    }
+}
+
+std::istream& operator>>(std::istream& stream, PhysicsGripFlags& value)
+{
+    std::string token;
+    stream >> token;
+    std::string numericName;
+    if (token.size() <= 3)
+    {
+        int numeric = -1;
+        if (std::sscanf(token.c_str(), "%d", &numeric) == 1)
+        {
+            std::ostringstream text;
+            text << static_cast<PhysicsGripFlags>(numeric);
+            numericName = text.str();
+        }
+    }
+    static const char* const names[] = {"PGFNoGrip", "PGFContactGrip", "PGFRollGrip", "PGFEngineGrip",
+        "PGFRollGripWhenOccupied", "PGFDummyGrip", "PGFStaticFriction", "PGFEngineDummyGrip"};
+    value = PGFNoGrip;
+    for (unsigned int i = 0; i < 8; ++i)
+        if (token == names[i] || token == std::string("c_") + names[i] || numericName == names[i])
+        { value = static_cast<PhysicsGripFlags>(1u << i); break; }
+    return stream;
+}
 
 // Zero-layout friend bridge for direct-field/template-cursor executors. Keeping this access here
 // avoids inventing public gameplay setters/getters or exposing BundleTemplate's shipped static
@@ -59,7 +101,7 @@ struct BaseTemplateConsoleAccess
     }
     static const Math::Vec3& getInertiaModifier() { return simpleObject()->m_inertiaModifier; }
     static void setInertiaModifier(const Math::Vec3& value) { simpleObject()->m_inertiaModifier = value; }
-    static PhysicsGripFlags getGrip() { return simpleObject()->m_grip; }
+    static PhysicsGripFlags getGrip() { return static_cast<PhysicsGripFlags>(simpleObject()->m_grip); }
     static void setGrip(PhysicsGripFlags value) { simpleObject()->m_grip = value; }
     static U32 getCollisionGroups() { return simpleObject()->m_collisionGroups; }
     static void setCollisionGroups(U32 value) { simpleObject()->m_collisionGroups = value; }
@@ -260,6 +302,7 @@ struct BaseTemplateConsoleAccess
     {
         return static_cast<BundleTemplate*>(getActiveTemplate(CID_BundleTemplate));
     }
+    static int activeMemberId() { return BundleTemplate::mActiveMemberId; }
     static void setPosition(const Math::Vec3& value, int index = BundleTemplate::mActiveMemberId)
     {
         bundle()->setPosition(value, index);
@@ -324,6 +367,10 @@ void objTemplCollisionMeshSet(const std::string& v)
 
 // General ObjectTemplate defaults use category 0. Some later general rows retain category-1 metadata.
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
+
+// BF2.exe 0x550DCB: base getter returns empty; assignment dispatches the virtual setter.
+BF2_CONSOLE_PROPERTY(destroyableWindowsTemplate, std::string, BaseTemplateConsoleAccess::simpleObject(),
+                     setDestroyableWindowsTemplate, getDestroyableWindowsTemplate, kObjTemplBaseConsoleTag)
 
 // Reads or sets the active template's cull-radius scale.
 BF2_CONSOLE_PROPERTY(cullRadiusScale, float, getActiveTemplate(CID_ObjectTemplate), setCullRadiusScale, getCullRadiusScale, kObjTemplBaseConsoleTag)
@@ -590,10 +637,50 @@ BF2_CONSOLE_PROPERTY_FN(inertiaModifier, Vec3,
 // bit 8 is present. Stock tanks author grip 8 on their drive wheels and grip 128 on passive road
 // wheels; without this property every wheel kept the constructor default 2 and no track force was
 // ever produced.
-BF2_CONSOLE_PROPERTY_FN(grip, PhysicsGripFlags,
-                        getActiveTemplate(CID_SimpleObjectTemplate) != 0,
-                        BaseTemplateConsoleAccess::getGrip(),
-                        BaseTemplateConsoleAccess::setGrip, kObjTemplBaseConsoleTag)
+// BF2.exe 0x553318/0x553339 publishes numeric range 0..7, despite the bit-valued vocabulary.
+// Its range checker is empty (0x586B53), and its delta text is PGFNoGrip (0x5533F5).
+namespace {
+class ConsoleGrip : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleGrip()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "grip";
+        m_type = 1; m_minNoArgs = 0; m_maxNoArgs = 1; m_returnType = "PhysicsGripFlags";
+        m_hasReturnValue = false; m_isDynamic = true;
+        m_argTypes[0] = "PhysicsGripFlags"; m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const { return getActiveTemplate(CID_SimpleObjectTemplate) != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount == 0) { m_hasReturnValue = true; m_returnValue = BaseTemplateConsoleAccess::getGrip(); }
+        else if (m_argCount == 1) { m_hasReturnValue = false; BaseTemplateConsoleAccess::setGrip(BF2_CC_ARG(PhysicsGripFlags, 0)); }
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        if (index != 1) return;
+        static PhysicsGripFlags argument;
+        std::istringstream stream(value);
+        // BF2.exe 0x553438 extracts in place, including the reader's fallback on empty input.
+        stream >> argument;
+        m_args[0] = reinterpret_cast<std::string*>(&argument);
+    }
+    BF2_CC_RETURN_AS_STRING
+    bool objectHasRange() const { return true; }
+    std::pair<const void*, const void*> getObjectRange() const
+    { m_min = 0; m_max = 7; return std::make_pair(&m_min, &m_max); }
+    std::pair<std::string, std::string> getObjectRangeAsString() const
+    { m_min = 0; m_max = 7; return std::make_pair(std::string("0"), std::string("7")); }
+    std::string getObjectDeltaAsString() const { return "PGFNoGrip"; }
+    void checkObjectRange(bool) {}
+private:
+    PhysicsGripFlags m_returnValue;
+    mutable unsigned int m_min, m_max;
+};
+static ConsoleGrip s_consoleGrip;
+}
 
 // Collision, simulation frequency and portal-passing properties.
 BF2_CONSOLE_PROPERTY_FN(centerOfCollisionOffset, Vec3,
@@ -755,8 +842,49 @@ BF2_CONSOLE_METHOD_1_ACTIVE(addTemplate, objTemplBundleAddTemplate, getActiveTem
 BF2_CONSOLE_METHOD_1_2_STATIC_ACTIVE(setPosition, BaseTemplateConsoleAccess::setPosition, getActiveTemplate(CID_BundleTemplate) != 0, Math::Vec3, int, kObjTemplBaseConsoleTag)
 BF2_CONSOLE_METHOD_1_2_STATIC_ACTIVE(setRotation, BaseTemplateConsoleAccess::setRotation, getActiveTemplate(CID_BundleTemplate) != 0, Math::Vec3, int, kObjTemplBaseConsoleTag)
 
+// BF2.exe 0x554A6E/0x554AEF/0x554B3C; dedicated PE 0x4E7090/0x4E7180/0x4E71E0.
+// The omitted index reads the shared child selection.
+namespace {
+class ConsoleClassBundleGetTemplate : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassBundleGetTemplate()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "getTemplate";
+        m_type = 0;
+        m_minNoArgs = 0;
+        m_maxNoArgs = 1;
+        m_returnType = "std::string";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        m_argTypes[0] = "int";
+        m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplBaseConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const { return getActiveTemplate(CID_BundleTemplate) != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount == 0 || m_argCount == 1)
+        {
+            const int suppliedIndex = m_argCount == 1 ? BF2_CC_ARG(int, 0) : 0;
+            m_hasReturnValue = true;
+            BundleTemplate* bundle = static_cast<BundleTemplate*>(getActiveTemplate(CID_BundleTemplate));
+            m_returnValue = bundle->getTemplate(m_argCount == 0 ? BaseTemplateConsoleAccess::activeMemberId() : suppliedIndex);
+        }
+    }
+    void setArgFromString(int index, const std::string& value) { BF2_CC_CONVERT(int, 1) }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    std::string m_returnValue;
+};
+static ConsoleClassBundleGetTemplate s_consoleBundleGetTemplate;
+}
+
 // Bundle member-list and destruction settings.
-// Unimplemented optional-index getters require their original argument and return behavior before binding.
 namespace {
 void objTemplBundleClearTemplateList()
 {

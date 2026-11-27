@@ -47,10 +47,18 @@
 #include "../GameLogicComp/ArmorGLComp.h"        // handleMessage reads the armor status
 #include "../../../AI/AIInterface/AIInstance.h"  // the AI singleton, ds:0x8AC37F8
 #if !DEDICATED
+#include "../Fx/EffectBundle.h"
+#include "../../../Math/Plane3.h"
+#include "../../../Core/Random.h"
+#include "../../../Geom/IGeometryTemplate.h"
+#include "../../../Physics/CollisionMesh.h"
 #include "SoldierHapticProfile.h"                // ledger N2: the control-box profile switch (HapticSettings)
 #include "../PlayerControlObjectTemplate.h"       // onEnter's unchecked +0x22C template view
 #include "../../HapticSettings.h"
-#include "../../Main/BF2ClientSeams.h"           // g_hapticSettings, ds:0x987394
+#include "../../Main/BF2ClientSeams.h"           // g_hapticSettings ds:0x987394, hudManager ds:0xA10890
+#include "../../../Menu/BF2HudManager.h"         // onManDown, BF2HudManager +0x350
+#include "../../../Menu/HudVehicleInformation.h" // the revive's updateHudMode (0x78B870)
+#include "../../../Menu/Bf2MenuMapNode.h"
 #endif
 #include "../../../AI/AIInterface/BFKnowledge/IAIObject.h"   // init()'s lock bracket, the revive's init()
 #include "../../GameServer/ServerSettings.h"     // serverSettings - the man-down time
@@ -101,6 +109,47 @@ extern IBase* materialManager;                   // ds:0x8AD2820 - Core/Globals.
 // Console-backed soldier tuning. Pose and speed tables capture values at static initialization.
 // Swim pose rows reuse sprint variable names, so their values alias the sprint row.
 namespace {
+
+#if !DEDICATED
+// BF2.exe 0x854340..0x8543B1: client footstep tuning, in registration order.
+float* const g_footstepCullDistance = Vars::getFloat("soldier-footstep-effect-cull-distance", 20.0f);
+float* const g_footstepOffsetY = Vars::getFloat("soldier-footstep-offset-y", -0.99f);
+float* const g_footstepOffsetStand = Vars::getFloat("soldier-footstep-offset-dof-stand", 0.13f);
+float* const g_footstepOffsetProne = Vars::getFloat("soldier-footstep-offset-dof-prone", 0.0f);
+// BF2.exe 0x85B0D0..0x85B184; client effect tuning, absent from the dedicated bodies.
+float* const g_throwHelmetVar = Vars::getFloat("soldier_throwHelmet", 0.025f);
+float* const g_throwGunVar = Vars::getFloat("soldier_throwGun", 0.025f);
+float* const g_throwGunForwardVar = Vars::getFloat("soldier_throwGunForward", 1.0f);
+float* const g_dropMinVar = Vars::getFloat("soldier-drop-min", 0.5f);
+float* const g_dropMaxVar = Vars::getFloat("soldier-drop-max", 1.5f);
+
+// BF2.exe 0x440030, inlined at 0x61D04B/0x61D089/0x61D0C7.
+// [INFERRED] Helper name. Keep the shared Rand state and the signed shift before scaling.
+double fallingFxRandom(float lower, float upper)
+{
+    const int value = (static_cast<int>(Rand.getRaw() | 0x80u) >> 7) + 1;
+    return static_cast<double>(value) * (static_cast<double>(upper) - lower)
+        * (1.0 / 16777216.0) + lower;
+}
+
+// BF2.exe 0x61D02C..0x61D143 / 0x61D2BB..0x61D38B. Draw x, y, z in order;
+// x/y are materialized floats, whereas z remains an intermediate until the final vector store.
+Vec3 fallingFxSpin()
+{
+    float extent = *g_dropMaxVar - *g_dropMinVar;
+    const float x = static_cast<float>(fallingFxRandom(-extent, extent));
+    extent = *g_dropMaxVar - *g_dropMinVar;
+    const float y = static_cast<float>(fallingFxRandom(-extent, extent));
+    extent = *g_dropMaxVar - *g_dropMinVar;
+    const double z = fallingFxRandom(-extent, extent);
+    const Vec3 spin = {
+        x + (x > 0.0f ? *g_dropMinVar : -*g_dropMinVar),
+        y + (y > 0.0f ? *g_dropMinVar : -*g_dropMinVar),
+        static_cast<float>(z + (z > 0.0 ? *g_dropMinVar : -*g_dropMinVar))
+    };
+    return spin;
+}
+#endif
 
 float* const g_soldierTimeToEnableWeaponVar =
     Vars::getFloat("soldier-timeToEnableWeapon", 1.25f);
@@ -788,6 +837,10 @@ void Soldier::exit()
     if (m_ragDoll)                                                           // +0x220
     {
         m_ragDoll->setIsClient(false);
+#if !DEDICATED
+        // BF2.exe 0x5A71A2..0x5A71B5: released client ragdolls keep simulating.
+        if (isDedicated())
+#endif
         m_ragDoll->m_exited = true;                                        // byte +0x5C = 1
     }
     stopTinnitus();
@@ -829,6 +882,10 @@ void Soldier::exitPlayer()
     if (m_ragDoll)                                                           // +0x220
     {
         m_ragDoll->setIsClient(false);
+#if !DEDICATED
+        // BF2.exe 0x5A98D6..0x5A98E9; setIsClient(false) remains unconditional.
+        if (isDedicated())
+#endif
         m_ragDoll->m_exited = true;
     }
     stopTinnitus();
@@ -868,6 +925,16 @@ void Soldier::onExit()
                 if (pco)
                     break;
             }
+#if !DEDICATED
+            // BF2.exe 0x5AB4E4..0x5AB52F: remove the root radar before kit bonuses.
+            // The root PCO's seat-map copy lives across the HUD call (0x4CF410/0x4CF430).
+            if (!isDedicated() && L::abilityGLComponent(used)
+                && findOwningPlayerControlObject(used))
+            {
+                const std::map<int, IPlayerControlObject*> pcos(*pco->getPcos());
+                hudManager->getMap()->removeVehicleRadar(root);
+            }
+#endif
             const std::string& rootName = L::objectTemplate(root)->getName();   // +0x14 > +0x2C, root unchecked
             if (pco)
             {
@@ -1259,7 +1326,68 @@ unsigned int Soldier::getGrapplingHookId() const { return m_grapplingHookId; }
 void Soldier::setReadyToClimbTime(float t)       { m_readyToClimbTime = t; }
 
 bool  Soldier::getIsSkyDiving() const            { return m_isSkyDiving; }
-void  Soldier::dropWeaponFx(bool, Vec3&, int)    { }
+// BF2.exe 0x61CF60..0x61D20A; dedicated PE 0x5BC650 / ELF 0x81B6E50 are empty.
+void Soldier::dropWeaponFx(bool useVelocity, Vec3& velocity, int lod)
+{
+#if !DEDICATED
+    typedef object_detail::LayoutAccess L;
+    if (m_activeItemIndex == -1 || isDedicated() || !m_soldierTemplate->m_weapObjTemplate)
+        return;
+
+    IObject* const weapon = getItem(m_activeItemIndex);
+    IObject* const fallingWeapon = m_soldierTemplate->m_weapObjTemplate->createObject();
+    fallingWeapon->init();
+    setGeometry(fallingWeapon, static_cast<geom::IGeometryTemplate*>(
+        geometry_part::getTemplate(L::geometry(weapon))));
+    if (L::geometry(fallingWeapon))
+        geometry_part::setLod(L::geometry(fallingWeapon), lod);
+
+    ICollisionMesh* const weaponCollision = static_cast<ICollisionMesh*>(L::collisionMesh(weapon));
+    if (weaponCollision)
+    {
+        CollisionMeshTemplate* const meshTemplate = weaponCollision->getTemplate();
+        if (meshTemplate)
+        {
+            // BF2.exe 0x61CFF7..0x61D029, CollisionMesh constructor 0x6E9DF0.
+            // setComponent retains the new handle; the weapon's shared template is borrowed.
+            CollisionMesh* const collision = new CollisionMesh(meshTemplate);
+            fallingWeapon->setComponent(IID_ICollisionMesh, collision);
+            if (collision)
+                collision->release();
+        }
+    }
+
+    IPhysicsNode* const physics = static_cast<IPhysicsNode*>(L::physicsNode(fallingWeapon));
+    physics->addRotationalSpeed(fallingFxSpin());
+    if (!useVelocity)
+    {
+        if (m_ragDoll)
+        {
+            const Vec3& speed = m_ragDoll->getParticleSpeed(34);
+            const float scale = *g_throwGunVar;
+            const Vec3 thrown = { speed.x * scale, speed.y * scale, speed.z * scale };
+            physics->addPositionalSpeed(thrown);
+        }
+        else
+        {
+            physics->addPositionalSpeed(static_cast<IPhysicsNode*>(m_physicsNode)->getPositionalSpeed());
+        }
+
+        const Mat4& transform = getAbsoluteTransformation();
+        const float scale = *g_throwGunForwardVar;
+        const Vec3 forward = { transform.m[8] * scale, transform.m[9] * scale, transform.m[10] * scale };
+        physics->addPositionalSpeed(forward);
+    }
+    else
+    {
+        physics->addPositionalSpeed(velocity);
+    }
+
+    fallingWeapon->setAbsoluteTransformation(weapon->getAbsoluteTransformation());
+    // BF2.exe 0x61D1F8..0x61D204: ISoldier +0x1A8 == Soldier +0x304 (ELF +0x2D0).
+    m_dword2D0 = static_cast<int>(L::objectId(fallingWeapon));
+#endif
+}
 float Soldier::getCurrentAbility() const         { return m_currentAbility; }
 void  Soldier::setCurrentAbility(float a)        { m_currentAbility = a; }
 
@@ -1463,16 +1591,108 @@ void Soldier::setHitByVehicleSpeed(const Vec3& speed)
     m_hitByVehicleSpeedTicks = WorldPref::getTickCount() + 16;
 }
 
-// . IT does NOT drop A helmet - it zeroes one dword. Whatever consumes +0x22C is what makes
-// the helmet appear; this only arms it.
+// BF2.exe 0x61D210..0x61D3EC. Dedicated PE 0x5BC660 / ELF 0x81B6E60 only clear the timer.
 void Soldier::dropHelmetFx()
 {
     m_helmetTime = 0.0f;
+#if !DEDICATED
+    typedef object_detail::LayoutAccess L;
+    if (isDedicated() || !m_kit)
+        return;
+
+    const KitTemplate* const kitTemplate = static_cast<const KitTemplate*>(L::objectTemplate(m_kit));
+    if (kitTemplate->m_dropHeadwear.empty())
+        return;
+    IObjectTemplate* const helmetTemplate = objectTemplateManager->getTemplate(kitTemplate->m_dropHeadwear);
+    if (!helmetTemplate)
+        return;
+
+    IObject* const helmet = helmetTemplate->createObject();
+    helmet->init();
+    IPhysicsNode* const physics = static_cast<IPhysicsNode*>(L::physicsNode(helmet));
+    const Mat4& worldTransform = getAbsoluteTransformation();
+    if (m_ragDoll)
+    {
+        const Vec3& speed = m_ragDoll->getParticleSpeed(47);
+        const float scale = *g_throwHelmetVar;
+        const Vec3 thrown = { speed.x * scale, speed.y * scale, speed.z * scale };
+        physics->addPositionalSpeed(thrown);
+        physics->addRotationalSpeed(fallingFxSpin());
+    }
+
+    // BF2.exe 0x61D38E..0x61D3C1: selected character rig, head bone 47, then soldier world.
+    // 0x6D9620 multiplies all sixteen entries, including the fourth column.
+    anim::Skeleton* const skeleton = m_characterMode == 0
+        ? static_cast<anim::Skeleton*>(m_animSkeleton) : m_collisionSkeleton;
+    Mat4 transform = Mat4::getIdentity();
+    transform.fullMult(skeleton->m_transforms[47], worldTransform);
+    helmet->setAbsoluteTransformation(transform);
+    m_dword2D4 = static_cast<int>(L::objectId(helmet));  // client Soldier +0x308 / ELF +0x2D4
+
+    if (L::geometry(m_kit))
+        geometry_part::setExcludedPart(L::geometry(m_kit), 47, true);
+#endif
 }
 
-// / 5 B / 5 B. All three are empty in the shipped binary. Footstep effects, the breath-holding
-// meter and leaving a ladder are named, dispatched and do nothing - on this build.
-void Soldier::triggerFootStepEffect(int, int)    { }
+// BF2.exe 0x5A7A50..0x5A7C08; dedicated ELF 0x81AD580 is empty.
+void Soldier::triggerFootStepEffect(int material, int footMaterial)
+{
+#if !DEDICATED
+    if (isDedicated() || footMaterial < 0 || m_pose != 0)
+        return;
+    IPlayerControlObject* const control = static_cast<IPlayerControlObject*>(this);
+    if (!control->getOccupingPlayer() || control->getOccupingPlayer()->hasFirstPersonView())
+        return;
+
+    Mat4 camera = Mat4::getIdentity();
+    objectManager->getCameraInfo(&camera, 0, 0);
+    const Vec3& position = getAbsolutePosition();
+    const Vec3 distance = {camera.m[12] - position.x, camera.m[13] - position.y,
+                           camera.m[14] - position.z};
+    if (std::sqrt(distance.x * distance.x + distance.y * distance.y + distance.z * distance.z)
+        > *g_footstepCullDistance)
+        return;
+
+    IObjectTemplate* const effectTemplate = static_cast<IObjectTemplate*>(
+        static_cast<MaterialManager*>(materialManager)->getEffectTemplate(material, footMaterial, 0));
+    if (!effectTemplate)
+        return;
+    IObject* const effect = effectTemplate->createObject();
+    if (!effect)
+        return;
+
+    // Retail re-reads pose after creation, even though the entry gate requires standing.
+    const float offset = m_pose == 0 ? *g_footstepOffsetStand : *g_footstepOffsetProne;
+    Mat4 transform = getAbsoluteTransformation();
+    transform.m[12] += 0.0f;
+    transform.m[13] += *g_footstepOffsetY;
+    transform.m[14] += 0.0f;
+    const Vec3& speed = static_cast<IPhysicsNode*>(
+        object_detail::LayoutAccess::physicsNode(this))->getPositionalSpeed();
+    const Vec3 displacement = {speed.x * offset, speed.y * offset, speed.z * offset};
+    transform.m[12] += displacement.x;
+    transform.m[13] += displacement.y;
+    transform.m[14] += displacement.z;
+
+    if (object_detail::LayoutAccess::objectTemplate(effect)->getClassID() == CID_EffectBundleTemplate ||
+        object_detail::LayoutAccess::objectTemplate(effect)->getClassID() == CID_GroundEffectBundleTemplate)
+    {
+        const Plane3 plane = {{transform.m[4], transform.m[5], transform.m[6]},
+            -(transform.m[14] * transform.m[6] + transform.m[13] * transform.m[5]
+              + transform.m[12] * transform.m[4])};
+        static_cast<EffectBundle*>(effect)->setCollisionPlane(plane);
+    }
+    // BF2.exe 0x4C4B60 selects the relative setter for an already parented object.
+    if (object_detail::LayoutAccess::parent(effect))
+        effect->setRelativeTransformation(transform);
+    else
+        effect->setAbsoluteTransformation(transform);
+    effect->init();
+    effect->handleMessage(static_cast<TemplateMessage>(0), 0, false);
+#endif
+}
+
+// Dedicated bodies for the breath-holding meter and ladder exit are empty.
 void Soldier::updateHoldBreathUnderwaterTime(float) { }
 void Soldier::removeFromLadder()                 { }
 
@@ -2960,7 +3180,20 @@ void Soldier::handleManDownActions(TemplateMessage message, IPlayer* player)
 
     switch (player->getCurrentFiringButton())     // IPlayer vslot ELF +0x208 / PE +0x204
     {
-    case io::PIFire:                              // 8 - explicit and empty; see the note above
+    case io::PIFire:                              // 8
+#if !DEDICATED
+        // BF2.exe 0x5A5BF7..0x5A5C3B: on the client, the local player's first primary-fire press
+        // while down calls for a medic (IGame +0xD0, HudNodeTypes 49), at most three times per
+        // man-down (m_medicCalled, PE +0x2F8, already 1 after the automatic call in "die"). The
+        // dedicated ELF keeps this case empty.
+        if (!isDedicated() && player == playerManager->getLocalHumanPlayer()
+            && m_fireButtonState[0].translateMessage(message) == 7     // PE this+0x32C
+            && m_medicCalled < 3)
+        {
+            gameCallForSpecialist(player, static_cast<HudNodeTypes>(49));
+            ++m_medicCalled;
+        }
+#endif
         break;
 
     case io::PIAltFire:                           // 31
@@ -3199,7 +3432,16 @@ void Soldier::handleMessage(TemplateMessage message, IPlayer* player, bool remot
             {
                 gameCallForSpecialist(occupant, static_cast<HudNodeTypes>(50));
                 ++m_medicCalled;
-                playerManager->getLocalHumanPlayer();   // discarded - a leftover, reproduced
+#if !DEDICATED
+                // BF2.exe 0x5A779A..0x5A77B5: the local player's man-down also tells the HUD,
+                // through BF2HudManager +0x350 (onManDown, 0x751460), which slides the soldier
+                // panels away and shows the man-down text. The dedicated ELF keeps only the
+                // local-player query.
+                if (occupant == playerManager->getLocalHumanPlayer() && hudManager)
+                    hudManager->onManDown();
+#else
+                playerManager->getLocalHumanPlayer();   // discarded - the HUD call's remnant
+#endif
             }
         }
         m_isManDown = 1;
@@ -3230,6 +3472,15 @@ void Soldier::handleMessage(TemplateMessage message, IPlayer* player, bool remot
                 eventManager->postEvent(static_cast<EventCategory>(3), 7, &payload, 0.0f);
             }
         }
+#if !DEDICATED
+        // BF2.exe 0x5A790D..0x5A796A: on the client, the local player's revive brings the soldier
+        // panels back through HudVehicleInformation::updateHudMode (0x78B870, reached through
+        // BF2HudManager +0x24C), which clears KilledState and so also hides the man-down text that
+        // onManDown set. The dedicated ELF has no such tail.
+        if (!isDedicated() && playerManager->getLocalHumanPlayer() == getOccupingPlayer()
+            && hudManager && hudManager->getVehicleInformation())
+            hudManager->getVehicleInformation()->updateHudMode();
+#endif
         break;
 
     case 28:
@@ -4195,6 +4446,21 @@ void Soldier::onEnter(IObject* entering)
         if (seat)
             break;
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5ACADE..0x5ACB58: a friendly soldier entering an ability-equipped
+    // object registers its radar. PCO +0x98 / IPlayer +0xE4 are the team getters.
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+    if (!isDedicated() && L::abilityGLComponent(entering) && local)
+    {
+        const int team = getTeam();
+        if (team == local->getTeam() && seat)
+        {
+            const std::map<int, IPlayerControlObject*> pcos(*seat->getPcos());
+            hudManager->getMap()->addVehicleRadar(entering);
+        }
+    }
+#endif
 
     if (seat && !seat->getCameras()->empty())                          // +0x38 then the node count
     {

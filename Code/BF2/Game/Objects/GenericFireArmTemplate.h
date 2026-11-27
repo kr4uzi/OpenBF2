@@ -54,6 +54,7 @@ public:
 
     // the weapon half of the projectile pre-store cascade.
     virtual void preCache() const;                        // +0x6C
+    virtual bool makeScript(io::IStream* stream);
 
     // IItemTemplate @ +404. These four accessors are the exact tail of its eight-slot secondary
     // table (ELF 0x8256CC0..0x8256D40); the console uses this face for itemIndex/itemType.

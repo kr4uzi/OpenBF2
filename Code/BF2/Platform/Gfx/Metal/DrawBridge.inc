@@ -30,6 +30,7 @@ struct DrawCaches {
     Occlusion* counting = nullptr; // the query the open pass is counting into, if any
     id<MTLTexture> color, depth;
     unsigned colorLevel = 0, colorSlice = 0, depthLevel = 0, depthSlice = 0;
+    bool aliased = false; // the open pass places every sample at the pixel centre (passFor)
     std::map<std::string, id<MTLLibrary>> libraries;
     std::map<std::string, id<MTLRenderPipelineState>> pipelines;
     std::map<std::string, id<MTLDepthStencilState>> depthStates;
@@ -247,8 +248,17 @@ static id<MTLRenderCommandEncoder> passFor(Frame* f, const DrawCall& c)
     // A query draw needs a pass with a visibility buffer and a free slot (or its slot in this pass).
     const bool counted = !c.occlusion || (d.visibility &&
         (d.counting == c.occlusion || d.visibility->used < VisibilityBatch::capacity));
+    // D3DRS_MULTISAMPLEANTIALIAS FALSE on a multisampled target: D3D9 writes every sample with the
+    // coverage and value of the pixel centre. A pass whose sample positions all lie on the pixel
+    // centre rasterizes exactly that. RendDX9 draws the HUD, name tags, debug text and the console
+    // this way (Renderer::render, PE 0x100306D2); with the standard sample positions their quads,
+    // whose edges run through pixel centres under the D3D9 convention, cover half of each edge
+    // pixel and blend in the neighbouring atlas texel. [CHOSEN, not recovered] emulation; a GPU
+    // without programmable sample positions keeps the standard positions.
+    const unsigned samples = colorSamples(f, color);
+    const bool aliased = c.aliased && samples > 1 && samples <= 16 && [f->device areProgrammableSamplePositionsSupported];
     if (d.encoder && counted && d.color == color && d.depth == depth && d.colorLevel == c.colorLevel && d.colorSlice == c.colorSlice &&
-        d.depthLevel == c.depthLevel && d.depthSlice == c.depthSlice) return d.encoder;
+        d.depthLevel == c.depthLevel && d.depthSlice == c.depthSlice && d.aliased == aliased) return d.encoder;
     endDraws(f);
     if (f->failed) return nil;
     if (!f->commands) f->commands = [f->queue commandBuffer];
@@ -275,9 +285,14 @@ static id<MTLRenderCommandEncoder> passFor(Frame* f, const DrawCall& c)
             pass.stencilAttachment.loadAction = MTLLoadActionLoad; pass.stencilAttachment.storeAction = MTLStoreActionStore;
         }
     }
+    if (aliased) {
+        MTLSamplePosition centre[16];
+        for (unsigned i = 0; i < samples; ++i) centre[i] = MTLSamplePositionMake(0.5f, 0.5f);
+        [pass setSamplePositions:centre count:samples];
+    }
     d.encoder = [f->commands renderCommandEncoderWithDescriptor:pass];
     d.color = color; d.depth = depth; d.colorLevel = c.colorLevel; d.colorSlice = c.colorSlice;
-    d.depthLevel = c.depthLevel; d.depthSlice = c.depthSlice;
+    d.depthLevel = c.depthLevel; d.depthSlice = c.depthSlice; d.aliased = aliased;
     return d.encoder;
 }
 static void bindBytes(id<MTLRenderCommandEncoder> e, Frame* f, bool vertex, const void* bytes, std::size_t n, unsigned index)

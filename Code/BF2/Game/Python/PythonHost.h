@@ -92,9 +92,11 @@ public:
                                                          //   handler table walk)
     void removePlayer(world::IPlayer*);
 
-    // Forwards nine strings by value to the console API. The string return type is [CHOSEN].
-    std::string consoleSendCommand(std::string, std::string, std::string, std::string, std::string,
-                                   std::string, std::string, std::string, std::string);
+    // Dispatches ConsoleSendCommand with the command and an argument tuple, trimming
+    // trailing empty arguments. Requires a running interpreter; returns true
+    // regardless of whether a handler runs.
+    bool consoleSendCommand(std::string, std::string, std::string, std::string, std::string,
+                            std::string, std::string, std::string, std::string);
 
 private:
     PythonHostData* m_data;                              // +0x04

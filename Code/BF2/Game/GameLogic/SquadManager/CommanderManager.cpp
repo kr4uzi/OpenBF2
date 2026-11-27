@@ -33,6 +33,9 @@
 #include "../../Common/GameEvent.h"                  // PostRemoteEvent - the ECHud 35 / 37 sends
 #include "SquadManager.h"                            // m_commanderSelectDelay - resignCommander's election delay
 #include "ISquadManager.h"                           // squadManager - ds:0x8ACBFA4
+#include "../../../AI/AIInterface/AIInstance.h"
+#include "../../../AI/AIInterface/IAIEventCourier.h"
+#include "../../../AI/AIInterface/SingletonServer.h"
 
 namespace dice {
 namespace hfe {
@@ -98,8 +101,9 @@ void CommanderManager::applyForCommander(int playerId, Team* team)
             return;
     }
 
-    // [UNRESOLVED] The optional two-global AI notification is omitted. Neither singleton is
-    // declared/published in this build, so this is the shipped null-global branch today.
+    // BF2.exe 0x4E7633..0x4E764F / ELF applyForCommander export 0x0811B270.
+    if (ai::g_aiInstance && ai::aiInstance()->isInitialized())
+        ai::BFSingletonServer::m_iaiEventCourier->event_appliedForCommander(playerId);
 
     if (m_proposedCommander < 0)
     {
@@ -122,8 +126,6 @@ void CommanderManager::applyForCommander(int playerId, Team* team)
 // Stand-down clears the player's flag before the stored id and always broadcasts.
 // Assignment removes squad membership and notifies applicants before clearing them.
 // Python receives (team truth value, old player, new player).
-// [UNRESOLVED] The optional two-global notification branch is omitted while its
-// first global is unavailable; recover it before publishing those services.
 bool CommanderManager::setCommander(int playerId, Team* team)
 {
     return setCommander(-1, team, playerId);
@@ -147,7 +149,10 @@ bool CommanderManager::setCommander(int, Team* team, int playerId)
             new CommanderEvent(static_cast<CommanderEvent::CommanderEventTypes>(3),
                                team->getTeamId(), -1));                               // IGame +0x94
 
-        // [UNRESOLVED] the two-global AI notification - omitted; null-global retail branch.
+        // BF2.exe 0x4E8743..0x4E8777 / ELF setCommander export 0x0811B570.
+        if (ai::g_aiInstance && ai::aiInstance()->isInitialized())
+            ai::BFSingletonServer::m_iaiEventCourier->event_resignAsCommander(
+                playerId, team->getTeamId());
 
         if (old)
         {
@@ -195,7 +200,11 @@ bool CommanderManager::setCommander(int, Team* team, int playerId)
     game->sendGameEventToAllConnected(
         new PostRemoteEvent(ECHud, 33, true, &payload, 8, 0.0f));
 
-    // [UNRESOLVED] the two-global AI notification - omitted; null-global retail branch.
+    // BF2.exe 0x4E8927..0x4E895B / ELF setCommander export 0x0811B570:
+    // stop the AI commander's policy while a player commands this team.
+    if (ai::g_aiInstance && ai::aiInstance()->isInitialized())
+        ai::BFSingletonServer::m_iaiEventCourier->event_acceptedCommander(
+            playerId, team->getTeamId());
 
     for (std::set<int>::iterator it = m_applicants.begin(); it != m_applicants.end(); ++it)
     {

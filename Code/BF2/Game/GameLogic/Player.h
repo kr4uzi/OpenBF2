@@ -277,7 +277,7 @@ public:
     virtual bool  getIsUnderwater() const;   // +0x2D4 (Player: false)
     virtual float getNormalizedNightVisionPower();   // +0x2D8 (Player: 1.0f)
     virtual void  setNightVision(bool, bool);   // +0x2DC 138 B
-    virtual void  rechargeNightVision();   // +0x2E0 (Player: empty)
+    virtual void  rechargeNightVision();   // +0x2E0 (dedicated: empty; client BF2.exe 0x4FB080)
     virtual void  setVisualNightVision(bool);   // +0x2E4 1,000 B
     virtual bool  getNightVision() const;   // +0x2E8 (byte +0x320)
     virtual void  disableFlashBangEffect();   // +0x2EC 59 B
@@ -320,6 +320,9 @@ public:
     // vehicle, and returns an empty string on success or a refusal message.
     virtual unsigned int getMinimumBitSize() const;   // +0x350   - `return 48`
     virtual std::string  moveTo(const Vec3& position);
+
+    // Adds a named item to the controlled soldier when running as a server.
+    void pickup(std::string templateName);
 
     // Updates explosions, server-side abilities/mines/commander state, VOIP, radio
     // limits, and client team verification once per fixed step. Mine proximity runs
@@ -380,8 +383,10 @@ private:
     void handleGasClouds(float deltaTime);
     void handleBlurryVision(float deltaTime);
     void handleNightVision(float deltaTime);
-    void setNightVisionHudItem(bool enabled);                  // exact empty body
-    void setNightVisionMaskOverlay(bool enabled);              // exact empty body
+    void setNightVisionHudItem(bool enabled);                  // dedicated: empty; client: HUD mask
+    void setNightVisionMaskOverlay(bool enabled);              // dedicated: empty; client: mask overlay
+    // ELF 0x80F7660 / BF2.exe 0x4FAAA0: the occupied vehicle's pco 0 drives a c_ETHelicopter engine.
+    bool playerInHelicopter();
     // Non-virtual statistics reset used by round reset.
     void resetStats();
     // Non-virtual flag combinator; returns the updated word without accessing player state.
@@ -423,11 +428,14 @@ protected:
     /* +0x71  */ bool   m_overheadCameraEnabled;     // 0
     /* +0x72  */ bool   m_overheadCameraTopDownView; // 0
     /* +0x73  */ bool   m_commanderCamOverhead;      // 0
-    /* +0x74  */ void*  m_field74;                   // 0 was m_freeCameraObject - that is the
-                                                     //   +0x6C block's target, not this
-    /* +0x78  */ int    m_field78;                   // 0
-    /* +0x7C  */ int    m_field7C;                   // 0
-    /* +0x80  */ int    m_field80;                   // 0
+    // Saved by the client top-down transition (BF2.exe 0x4FC630), restored on exit; names inferred.
+    /* +0x74  */ Vec4   m_savedCommanderFog;         // PE +0x90, initially zero
+    /* +0x84  */ float  m_savedCommanderRendererDistance; // PE +0xA0
+    /* +0x88  */ float  m_savedCommanderRoadDistance; // PE +0xA4
+    /* +0x8C  */ float  m_savedCommanderRoadBias;     // PE +0xA8
+    /* +0x90  */ bool   m_savedCommanderDynamicShadows; // PE +0xAC
+    /* +0x91  */ bool   m_savedCommanderTerrainFlag;  // PE +0xAD
+    /* +0x94  */ int    m_savedCommanderViewDistance; // PE +0xB0
     /* +0x98  */ int    m_inputId;                   // 1 sentinel, not 0
     /* +0x9C  */ int    m_playerId;                  // the ctor argument. IPlayer.h: getId +0x9C
     /* +0xA0  */ int    m_updateFrequencyType;       // 0    IPlayer.h: getUpdateFrequencyType +0xA0

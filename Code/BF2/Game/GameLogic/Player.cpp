@@ -76,9 +76,20 @@
 #include "../Objects/GameLogicComp/IArmorGLComp.h"   // getDefaultMaterial
 #include "../../Scene/Object/ObjectTypes/Game/IPlayerControlObject.h"
 #include "ActionBuffer.h"                         // sizeof 0x2C - ditto
+#include "../Objects/Game/ObjectSpawner.h"  // getEngineFromChildsAndSiblings - playerInHelicopter
+#include "../Objects/Game/EngineBase.h"     // getEngineType - playerInHelicopter
 #if !DEDICATED
 // BF2.exe 0x5ED220: client tutorial owner.
 #include "PlayerVOHelp.h"
+// The client image's xpack mask / night-vision / tear-gas presentation (BF2.exe 0x4FA880..0x4FD20F).
+#include "../Main/BF2ClientSeams.h"           // g_bf2Render (ds:0x9A5580), hudManager (ds:0xA10890)
+#include "../../Menu/BF2HudManager.h"         // isCommanderShown (+0x1EC), getInformationAdapter (+0x244)
+#include "../../Menu/HudInformationAdapter.h" // setBool (+0x0C)
+#include "../../RendMisc/IRenderer.h"         // +0xAC, the renderer's night-map byte (isExpansionPack)
+#if !defined(_MSC_VER)
+// [CHOSEN, not recovered] This native provider is an explicit PE-order table.
+#include "../../RendMisc/NativePostProductionSlots.h"
+#endif
 #endif
 
 namespace dice {
@@ -119,10 +130,88 @@ class IGame;
 extern IGame*      game;
 extern IGameLogic* gameLogic;
 
+#if !DEDICATED
+namespace {
+// The client reaches the published PostProductionFrameWork (RendDX9's owner+8 subobject, not an
+// IBase table) through raw slots, as CExplosionEffectFlashBang does (same adapter shape, see
+// Objects/Fx/ExplosionEffectFlashBang.cpp). PE ordinals: 13 setGasMaskBlend (+0x34), 21/22 the two
+// renderer floats (+0x54/+0x58), 23 setNoiseTextureName (+0x5C).
+#if defined(_MSC_VER)
+#define PLAYER_POST_VCALL __thiscall
+#else
+#define PLAYER_POST_VCALL
+#endif
+template<class Function> Function playerPostSlot(void* object, unsigned int peOrdinal)
+{
+#if defined(_MSC_VER)
+    const unsigned int ordinal = peOrdinal;
+#elif defined(BF2_STATIC_PLUGINS)
+    // [CHOSEN, not recovered] No compiler-generated destructor is inserted here.
+    const unsigned int ordinal = dx9rend::native_post::slot(peOrdinal);
+#else
+    const unsigned int ordinal = peOrdinal + 1;
+#endif
+    return reinterpret_cast<Function>((*static_cast<void***>(object))[ordinal]);
+}
+void* postProductionFrameWork()
+{
+    return g_bf2Render->getPostProductionFrameWork();                    // BF2Render +0x34
+}
+void postSetGasMaskBlend(void* post, float value)
+{ playerPostSlot<void (PLAYER_POST_VCALL*)(void*, float)>(post, 13)(post, value); }
+float postGetNightVisionMaxPower(void* post)       // renderer +0x73C [INFERRED role]
+{ return playerPostSlot<float (PLAYER_POST_VCALL*)(void*)>(post, 21)(post); }
+float postGetNightVisionRechargeRate(void* post)   // renderer +0x740 [INFERRED role]
+{ return playerPostSlot<float (PLAYER_POST_VCALL*)(void*)>(post, 22)(post); }
+void postSetNoiseTextureName(void* post, const std::string& name)
+{ playerPostSlot<void (PLAYER_POST_VCALL*)(void*, const std::string&)>(post, 23)(post, name); }
+#undef PLAYER_POST_VCALL
+
+void setNightVisionGaugeShown(bool shown)
+{
+    hudManager->getInformationAdapter()->setBool(std::string("ShowNightVisionGauge"), shown);
+}
+} // namespace
+#endif
+
 // Both shipped ports expose these as two distinct writable namespace globals. They intentionally
 // remain distinct even though retail initializes both to 0.95f.
 float MAX_MASK_TIMEOUT_OFF_TIME = 0.95f;
 float MAX_MASK_TIMEOUT_ON_TIME  = 0.95f;
+
+#if !DEDICATED
+namespace {
+// BF2.exe 0x4FC6F3 / 0x4FC726 / 0x4FC870: the published framework is an explicit
+// function table, not IBase. Its fog getter returns the supplied Vec4's address.
+#if defined(_MSC_VER)
+#define COMMANDER_POST_CALL __thiscall
+#else
+#define COMMANDER_POST_CALL
+#endif
+template<class Function> Function commanderPostSlot(void* post, unsigned int ordinal)
+{
+#if !defined(_MSC_VER)
+    // [CHOSEN, not recovered] The native provider retains the explicit PE slot order.
+    ordinal = dx9rend::native_post::slot(ordinal);
+#endif
+    return reinterpret_cast<Function>((*static_cast<void***>(post))[ordinal]);
+}
+Vec4 getCommanderFog(void* post)
+{
+    Vec4 fog;
+    return *commanderPostSlot<Vec4* (COMMANDER_POST_CALL*)(void*, Vec4*)>(post, 10)(post, &fog);
+}
+void setCommanderFog(void* post, const Vec4& fog)
+{
+    commanderPostSlot<void (COMMANDER_POST_CALL*)(void*, const Vec4*)>(post, 9)(post, &fog);
+}
+dx9rend::IRenderer* commanderRenderer()
+{
+    return static_cast<dx9rend::IRenderer*>(g_renderer);
+}
+#undef COMMANDER_POST_CALL
+} // namespace
+#endif
 
 // Initialize player state, owned action/score helpers, and replication history. Preserve the
 // nonzero sentinels and initial flags. The retail networkable subobject uses PlayerNetworkable's
@@ -141,10 +230,7 @@ Player::Player(int index, world::CPersistentExplosionEffectManager* explosionEff
     , m_overheadCameraEnabled(false)
     , m_overheadCameraTopDownView(false)
     , m_commanderCamOverhead(false)
-    , m_field74(0)
-    , m_field78(0)
-    , m_field7C(0)
-    , m_field80(0)
+    , m_savedCommanderFog{}
     , m_inputId(-1)
     , m_playerId(index)
     , m_updateFrequencyType(0)
@@ -1475,14 +1561,60 @@ bool Player::getOverheadCameraTopDownView() const
     return false;
 }
 
-// . IPlayer +0xC0. forwards first, through its OWN vtable: the top-down write
-// always mirrors into setCommanderCamOverhead (+0xC8, virtual - `call [edx+0C8h]`, preserved as a
-// virtual call), and only then guard-stores its own byte.
+// Mirrors the requested top-down mode through the virtual setter before checking for a change.
+// The local client saves or restores its live-view settings before storing the changed flag.
 void Player::setOverheadCameraTopDownView(bool topDown)
 {
     setCommanderCamOverhead(topDown);                                // virtual +0xC8
-    if (topDown != (m_overheadCameraTopDownView != 0))               // the +0x72 guard-store
-        m_overheadCameraTopDownView = topDown;
+    if (topDown == (m_overheadCameraTopDownView != 0))
+        return;
+#if !DEDICATED
+    // BF2.exe 0x4FC652..0x4FC907: local client entry saves fog, road/terrain/shadow
+    // settings and view distance; exit restores them. The dedicated ELF 0x080F52F0
+    // has only the flag stores. A missing commander camera still stores the flag.
+    if (!isDedicated() && world::playerManager->getLocalHumanPlayer() == this)
+    {
+        if (topDown)
+        {
+            world::IObject* object = static_cast<world::IObject*>(
+                static_cast<ISquadManager*>(squadManager)->getCommanderCam(getTeam()));
+            if (object)
+            {
+                world::ICameraObject* camera = static_cast<world::ICameraObject*>(
+                    object->queryInterface(world::IID_ICameraObject));
+                setFov(camera->getActiveFOV(), 0.0f);
+                void* post = classManager->getSingleton(std::string("PostProductionFrameWork"));
+                m_savedCommanderFog = getCommanderFog(post);
+                setCommanderFog(post, Vec4{0.0f, 10000.0f, 0.0f, 1.0f});
+                m_savedCommanderRendererDistance = commanderRenderer()->slot_0x7C();
+                commanderRenderer()->slot_0x78(500.0f);
+                m_savedCommanderRoadDistance = commanderRenderer()->slot_0x84();
+                commanderRenderer()->slot_0x80(10.0f);
+                m_savedCommanderRoadBias = commanderRenderer()->slot_0x8C();
+                commanderRenderer()->slot_0x88(-0.000001f);
+                m_savedCommanderDynamicShadows = commanderRenderer()->slot_0x94();
+                commanderRenderer()->slot_0x90(false);
+                m_savedCommanderTerrainFlag = commanderRenderer()->slot_0x9C();
+                commanderRenderer()->slot_0x98(true);
+                m_savedCommanderViewDistance = settings->intGet(std::string("GSViewDistance"), 500);
+                settings->intSet(std::string("GSViewDistance"), 500);
+            }
+        }
+        else
+        {
+            setFov(0.0f, 0.0f);
+            void* post = classManager->getSingleton(std::string("PostProductionFrameWork"));
+            setCommanderFog(post, m_savedCommanderFog);
+            commanderRenderer()->slot_0x78(m_savedCommanderRendererDistance);
+            commanderRenderer()->slot_0x80(m_savedCommanderRoadDistance);
+            commanderRenderer()->slot_0x88(m_savedCommanderRoadBias);
+            commanderRenderer()->slot_0x90(m_savedCommanderDynamicShadows);
+            commanderRenderer()->slot_0x98(m_savedCommanderTerrainFlag);
+            settings->intSet(std::string("GSViewDistance"), m_savedCommanderViewDistance);
+        }
+    }
+#endif
+    m_overheadCameraTopDownView = topDown;
 }
 
 //  / 0x80F9000, 12 B - the plain +0x73 pair the mirror above lands in.
@@ -1537,6 +1669,12 @@ void Player::setOverheadCameraEnabled(bool enabled)
     m_overheadCameraEnabled = enabled;                    // ELF +0x71 / PE +0x8D
     if (!enabled)
         setOverheadCameraTopDownView(false);               // virtual +0xC0
+#if !DEDICATED
+    // BF2.exe 0x4FA4CD..0x4FA4F8: refresh the local HUD after either request,
+    // including repeated values; the delay is one second.
+    if (!isDedicated() && world::playerManager->getLocalHumanPlayer() == this)
+        eventManager->postEvent(ECHud, 31, 0, 1.0f);
+#endif
 }
 
 // . IPlayer +0xBC. checkPlayerTriggers' second guard.
@@ -1838,11 +1976,24 @@ void Player::handleFrameUpdate(float deltaTime)
             m_fov = m_endFov;
     }
 
+#if !DEDICATED
+    // BF2.exe 0x502625..0x502663 (client): the mask views stay untouched while the commander screen
+    // is up; the flag is sampled before the local-player test.
+    bool commanderShown = false;
+    if (!isDedicated())
+        commanderShown = hudManager->isCommanderShown();
+    if (world::playerManager->getLocalHumanPlayer() == this)
+    {
+        world::ICameraObject* camera = m_camera;
+        if (camera && !commanderShown && !camera->isOverheadCamera())
+        {
+#else
     if (world::playerManager->getLocalHumanPlayer() == this)
     {
         world::ICameraObject* camera = m_camera;
         if (camera && !camera->isOverheadCamera())
         {
+#endif
             // The repeated getViewMode call is shipped: mode zero short-circuits, every other mode
             // is fetched again before the comparison with one.
             if (static_cast<int>(camera->getViewMode()) == 0
@@ -1862,6 +2013,37 @@ void Player::handleFrameUpdate(float deltaTime)
             }
         }
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5026F9..0x502804 (client): entering the commander screen stores the player's night
+    // vision (+0x369), forces it off and back on (the commander vision script) and hides the
+    // night-vision HUD, gauge and gas mask view; leaving restores the stored state and the mask view.
+    // +0x370 (ELF +0x328) is the last seen commander-screen state.
+    if (!isDedicated() && hudManager->isCommanderShown() != m_byte328)
+    {
+        m_byte328 = hudManager->isCommanderShown();
+        if (world::playerManager->getLocalHumanPlayer() == this)
+        {
+            if (hudManager->isCommanderShown())
+            {
+                m_byte321 = getNightVision();
+                setNightVision(false, true);
+                setNightVision(true, true);
+                setNightVisionHudItem(false);
+                setNightVisionGaugeShown(false);
+                if (getIsGasMaskOn())
+                    setGasMaskHudItem(false);
+            }
+            else
+            {
+                setNightVision(false, true);
+                setNightVision(m_byte321, true);
+                if (getIsGasMaskOn())
+                    setGasMaskHudItem(true);
+            }
+        }
+    }
+#endif
 
     handleGasClouds(deltaTime);
     handleNightVision(deltaTime);
@@ -1886,9 +2068,24 @@ bool Player::getIsNearGasCloud() const
 
 //  / PE nullsub.  These HUD functions are genuinely empty in the shipped
 // dedicated image; their calls and argument evaluation remain observable and are retained above.
+// BF2.exe 0x4FA880 (client): the local human player's gas-mask view is the post-production noise
+// texture (+0x5C). The latch (+0x375 / ELF +0x32D) suppresses repeated texture loads.
+#if !DEDICATED
+void Player::setGasMaskHudItem(bool enabled)
+{
+    if (isDedicated() || world::playerManager->getLocalHumanPlayer() != this)
+        return;
+    if (m_byte32D == enabled)
+        return;
+    const std::string texture(enabled ? "menu/hud/texture/Ingame/Player/gasmask" : "");
+    postSetNoiseTextureName(postProductionFrameWork(), texture);
+    m_byte32D = enabled;
+}
+#else
 void Player::setGasMaskHudItem(bool /*enabled*/)
 {
 }
+#endif
 
 float Player::getPlayerGasMaskChangeTimer() const
 {
@@ -1900,10 +2097,20 @@ float Player::getPlayerNightVisionChangeTimer() const
     return m_playerNightVisionChangeTimer;
 }
 
+#if !DEDICATED
+// BF2.exe 0x4FAB30 (client): remaining power over the renderer's maximum; 1 without a renderer.
+float Player::getNormalizedNightVisionPower()
+{
+    if (g_bf2Render && postProductionFrameWork())
+        return m_field324 / postGetNightVisionMaxPower(postProductionFrameWork());
+    return 1.0f;
+}
+#else
 float Player::getNormalizedNightVisionPower()
 {
     return 1.0f;
 }
+#endif
 
 //  / PE 0x4760D0.  This deliberately reads both weak blocks directly instead of
 // calling getVehicle/getDefaultVehicle: those getters may release a destroyed weak target, while
@@ -2087,8 +2294,91 @@ void Player::handleBlurryVision(float deltaTime)
             }
         }
     }
+
+#if !DEDICATED
+    // BF2.exe 0x4FCB6F..0x4FCBA7 (client): every frame the local player's blur drives the
+    // post-production tear-gas blend (+0x34). The frame-work is fetched twice, as shipped.
+    if (g_bf2Render && postProductionFrameWork()
+        && world::playerManager->getLocalHumanPlayer() == this)
+        postSetGasMaskBlend(postProductionFrameWork(), m_blurValue);
+#endif
 }
 
+#if !DEDICATED
+// BF2.exe 0x4FAB70 (client), every instruction read. Once a second the power (+0x36C / ELF +0x324)
+// drains by one while night vision is on outside the commander screen and outside helicopter vision,
+// and otherwise recharges by the renderer's rate; the commander screen keeps draining only for a
+// player whose pre-commander night vision (+0x369) was on. Power at or below zero switches night
+// vision off (local non-server players relay it), and power is clamped to the renderer's maximum.
+// The tail swaps between helicopter vision and ordinary night vision as the player enters or
+// leaves a helicopter's pilot seat.
+void Player::handleNightVision(float deltaTime)
+{
+    // fsub dword / fcomp qword on the unrounded x87 result: the difference is not narrowed.
+    if (g_system->getExactTime() - m_field31C >= 1.0)
+    {
+        m_field31C = static_cast<float>(g_system->getExactTime());
+        bool commanderShown = false;
+        if (!isDedicated())
+            commanderShown = hudManager->isCommanderShown();
+
+        if (m_nightVision && !(commanderShown && !m_byte321))
+        {
+            if (!isDedicated() && !hudManager->isCommanderShown() && !m_byte329)
+                m_field324 = m_field324 - 1.0f;
+        }
+        else if (g_bf2Render && postProductionFrameWork())
+        {
+            m_field324 = postGetNightVisionRechargeRate(postProductionFrameWork()) + m_field324;
+        }
+    }
+
+    if (m_field324 <= 0.0f)
+    {
+        if (getNightVision())
+        {
+            setNightVision(false, false);
+            if (!gameLogic->isServer()
+                && world::playerManager->getLocalHumanPlayer() == this)
+            {
+                game->sendGameEventToAllPlaying(new SetNightVisionEvent(getId(), false));
+            }
+        }
+        m_field324 = 0.0f;
+    }
+
+    if (g_bf2Render && postProductionFrameWork()
+        && postGetNightVisionMaxPower(postProductionFrameWork()) <= m_field324)
+    {
+        m_field324 = postGetNightVisionMaxPower(postProductionFrameWork());
+        if (!isDedicated() && !getNightVision()
+            && world::playerManager->getLocalHumanPlayer() == this)
+            setNightVisionGaugeShown(false);
+    }
+
+    if (m_playerNightVisionChangeTimer > 0.0f)
+        m_playerNightVisionChangeTimer -= deltaTime;
+
+    if (isDedicated())
+        return;
+
+    if (m_byte329 && getNightVision() && !playerInHelicopter())
+    {
+        setNightVision(false, true);
+        setNightVision(true, true);
+        m_byte329 = false;
+    }
+    else if (!m_byte329 && getNightVision() && playerInHelicopter())
+    {
+        setNightVision(true, true);
+        setNightVisionGaugeShown(false);
+        m_byte329 = true;
+    }
+
+    if (m_byte32C && m_byte329)
+        setNightVisionGaugeShown(false);
+}
+#else
 //  / PE 0x472FC0.  The one-second time stamp refresh deliberately samples exact time
 // twice on the refresh frame.  Power depletion sends the event only from a local non-server player.
 void Player::handleNightVision(float deltaTime)
@@ -2114,10 +2404,17 @@ void Player::handleNightVision(float deltaTime)
     if (m_playerNightVisionChangeTimer > 0.0f)
         m_playerNightVisionChangeTimer -= deltaTime;
 }
+#endif
 
 //  / PE 0x4730E0.  Both named retail timeout constants contain 0.95f.
 void Player::setNightVision(bool enabled, bool force)
 {
+#if !DEDICATED
+    // BF2.exe 0x4FAEA0..0x4FAEC0 (client): a renderer whose +0xAC byte is clear (not a night map)
+    // refuses every request, forced or not. A missing renderer or IRenderer lets it through.
+    if (g_bf2Render && g_bf2Render->getRenderer() && !g_bf2Render->getRenderer()->isExpansionPack())
+        return;
+#endif
     if (force
         || m_playerNightVisionChangeTimer <= 0.0f
         || (world::playerManager->getLocalHumanPlayer() != this && !gameLogic->isServer()))
@@ -2128,10 +2425,19 @@ void Player::setNightVision(bool enabled, bool force)
     }
 }
 
+#if !DEDICATED
+// BF2.exe 0x4FB080 (client): refill the power to the renderer's maximum.
+void Player::rechargeNightVision()
+{
+    if (g_bf2Render && postProductionFrameWork())
+        m_field324 = postGetNightVisionMaxPower(postProductionFrameWork());
+}
+#else
 //  / PE single retn: an exact shipped empty body.
 void Player::rechargeNightVision()
 {
 }
+#endif
 
 //  / PE 0x474980.  The local visual arm changes the map's console script; remote and
 // dedicated players retain only the one-shot recharge latch at the tail.
@@ -2147,8 +2453,45 @@ void Player::setVisualNightVision(bool enabled)
 
         if (enabled)
         {
+#if !DEDICATED
+            // BF2.exe 0x4FCC39..0x4FD07A (client): the level's vision script - commander screen,
+            // helicopter pilot (which latches +0x371) or plain night vision - then the activation
+            // sound, which the commander screen suppresses.
+            if (!isDedicated())
+            {
+                if (hudManager->isCommanderShown())
+                {
+                    io::mainConsole->run(basePath + "/commandervision.con",
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         io::Console::ignoredString_);
+                }
+                else if (playerInHelicopter())
+                {
+                    io::mainConsole->run(basePath + "/helicoptervision.con",
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         io::Console::ignoredString_);
+                    m_byte329 = true;
+                }
+                else
+                {
+                    io::mainConsole->run(basePath + "/nightvision.con",
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         std::string(), std::string(), std::string(), std::string(),
+                                         io::Console::ignoredString_);
+                }
+            }
+            if (m_nightVisionVisualTransitionTimer <= 0.0f)
+            {
+                if (!isDedicated() && !hudManager->isCommanderShown())
+                    g_bfSound->playSound(std::string("activate_nightvision"));
+                m_nightVisionVisualTransitionTimer = 0.95f;
+            }
+#else
             if (m_nightVisionVisualTransitionTimer <= 0.0f)
                 m_nightVisionVisualTransitionTimer = 0.95f;
+#endif
         }
         else
         {
@@ -2168,6 +2511,38 @@ void Player::setVisualNightVision(bool enabled)
     }
 }
 
+#if !DEDICATED
+// BF2.exe 0x4FAF30 (client): the night-vision view texture and the HUD's power gauge. The latch at
+// +0x374 (ELF +0x32C) is shared with setNightVisionMaskOverlay. Switching on shows the gauge;
+// switching off leaves the gauge to its other writers. No renderer null test, as shipped.
+void Player::setNightVisionHudItem(bool enabled)
+{
+    if (isDedicated() || enabled == m_byte32C)
+        return;
+    if (enabled)
+    {
+        const std::string texture("menu/hud/texture/Ingame/Player/nightvision");
+        postSetNoiseTextureName(postProductionFrameWork(), texture);
+        setNightVisionGaugeShown(enabled);
+    }
+    else
+    {
+        const std::string texture("");
+        postSetNoiseTextureName(postProductionFrameWork(), texture);
+    }
+    m_byte32C = enabled;
+}
+
+// BF2.exe 0x4FB000 (client): the same latch and slot with the .tga overlay spelling; no gauge.
+void Player::setNightVisionMaskOverlay(bool enabled)
+{
+    if (isDedicated() || enabled == m_byte32C)
+        return;
+    const std::string texture(enabled ? "menu/hud/texture/Ingame/Player/nightvision.tga" : "");
+    postSetNoiseTextureName(postProductionFrameWork(), texture);
+    m_byte32C = enabled;
+}
+#else
 //  / 0x80F7D30, both 5 B; PE emits matching nullsubs.  They are intentionally not
 // folded out at source level because retail still evaluates arguments and calls them.
 void Player::setNightVisionHudItem(bool /*enabled*/)
@@ -2176,6 +2551,30 @@ void Player::setNightVisionHudItem(bool /*enabled*/)
 
 void Player::setNightVisionMaskOverlay(bool /*enabled*/)
 {
+}
+#endif
+
+// playerInHelicopter - ELF 0x80F7660, 192 B / BF2.exe 0x4FAAA0. Only a player sitting in some
+// vehicle other than its own soldier qualifies. The first pco above the vehicle is used without a
+// null test (both images dereference a missing one); seat 0 of a c_ETHelicopter (33) engine found
+// in the vehicle's tree answers true. getVehicle is asked three times, as compiled.
+bool Player::playerInHelicopter()
+{
+    if (getDefaultVehicle() == getVehicle())
+        return false;
+    world::IObject* engine = 0;
+    world::getEngineFromChildsAndSiblings(getVehicle(), engine);
+    world::IPlayerControlObject* pco = 0;
+    for (world::IObject* object = getVehicle(); object;
+         object = world::object_detail::LayoutAccess::parent(object))
+    {
+        pco = static_cast<world::IPlayerControlObject*>(
+            object->queryInterface(world::IID_IPlayerControlObject));
+        if (pco)
+            break;
+    }
+    return pco->getPcoId() == 0 && engine
+        && static_cast<world::EngineBase*>(engine)->getEngineType() == 0x21;
 }
 
 // Extend blur only when the requested fade/hold duration exceeds the current effect. Sound
@@ -2279,6 +2678,11 @@ void Player::disableBlurryVision()
         g_bfSound->stopSound(std::string("S_Poisoned"));
         m_byte331 = false;
     }
+#if !DEDICATED
+    // BF2.exe 0x4FA9D3..0x4FA9F6 (client): clear the post-production tear-gas blend.
+    if (g_bf2Render && postProductionFrameWork())
+        postSetGasMaskBlend(postProductionFrameWork(), 0.0f);
+#endif
 }
 
 // Reset per-round score and world-boundary state while preserving career statistics and rank.
@@ -3788,20 +4192,22 @@ int Player::getProfileId()
     return m_profileId;                                  // +0x2D8
 }
 
-// . IPlayer +0x290. Sets the flag, then - client-only - relays it to the server.
-// THE relay IS dead ON A dedicated server. It fires only when `this` is the local human player
-// (there is none on a dedicated server) AND `game` is NOT an IGameServer (queryInterface returns
-// null - i.e. this process is a client). Reproduced in full; on the server it reduces to the store.
+// Sets voice state and relays the local human's change to the server or connected clients.
 void Player::setVoipEnabled(bool enabled)
 {
     m_voipEnabled = enabled;
 
     void* const asGameServer = game->queryInterface(IID_IGameServer);   // non-null iff game IS a server
     if (game
-        && this == world::playerManager->getLocalHumanPlayer()
-        && !asGameServer)
+        && this == world::playerManager->getLocalHumanPlayer())
     {
-        game->sendGameEvent(0xFFFFFFFFu, new VoipOnOffEvent(m_playerId, m_voipEnabled));   // connection id -1
+        if (!asGameServer)
+            game->sendGameEvent(0xFFFFFFFFu, new VoipOnOffEvent(m_playerId, m_voipEnabled));   // connection id -1
+#if !DEDICATED
+        // BF2.exe 0x4FA644..0x4FA677: PE IGame +0x90 is sendGameEventToAllConnected.
+        else if (!isDedicated())
+            game->sendGameEventToAllConnected(new VoipOnOffEvent(m_playerId, enabled));
+#endif
     }
 }
 
@@ -3896,6 +4302,22 @@ void Player::doAddTouchItem(world::IPlayer* other)
         SingletonServer::m_iNametagManager->addTouchItem(other);
 }
 
+// BF2.exe 0x4FEE60; dedicated PE 0x475FA0; ELF 0x80F5790. Inspect the weak target
+// directly: getVehicle() can release a destroyed target, which this command does not do.
+void Player::pickup(std::string templateName)
+{
+    if (!game->queryInterface(IID_IGameServer))
+        return;
+    const WeakPtr<world::IObject>::Ctrl* vehicle =
+        static_cast<const WeakPtr<world::IObject>::Ctrl*>(m_vehicleWeak);
+    if (!vehicle || !vehicle->target)
+        return;
+    if (vehicle->target->getTemplate()->getClassID() != world::CID_SoldierTemplate)
+        return;
+    vehicle = static_cast<const WeakPtr<world::IObject>::Ctrl*>(m_vehicleWeak);
+    static_cast<world::Soldier*>(vehicle->target)->addItem(templateName, -1);
+}
+
 //  / PE 0x472BC0. Both return a string by value, empty on success.
 std::string Player::moveTo(const Vec3& position)
 {
@@ -3923,7 +4345,17 @@ void Player::setUpdateFrequencyType(world::UpdateFreqencyType type) { m_updateFr
 void Player::handleUpdate(float, unsigned int) {}
 
 bool Player::getIsUnderwater() const { return false; }
+#if !DEDICATED
+// BF2.exe 0x4FB130 (client): the renderer's +0xAC byte; false without a renderer.
+bool Player::isPlayerInNightMap() const
+{
+    if (g_bf2Render && g_bf2Render->getRenderer())
+        return g_bf2Render->getRenderer()->isExpansionPack();
+    return false;
+}
+#else
 bool Player::isPlayerInNightMap() const { return false; }
+#endif
 
 //  / PE 0x47C3D0. By-value input snapshot: compiler-owned aggregate copy.
 // [PLATFORM] PE copies its whole 0x118-byte object; ELF emits a 273-byte logical copy.
@@ -4235,6 +4667,24 @@ void Player::update(float deltaTime)
         updateCommanderStatus();
     }
 
+#if !DEDICATED
+    // BF2.exe 0x50540C..0x5054A0: publish the local player's replicated commander
+    // assets on both listen servers and clients, after the server-side refresh.
+    if (hudManager && this == world::playerManager->getLocalHumanPlayer())
+    {
+        hudManager->setSatelliteEnabled(m_fieldF8);
+        hudManager->setArtilleryEnabled(m_fieldF9);
+        hudManager->setUAVEnabled(m_fieldFA);
+        float satelliteArmor, artilleryArmor, uavArmor;
+        std::memcpy(&satelliteArmor, &m_fieldFC, sizeof(satelliteArmor));
+        std::memcpy(&artilleryArmor, &m_field100, sizeof(artilleryArmor));
+        std::memcpy(&uavArmor, &m_field104, sizeof(uavArmor));
+        hudManager->setSatelliteAvailability(satelliteArmor);
+        hudManager->setArtilleryAvailability(artilleryArmor);
+        hudManager->setUAVAvailability(uavArmor);
+    }
+#endif
+
     // 5: the one-shot VOIP re-check
     if (m_checkVoip && this == world::playerManager->getLocalHumanPlayer())
     {
@@ -4256,18 +4706,28 @@ void Player::update(float deltaTime)
 
     // Recheck the count after each clock call. The equality guard skips the
     // window check on the tick that armed the timer.
+    // [PLATFORM] PE keeps the returned double (BF2.exe 0x50550F..0x50555F,
+    // dedicated PE 0x47A475..0x47A4C9);
+    // the dedicated ELF rounds each clock read to float (0x080EA5FD..0x080EA725).
+    // Promote the timer operand so the ELF subtraction is not rounded to float
+    // before comparison; its FSUB feeds FUCOMIP without an intervening store.
+#if !DEDICATED || defined(_WIN32)
+    using RadioSpamTime = double;
+#else
+    using RadioSpamTime = float;
+#endif
     if (m_radioSpamFlagCount >= maxSpamFlagCount &&
-        static_cast<float>(WorldPref::getWorldTime()) - m_radioSpamFilterFlagTimer
-            >= static_cast<float>(blockedDuration))
+        static_cast<RadioSpamTime>(WorldPref::getWorldTime()) - static_cast<double>(m_radioSpamFilterFlagTimer)
+            >= static_cast<RadioSpamTime>(blockedDuration))
     {
         m_radioSpamFlagCount        = 0;
         m_radioSpamBlockedFlagCount = 0;
         m_radioSpamFilterFlagTimer  = -1.0f;              // the ctor's sentinel again
     }
     else if (m_radioSpamFlagCount < maxSpamFlagCount &&
-             m_radioSpamFilterFlagTimer != static_cast<float>(WorldPref::getWorldTime()) &&
-             static_cast<float>(WorldPref::getWorldTime()) - m_radioSpamFilterFlagTimer
-                 >= static_cast<float>(serverInfo->m_block.radioSpamInterval))   // ServerInfo +0x28
+             m_radioSpamFilterFlagTimer != static_cast<RadioSpamTime>(WorldPref::getWorldTime()) &&
+             static_cast<RadioSpamTime>(WorldPref::getWorldTime()) - static_cast<double>(m_radioSpamFilterFlagTimer)
+                 >= static_cast<RadioSpamTime>(serverInfo->m_block.radioSpamInterval))
     {
         m_radioSpamFlagCount        = 0;
         m_radioSpamBlockedFlagCount = 0;

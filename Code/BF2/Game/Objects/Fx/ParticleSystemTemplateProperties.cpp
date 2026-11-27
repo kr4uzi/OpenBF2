@@ -1161,4 +1161,112 @@ float TrailSystemTemplate::getMinTrailVelocity() const
     return static_cast<IParticleSystemTemplateType2*>(m_impl)->getMinTrailVelocity();
 }
 
+// Gas-cloud forwarders: ELF 0x8210270..0x8210560 / client PE 0x64F300.. (impl ELF +0x130..+0x164,
+// PE +0x12C..+0x160; refresh ELF +0xC / PE +0x8). Every instruction read in both images.
+
+// ELF 0x8210270 / 0x82102C0, client PE 0x64F300 / 0x64F340.
+void ParticleSystemTemplateBase::setGasCloudType(geom::GasCloudType value)
+{
+    if (m_impl)
+    {
+        m_impl->setGasCloudType(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+geom::GasCloudType ParticleSystemTemplateBase::getGasCloudType() const
+{
+    return m_impl->getGasCloudType();
+}
+
+// ELF 0x82102E0 / 0x8210330, client PE 0x64F350 / 0x64F390.
+void ParticleSystemTemplateBase::setBlurryVisionTime(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setBlurryVisionTime(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getBlurryVisionTime() const
+{
+    return m_impl->getBlurryVisionTime();
+}
+
+// ELF 0x8210350 / 0x82103A0, client PE 0x64F3A0 / 0x64F3E0.
+void ParticleSystemTemplateBase::setBlurryVisionHoldTime(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setBlurryVisionHoldTime(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getBlurryVisionHoldTime() const
+{
+    return m_impl->getBlurryVisionHoldTime();
+}
+
+// ELF 0x82103C0 / 0x8210410, client PE 0x64F3F0 / 0x64F430.
+void ParticleSystemTemplateBase::setMinGasCloudRadius(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setMinGasCloudRadius(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getMinGasCloudRadius() const
+{
+    return m_impl->getMinGasCloudRadius();
+}
+
+// ELF 0x8210430 / 0x8210480, client PE 0x64F440 / 0x64F480.
+void ParticleSystemTemplateBase::setMaxGasCloudRadius(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setMaxGasCloudRadius(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getMaxGasCloudRadius() const
+{
+    return m_impl->getMaxGasCloudRadius();
+}
+
+// ELF 0x82104A0 / 0x82104F0, client PE 0x64F490 / 0x64F4D0.
+void ParticleSystemTemplateBase::setGasCloudRadiusTime(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setGasCloudRadiusTime(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getGasCloudRadiusTime() const
+{
+    return m_impl->getGasCloudRadiusTime();
+}
+
+// ELF 0x8210510 / 0x8210560, client PE 0x64F4E0 / 0x64F520.
+void ParticleSystemTemplateBase::setGasCloudDamage(float value)
+{
+    if (m_impl)
+    {
+        m_impl->setGasCloudDamage(value);
+        if (m_impl)
+            m_impl->refreshDerivedState();
+    }
+}
+float ParticleSystemTemplateBase::getGasCloudDamage() const
+{
+    return m_impl->getGasCloudDamage();
+}
+
 } } } // namespace dice::hfe::world

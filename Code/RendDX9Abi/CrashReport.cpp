@@ -35,6 +35,7 @@ void removeCrashReporter()
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 namespace renddx9abi {
 namespace {
@@ -465,6 +466,10 @@ void installCrashReporter()
     // First in the chain, so the report is written before anything else can unwind the stack out
     // from under it.
     s_handle = ::AddVectoredExceptionHandler(1, &vectoredHandler);
+    // The handler must not outlive the image. deinitDll removes it; this covers an unload that does
+    // not pass through deinitDll. atexit inside a DLL runs at the DLL's own CRT teardown, on unload.
+    if (s_handle)
+        ::atexit(&removeCrashReporter);
     logf("crash reporter: %s", s_handle ? "installed (first-chance, report-only)"
                                         : "AddVectoredExceptionHandler FAILED");
 }

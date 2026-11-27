@@ -8,6 +8,9 @@
 #include "../VoipClient/BF2VoipClient.h"   // bf2VoipClient (ds:0x9A4DA0)
 #include "../AudioSettings.h"              // loadVoiceMessages' englishOnlyVoices read (+0x90)
 #include "../Main/BF2ClientSeams.h"        // g_audioSettings (ds:0x987384)
+#include "../Main/BF2.h"                   // loading-time message pump
+#include "../../Menu/IMenuLogic.h"
+#include "../../Sound/BfSound/MusicPlayer.h"
 #endif
 #include "GameLogicCollision.h"                        // doImpact's exact static forwarding target
 #include "GameLogicExplosion.h"                        // common explosion presentation forwarder
@@ -310,12 +313,25 @@ bool GameLogic::loadAllConFiles(const std::string& path)
 }
 
 // Pump server updates and report changed loading percentages. Clients also post
-// a loading-screen event; LoadStat throttles callbacks to thirty per second.
+// a loading-screen event; LoadStat uses the interval selected for this process.
 // [UNRESOLVED] Some LoadStat member names remain provisional.
-// [RETIRE-WHEN: loadcallback-client-preamble] Recover the client message-pump
-// return contract and working-set operations before restoring the omitted preamble.
 static void loadCallback()
 {
+#if !DEDICATED
+    // BF2.exe 0x4EBED9..0x4EBF09: yield and pump only with an application facade.
+    // The existing pump handles quit itself; 0x401500/0x401568 return AL=0 on
+    // every returning path, so the caller's conditional exit cannot be reached.
+    if (bf2Engine && bf2Engine->getApplication())
+    {
+        g_system->sleep(0);
+        bf2Engine->getApplication()->handleInGameWinMessages();
+    }
+    // [FRONTIER] BF2.exe 0x4EBF0F calls 0x4013E0 -> 0x401350 unconditionally.
+    // [RETIRE-WHEN: loadcallback-client-preamble] Expose BF2.cpp's existing Win32
+    // trimOtherProcessesAndFileCache helper through a typed entry point, establish
+    // the native OS policy, and validate the loading-time call before restoring it.
+#endif
+
     if (game != 0 && game->queryInterface(IID_IGameServer) != 0)
         game->update(0, -1.0f);                            // pump the server
 
@@ -363,7 +379,7 @@ static void loadCallback()
 }
 
 // Resets progress, records the start time, announces the level on HUD/frame
-// channels, and arms the callback at the exact widened float interval 1/30.
+// channels, and arms the callback. Only dedicated mode selects a 1/30 interval.
 void GameLogic::beginLoadStats(const std::string& levelPath)
 {
     LoadStat* stat = loadStat;                             // ds:0x8ABBC98
@@ -372,7 +388,7 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
     stat->m_unknown1C = now;                               // +0x1C - the load start time
 
 #if !DEDICATED
-    // [PLATFORM] BF2.exe 0x4EC051-0x4EC08C publishes the loading state before the menu events
+    // BF2.exe 0x4EC051-0x4EC08C publishes the loading state before the menu events
     // below can construct endOfRound.swf. The SwiffHost lookup and result are both unguarded in
     // retail. Without this write the movie sees getIsLoading()==false on its first frame and skips
     // the progress bar and the EOR_finishedloading ("validating client data") state entirely.
@@ -381,6 +397,20 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
         ui::ISwiffHost* host = static_cast<ui::ISwiffHost*>(
             classManager->getSingleton(std::string("SwiffHost")));
         host->setFlag7B8(true);                             // +0xD0
+
+        // BF2.exe 0x4EC092..0x4EC0EF: fade before releasing the old menu and
+        // posting loading events. Preserve the repeated class-id and global reads.
+        if (menuLogic)
+        {
+            MusicPlayer* music = bf2Engine->getMusicPlayer();
+            if (menuLogic->getClassId() == CID_MainMenuLogic && music)
+                music->setState(1, 0);
+            else if (menuLogic->getClassId() == CID_BetweenRoundsLogic && music)
+                music->setState(3, 0);
+            if (menuLogic)
+                menuLogic->release();
+            menuLogic = 0;
+        }
     }
 #endif
 
@@ -389,7 +419,9 @@ void GameLogic::beginLoadStats(const std::string& levelPath)
     eventManager->postEvent(static_cast<EventCategory>(10), 3,
                             const_cast<std::string*>(&levelPath), 0.0f);
 
-    stat->setSecondsBetweenCallbacks(static_cast<double>(1.0f / 30.0f));
+    // BF2.exe 0x4EC120..0x4EC13C; both dedicated images select this unconditionally.
+    if (isDedicated())
+        stat->setSecondsBetweenCallbacks(static_cast<double>(1.0f / 30.0f));
     stat->registerLoadCallback(&loadCallback);
 }
 
@@ -1749,10 +1781,14 @@ bool GameLogic::isVoipClientRunning()
 namespace {
 } // namespace
 
-// : `ret`. The base's per-tick update is empty; ServerGameLogic::update does the work
-// and calls this first.
+// BF2.exe 0x004EDF00 publishes state 3 every update; BfSound::updateGroups clears it.
+// Dedicated PE 0x00464F20 / ELF 0x080D5330 have an empty base update.
 void GameLogic::update(float)
 {
+#if !DEDICATED
+    if (m_voiceMessages)
+        g_bfSound->setMuteState(static_cast<MuteState>(3), m_voiceMessages->isHelpVOPlaying());
+#endif
 }
 
 //  / 0x80CCDF0 / 0x80CCE00 / 0x80CCE50 - the combat-area quartet on +0x1D0..+0x1E0.
@@ -2211,6 +2247,36 @@ GameLogic::GameLogic()
     eventManager->registerEventHandler(ECCore, this, 10000);    //   priority 10000
     eventManager->registerEventHandler(ECGame, this, 0);
     eventManager->registerEventHandler(ECGameLogic, this, 0);
+
+    // BF2.exe 0x4F6C31..0x4F6F9B, DED PE 0x46C4DB..0x46C84B,
+    // ELF 0x80C8D6B / 0x80C8DCF..0x80C9419: the same order and one-time guard
+    // in every image, after the listeners and before manager construction or reset.
+    static bool eventsRegistered = false;
+    if (!eventsRegistered)
+    {
+        eventsRegistered = true;
+        eventManager->registerEvent(ECGameLogic, 1, "ECGameLogicGLGameStatus");
+        eventManager->registerEvent(ECGameLogic, 2, "ECGameLogicGLControlPointChangedTeam");
+        eventManager->registerEvent(ECGameLogic, 3, "ECGameLogicGLKilledBy");
+        eventManager->registerEvent(ECGameLogic, 4, "ECGameLogicGLLowOnTickets");
+        eventManager->registerEvent(ECGameLogic, 5, "ECGameLogicGLFailedToChangePosition");
+        eventManager->registerEvent(ECGameLogic, 6, "ECGameLogicGLReset");
+        eventManager->registerEvent(ECGameLogic, 7, "ECGameLogicGLStartApplyForCommander");
+        eventManager->registerEvent(ECGameLogic, 8, "ECGameLogicGLChangedTeam");
+        eventManager->registerEvent(ECGameLogic, 9, "ECGameLogicGLAssistKill");
+        eventManager->registerEvent(ECGameLogic, 13, "ECGameLogicGLTinnitus");
+        eventManager->registerEvent(ECGameLogic, 11, "ECGameLogicGLTeamDamage");
+        eventManager->registerEvent(ECGameLogic, 10, "ECGameLogicGLReplenish");
+        eventManager->registerEvent(ECGameLogic, 12, "ECGameLogicGLConquest");
+        eventManager->registerEvent(ECGameLogic, 14, "ECGameLogicGLRevive");
+        eventManager->registerEvent(ECGameLogic, 15, "ECGameLogicGLGameEventLocal");
+        eventManager->registerEvent(ECGameLogic, 17, "ECGameLogicGLUAV");
+        eventManager->registerEvent(ECGameLogic, 18, "ECGameLogicGLScan");
+        eventManager->registerEvent(ECGameLogic, 19, "ECGameLogicGLUAVVehicleCreated");
+        eventManager->registerEvent(ECGameLogic, 20, "ECGameLogicGLUAVVehicleDestroyed");
+        eventManager->registerEvent(ECGameLogic, 21, "ECGameLogicGLDropVehicle");
+        eventManager->registerEvent(ECGameLogic, 22, "ECGameLogicGLAddParachuteToDropVehicle");
+    }
 
     // Clients require the renderer's DecalManager singleton before game-logic construction.
     // Its returned decal client is owned through the renderer's decal-object interface.
@@ -2770,6 +2836,11 @@ void GameLogic::selectWeapon(world::IPlayer* player, world::IObject* vehicle,
             {
                 if (itemIndex != -1)
                 {
+#if !DEDICATED
+                    // BF2.exe 0x004F2AED..0x004F2B07 refuses before changing either device.
+                    if (hudManager && hudManager->isCommanderShown())
+                        return;
+#endif
                     bool clearedTheOther = false;
                     if (player->getNightVision())                              // +0x2E8
                     {

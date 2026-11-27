@@ -24,6 +24,7 @@
 #include "../Common/GhostManager.h"        // the per-connection ghost update
 #include "../../Core/System.h"             // WorldPref::getTickCount
 #include "../DemoRecorder/DemoRecorder.h"  // a recording connection never sends
+#include "../DemoAvailableInfo.h"
 
 #include <algorithm>                       // std::sort - the fairness queue
 #include "../GameEvents/ChallengeEvent.h"  // the first thing a server ever sends
@@ -102,6 +103,7 @@
 #include "../Main/Game.h"                       // Game::outputChatString - ServerStringMessageEW
 #if !DEDICATED
 #include "../Common/ClientVoteManager.h"         // update()'s listen-server vote tick (BF2.exe 4D11AD)
+#include "../HudInformationLayer.h"
 #endif
 // the frame loop
 #include "ServerInfo.h"                         // the server-info broadcast (real class since this batch)
@@ -321,7 +323,14 @@ bool GameServer::init()
 // Client admission starts with a mod-specific challenge; the connection map uses byte keys.
 extern IBase* spawnManager;
 
-// Creates a player using a name truncated to 23 characters, retrying with ID/numeric suffixes.
+// [CHOSEN, not recovered] Retail fix "Player names keep up to 27 characters" (docs/retail-fixes.md).
+// Retail keeps 23 (0x17; ELF 0x80AFCA0, 0x80B3460), which cuts "<tag> <nick>" with a six-character
+// tag and a 20-character GameSpy nick (27). 27 leaves room for a "_255" retry suffix inside the
+// 31 characters CreatePlayerEvent and ChangePlayerNameEvent carry.
+static const std::string::size_type kMaxPlayerNameLength = 27;
+
+// Creates a player using a name truncated to kMaxPlayerNameLength characters, retrying with
+// ID/numeric suffixes.
 // Retries have no failure limit, so persistent failures other than name collisions can loop forever.
 // The player's network ID is player ID plus one.
 world::IPlayer* GameServer::createPlayerWithValidName(const std::string& name, int id)
@@ -330,8 +339,8 @@ world::IPlayer* GameServer::createPlayerWithValidName(const std::string& name, i
     if (m_numPlayers >= settings->intGet("GSMaxNrOfPlayers", 64))
         return 0;
 
-    std::string::size_type keep = 23;
-    if (name.size() < 23)
+    std::string::size_type keep = kMaxPlayerNameLength;
+    if (name.size() < kMaxPlayerNameLength)
         keep = name.size();
     const std::string base(name, 0, keep);
 
@@ -1574,7 +1583,9 @@ bool GameServer::radioMessageFromPlayer(TargetChannel channel, const std::string
             &messageId, 0, 0, message, empty1, empty2))
         return true;
 
-    if (!bypassSpamCheck && player->getIsThisASpam(true))
+    // [CHOSEN, not recovered] Retail fix "AI radio messages consume one allowance"
+    // (docs/retail-fixes.md). An AI sender is charged by the relay under its own ID.
+    if (!bypassSpamCheck && player->getIsThisASpam(!player->getIsAIPlayer()))
     {
         if (!isDedicated() && localPlayback && !player->getIsAIPlayer())
             showRadioSpamNotice(this, player);
@@ -1819,16 +1830,25 @@ void GameServer::flushDemoPackets(ServerConnection* conn, int tick)
     }
 }
 
-// [FRONTIER] [RETIRE-WHEN: demo-available-info] Requires DemoAvailableInfo's wire format
-// before constructing the URL/map data block for clients. Reached only after a configured
-// auto-demo hook completes; recording without a hook does not enter this boundary.
-void GameServer::onAutoRecordingAvailable(const std::string& /*fileName*/,
-                                          const std::string& /*mapName*/)
+// BF2.exe 0x4CD2B0 / dedicated PE 0x448840 / ELF 0x80B5C00: replace the first token,
+// or append the filename when absent. The broadcast receiver is the global game, not this.
+void GameServer::onAutoRecordingAvailable(const std::string& fileName,
+                                          const std::string& mapName)
 {
-    std::fprintf(stderr, "[FRONTIER] dice::hfe::GameServer::onAutoRecordingAvailable reached "
-                         "(DemoAvailableInfo is unrecovered)\n");
-    std::fflush(stderr);
-    std::abort();
+    const std::string token("{file}");
+    std::string url(serverSettings->m_demoDownloadURL);
+    const std::string::size_type position = url.find(token);
+    if (position != std::string::npos)
+        url.replace(position, token.size(), fileName);
+    else
+        url.append(fileName);
+
+    DemoAvailableInfo info;
+    info.setUrl(url);
+    info.setMapName(mapName);
+    const unsigned int size = info.getNetBufferSize();
+    const void* const data = info.getNetBuffer();
+    static_cast<GameServer*>(game)->sendDataBlockToAll(9, data, size, true);
 }
 
 void GameServer::recordDemo(DemoRecorder* recorder)
@@ -2612,6 +2632,11 @@ bool GameServer::simulateFrame(float dt)
         if (ai::g_aiInstance && ai::aiInstance()->isBotsGame())
             ai::aiInstance()->update(static_cast<double>(dt));
     }
+#if !DEDICATED
+    // BF2.exe 0x4CF4BF..0x4CF4D1: the simulation HUD step precedes event processing.
+    if (!isDedicated())
+        static_cast<HudInformationLayer*>(g_hudInformationLayer)->update(dt);
+#endif
     eventManager->processEvents(dt);                            // +0x20
     simulatePlayersUpdate(dt);
     if (gameLogic->getGameStatus() != 4)
@@ -4023,7 +4048,12 @@ void GameServer::handleStringReceivedEvent(StringReceivedEvent* event, void*)
         event->m_senderId = -1;
 
     StringMessageEW wrapper(event);
-    if (event->m_channel == 14)
+    // BF2.exe 0x4CB334..0x4CB359: only dedicated mode uses admin dispatch for channel 14.
+    if (
+#if !DEDICATED
+        isDedicated() &&
+#endif
+        event->m_channel == 14)
         adminToPlayerEvent(wrapper);
     else
         playerMessageEvent(wrapper);
@@ -4127,7 +4157,11 @@ void GameServer::playerMessageEvent(IEventWrapper& wrapper)
     {
         if (!sender)
             return;
-        if (sender->getIsThisASpam(sender->getId() != -1))                   // +0x30C
+        // BF2.exe 0x4C8E8B..0x4C8E9D / dedicated PE 0x445F2B..0x445F3D /
+        // ELF 0x080AEBCB..0x080AEBE4 compare the low byte with 0xFF.
+        // The hosted human has ID 255 and was already counted at submission.
+        const bool count = static_cast<unsigned char>(sender->getId()) != 0xFF;
+        if (sender->getIsThisASpam(count))
             return;
     }
 
@@ -4523,7 +4557,8 @@ bool GameServer::say(const std::string& text, TargetChannel channel, ChannelMess
     return true;
 }
 
-//  / PE 0x444D20. Compare the untruncated request first, then try its first 23 bytes.
+//  / PE 0x444D20. Compare the untruncated request first, then try its first
+// kMaxPlayerNameLength bytes (retail: 23; see createPlayerWithValidName).
 // setName may refuse the name. Retry with _0, _1, ... only while the player's name remains equal
 // to its original name; no retry limit or alternate uniqueness check exists in either binary.
 bool GameServer::changePlayerName(int playerId, const std::string& name)
@@ -4532,7 +4567,7 @@ bool GameServer::changePlayerName(int playerId, const std::string& name)
     if (!player || name == player->getName())
         return false;
 
-    const std::string baseName(name, 0, 23);
+    const std::string baseName(name, 0, kMaxPlayerNameLength);
     const std::string oldName(player->getName());
     player->setName(baseName);
     int suffix = 0;

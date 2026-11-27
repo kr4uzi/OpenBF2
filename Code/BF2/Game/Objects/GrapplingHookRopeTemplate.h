@@ -64,10 +64,8 @@ protected:
     // Runtime state in a template - see the header block.
     /* 368 */ IPlayer* m_player;                     // createGrapplingHookObject's player; ctor 0
 
-    /* 372 */ float _float174;                       // [UNRESOLVED] name; ctor 14.0f
-    /* 376 */ int   _dword178;                       // [UNRESOLVED] name; ctor 28 (0x1C - stored as
-                                                     // a plain integer immediate, and 0x1C read
-                                                     // as a float would be a denormal, so int)
+    /* 372 */ float _float174;                       // MaxRopeLength, ctor 14.0f; PE +0x238, executor 0x52DA76
+    /* 376 */ int   _dword178;                       // NumberOfLinks, ctor 28; PE +0x23C, executor 0x52DB93
 
     // 380..463: the rope simulation constants, in shipped order. The names are the retail
     // ObjectTemplate console properties, recovered from the dedicated PE: the template ctor

@@ -27,6 +27,9 @@ public:
     virtual IObject* createObject() const;    // new(0x174) AntennaObject(this) -
     virtual bool  makeScript(io::IStream*);
 
+    void setSkeleton(const std::string& name);
+    const std::string& getSkeleton() const;
+
 protected:
     // from the ctor (117 B), which writes both before any named field:
     /* 0x164 */ int   m_refCount;           // ctor 1 - the quartet's count, at sizeof(base)

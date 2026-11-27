@@ -15,14 +15,15 @@ wrapper validation.
 
 The client leg of the `linux` matrix in [build.yml](../.github/workflows/build.yml) checks out
 the event's exact engine commit and pins setup to
-`f6b86455ca4e4f3396d6c93deea9251ff75bf3a7` (the 0.5.0 candidate). That setup revision includes the Qt
+`3045c93ddc2c90c8547490f7f0e1f1120c7720e8`. That setup revision includes the Qt
 frontend, SDL microphone backend, explicit build-root audits and isolation of
 diagnostic scratch configuration from the production application, the
 GCC 15 text-reader lookup fix and Complete Edition support, and passes the
-online services to the client as `+onlineProviderConfig <file>`. Its Qt runtime
+online services to the client as `+onlineProviderConfig <file>`. It can also use a
+Battlefield 2 1.50 installation that is already on the computer, in place. Its Qt runtime
 adds QtNetwork and the `tls/libqopensslbackend.so` plugin (a provider file
 downloaded by URL; it loads the host's libssl at run time). Its
-[artifact contract](https://github.com/kr4uzi/openbf2-setup/blob/f6b86455ca4e4f3396d6c93deea9251ff75bf3a7/docs/linux-distribution.md)
+[artifact contract](https://github.com/kr4uzi/openbf2-setup/blob/3045c93ddc2c90c8547490f7f0e1f1120c7720e8/docs/linux-distribution.md)
 is checked by setup's own packager; this repository supplies its engine and
 runtime inputs rather than duplicating the installer.
 

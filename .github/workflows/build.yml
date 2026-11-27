@@ -7,13 +7,17 @@ on:
         description: Skip Windows and macOS for a focused manual Linux validation
         type: boolean
         default: false
+      windows_only:
+        description: Skip Linux and macOS for a focused manual Windows validation
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+  LINUX_SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
 
 jobs:
   windows:
@@ -287,7 +291,7 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+      SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
       BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     defaults:
       run:
@@ -419,6 +423,18 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      # The OpenBF2 release that Windows shows for the installed app (Settings > Apps, the installer, the product
+      # version of OpenBF2.exe): the tag without its "v" on a tag or release run, so v0.3.0-rc2 gives 0.3.0-rc2.
+      # Other runs pass nothing, and the setup uses its fallback version.
+      - name: Take the installer's version from the tag
+        if: steps.clients.outputs.complete == 'true' && env.BF2_RELEASE_RUN == 'true'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>" }
+          "SETUP_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
+          "SETUP_VERSION_OPTION=-Version $($Matches[1])" >> $env:GITHUB_ENV
+
       # with -Sign (signed release runs), the setup's sign.ps1 takes the signtool, the certificate and Certum's
       # timestamp server from the login's SETUP_* variables
       - name: Build, test and package the installer
@@ -426,7 +442,7 @@ jobs:
         run: |
           call out\openbf2\Code\Build\vsdevcmd.cmd x64
           if errorlevel 1 exit /b 1
-          powershell -NoProfile -ExecutionPolicy Bypass -File out\openbf2-setup\windows\build-release.ps1 out\clients\openbf2-windows-x64-client out\clients\openbf2-windows-x86-client "%GITHUB_WORKSPACE%\out\packages-app\openbf2-windows-setup.exe" "%GITHUB_WORKSPACE%\out\setup-build" %SETUP_SIGN_OPTION%
+          powershell -NoProfile -ExecutionPolicy Bypass -File out\openbf2-setup\windows\build-release.ps1 out\clients\openbf2-windows-x64-client out\clients\openbf2-windows-x86-client "%GITHUB_WORKSPACE%\out\packages-app\openbf2-windows-setup.exe" "%GITHUB_WORKSPACE%\out\setup-build" %SETUP_VERSION_OPTION% %SETUP_SIGN_OPTION%
 
       - name: Log out of SimplySign
         if: always() && env.BF2_WINDOWS_SIGN == 'true'
@@ -458,6 +474,7 @@ jobs:
           retention-days: 7
 
   linux:
+    if: ${{ !inputs.windows_only }}
     name: Linux x64 ${{ matrix.role }}
     runs-on: ubuntu-22.04
     timeout-minutes: ${{ matrix.timeout }}
@@ -488,9 +505,9 @@ jobs:
         if: matrix.role == 'server'
         run: cmake --preset linux-x64 -B out/build/ci-linux-x64 -DBF2_GAME_DIR:PATH="$GITHUB_WORKSPACE/out/no-game-content"
 
-      - name: Build the dedicated server and check the Python runtime
+      - name: Build the dedicated server and AI library and check the Python runtime
         if: matrix.role == 'server'
-        run: cmake --build out/build/ci-linux-x64 --target bf2 dice_py_check_run
+        run: cmake --build out/build/ci-linux-x64 --target bf2 bf2_aidll dice_py_check_run
 
       - name: Package Linux binaries
         if: matrix.role == 'server'
@@ -576,6 +593,18 @@ jobs:
           path: ${{ runner.temp }}/openbf2-linux-sdk.oci
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
 
+      # The OpenBF2 release that the application carries as its version: the tag without its "v" on a tag or
+      # release run, so v0.3.0-rc2 gives 0.3.0-rc2. Other runs set nothing, and the setup uses its fallback.
+      - name: Take the application's version from the tag
+        if: matrix.role == 'client' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          tag=$GITHUB_REF_NAME
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>"; exit 1
+          fi
+          echo "SETUP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+
+      # `--env SETUP_VERSION` hands the variable on only when the step above set it.
       - name: Build, audit and package the Linux application
         if: matrix.role == 'client'
         env:
@@ -587,6 +616,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work/engine:rw" \
             --volume "$RUNNER_TEMP/linux-release:/work/release:rw" \
             --env BF2_RELEASE_JOBS=2 \
+            --env SETUP_VERSION \
             "$SDK_IMAGE" bash /work/engine/tools/linux/release/build-client.sh \
             /work/engine /work/engine/out/linux-setup /work/release/result "$SDK_REFERENCE"
 
@@ -703,7 +733,7 @@ jobs:
   # stays ad-hoc and uses no secrets (docs/ci-releases.md). The per-architecture ZIPs are CI
   # artifacts only and not notarized: releases ship the notarized disk image (macos-app).
   macos:
-    if: ${{ !inputs.linux_only }}
+    if: ${{ !inputs.linux_only && !inputs.windows_only }}
     name: macOS ${{ matrix.arch }}
     runs-on: macos-15
     timeout-minutes: 150
@@ -752,7 +782,7 @@ jobs:
           deps=nativefx
           if [ "${{ matrix.arch }}" = arm64 ]; then deps=nativefx-arm64; fi
           cmake --preset macos-x64 -B out/build/ci-macos-${{ matrix.arch }} \
-            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DBF2_MACOS_LINK_RENDDX9=ON \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
             -DBF2_FRONTIER_DEFAULT_CONTINUE=ON \
             -DBF2_FX_NATIVE_DEPS="$GITHUB_WORKSPACE/out/build/$deps" \
             -DBF2_GAME_DIR:PATH="$GITHUB_WORKSPACE/out/no-game-content"
@@ -830,7 +860,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: f6b86455ca4e4f3396d6c93deea9251ff75bf3a7 # 0.5.0 candidate: +onlineProviderConfig, Qt on macOS, Windows installer and signing, fixed provider addresses
+      SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app
@@ -904,6 +934,17 @@ jobs:
         run: |
           bash out/openbf2/tools/macos/ci/release-signing.sh import
           bash out/openbf2/tools/macos/ci/release-signing.sh notary-key
+
+      # The OpenBF2 release that the app carries as its version (see the Windows installer job): the tag
+      # without its "v" on a tag or release run. Other runs set nothing, and the setup uses its fallback.
+      - name: Take the app's version from the tag
+        if: env.BF2_RELEASE_SIGNING == 'true'
+        run: |
+          tag=$GITHUB_REF_NAME
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>"; exit 1
+          fi
+          echo "SETUP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
 
       # SETUP_SIGN_IDENTITY unset means ad-hoc. In release runs the setup scripts sign with the
       # imported identity, the hardened runtime, a timestamp and the two entitlements files.

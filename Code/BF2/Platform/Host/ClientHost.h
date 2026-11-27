@@ -21,7 +21,7 @@ namespace host {
 
 struct HostDisplayModeInfo
 {
-    int width;                      // pixels
+    int width;                      // logical points on macOS, pixels on other hosts
     int height;
     int refreshHz;                  // 0 when the display does not report one (most LCD panels report 60)
     int bitsPerPixel;               // 32 for every mode macOS offers
@@ -37,7 +37,7 @@ struct HostWindowDesc
     int  height;
     int  x;                         // top-left of the window frame from the screen's top-left;
     int  y;                         //   Window::create passes 50/50 when the setting is -1
-    bool fullscreen;                // a borderless window covering the main screen
+    bool fullscreen;                // macOS: the window enters its own full-screen Space
     bool hideCursor;
 };
 
@@ -49,7 +49,8 @@ public:
     // Initializes the native application/event system. Safe to call more than once.
     bool initApplication();
 
-    // Creates and activates the game window. False if one already exists or creation fails.
+    // Creates and shows the game window. A macOS full-screen start returns once the window is
+    // in its own Space, or after three seconds. False if one already exists or creation fails.
     bool createWindow(const HostWindowDesc& desc);
     // Closes and releases the window. Restores the cursor and the presentation options.
     void destroyWindow();
@@ -69,8 +70,8 @@ public:
     void setTitle(const std::string& title);
     // Resizes the windowed client area, keeping the top-left corner.
     void resizeClient(int width, int height);
-    // Switches between the windowed frame and the borderless full-screen window. The back-buffer
-    // size stays width x height in both.
+    // Switches windowed/full screen (macOS: the window's own Space, asynchronously).
+    // The back-buffer size stays width x height in both.
     void setFullscreen(bool fullscreen);
     bool isFullscreen() const;
 
@@ -87,6 +88,14 @@ public:
     bool pumpEvents();
     // Blocks for up to timeoutSeconds for an event, then drains. Returns as pumpEvents.
     bool waitEvents(double timeoutSeconds);
+    // [CHOSEN, not recovered] Long main-thread work (a level load) calls this at the points where
+    // retail repaints its loading screen. It keeps the application responsive for the platform
+    // without delivering anything: Cocoa takes the queued events from the window server and keeps
+    // them, in order, for the next pumpEvents(), which delivers them first; the animated cursor
+    // moves on. No callback runs and no input reaches the engine earlier than without the call.
+    // Throttled internally (a call within 50 ms of the last pump does nothing), so it may be called
+    // often. SDL hosts: nothing.
+    void serviceWhileBusy();
     // A user-initiated close: notifies onCloseRequested, then sets the quit flag.
     void requestQuit();
     // PostQuitMessage: sets the quit flag only.
@@ -141,9 +150,9 @@ public:
     bool getClipboardText(std::string& text) const;
 
     // Display modes of the main display (duplicates removed) and the current desktop mode.
-    // macOS desktopMode reports the desktop's logical size in points (e.g. 1440x900 on a
-    // 2880x1800 Retina panel), the size a Windows user would call the desktop resolution;
-    // displayModes lists pixel sizes, which include the same sizes as low-resolution modes.
+    // [CHOSEN, not recovered] macOS reports logical point sizes for both calls. displayModes
+    // lists GUI-usable sizes, capped in each dimension at the largest HiDPI logical size when
+    // present; 1x displays keep all usable modes. Zero-Hz modes use the panel refresh rate.
     std::vector<HostDisplayModeInfo> displayModes() const;
     HostDisplayModeInfo desktopMode() const;
 

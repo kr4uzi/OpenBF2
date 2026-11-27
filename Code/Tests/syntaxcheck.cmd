@@ -147,6 +147,12 @@ cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundle.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundleTemplate.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\GroundEffectBundle.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\AirDraftEffectBundle.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\AirDraftEffectBundleTemplate.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Game\Spring.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS% "%~dp0..\BF2\Game\Objects\Fx\ExplosionEffectFlashBang.cpp"
@@ -1212,6 +1218,16 @@ cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManager.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\ProfileManager.cpp"
 if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\RankManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\ClanManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\NewsManager.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\AutoPatch\AutoPatch.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Persistence\Persistence.cpp"
+if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManagerInit.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\LocalProfileManagerOperations.cpp"
@@ -1272,6 +1288,10 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\SwiffHostEndOfRound.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\BetweenRoundsLogic.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Menu\EndOfRoundLogic.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Menu\LoadGameLogic.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Menu\MainMenuLogic.cpp"
 if errorlevel 1 set /a RC+=1
@@ -1600,6 +1620,12 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundle.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\WheelEffectBundleTemplate.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\GroundEffectBundle.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\AirDraftEffectBundle.cpp"
+if errorlevel 1 set /a RC+=1
+cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Fx\AirDraftEffectBundleTemplate.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Game\Objects\Game\Spring.cpp"
 if errorlevel 1 set /a RC+=1
@@ -2663,6 +2689,10 @@ if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\D3D9Forward\GeneratedNative\ForwardFunctions.cpp"
 if errorlevel 1 set /a RC+=1
 cl %FLAGS0% "%~dp0..\BF2\Platform\Gfx\D3D9Forward\GeneratedNative\ForwardWrappers.cpp"
+if errorlevel 1 set /a RC+=1
+
+rem Content-free terrain shader source correction check (client image).
+cl %FLAGS0% "%~dp0terrain_shader_source.cpp"
 if errorlevel 1 set /a RC+=1
 
 if %RC%==0 (echo ALL OK) else (echo *** %RC% FILE^(S^) FAILED ***)

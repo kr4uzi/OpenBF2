@@ -5,6 +5,9 @@
 #include "SoldierTemplate.h"
 
 #include "../../../Animation/BoneAnimation/Skeleton.h"
+#include "../../../Sound/SoldierSound.h"
+#include "../../../Core/ContentError.h"
+#include "../../../Core/Ids.h"
 
 namespace dice {
 namespace hfe {
@@ -40,6 +43,45 @@ int SoldierTemplate::release()
     if (remaining == 0)
         delete this;
     return remaining;
+}
+
+// BF2.exe 0x5F4830 / ELF 0x081B8C20: the manager calls this after assigning the template name.
+void SoldierTemplate::templateInitialize()
+{
+    SoldierSound::initTemplates(this);
+}
+
+// BF2.exe 0x005F4730 / ELF 0x081B8FF0: retain all BundleTemplate faces and add
+// the adjusted soldier-template face. Neither lookup increments the reference count.
+void* SoldierTemplate::queryInterface(unsigned int iid) const
+{
+    if (iid == IID_ISoldierTemplate)
+        return static_cast<ISoldierTemplate*>(const_cast<SoldierTemplate*>(this));
+    return BundleTemplate::queryInterface(iid);
+}
+
+// BF2.exe 0x005F4970 / ELF 0x081B90C0: copy all three components without validation.
+void SoldierTemplate::setNameTagOffset(Vec3 value)
+{
+    m_nameTagOffset = value;
+}
+
+// BF2.exe 0x005F49A0 / ELF 0x081B9110.
+void SoldierTemplate::setRidingWithOffset(Vec3 value)
+{
+    m_ridingWithOffset = value;
+}
+
+// BF2.exe 0x005F4870 / ELF 0x081B8C60. Retail refuses this save without calling
+// the base or touching the stream; its emitted DebugTypeError terminates.
+bool SoldierTemplate::makeScript(io::IStream*)
+{
+    // BF2.exe 0x005F4870: Debug(DebugTypeError, ..., 74, "")
+    // << "SoldierTemplate doesn't have makeScript implemented. Save failed...".
+    // [CHOSEN, not recovered] Retail fix "Content errors are logged without ending the game".
+    reportContentError("Game/Objects/Game/SoldierTemplate.cpp", 74,
+        "SoldierTemplate doesn't have makeScript implemented. Save failed...", getName());
+    return false;
 }
 
 // , 23 B. The null guard and the exclusive use of the third-person

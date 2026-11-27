@@ -402,6 +402,11 @@ bool Squad::removeFromSquad(int playerId, bool skipScriptEvent, bool kicked)
         const unsigned int hudId = kicked ? 20u : 21u;
         for (std::set<int>::iterator it = m_members.begin(); it != m_members.end(); ++it)
         {
+            // [CHOSEN, not recovered] Retail fix "Only the squad leader is told that a member left"
+            // (docs/retail-fixes.md). Retail (ELF 0x8119D00) sends HUD 21 to every member. The
+            // leaver still gets it: the client closes its squad view on its own id.
+            if (!kicked && *it != playerId && *it != m_leaderPlayerId)
+                continue;
             if (*it == 255)
                 eventManager->postEvent(ECHud, hudId, &playerId, 0.0f);         // +0x14
             else

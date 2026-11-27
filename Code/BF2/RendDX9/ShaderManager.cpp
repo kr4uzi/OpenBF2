@@ -16,6 +16,7 @@
 #include "../../RendDX9Abi/Frontier.h"
 #include "RendDX9Base.h"
 #include "ShaderLoading.h"
+#include "ShaderSource.h"
 #include "DiceEffect.h"
 #include "../RendMisc/IRenderer.h"
 #include "../GeomMisc/Debug.h"
@@ -499,7 +500,7 @@ const void* shaderManagerDefineTable()
 
 
 // ID3DXInclude occupies the ShaderManager face at +0x04; it has Open/Close only.
-// Open resolves the mod path, reads into engine-owned storage, and optionally deobfuscates.
+// Open resolves the mod path, reads into engine-owned storage, and prepares shader source.
 // A short read fails. Close frees the returned buffer.
 
 namespace {
@@ -538,11 +539,14 @@ long __stdcall smIncludeOpen(void* /*self*/, int /*includeType*/, const char* fi
     const unsigned int got = stream->read(buf, *outBytes);
     stream->release();
 
-    if (settings->boolGet(std::string("GSLoadObfuscated"), true))
-        deobfuscateShader(const_cast<unsigned char*>(static_cast<const unsigned char*>(*outData)),
-                         *outBytes);
-
-    return got == *outBytes ? 0 : (long)-2005529767;
+    const bool obfuscated = settings->boolGet(std::string("GSLoadObfuscated"), true);
+    if (got != *outBytes)
+    {
+        if (obfuscated) deobfuscateShader(buf, *outBytes);
+        return (long)-2005529767;
+    }
+    prepareShaderSource(path.c_str(), buf, *outBytes, obfuscated);
+    return 0;
 }
 
 // PE 0x10022770.

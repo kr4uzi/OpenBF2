@@ -6,8 +6,12 @@ requests use read-only permissions and require no secrets. Repository settings m
 require a maintainer to approve a first-time contributor's workflow run.
 For Linux-only packaging changes, manual dispatch offers `linux_only`: it runs
 the Linux server/client matrix and Linux package job without rebuilding Windows
-or macOS. Its default is false; pull requests, `main` pushes and published
-releases retain all-platform coverage. Validate locally before dispatching.
+or macOS. `windows_only` likewise runs only the Windows matrix, the Windows
+installer and the Windows package. Dispatched on a `v*` tag, that run is a
+release run with the `release` environment, so it exercises Windows signing
+without building Linux or macOS and without touching a release. Both default
+to false; pull requests, `main` pushes and published releases retain
+all-platform coverage. Validate locally before dispatching.
 
 Use the [local CI tooling](local-ci.md) before a PR to run the Linux build,
 installer and package jobs with `act`. The optional pre-push guard checks saved
@@ -97,7 +101,7 @@ from them.
 | `openbf2-macos.dmg` | `OpenBF2.app`: the setup assistant and launcher with the universal (arm64 + x86_64) client; the app carries its own instructions |
 | `openbf2-windows-setup.exe` | the Windows installer: the setup assistant and launcher (kr4uzi/openbf2-setup) with both clients, installed for the current user without administrator rights; it installs the game from the user's disc. Release runs sign it when signing is configured ([Windows signing](#windows-signing)) |
 | `openbf2-windows.zip` | `x64\` the x64 client, `x86\` the x86 client, `server\` the x86 dedicated server, `editor\` the x86 editor, `licenses\`, `LICENSE`, `README.txt`, `build-info.json`; release runs sign its programs and DLLs when signing is configured ([Windows signing](#windows-signing)) |
-| `openbf2-linux.zip` | the x64 dedicated server: `bf2`, `libdice_py.so`, `licenses/`, `LICENSE`, `README.txt`, `build-info.json` |
+| `openbf2-linux.zip` | the x64 dedicated server: `bf2`, `libdice_py.so`, `libaidll.so`, `licenses/`, `LICENSE`, `README.txt`, `build-info.json` |
 | `openbf2-linux-x86_64-client.tar.gz` | `OpenBF2/`: the Qt installer/launcher, native Vulkan client, bundled runtime, setup manifests, licenses and checked provenance; no game media or user profiles |
 | `openal-soft-1.25.2.tar.bz2` | the LGPL source of both Windows clients' `BF2OpenAL.dll` ([OpenAL Soft](#openal-soft-in-the-windows-clients)) |
 
@@ -138,6 +142,12 @@ SHA-256 of every runtime file under its folder path. Every input is verified bef
 written. The `Windows package` job runs it on Ubuntu after both Windows jobs and uploads the
 `release-windows` artifact; on release runs it also waits for the `Windows installer` job and, when that job signed,
 takes the ZIPs it signed ([Windows signing](#windows-signing)).
+
+The setup app carries the OpenBF2 release as its version. On a tag or release run the three jobs that build it
+(the Windows installer, the macOS app and the Linux client) take the tag without its `v` (`v0.3.0-rc2` gives
+`0.3.0-rc2`) and hand it to the setup's release script: `SETUP_VERSION` in the environment, on Windows also
+`-Version`. Windows shows it for the installed app, macOS as the app's version, and the Linux package records it
+in `release.json`. Other runs hand over nothing, and the setup uses its fallback `0.0.0-dev`.
 
 The `Windows installer` job builds `openbf2-windows-setup.exe` from both legs' client packages with the setup
 app's own release script (`windows/build-release.ps1` in kr4uzi/openbf2-setup, at the pinned revision) and uploads
@@ -191,7 +201,7 @@ Every Windows package also carries the app-local Visual C++ runtime beside its e
 | `openbf2-windows-x86-editor.zip` | `BF2Editor.exe`, `dice_py.dll`, editor `RendDX9.dll`, `TextureAtlasBuilder.dll`, `BF2VoipServer.dll` | `openbf2-windows.zip`, `editor\` |
 | `openbf2-windows-x64-server.zip` | `bf2_w64ded.exe`, `dice_py.dll`, `aidll.dll` | none |
 | `openbf2-windows-x64-client.zip` | `BF2.exe`, `dice_py.dll`, `RendDX9.dll`, `SwiffPlayer.dll`, `BF2Audio.dll`, `TextureAtlasBuilder.dll`, `aidll.dll`, `BF2OpenAL.dll` (OpenAL Soft); no PunkBuster, so it cannot join servers that require it | `openbf2-windows.zip`, `x64\` |
-| `openbf2-linux-x64-server.zip` | `bf2`, `libdice_py.so` | `openbf2-linux.zip` |
+| `openbf2-linux-x64-server.zip` | `bf2`, `libdice_py.so`, `libaidll.so` | `openbf2-linux.zip` |
 | `openbf2-macos-arm64-client.zip`, `openbf2-macos-x86_64-client.zip` | `bf2_client`, `libdice_py.dylib`, `libaidll.dylib` | merged into the app in `openbf2-macos.dmg` |
 | `openbf2-macos-arm64-server.zip`, `openbf2-macos-x86_64-server.zip` | `bf2`, `libdice_py.dylib`, `libaidll.dylib` | none |
 
@@ -442,7 +452,7 @@ The macOS client and server ZIPs are development artifacts, not release assets.
    (the CI artifact `openbf2-linux-x64-server.zip` installs the same way under its own name).
    Copy your 1.50 server's `mods/`, `python/`, `pylib-2.3.4.zip`, and any `Settings/`,
    `Profiles/` and used `admin/` into it. Use Linux server content with lowercase game paths.
-   Keep `libdice_py.so` beside `bf2` and run:
+   Keep `libdice_py.so` and `libaidll.so` beside `bf2` and run:
 
    ```sh
    cd "$HOME/Games/openbf2-linux"

@@ -9,10 +9,14 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
+#if defined(__APPLE__) && !DEDICATED && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+#include "../Platform/Host/ClientHost.h"           // [CHOSEN] the loading screen's busy service
+#endif
 
 namespace dice { namespace hfe {
 class ConsoleObject;                                        // Core/ConsoleObject.h
 std::list<ConsoleObject*>& gameConsoleObjects();            // Game/Main/GameConsole.cpp
+std::list<ConsoleObject*>& moduleGameConsoleObjects();      // Game/Main/GameConsole.cpp
 #if DEDICATED
 std::list<ConsoleObject*>& openBf2ConsoleObjects();         // Game/Main/OpenBF2Console.cpp [CHOSEN, not recovered]
 #endif
@@ -76,6 +80,11 @@ std::list<ConsoleObject*>& toolObjectConsoleObjects();      // Scene/Object/Tool
 #include "../Game/Main/BF2ClientSeams.h"  // their slots
 #include "../Game/LocalProfileManager.h" // client factory4104FC, native startup owner
 #include "../Game/ProfileManager.h" // client factory410382, online-profile lifetime/status owner
+#include "../Game/Persistence/RankManager.h"
+#include "../Game/Persistence/ClanManager.h"
+#include "../Game/Persistence/NewsManager.h"
+#include "../Game/AutoPatch/AutoPatch.h"
+#include "../Game/Persistence/Persistence.h"
 #include "../Game/AudioSettings.h"       // client factory4105B9, native settings owner
 #include "../Game/GeneralSettings.h"     // client factory4106BE, native settings owner
 #include "../Game/GameServerSettings.h"  // client factory41067C, the ServerSettings mirror
@@ -89,6 +98,8 @@ std::list<ConsoleObject*>& toolObjectConsoleObjects();      // Scene/Object/Tool
 #include "../Menu/ServerLogoManager.h"   // client factory410784, the server-browser logo cache
 #include "../Menu/SwiffHost.h"           // client factory410244, the front-end host
 #include "../Menu/BetweenRoundsLogic.h"   // ModuleGame::handleEvent builds it on ECMenu 3 / 9
+#include "../Menu/EndOfRoundLogic.h"
+#include "../Menu/LoadGameLogic.h"
 #include "LoadStat.h"                      // loadStat->executeLoadCallback - the ECMenu 6 arm
 #include "../Game/Main/BF2Engine.h"        // menuLogic, the live IMenuLogic global (ds:0x987358)
 #include "../Menu/MainMenuLogic.h"       // client factory410286, the Flash menu bridge
@@ -392,10 +403,19 @@ void ModuleGame::getClassList(std::vector<ClassRegInfo>& out)
         out.push_back(ClassRegInfo{CID_MainMenuLogic, "dice.hfe.MainMenuLogic", &MainMenuLogic::create});
         // Loading-screen logic created by the InitLoadingScreen menu event.
         out.push_back(ClassRegInfo{CID_BetweenRoundsLogic, "dice.hfe.BetweenRoundsLogic", &BetweenRoundsLogic::create});
-        // EndOfRoundLogic and LoadGameLogic remain unregistered until their classes are implemented.
+        // BF2.exe 0x430BDA / 0x430C19: between BetweenRoundsLogic and LocalProfileManager.
+        // Neither row exists in the dedicated ELF getClassList at 0x87AB2B0.
+        out.push_back(ClassRegInfo{CID_EndOfRoundLogic, "dice.hfe.EndOfRoundLogic", &EndOfRoundLogic::create});
+        out.push_back(ClassRegInfo{CID_LoadGameLogic, "dice.hfe.LoadGameLogic", &LoadGameLogic::create});
         out.push_back(ClassRegInfo{CID_LocalProfileManager, "dice.hfe.LocalProfileManager", &LocalProfileManager::create});
         // PE430C97..430CCF: the online owner immediately follows the local manager.
         out.push_back(ClassRegInfo{CID_ProfileManager, "dice.hfe.ProfileManager", &ProfileManager::create});
+        // BF2.exe 0x430CD6 / 0x430D15 / 0x430D54 / 0x430D93 / 0x430DD2.
+        out.push_back(ClassRegInfo{CID_RankManager, "dice.hfe.RankManager", &RankManager::create});
+        out.push_back(ClassRegInfo{CID_ClanManager, "dice.hfe.ClanManager", &ClanManager::create});
+        out.push_back(ClassRegInfo{CID_NewsManager, "dice.hfe.NewsManager", &NewsManager::create});
+        out.push_back(ClassRegInfo{CID_AutoPatch, "dice.hfe.AutoPatch", &AutoPatch::create});
+        out.push_back(ClassRegInfo{CID_Persistence, "dice.hfe.Persistence", &Persistence::create});
         // PE430E11..430E39: later than LocalProfileManager, before GlobalSettings.
         out.push_back(ClassRegInfo{CID_ServerBrowser, "dice.hfe.ServerBrowser", &ServerBrowser::create});
         // PE430E50: the existing MenuTeamManager singleton requires this factory.
@@ -667,12 +687,8 @@ void ObjectModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_ObjectManager, "dice.hfe.world.ObjectManager.Standard", &world::ObjectManager::create});
     out.push_back(ClassRegInfo{CID_WindManager, "dice.hfe.world.WindManager.Standard", &world::WindManager::create});
     out.push_back(ClassRegInfo{CID_Object, "dice.hfe.world.Object.Standard", &world::Object::create});
-#if DEDICATED
-    // Dedicated body preserves retail's absent-render-singleton fault in update().
+    // BF2.exe 0x715CCE: shared registration; the client update reads its Renderer singleton.
     out.push_back(ClassRegInfo{CID_ObjectPriorityCalculator, "dice.hfe.world.ObjectPriorityCalculator.Standard", &world::ObjectPriorityCalculator::create});
-#else
-    // RW-6: the client render-singleton update arm remains unrecovered.
-#endif
     out.push_back(ClassRegInfo{CID_QuadTreeCuller, "dice.hfe.world.Culler.QuadTreeCuller", &world::QuadTreeCuller::create});
     out.push_back(ClassRegInfo{CID_BinTreeCuller, "dice.hfe.world.Culler.BinTreeCuller", &world::BinTreeCuller::create});
 }
@@ -800,9 +816,8 @@ void GameLogicObjTemplFxModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_DecalTemplate, "dice.hfe.world.ObjectTemplate.Decal", &world::ClassFactory<world::DecalTemplate>::create});
     out.push_back(ClassRegInfo{CID_EmitterTemplate, "dice.hfe.world.ObjectTemplate.Emitter", &world::ClassFactory<world::EmitterTemplate>::create});
     out.push_back(ClassRegInfo{CID_ParticleTemplate, "dice.hfe.world.ObjectTemplate.Particle", &world::ClassFactory<world::ParticleTemplate>::create});
-#if DEDICATED
+    // BF2.exe 0x576A6E, factory 0x55F771: the legacy sprite class is registered in both images.
     out.push_back(ClassRegInfo{CID_SpriteParticleTemplate, "dice.hfe.world.ObjectTemplate.SpriteParticle", &world::ClassFactory<world::SpriteParticleTemplate>::create});
-#endif // Client particle presentation remains outside the dedicated recovery.
     // Particle templates must retain registration order so client and server assign matching template IDs.
     out.push_back(ClassRegInfo{CID_SpriteParticleSystemTemplate, "dice.hfe.world.ObjectTemplate.SpriteParticleSystem", &world::ClassFactory<world::SpriteParticleSystemTemplate>::create});
     out.push_back(ClassRegInfo{CID_MeshParticleSystemTemplate, "dice.hfe.world.ObjectTemplate.MeshParticleSystem", &world::ClassFactory<world::MeshParticleSystemTemplate>::create});
@@ -848,10 +863,9 @@ void GameLogicObjTemplBFModule::getClassList(std::vector<ClassRegInfo>& out)
     out.push_back(ClassRegInfo{CID_ObjectSpawnerTemplate, "dice.hfe.world.ObjectTemplate.ObjectSpawner", &world::ClassFactory<world::ObjectSpawnerTemplate>::create});
     out.push_back(ClassRegInfo{CID_PlayerControlObjectTemplate, "dice.hfe.world.ObjectTemplate.PlayerControlObject", &world::ClassFactory<world::PlayerControlObjectTemplate>::create});
     out.push_back(ClassRegInfo{CID_ParachuteTemplate, "dice.hfe.world.ObjectTemplate.Parachute", &world::ClassFactory<world::ParachuteTemplate>::create});
-#if DEDICATED
+    // BF2.exe 0x5375ED/0x53762C, factories 0x506F0E/0x506F50: shared template registrations.
     out.push_back(ClassRegInfo{CID_KitPartTemplate, "dice.hfe.world.ObjectTemplate.KitPart", &world::ClassFactory<world::KitPartTemplate>::create});
     out.push_back(ClassRegInfo{CID_SupplyDepotTemplate, "dice.hfe.world.ObjectTemplate.SupplyDepot", &world::ClassFactory<world::SupplyDepotTemplate>::create});
-#endif // Client presentation paths have not been attested by this server recovery.
     out.push_back(ClassRegInfo{CID_SupplyObjectTemplate, "dice.hfe.world.ObjectTemplate.SupplyObject", &world::ClassFactory<world::SupplyObjectTemplate>::create});
     out.push_back(ClassRegInfo{CID_ControlPointTemplate, "dice.hfe.world.ObjectTemplate.ControlPoint", &world::ClassFactory<world::ControlPointTemplate>::create});
     out.push_back(ClassRegInfo{CID_ObstacleTemplate, "dice.hfe.world.ObjectTemplate.Obstacle", &world::ClassFactory<world::ObstacleTemplate>::create});
@@ -1002,6 +1016,7 @@ bool ModuleGame::init()
     consoleObjects()->registerConsoleObjects(gameLogicConsoleObjects());
     // Combat-area bindings apply the authored battlefield boundaries from level scripts.
     consoleObjects()->registerConsoleObjects(combatAreaConsoleObjects());
+    consoleObjects()->registerConsoleObjects(moduleGameConsoleObjects());
 #if !DEDICATED
     // PE4107C3 registers list 0x98913C before the event handlers. These four
     // static command constructors append to that same ModuleGame list.
@@ -1063,6 +1078,16 @@ void ModuleGame::handleEvent(EventCategory category, unsigned int id, EventNode*
             return;
 
         case 4:                                             // ECMenuMenuEvent_UpdateLoadingScreen
+#if defined(__APPLE__) && !(defined(BF2_IMAGE_EDITOR) && BF2_IMAGE_EDITOR)
+            // [CHOSEN, not recovered] A level load posts this event at every throttled load step
+            // (GameLogic loadCallback, 1/30 s) and at every effect load (shaderLoadingEvent), and
+            // never pumps the window. Here, where retail repaints its loading screen, the Cocoa
+            // host takes the window server's queued events and holds them for the next pump, and
+            // moves the animated busy cursor on: without that macOS replaces it with the spinning
+            // wait cursor after a few seconds. Nothing is delivered to the engine here, and it is
+            // done whether or not the screen is repainted (ClientHost::serviceWhileBusy).
+            host::ClientHost::instance().serviceWhileBusy();
+#endif
             if (menuLogic && m_appActive)
             {
                 menuLogic->update(1.0);                     // +0x28, the literal 1.0
@@ -1134,6 +1159,7 @@ bool ModuleGame::close()
     consoleObjects()->unregisterConsoleObjects(mapListConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(gameLogicConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(combatAreaConsoleObjects());
+    consoleObjects()->unregisterConsoleObjects(moduleGameConsoleObjects());
 #if !DEDICATED
     consoleObjects()->unregisterConsoleObjects(menuTeamConsoleObjects());
     consoleObjects()->unregisterConsoleObjects(localProfileConsoleObjects());

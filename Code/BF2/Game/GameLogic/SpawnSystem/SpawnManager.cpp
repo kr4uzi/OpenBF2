@@ -58,12 +58,14 @@ void* SpawnManager::queryInterface(unsigned int iid) const
 }
 
 // Seeds spawn-point types soldier_spawn and vehicle_spawn; these names are part
-// of the map-script interface. Some original fields are deliberately uninitialized.
+// of the map-script interface.
+// [CHOSEN, not recovered] Retail fix "The spawn manager's unwritten words start at zero".
+// ELF 0x081124F0 / 0x081126B0 leave +0x14 and +0x24 unwritten; no readers are identified.
 SpawnManager::SpawnManager()
     : m_refCount(1)                  // the one-reference rule, same as every other IBase here
-    , m_unknown14(0)                 // [CHOSEN] - the original leaves it uninitialised (see header)
+    , m_unknown14(0)
     , m_nextGroupId(1)
-    , m_unknown24(0)                 // [CHOSEN] - likewise
+    , m_unknown24(0)
     , m_soldierSpawn("soldier_spawn")
     , m_vehicleSpawn("vehicle_spawn")
 {
@@ -71,9 +73,11 @@ SpawnManager::SpawnManager()
     // self-linked sentinel allocations amount to.
 }
 
-// [UNRESOLVED] Original destructor body is unread; owned-group teardown is not yet implemented.
+// BF2.exe 0x6598C0 (call 0x6598CF) / ELF 0x81127C0, 0x8112930, 0x8112AA0:
+// remove registered groups before destroying the registry containers.
 SpawnManager::~SpawnManager()
 {
+    removeAll();
 }
 
 // `lea eax, [this+0x0C]; ret`.

@@ -207,7 +207,7 @@ void Terrain::update()
     updateWaterConstants();                                               // vslot +0xE0
 }
 
-// the first arm: push, update, the constants, the main draw, the water, pop.
+// Draws the main terrain and water before world objects (PE 0x100E0E50).
 void Terrain::renderWorldPassBegin()
 {
     dx9rend::stateManagerPush();
@@ -220,7 +220,7 @@ void Terrain::renderWorldPassBegin()
     dx9rend::stateManagerPop();
 }
 
-// the closing arm: the diffuse passes, then the ring.
+// Draws the terrain colour passes and surrounding ring after world objects (PE 0x100E10C0).
 void Terrain::renderWorldPassEnd()
 {
     dx9rend::stateManagerPush();
@@ -1519,7 +1519,7 @@ void Terrain::reloadForLowQuality()
 }
 
 
-// the +0xBC arm's diffuse passes: the technique again, per visible node's patch the
+// The terrain colour passes: the technique again, per visible node's patch the
 // colormap and the low-detail map, then the patch's detail passes.
 
 void Terrain::drawFinal()

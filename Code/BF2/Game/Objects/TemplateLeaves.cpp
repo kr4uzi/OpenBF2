@@ -26,6 +26,7 @@
 #include "Game/Spring.h"                         // SpringTemplate::createObject's product
 #include "Game/Rotor.h"                          // RotorTemplate::createObject's product
 #include "Fx/Emitter.h"                          // EmitterTemplate::createObject's product
+#include "Fx/GroundEffectBundle.h"               // GroundEffectBundleTemplate::createObject's product
 #include "../Main/Game.h"                        // isDedicated() - EmitterTemplate::createObject (BF2.exe 0x440510)
 #include "IPlayer.h"                             // Zipline placement owner/vehicle
 #include "IObject.h"                             // placement collision objects
@@ -355,8 +356,9 @@ void EnvMapTemplate::templateInitialize()
     }
 }
 
-// . Ctor 58 B: one float at +0x164 = 3.0f. createObject returns NULL (7 B).
-// templateInitialize is a 5-byte empty - THE body the deep drive faulted on.
+// . Ctor 58 B: one float at +0x164 = 3.0f. The ELF's createObject returns NULL (7 B); the
+// client's creates a GroundEffectBundle. templateInitialize is a 5-byte empty - THE body the
+// deep drive faulted on.
 BF2_LEAF_SIMPLE(GroundEffectBundleTemplate)
 // ELF 8202E10: the only derived field is the trigger-distance float, with no flag update.
 GroundEffectBundleTemplate::GroundEffectBundleTemplate() : m_maxTriggerDistance(3.0f) {}
@@ -370,7 +372,18 @@ bool GroundEffectBundleTemplate::makeScript(io::IStream* stream)
     const std::string text = out.str();
     return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
  }
-IObject* GroundEffectBundleTemplate::createObject() const { return 0; }
+// ELF 8202E60: `xor eax, eax; ret`. BF2.exe 0x646A10: null on a dedicated game, else a
+// 0x150-byte GroundEffectBundle.
+IObject* GroundEffectBundleTemplate::createObject() const
+{
+#if DEDICATED
+    return 0;
+#else
+    if (isDedicated())
+        return 0;
+    return new GroundEffectBundle(this);
+#endif
+}
 void GroundEffectBundleTemplate::templateInitialize() {}
 
 // Hook links create RopeLink objects using this template's compatible layout.
@@ -482,9 +495,13 @@ IObject* ZiplineTemplate::createObject() const
     return new Zipline(this);
 }
 
-// (25 B); PE counterpart is the same single member store.
+extern float* const ziplineSoldierHeight; // registered by ZiplineContainer's TU initializer
+
+// BF2.exe 0x5DA080; dedicated PE 0x57B140; ELF 0x81D2840.
+// Update the riders' shared height before the template member.
 void ZiplineTemplate::setZiplineSoldierHeight(float height)
 {
+    *ziplineSoldierHeight = height;
     m_ziplineSoldierHeight = height;
 }
 
@@ -791,7 +808,28 @@ DestroyableWindowsBundleTemplate::DestroyableWindowsBundleTemplate()
         m_effectTemplates[i] = 0;                    // +0x19C..+0x1BF, non-owning 3x3 cache
 }
 BF2_LEAF_BUNDLE(DestroyableWindowsBundleTemplate)
-BF2_LEAF_IBASE_IMPL(DestroyableWindowsBundleTemplate, BundleTemplate)
+void DestroyableWindowsBundleTemplate::addRef() { ++m_refCount; }
+int DestroyableWindowsBundleTemplate::getRef() { return m_refCount; }
+int DestroyableWindowsBundleTemplate::release()
+{
+    const int refs = --m_refCount;
+    if (refs == 0)
+        delete this;
+    return refs;
+}
+
+// Client PE 0x5F1F50, server PE 0x590070, ELF 0x8176870: no simple-object interface.
+void* DestroyableWindowsBundleTemplate::queryInterface(unsigned int iid) const
+{
+    DestroyableWindowsBundleTemplate* self = const_cast<DestroyableWindowsBundleTemplate*>(this);
+    if (iid == IID_IBase || iid == IID_IObjectTemplate)
+        return static_cast<IObjectTemplate*>(self);
+    if (iid == IID_IBundleTemplate)
+        return static_cast<IBundleTemplate*>(self);
+    if (iid == io::IID_IConsoleSaveable)
+        return static_cast<io::IConsoleSaveable*>(self);
+    return 0;
+}
 
 // . Ctor 76 B, and its one observable act is NOT updateFlags: `or byte [this+0xAC], 6` -
 // it sets bits 1 and 2 of SimpleObjectTemplate's physics-flags byte directly, which is the

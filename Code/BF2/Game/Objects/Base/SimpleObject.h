@@ -9,12 +9,18 @@
 namespace dice {
 namespace hfe {
 class SimpleObjectNetworkable;
+namespace geom { class IGeometryTemplate; }
 namespace world {
 
 class SimpleObjectTemplate;
 
-// Both dedicated-server ports carry this named free helper as an intentional no-op.
+// Resolves geometry by name on clients; dedicated-server ports return false.
 bool setGeometry(IObject* object, const std::string& geometry);
+#if !DEDICATED
+// Creates and attaches a geometry instance, releasing its temporary reference on either outcome.
+// Returns false for null arguments, creation failure or refused attachment.
+bool setGeometry(IObject* object, geom::IGeometryTemplate* geometryTemplate);
+#endif
 
 class SimpleObject : public Object
 {

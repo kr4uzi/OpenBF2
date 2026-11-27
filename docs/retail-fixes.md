@@ -54,6 +54,48 @@ Each entry is a heading that names the fix, followed by these fields:
 
 ## Client
 
+### Shared zipline ride sound detaches from a destroyed container
+
+- **Retail:** `BfSound::getSound(name)` resolves the name to an ID and returns the stored sound
+  pointer without creating an instance or adding a reference (`BF2.exe` `0x7DE1F0`,
+  `0x7DF8A0`, `0x7DF7D0`). `addSound` stores one instance per name, releasing a replaced instance
+  (`0x7DF980`), and BfSound releases the game sounds on destruction (`0x7E15B0`–`0x7E15D5`).
+  Every ZiplineContainer binds this shared `S_ZiplineUsed` sound to its own ObjectSoundNode and
+  slide-speed float (`0x5DAD72`–`0x5DADDA`). Its destructor stops playback but leaves those
+  bindings (`0x5DA0A3`–`0x5DA0E5`); another container's successful entry plays the same sound
+  (`0x5DB361`–`0x5DB37B`), allowing reads through the destroyed container's pointers.
+  Stock content does not define `S_ZiplineUsed`; the defect requires content that defines it.
+  A retail game reproduction has not been run.
+- **OpenBF2:** When the destroyed container is still the sound's parent, clears the parent and
+  both evaluator bindings before the container's storage is freed. A successful entry binds the
+  sound to the riding container and its speed before playback. The sound remains owned by
+  BfSound, and the existing playback and stop conditions are preserved.
+- **Applies to:** Client; all platforms. No ABI, protocol or file-format changes.
+- **Source:** `Code/BF2/Game/Objects/Game/ZiplineContainer.cpp`,
+  `Code/Tests/client_effects_runtime.cpp`
+
+### New profiles get the audio quality the memory check intended
+
+- **Retail:** The audio-defaults initializer (`BF2.exe` 1.50 x86 `0x4B0C10`) calls the
+  memory helper at `0x4B0C3F`, compares its result with 768 MB at `0x4B0C44`, and chooses
+  "Low" below that threshold or "Medium" otherwise. The helper (`0x4B0B80`) calls
+  `GlobalMemoryStatus` at `0x4B0BAC` through import `0x87F0C0`, reads its 32-bit
+  `dwTotalPhys`, adds `0x7FFFF` at `0x4B0BB5` and shifts right by 20 at `0x4B0BBA`, then
+  rounds up to a multiple of four megabytes. On machines with 4 GB or more the legacy API
+  saturates at `0xFFFFFFFF`; the addition wraps and reports 0 MB, selecting "Low".
+- **OpenBF2:** Reads the full physical-memory size with `GlobalMemoryStatusEx` (`ullTotalPhys`)
+  on Windows, `sysctl hw.memsize` on macOS and `sysinfo` on Linux. Conversion and rounding
+  use 64-bit arithmetic and clamp to the `int` range. This memory-read fix preserves the
+  rounding and 768 MB threshold, so the low-memory guard no longer mistakes a modern
+  machine for a low-memory one. The separate `[CHOSEN, not recovered]`
+  [client audio defaults](architecture.md#client-audio-defaults) select hardware and High
+  above that guard, replacing retail's software and Medium defaults. Existing profiles
+  keep their saved settings when `Audio.con` is loaded; explicitly restoring defaults
+  uses the corrected memory check and the new defaults. No quality row, profile format
+  or network contract changes.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Game/AudioSettings.cpp`, `Code/Tests/audio_settings_runtime.cpp`
+
 ### Unsupported stored video mode falls back to the closest supported one
 
 - **Retail:** `VideoOptions::setDynamicOption` accepts only entries of the enumerated resolution and
@@ -82,6 +124,60 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Applies to:** Client; all platforms.
 - **Source:** `Code/BF2/RendDX9/BF2Render.cpp`, `Code/Tests/macos_metal_device/msaa.inc`;
   [#35](https://github.com/kr4uzi/OpenBF2/issues/35)
+
+### Screenshots are saved opaque instead of with the back buffer's alpha
+
+- **Retail:** `renderer.dumpScreen` (Print Screen) copies the back buffer into an A8R8G8B8 scratch
+  surface (`RendDX9.dll` `0x1000521A`, `CreateOffscreenPlainSurface` with format `0x15`) and saves
+  it as `screenNNN.png` and `screenNNN.jpg`. A 32-bit fullscreen back buffer is A8R8G8B8 too
+  (windowed mode takes the desktop format), and its alpha is render-pass data. On High terrain,
+  the low-detail pass for every terrain node above LOD 0 (`Hi_Terrain` pass 3, `Shared_PS_LowDetail` in `Shaders_client.zip`
+  `TerrainShader_Shared.fx`) returns the light-accumulation alpha, which is the dynamic-shadow
+  term written by pass 7 (`DirectionalLightShadows`). The other branch of the same shader returns
+  alpha 1. Shadowed terrain beyond the full-detail nodes therefore has alpha 0. The `.png` keeps
+  it: a viewer shows black holes, shaped like the shadows of bushes and palms, in the middle
+  distance. The `.jpg` of the same frame is correct.
+- **OpenBF2:** The capture stages X8R8G8B8, so the `.png` is opaque and has the same colour as
+  the `.jpg`. The rendering and the `.jpg` are unchanged.
+- **Applies to:** Client; all platforms (Linux has used this since
+  [#36](https://github.com/kr4uzi/OpenBF2/issues/36)).
+- **Source:** `Code/BF2/RendDX9/RendDX9Draw.cpp`
+
+### Terrain colour passes no longer leave black patches in the middle distance
+
+- **Retail:** `Terrain::drawMain` writes the terrain's depth in pass 0 (`ZFillLightmap`, ZFUNC LESS)
+  and `Terrain::drawFinal` then draws the colour passes (`LowDiffuse`, `FullDetail`,
+  `FullDetailMounten`, `FullDetailWithEnvMap`) with ZFUNC LESSEQUAL and no depth writes,
+  `FullDetail` additively onto a cleared target. In the shipped `TerrainShader_Hi.fx`,
+  `Hi_VS_FullDetail` and `Hi_VS_FullDetailWithEnvMap` add `vScaleTransY.zw` after the height
+  multiply. `Shared_VS_ZFillLightmap` in `TerrainShader_Shared.fx` and every other terrain pass,
+  including `Hi_VS_FullDetailMounten`, omit that term. The engine always supplies
+  `vScaleTransY = (yScale, 1, 0, 0)`, so the addition is mathematically zero. On GPUs that merge
+  multiply-add operations, the extra operation changes which pair can be merged, introducing
+  one different rounding step. The colour and depth positions then differ in their last bits.
+  Colour pixels that land behind the filled depth fail LESSEQUAL and expose the cleared target
+  as black patches. The geomorph band exposes this because its subtracted morph delta is nonzero.
+  The same mechanism occurs with Metal and Linux DXVK, and affects retail on GPUs that merge
+  multiply-add operations.
+  Measurements with a real frame's constants on Intel Iris Plus 655, invariant positions and no
+  depth offset: the two affected colour shaders fail at 748 of 45,528 pixels with float depth
+  and 292 of 17,791 with 24-bit depth. Disabling fast math leaves those counts unchanged.
+  Removing the two zero additions gives zero failures in both cases; `LowDiffuse` and
+  `FullDetailMounten`, which never had the term, also give zero.
+- **OpenBF2:** Corrects those assignments in memory after source decoding, for any mod's file
+  whose base name is `TerrainShader_Hi.fx` (case-insensitive). Matching tolerates spaces and tabs
+  between tokens. Files without the assignment remain unchanged, silently. The root and include
+  loaders share source preparation before Windows D3DX compilation or native effect request
+  capture. Native effect cache keys include the corrected root and include bytes, so entries
+  built from the uncorrected text are not reused. The terrain effect has no other compiled cache.
+  Content files on disk remain untouched.
+  Terrain colour passes leave `D3DRS_DEPTHBIAS` untouched and retain retail ordering:
+  `renderWorldPassBegin` draws main terrain and water (RendDX9 PE `0x100E0E50`); after world
+  objects, `renderWorldPassEnd` draws terrain colour and the surrounding ring (`0x100E10C0`).
+- **Applies to:** Every client platform. Rendering only; retail servers, unmodified retail clients,
+  network protocols and content file formats are unaffected.
+- **Source:** `Code/BF2/RendDX9/ShaderSource.h`, `Code/BF2/RendDX9/ShaderManager.cpp`,
+  `Code/BF2/RendDX9/Effect.cpp`
 
 ### The effect parameter snapshot zeroes its description before the query
 
@@ -375,7 +471,71 @@ Each entry is a heading that names the fix, followed by these fields:
   has no mixer, so the allocation is not reached there.
 - **Source:** `Code/BF2/Game/VoipClient/VoipMixer.cpp`
 
+### Server logo URLs cannot leave the logo cache
+
+- **Retail:** `ServerLogoManager::parseUrl` (`BF2.exe` `0x4C3550`) splits a logo URL at `/` and
+  takes every part as a cache path component; it does not test for `..` or backslashes.
+  `ServerLogoManager::download` (`0x4C3120`) ignores parseUrl's answer (the call at `0x4C3164`),
+  deletes `<home>\LogoCache\<directory><file>`, creates the directory chain and downloads the URL
+  into it. A server's sponsor or community logo URL can therefore delete and write files outside
+  the cache folder, the sponsor logo already when the server is selected in the browser (Luigi
+  Auriemma, "Refractor 2 Client URL Directory Traversal", bf2urlz, 2010; reported for 1.50).
+- **OpenBF2:** parseUrl refuses a URL with a part that is only dots and spaces, or that contains a
+  backslash or a control character. download returns false for a refused URL before it touches a
+  file, and getCachedPath refuses it as before, so the logo is not shown. Other URLs are split and
+  cached as before; a colon (`host:port`) stays allowed.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Menu/ServerLogoManager.cpp`, `Code/Tests/server_logo_url_runtime.cpp`
+
+### GroundEffectBundle plays the effect of the ground material it hits
+
+- **Retail:** A GroundEffectBundle (stock: `geb_tank`, material 66, on the tank and artillery
+  barrels) casts a ray of `maxTriggerDistance` metres below itself when it starts and finds the hit
+  object face's material or the terrain's (`BF2.exe` `0x646B60`, ELF `0x8202AB0`), but then asks the material
+  manager for the effect of the cell (own material, 0) (`BF2.exe` `0x646D05` to `0x646D1D`, ELF
+  `0x8202CF6` to `0x8202D1F`). So it always plays that cell's effect (stock: `e_geb_tank_generic`),
+  although `materialManagerSettings.con` gives cells (66, n) separate effects for water, sand,
+  gravel, dirt, mud and leaves. Reported for retail by a Project Reality modder in
+  [B2BF#93](https://github.com/B2BF/OpenBF2/issues/93).
+- **OpenBF2:** Asks the cell (own material, hit material). A Soldier hit leaves the hit material
+  at -1, and like any material without its own cell it falls back to (own material, 0), so those
+  hits play the effect retail plays.
+- **Applies to:** Client; all platforms. The dedicated server never creates the object.
+- **Source:** `Code/BF2/Game/Objects/Fx/GroundEffectBundle.cpp`
+
+### The kit shown on the spawn screen is requested with the spawn
+
+- **Retail:** The spawn screen keeps the last selected kit across rounds and servers
+  (`HudKitSelection`, whose reset at `BF2.exe` `0x7A1E10` keeps it) and shows it as selected after a
+  join, but the server gives a new player kit 2 (`ServerGameLogic::_createPlayer`, Linux ia-32
+  server `0x8101400`). The kit is sent only by a click on a kit (`HudKitSelection::selectKit`) or
+  after a death (`BF2HudManager::onSpawn`, `0x751560`); the Spawn button (`BF2HudManager::setDone`,
+  `0x74F180`) sends only the spawn group.
+  The first spawn after a join therefore uses kit 2 while the screen shows another kit.
+  Reproduced with a retail client on retail and OpenBF2 servers
+  ([B2BF/OpenBF2 #34](https://github.com/B2BF/OpenBF2/issues/34)).
+- **OpenBF2:** `setDone` calls `selectKit` with the shown kit before it sends the spawn group. As
+  on a click, the request is sent only when the player's kit differs, with the player's chosen
+  unlock level for that kit.
+- **Applies to:** Client; all platforms.
+- **Source:** `Code/BF2/Menu/BF2HudManager.cpp`
+
 ## Server
+
+### AI radio messages consume one allowance
+
+- **Retail:** `GameServer::radioMessageFromPlayer` charges a bot at submission
+  (BF2.exe `0x4C4FA8`, Windows dedicated `0x443270`, Linux ia-32 `0x080AD2F0`),
+  then relays under that bot's own connection ID. `playerMessageEvent` charges it
+  again (`0x4C8E9D`, `0x445F3D`, `0x080AEBE4`). One message therefore consumes two
+  units of the configured allowance. The direct AI event path charges only at relay.
+- **OpenBF2:** The from-player submission checks an AI sender's current blocked
+  state without incrementing its count. The relay charges the accepted message once.
+- **Applies to:** server-side AI radio submission, on every platform.
+- **Retail clients:** Human accounting, radio event IDs, channels, payloads and
+  wire formats are unchanged. An unmodified client receives the same radio messages;
+  bots reach the configured allowance after the configured number of messages.
+- **Source:** `Code/BF2/Game/GameServer/GameServer.cpp`.
 
 ### The dedicated server rejects ghost updates sent by a client
 
@@ -429,6 +589,69 @@ Each entry is a heading that names the fix, followed by these fields:
   `Code/Tests/command_line_join_runtime.cpp`
 
 ## Client and server
+
+### Windows computer names keep all 15 characters
+
+- **Retail:** `GetComputerNameA` receives capacity 15 (`BF2.exe` `0x004C4717`,
+  `0x004C471E`; `bf2_w32ded.exe` `0x004428D0`, capacity store `0x004428EF`). A
+  15-character computer name needs 16 bytes including its terminator, so the call fails
+  and the cached name becomes `"unknown"` (`BF2.exe` `0x004C4728`–`0x004C4740`).
+  With no configured server name, `getServerName` produces `"BF2 server on unknown"`
+  (`bf2_w32ded.exe` `0x0054D250`). `SwiffHost::getComputerName` also exposes the cached name.
+- **OpenBF2:** Passes the full 255-byte buffer capacity, preserving all 15 characters.
+  Query failures still cache `"unknown"`.
+- **Applies to:** Client and server; Windows.
+- **Retail clients:** The default server-name text contains the actual computer name;
+  configured server names, protocol fields, file formats and gameplay behavior are unchanged.
+  Retail clients already accept the same text from an explicitly configured server name.
+- **Source:** `Code/BF2/Core/SystemInfo.cpp`, `Code/BF2/Game/Utility/BuildNrUtil.cpp`,
+  `Code/BF2/Menu/SwiffHost.cpp`
+
+### Distributed lightmap jobs start numbering at zero
+
+- **Retail:** `DistributedLightRenderer`'s constructors leave the job counter at `+0x08`
+  unwritten (`BF2.exe` `0x46C350`; Linux ia-32 server `0x080C15A0`, `0x080C1C20`). Its first
+  read is in `addObjectToJobQueue` (`BF2.exe` `0x46C20A`; Linux `0x080C2946`): the old value
+  becomes the queued work item's id, then the counter advances. The first lightmap job therefore
+  gets whatever number the heap held. Not reproduced in a retail lightmap farm.
+- **OpenBF2:** Initializes the counter to 0, so jobs are numbered from 0 for each new renderer.
+- **Applies to:** Client and server lightmap-farm code in client builds; all platforms. The
+  rebuilt dedicated image excludes this implementation; no constructor was identified in
+  `bf2_w32ded.exe`.
+- **Retail clients:** The counter is internal queue bookkeeping. `assignWorkItem` (`BF2.exe`
+  `0x46BA30`; Linux `0x080C3460`) sends the object id or terrain-patch index in data block 4,
+  not this job id. The block's format and contents are unchanged.
+- **Source:** `Code/BF2/Game/DistributedLightRenderer/DistributedLightRenderer.cpp`
+
+### The material manager's unwritten word starts at zero
+
+- **Retail:** `MaterialManager`'s constructors leave the word at `+0x10` unwritten (Linux ia-32
+  server `0x0810E480`, `0x0810E540`). No read of that word was identified in the image's
+  `MaterialManager` methods, so no first consumer or gameplay failure is established. The Windows
+  layout differs: `BF2.exe` `0x63C340` and `bf2_w32ded.exe` `0x5ED190` initialize a map count at
+  `+0x10` (`0x63C379`, `0x5ED1C9`); no corresponding independent scalar was identified there.
+- **OpenBF2:** Initializes the retained `m_unknown10` member to 0 instead of leaving its value
+  indeterminate. Its purpose remains unknown, and no observable behavior change is established.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** No code in the rebuilt tree reads this member. Material selection, collision
+  properties, saved material data and network messages are unchanged.
+- **Source:** `Code/BF2/Physics/MaterialManager.cpp`
+
+### The spawn manager's unwritten words start at zero
+
+- **Retail:** `SpawnManager`'s constructors leave the words at `+0x14` and `+0x24` unwritten
+  (Linux ia-32 server `0x081124F0`, `0x081126B0`). No reads of either word were identified in
+  the image's `SpawnManager` methods, so no first consumers or gameplay failures are established.
+  The Windows constructors (`BF2.exe` `0x6599A0`; `bf2_w32ded.exe` `0x611EE0`) use a different
+  container layout: the spawn-group map starts at `+0x14`, the mapped-id map at `+0x24`, and the
+  group-id counter at `+0x20` starts at 1. No corresponding independent scalars were identified.
+- **OpenBF2:** Initializes the retained `m_unknown14` and `m_unknown24` members to 0 instead of
+  leaving their values indeterminate. Their purposes remain unknown, and no observable behavior
+  change is established. The separate group-id counter still starts at 1.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** No code in the rebuilt tree reads these members. Spawn-group allocation,
+  selection and replication are unchanged, including the group ids sent to retail clients.
+- **Source:** `Code/BF2/Game/GameLogic/SpawnSystem/SpawnManager.cpp`
 
 ### Option values longer than 255 characters no longer overrun the parser's buffer
 
@@ -565,6 +788,114 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Source:** `Code/BF2/Game/GameLogic/ServerGameLogic.cpp`,
   `Code/Tests/gamelogic_registries_runtime.cpp`
 
+### The server refuses a squad request for another team
+
+- **Retail:** `JoinSquadEvent::executeServer` passes the team byte from the packet to
+  `SquadManager::addToSquad` (Linux ia-32 server `0x8075270`), and `addToSquad` (`0x811CC20`)
+  looks the squad up in that team without comparing it with the player's team.
+  `ChangeSquadNameEvent::executeServer` (`0x806B7A0`) likewise renames the packet's team's squad
+  and has `setSquadName` add the named player to it. A request for the other team's squad thus
+  puts the player into that squad's member set, while `Squad::addToSquad` (`0x81198F0`) sets only
+  the player's squad number, so the clients show the player in the same-numbered squad of their own
+  team, and makes them its leader when that squad has no players.
+  The player is later removed from their own team's squad, where `removeFromSquad` (`0x811CF50`)
+  does not find them and returns, so the other team's squad keeps a member who is not in it, even
+  after that player leaves the server.
+  `setSquadName` refuses a squad with members, and the round reset keeps members, so that squad can
+  no longer be created until the server restarts, and the client offers the same squad, the lowest
+  one without players, every time. This is a candidate cause of "cannot create squads after (some)
+  round changes" ([B2BF/OpenBF2 #37](https://github.com/B2BF/OpenBF2/issues/37)): a client sends
+  its own team as it knows it, which is stale while a team change, such as an autobalance move, has
+  not reached it yet. Not reproduced on retail.
+- **OpenBF2:** Both handlers ignore the request when the player it would add exists and is on a
+  different team than the packet names. Requests for the player's own team are handled as in
+  retail.
+- **Applies to:** Client and server, wherever a game is hosted; all platforms.
+- **Retail clients:** Nothing on the wire changes. An unmodified client names its own team
+  (`HudSquad::joinSquad`, `BF2HudManager::createSquad`), so its requests are handled as before.
+  Only a request made with a stale or foreign team is dropped; the client then stays outside the
+  squad, as after any refused join, and can ask again.
+- **Source:** `Code/BF2/Game/GameEvents/JoinSquadEvent.cpp`,
+  `Code/BF2/Game/GameEvents/ChangeSquadNameEvent.cpp`
+
+### Only the squad leader is told that a member left
+
+- **Retail:** When a player leaves a squad, `Squad::removeFromSquad` sends HUD event 21 to every
+  member, the leaver included (Linux ia-32 server `0x8119D00`). The client's handler shows
+  "#PLAYERNAME# has left your squad" to any receiver on the same team who is in a squad, except the
+  leaver (`BF2.exe` `0x75B0FE`..`0x75B176`), so every remaining member gets it although only the
+  squad leader needs it ([B2BF/OpenBF2 #80](https://github.com/B2BF/OpenBF2/issues/80)); BF2142
+  tells only the leader.
+- **OpenBF2:** The server sends event 21 only to the leaver and the squad leader. The client shows
+  the text only when the local player is a squad leader, so it also behaves this way on a retail
+  server. When the leader leaves, nobody else gets event 21; the members then get the new-leader
+  event (HUD 24) as before. The kick event (HUD 20) still goes to every member.
+- **Applies to:** Client and server; all platforms.
+- **Retail clients:** Event 21 does nothing else on a member's client: `BF2HudManager` is its only
+  receiver, and for another player it only adds the chat line (squad lists are built from the
+  players' own squad fields). The leaver, whose client closes its squad view on its own id, and the
+  leader still receive it. A retail client on an OpenBF2 server therefore loses only the extra
+  message.
+- **Source:** `Code/BF2/Game/GameLogic/SquadManager/Squad.cpp`,
+  `Code/BF2/Menu/BF2HudManagerHudEvents.cpp`, `Code/Tests/hud_hud_event_runtime.cpp`
+
+### Player names keep up to 27 characters
+
+- **Retail:** The server builds a joining player's name as clan tag, a space and the nick, and
+  `GameServer::createPlayerWithValidName` keeps only its first 23 characters (Linux ia-32 server
+  `0x80AFCA0`, constant `0x17`); `GameServer::changePlayerName` does the same (`0x80B3460`). The
+  client caps the tag at six characters (`GlobalSettings::getNamePrefix`, `BF2.exe` `0x4B0A00`) and
+  a GameSpy unique nick has up to 20 (`GP_UNIQUENICK_LEN` 21), so a full name has up to 27
+  characters and long names lose their end in the game, the scoreboard and server queries
+  ([B2BF/OpenBF2 #59](https://github.com/B2BF/OpenBF2/issues/59)).
+- **OpenBF2:** Both functions keep up to 27 characters. With a name collision the retry suffix
+  `_<id>` (at most `_255`) still fits in the 31 characters the player events carry.
+- **Applies to:** Client and server, wherever a game is hosted; all platforms.
+- **Retail clients:** The wire format is unchanged: `CreatePlayerEvent` carries the name in a
+  32-byte field (31 characters and a terminator, Linux ia-32 server `CreatePlayerEvent` serialize
+  and deSerialize) and `ChangePlayerNameEvent` up to 31, so names of 24 to 27 characters arrive
+  whole. On the receiving side the recovered client code keeps player names in `std::string`
+  (player, scoreboard, squad list, kill and chat messages, nametags, whose format buffer has 4096
+  bytes), the end-of-round reader uses a 256-byte buffer, and the PunkBuster client copies at most
+  32 bytes into a 33-byte field; no fixed buffer smaller than 28 bytes holds a player name. A
+  longer name can be drawn wider in the scoreboard and nametags; that was not checked in a retail
+  client.
+- **Source:** `Code/BF2/Game/GameServer/GameServer.cpp`
+
+### Content errors are logged without ending the game
+
+- **Retail:** Four content checks emit Error (Debug type 6), which ends the process when
+  enabled: `BundleTemplate::addBundleChilds` reports a missing child other than an optional
+  `S_` sound on a non-dedicated client (`BF2.exe` `0x62892C`–`0x6289DA`);
+  `KitTemplate::addBundleChilds` reports any missing child (`BF2.exe` `0x594A10`,
+  `bf2_w32ded.exe` `0x55CA70`, Linux ia-32 server `0x8185CE0`);
+  the client `EventManager::postEvent` overloads and node `postEventNextUpdate` report
+  "Attempted use of unregistred event" for an unregistered category/ID, subject to their
+  existing exemptions (`BF2.exe` `0x68DB0E`, `0x68DCCB`, `0x68DE0B`); and
+  `SoldierTemplate::makeScript` reports "SoldierTemplate doesn't have makeScript implemented.
+  Save failed..." (`BF2.exe` `0x5F4870`, Linux ia-32 server `0x81B8C60`). The control flow
+  following these diagnostics already skips the missing child, dispatches or queues the event,
+  or returns false without writing a save. Termination prevents those failure paths from
+  completing. No retail game reproduction was run.
+- **OpenBF2:** These checks write their original text as Error through the normal typed log
+  and console sinks without invoking fatal diagnostic handling. Before the console exists,
+  the message goes to stderr. Repeats are suppressed for the process lifetime: one message
+  per parent/missing-child pair at each template site, per event category/ID across the three
+  event checks, and per soldier template name. The existing runtime dedicated guards,
+  optional-sound exemption, event exemptions, child IDs, dispatch order and failed-save
+  result remain. Other Error diagnostics and all frontiers keep their termination policy.
+- **Applies to:** Client on all platforms for the bundle and event checks; client and server
+  on all platforms for kit children and soldier saves. No platform-specific selection.
+- **Retail clients:** Only local content diagnostics change. Valid children, event payloads,
+  registrations, packet formats and save formats are unchanged. A host skips an unavailable
+  kit child as the existing failure path specifies, and a refused soldier save still returns
+  false with no output. No client message or protocol transition changes.
+- **Source:** `Code/BF2/Core/ContentError.h`, `Code/BF2/Core/EventManager.cpp`,
+  `Code/BF2/Game/Objects/Base/BundleTemplate.cpp`,
+  `Code/BF2/Game/Objects/Game/KitTemplate.cpp`,
+  `Code/BF2/Game/Objects/Game/SoldierTemplate.cpp`,
+  `Code/Tests/content_errors_runtime.cpp`, `Code/Tests/content_errors_runtime.py`.
+
 ### Wrong-length voice challenge datagram is dropped instead of ending the server
 
 - **Retail:** `VoipServerConnection::HandlePacketChallengeString` (Linux ia-32 server `0x8127600`,
@@ -651,6 +982,68 @@ Each entry is a heading that names the fix, followed by these fields:
 - **Retail clients:** Only the order of a read and a free during AI teardown inside the process
   changes; nothing on the wire changes.
 - **Source:** `Code/BF2/AI/AIDLL/AI/AIPathFinding/Cluster/ClusterNodeManager.cpp`
+
+### AI control-point queries reject missing IDs
+
+- **Retail:** `BFGame::getOwnerOfControlPoint`, `getControlPointTakeOverCounter` and
+  `getControlPointInfo` dereference the result of the control-point map's `find` without an
+  end check (`BF2.exe` `0x8164E0`, `0x816520`, `0x816560`; Linux ia-32 `bf2` `0x83FF220`,
+  `0x83FF270`, `0x83FF2C0`). `AIStrategicArea::postLoadInit` passes its scripted ID to the
+  info query and discards its return (`AIDLL.dll` `0x1006BB30`, call at `0x1006BB81`;
+  Linux ia-32 `libaidll.so` `0x337E20`). An absent ID reads past the map's end node and can
+  crash during level loading. Highway Tampa's installed `server.zip` has an empty
+  `GameModes/gpm_cq/16/AI/StrategicAreas.ai` and control points 101, 103, 104 and 109 in
+  that layer's `GamePlayObjects.con`. Its `GameModes/sp1/16/AI/StrategicAreas.ai` instead
+  names 602 (`CPNAME_MC_SP16_hotel`), 604, 603 and 601; none belongs to the conquest layer,
+  and the sp1/16 gameplay file defines no control points at all. The hotel is the first area
+  in name order, so loading those strategic areas reaches missing ID 602 first.
+  `AIStrategicArea::init` itself reads no control-point object: AIDLL.dll `0x10065DEF`
+  loads the cached `IAITerrain` pointer from `0x10160E60`, dereferences its vtable at
+  `0x10065DF5` and calls terrain altitude at `0x10065E04`. It then reads the pathfinding
+  singleton (`0x10065E1E`) and queries used maps/polygons. Post-load's position and radius
+  values cannot make a null terrain pointer safe. The owner's native crash report
+  (`bf2_client-2026-11-24-235450.ips`, `init()+46`, `rdi=0`) identifies that terrain
+  dereference. Retail also requires a live terrain adapter here; surviving an unchecked
+  end-node read is heap-dependent undefined behavior, not a retail missing-area policy.
+- **OpenBF2:** Tests for the end iterator in all three queries. A missing ID returns neutral
+  owner 0, capture progress 0, or false with position, radius and active outputs zeroed.
+  Existing IDs keep their live queries, including position and radius for points that cannot
+  change teams. No map entry is inserted, and content files are unchanged. Defined failure
+  outputs also cover AI callers that discard the info result. The info query's Boolean now
+  reports ID existence, while `active` still reports whether the point can change teams.
+  Retail returns `active`; every existing production caller discarded that Boolean. The
+  area position/radius helper now propagates existence so a fixed-team main base remains valid.
+  This is an intentional internal return-contract change between rebuilt images, with no
+  signature, virtual-slot or object-layout change; rebuild the host and AIDLL together.
+
+  Before any post-load area initialization, the strategic-object manager logs and removes
+  control-point areas whose IDs are absent. It unlinks both neighbor vectors, name tables,
+  active selection and category entries, deletes their waypoints and areas, and compacts
+  the object/category indices and surviving waypoint keys together. Deferred array pointers
+  are initialized to null so rejected areas can be destroyed without running their deferred
+  constructor work. Debug primitives are cleared using their old indices before compaction.
+  Bounded areas are retained. An empty roster skips `SAI::update` before strategy/planning
+  work; respawn/position notifications and owned-point tests also reject a null closest area.
+  This avoids publishing a phantom neutral target or ordering bots toward the zero position.
+
+  The AI-side consumer audit covers area owner/capture updates, takeability, radius/order
+  positioning, SAI owned/takeable queries, `VehicleUrgencyCalculator`, all three
+  `BBPFireInfantery` flag branches, squad taking-flag checks, and `BotSpawner`'s spawn-group
+  control-point IDs. They use surviving areas, the guarded BFGame queries, or already reject
+  a null closest object. Strategies store type/status modifiers rather than control-point IDs;
+  their area lists and bot orders are populated from the filtered manager roster. This does
+  not initialize a missing terrain adapter: a valid area still requires terrain and pathfinding.
+- **Applies to:** Client and server, all platforms. This is a shared retail fix under the rule
+  above, rather than an omission limited to a native platform arm.
+- **Retail clients:** The change handles invalid local AI lookups. It changes no network interface,
+  control-point ID, packet, state transition or file format; valid geometry, ownership,
+  capture eligibility and retail-client communication are unchanged. It does not supply
+  missing AI/navigation content.
+- **Source:** `Code/BF2/AI/AIInterface/BFKnowledge/BFGame.cpp`;
+  `Code/BF2/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.cpp`,
+  `AIStrategicObjectManager.cpp`; `Code/BF2/AI/AIDLL/AI/AIStrategic/SAI.cpp`;
+  `Code/Tests/aidll/control_point_lookup_runtime.cpp`, `control_point_area_runtime.cpp` (headless regression check,
+  `bf2_control_point_lookup_check`).
 
 ### BoneAnimation::load keeps channel samples inside the declared sample block
 

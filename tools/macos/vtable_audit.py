@@ -22,13 +22,36 @@ ROOT = Path(__file__).resolve().parents[2]
 H = "dice::hfe::"
 
 
-def side(header, cls, image="host", source=None, probe="getRef", subobject=None):
-    return dict(header=header, cls=H + cls, image=image, source=source, probe=probe, subobject=subobject)
+def side(header, cls, image="host", source=None, probe="getRef", subobject=None, key_function=None):
+    return dict(header=header, cls=H + cls, image=image, source=source, probe=probe,
+                subobject=subobject, key_function=key_function)
 
 
 # A pair is a consumer declaration and the actual provider declaration, compiled
 # independently: several images deliberately declare the same qualified name.
 PAIRS = [
+    *[("online-service-" + cls,
+       side("Code/BF2/Game/" + header, "I" + cls),
+       side("Code/BF2/Game/" + header, cls)) for cls, header in [
+        ("RankManager", "Persistence/RankManager.h"),
+        ("ClanManager", "Persistence/ClanManager.h"),
+        ("NewsManager", "Persistence/NewsManager.h"),
+        ("AutoPatch", "AutoPatch/AutoPatch.h"),
+        ("Persistence", "Persistence/Persistence.h"),
+    ]],
+    # BF2.exe 0x8A2AF8 / 0x8A2C08: the same 24-slot IMenuLogic face.
+    ("end-of-round-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/EndOfRoundLogic.h", "EndOfRoundLogic")),
+    ("load-game-logic", side("Code/BF2/Menu/IMenuLogic.h", "IMenuLogic"),
+     side("Code/BF2/Menu/LoadGameLogic.h", "LoadGameLogic")),
+    ("debug-text-writer", side("Code/BF2/GeomMisc/DebugTextWriter.h", "geom::IDebugTextWriter"),
+     side("Code/BF2/GeomMisc/DebugTextWriter.cpp", "geom::DebugTextWriter", "renderer")),
+    ("pov-native-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),
+     side("Code/BF2/IO/Input/NativeInputDeviceManager.h", "io::NativeGameControllerDevice", key_function="addRef")),
+    ("pov-directinput-controller", side("Code/BF2/IO/Input/Input.h", "io::IPOVInputDevice", probe="readPOV(io::IDPOV_0)"),
+     side("Code/BF2/IO/Input/GameControllerDevice.h", "io::GameControllerDevice", probe="readPOV(io::IDPOV_0)")),
+    ("advanced-native-mouse", side("Code/BF2/IO/Input/Input.h", "io::IAdvancedInputDevice"),
+     side("Code/BF2/IO/Input/NativeInputDeviceManager.h", "io::NativeMouseDevice", key_function="addRef")),
     ("class-manager", side("Code/RendDX9Abi/HfeAbi.h", "IClassManager", "renderer"),
      side("Code/BF2/Core/ClassManager.h", "ClassManager")),
     ("module", side("Code/BF2/Core/IModule.h", "IModule"),
@@ -110,6 +133,21 @@ for name, view_header, view_cls, provider_header, provider_cls, image, subobject
 for cls in ("dx9rend::DX9RendModule", "Rend::RendModule", "geom::ModuleGeom", "geom::ModuleGeomMisc"):
     PAIRS.append(("module-" + cls, side("Code/BF2/Core/IModule.h", "IModule"),
                   side("Code/RendDX9Abi/PluginModules.h", cls, "renderer")))
+
+# Item PE 0x8EFFBC / ELF 0x8899868: eight slots, including the IBase quartet.
+# Kit inherits that face; window bundles retain IBundleTemplate without exposing ISimpleObjectTemplate.
+for name, header, cls, view_header, view_cls in [
+    ("item-template", "ItemTemplate.h", "ItemTemplate", "IItemTemplate.h", "IItemTemplate"),
+    ("kit-item-template", "Game/KitTemplate.h", "KitTemplate", "IItemTemplate.h", "IItemTemplate"),
+    ("item-object-template", "ItemTemplate.h", "ItemTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+    ("kit-object-template", "Game/KitTemplate.h", "KitTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+    ("windows-bundle-template", "TemplateLeaves.h", "DestroyableWindowsBundleTemplate", "Base/BundleTemplate.h", "IBundleTemplate"),
+    ("windows-object-template", "TemplateLeaves.h", "DestroyableWindowsBundleTemplate", "IObjectTemplate.h", "IObjectTemplate"),
+]:
+    PAIRS.append((name, side("Code/BF2/Game/Objects/" + view_header, "world::" + view_cls),
+                  side("Code/BF2/Game/Objects/" + header, "world::" + cls,
+                       subobject="world::" + view_cls if view_cls != "IObjectTemplate" else None)))
+
 PAIRS.extend([
     ("decal-object-implementation", side("Code/BF2/Geom/DecalSystem/DecalObject.h", "geom::IDecalObject", "renderer"),
      side("Code/BF2/Geom/DecalSystem/DecalObject.h", "geom::DecalObject", "renderer")),
@@ -247,14 +285,22 @@ class Compiler:
         # lay out inherited slots too. Merely taking &Derived::inheritedMethod
         # only requests the base table and would leave holes in coverage.
         cls = spec["cls"].replace("(anonymous namespace)::", "")
-        code = (f'#include "{spec["header"]}"\n'
-                f'struct AuditForce : {cls} {{ virtual void audit_force(); }};\n'
-                'void AuditForce::audit_force() {}\n')
+        if spec.get("key_function"):
+            # A final provider cannot be subclassed. Define its known void() key function
+            # only in this compile-only probe to force the complete provider table.
+            code = (f'#include "{spec["header"]}"\n'
+                    f'void {cls}::{spec["key_function"]}() {{}}\n')
+            table = cls
+        else:
+            code = (f'#include "{spec["header"]}"\n'
+                    f'struct AuditForce : {cls} {{ virtual void audit_force(); }};\n'
+                    'void AuditForce::audit_force() {}\n')
+            table = "AuditForce"
         output = self.compile(key, code, spec["image"], spec.get("source"))
         tables = layouts(output)
-        if "AuditForce" not in tables:
+        if table not in tables:
             raise RuntimeError(f"{key}: Clang did not emit {spec['cls']}")
-        key = "AuditForce" + ("@" + H + spec["subobject"] if spec.get("subobject") else "")
+        key = table + ("@" + H + spec["subobject"] if spec.get("subobject") else "")
         if key not in tables:
             raise RuntimeError(f"{key}: secondary subobject not emitted")
         return [s for s in tables[key] if s != "void audit_force()"]
@@ -278,6 +324,22 @@ def check_pair(compiler, pair):
             errors.append(dict(slot=i, view=method, host=actual, expected=expected))
     if len(a) > len(b):
         errors.append(dict(error="view extends beyond provider"))
+    if name.startswith('online-service-'):
+        # PE tables 8A2E68/7C/90/A8/C0: four IBase slots, operations, destructor.
+        # Native Itanium adds a second destructor entry, keeping its trailing position.
+        cls = name.removeprefix('online-service-')
+        expected = ['void addRef()', 'int getRef()', 'int release()',
+                    'void *queryInterface(unsigned int) const']
+        if cls == 'NewsManager':
+            expected += ['void checkForPatch(PatchDesc *)']
+        elif cls == 'AutoPatch':
+            expected += ['bool checkForPatch(PatchDesc *)']
+        elif cls == 'Persistence':
+            expected += ['bool connect()', 'void update()']
+        expected += ['~destructor() [complete]', '~destructor() [deleting]']
+        if a != expected:
+            errors.append(dict(error='retail operation order or native destructor placement changed',
+                               expected=expected, actual=a))
     if name == 'class-manager':
         # Unlike classes inheriting their shared interface, this independent
         # view needs canonical C++ type checks as well as the textual slot dump.

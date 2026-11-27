@@ -14,9 +14,12 @@ namespace world {
 
 class IObject;
 
-// Attested by name in the manglings; values [UNRESOLVED] (3 = OverheadCamera's ctor / viewMode
-// default). Moved here from OverheadCamera.h - the interface's own slots take it.
-enum CameraViewMode { /* [UNRESOLVED] values */ };
+// BF2.exe reader 0x509B12 and writer 0x506AD7 establish the shared camera vocabulary.
+enum CameraViewMode : int
+{
+    CVMFirstPerson = 0, CVMInside = 1, CVMNose = 2, CVMChase = 3,
+    CVMFrontChase = 4, CVMFlyBy = 5, CVMTrace = 6, CVMExternTrace = 7
+};
 
 class ICameraObject : public IBase
 {

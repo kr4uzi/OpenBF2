@@ -58,7 +58,30 @@ AntennaObjectTemplate::AntennaObjectTemplate()
     speedFactor = 1.0f;
 }
 
-AntennaObjectTemplate::~AntennaObjectTemplate() {}
+// BF2.exe 0x5F40B0 / ELF 0x8169C00: the template owns its loaded skeleton.
+AntennaObjectTemplate::~AntennaObjectTemplate() { delete m_skeleton; }
+
+// BF2.exe 0x5F3AA0 / ELF 0x816A090: replace without releasing the previous skeleton.
+// The PE's +0x214 and ELF's +0x168 are the same derived field after their different bases.
+void AntennaObjectTemplate::setSkeleton(const std::string& name)
+{
+    bool loaded;
+    m_skeleton = new anim::Skeleton(name, &loaded, 0);
+    if (!loaded)
+    {
+        delete m_skeleton;
+        m_skeleton = 0;
+    }
+}
+
+// BF2.exe 0x5F39E0 / ELF 0x816A110 return an empty string even with a loaded skeleton.
+const std::string& AntennaObjectTemplate::getSkeleton() const
+{
+    if (!m_skeleton)
+        return getEmptyString();
+    static const std::string empty;
+    return empty;
+}
 
 unsigned int AntennaObjectTemplate::getClassID() const { return CID_AntennaObjectTemplate; }
 
@@ -158,6 +181,21 @@ void* AnimatedBundleTemplate::queryInterface(unsigned int iid) const
 // Creates an animated bundle using this template.
 IObject* AnimatedBundleTemplate::createObject() const { return new AnimatedBundle(this); }
 
+// BF2.exe 0x005F43B0 / ELF 0x08167C30. The skeleton argument is the shipped empty
+// string, not the skeleton's path. Animation paths are tested and fetched separately.
+bool AnimatedBundleTemplate::makeScript(io::IStream* stream)
+{
+    if (!BundleTemplate::makeScript(stream)) return false;
+    std::ostringstream out;
+    if (m_skeleton) out << "ObjectTemplate.createSkeleton " << std::string() << std::endl;
+    if (m_animationSystem1P && !m_animationSystem1P->getPath().empty())
+        out << "ObjectTemplate.animationSystem1P " << m_animationSystem1P->getPath() << std::endl;
+    if (m_animationSystem3P && !m_animationSystem3P->getPath().empty())
+        out << "ObjectTemplate.animationSystem3P " << m_animationSystem3P->getPath() << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
+
 // ForceObjectTemplate - SimpleObjectTemplate base. Ctor 120 B, and its +0x164 is NOT a refcount:
 // the class has no quartet at all, and the ctor seeds that slot with 64 - the same 0x40
 // unmapped-input code PlayerControlObjectTemplate and RotationalBundleTemplate use. Everything
@@ -228,6 +266,16 @@ void* FreeCameraTemplate::queryInterface(unsigned int iid) const
 }
 // Creates the free camera, including during template precaching.
 IObject* FreeCameraTemplate::createObject() const { return new FreeCamera(this); }
+
+// BF2.exe 0x0063D720 / ELF 0x081E5020: no base writer is called.
+bool FreeCameraTemplate::makeScript(io::IStream* stream)
+{
+    std::ostringstream out;
+    out << "ObjectTemplate.worldFOV " << m_defaultFoV << std::endl;
+    out << "ObjectTemplate.insideFOV " << m_activeFoV << std::endl;
+    const std::string text = out.str();
+    return stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+}
 
 // RemoteControlledObjectTemplate - CID 40002 ("ArtilleryControlObjectMEC"), the frontier that
 // followed. BundleTemplate base. Ctor 148 B: refcount 1 at +0x17C, rcType 0, the UAV block zeroed,

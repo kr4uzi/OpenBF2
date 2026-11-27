@@ -404,19 +404,19 @@ std::string screenDumpNextName(const std::string& directory)
     return name;
 }
 
-// PE 0x10005200 - the screenshot capture. Copies swap chain 0's back buffer into an A8R8G8B8
-// scratch surface of the back-buffer size and writes it twice, as <name>.png and <name>.jpg under
+// PE 0x10005200 - the screenshot capture. Copies swap chain 0's back buffer into a scratch
+// surface of the back-buffer size (retail: A8R8G8B8; here X8R8G8B8, see the retail fix below)
+// and writes it twice, as <name>.png and <name>.jpg under
 // the home directory: <screenDumpPath>/<requested name>, or the next free screenNNN. The
 // file-manager open of the .png creates the directory. As shipped, no call's result is checked.
 void rendererCaptureScreen(RendDX9Base* b)
 {
-#if defined(BF2_LINUX_CLIENT)
-    // [CHOSEN, not recovered] Issue #36: display screenshots are opaque RGB;
-    // backbuffer alpha is render-pass data, not window transparency.
+    // [CHOSEN, not recovered] Retail fix "Screenshots are saved opaque instead of with the back
+    // buffer's alpha" (docs/retail-fixes.md), first made for Linux under issue #36: retail
+    // (0x1000521A) stages an A8R8G8B8 copy, so the .png keeps the back buffer's alpha. That alpha
+    // is render-pass data, not transparency: the High terrain's low-detail pass leaves the
+    // dynamic-shadow term in it, and the shadowed terrain came out as holes in the image.
     const D3DFORMAT captureFormat = D3DFMT_X8R8G8B8;
-#else
-    const D3DFORMAT captureFormat = D3DFMT_A8R8G8B8;
-#endif
     IDirect3DSurface9* capture = 0;
     b->device->CreateOffscreenPlainSurface(b->pp.BackBufferWidth, b->pp.BackBufferHeight,
                                            captureFormat, D3DPOOL_SCRATCH, &capture, 0);   // +0x90

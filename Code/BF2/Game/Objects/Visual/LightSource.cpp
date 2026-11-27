@@ -113,8 +113,7 @@ LightSource::LightSource(const LightSourceTemplate* objectTemplate)
     m_lightManager = 0;                                          // +0x384
     m_transformDirty = true;                                     // +0x381
     m_absoluteDirectionDirty = true;                             // +0x382
-    // (the ELF leaves +0x148/+0x14C, +0x168..+0x178, +0x184 to the setters below; the two
-    // radians fields are never written on the server - zeroed here, unobservably)
+    // The setters initialize the light values; dedicated images do not write the radians caches.
     m_attenuationRange1 = m_attenuationRange2 = 0.0f;
     m_hdrIntensity = m_coneAngle1 = m_coneAngleRads1 = m_coneAngle2 = m_coneAngleRads2 = m_fov = 0.0f;
 
@@ -374,6 +373,10 @@ void LightSource::setConeAngle1(float degrees)
         degrees = 180.0f;
     }
     m_coneAngle1 = degrees;                                      // +0x16C
+#if !DEDICATED
+    // BF2.exe 0x67E194..0x67E1A0, multiplier bits 0x3C8EFA35.
+    m_coneAngleRads1 = degrees * 0.01745329238474369f;
+#endif
 }
 float LightSource::getConeAngle1() const     { return m_coneAngle1; }
 float LightSource::getConeAngleRads1() const { return m_coneAngleRads1; }    // +0x170
@@ -388,6 +391,12 @@ void LightSource::setConeAngle2(float degrees)
         degrees = 180.0f;
     }
     m_coneAngle2 = degrees;                                      // +0x174
+    // BF2.exe 0x67E270 / dedicated PE 0x6281C5.
+    m_lightDirty = true;
+#if !DEDICATED
+    // BF2.exe 0x67E264..0x67E277, after the degree and dirty stores.
+    m_coneAngleRads2 = degrees * 0.01745329238474369f;
+#endif
 }
 float LightSource::getConeAngle2() const     { return m_coneAngle2; }
 float LightSource::getConeAngleRads2() const { return m_coneAngleRads2; }    // +0x178

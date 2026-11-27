@@ -24,6 +24,10 @@
 #include "../Persistence/PlayerAwards.h"
 #include "../EndOfRoundInfo.h"             // gl_sendEndOfRoundData data-block serializer
 #include "../GameServer/GameServer.h"      // gl_sendEndOfRoundData broadcast
+#if !DEDICATED
+#include "../../Core/ClassManager.h"
+#include "../../Menu/ISwiffHost.h"
+#endif
 #include "../GameLogic/ScoreSystem/ScoreManager.h"
 #include "../Persistence/IStatsManager.h" // GameSpy snapshot/new/end wrappers
 #include "../Persistence/IPlayerStats.h"  // pers_getStatsKeyVal current-object view
@@ -59,6 +63,9 @@
 namespace dice {
 namespace hfe {
 
+#if !DEDICATED
+extern ClassManager* classManager;
+#endif
 extern IBase* squadManager;                  // ds:0x8ACBFA4 - Core/Globals.cpp
 namespace world {
 extern IBase* scoreManager;                  // ds:0x8AD1740 - Core/Globals.cpp
@@ -817,6 +824,28 @@ void PythonHost::handleEvent(ScriptEvent eventId, PyObject* args)
         else
             PyErr_Clear();
     }
+}
+
+// BF2.exe 0x45F9C0, dedicated PE 0x42AFB0, ELF 0x81611D0. Tuple setters steal
+// their items; releasing the outer tuple releases the command and nested tuple.
+bool PythonHost::consoleSendCommand(std::string command, std::string arg1, std::string arg2,
+                                    std::string arg3, std::string arg4, std::string arg5,
+                                    std::string arg6, std::string arg7, std::string arg8)
+{
+    const std::string* arguments[] = { &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8 };
+    PyObject* args = PyTuple_New(2);
+    PyTuple_SetItem(args, 0, PyString_FromString(command.c_str()));
+
+    int count = 8;
+    while (count > 0 && arguments[count - 1]->empty())
+        --count;
+    PyObject* values = PyTuple_New(count);
+    for (int i = 0; i < count; ++i)
+        PyTuple_SetItem(values, i, PyString_FromString(arguments[i]->c_str()));
+    PyTuple_SetItem(args, 1, values);
+    handleEvent(static_cast<ScriptEvent>(33), args);
+    Py_XDECREF(args);
+    return true;
 }
 
 // Invalidates the Python player wrapper after native lookup removal but before
@@ -1637,6 +1666,16 @@ PyObject* gl_sendEndOfRoundData(PyObject*, PyObject* args)
     const unsigned int size = endOfRound.getNetBufferSize();
     const void* const buffer = endOfRound.getNetBuffer();
     static_cast<GameServer*>(game)->sendDataBlockToAll(8, buffer, size, true);
+
+#if !DEDICATED
+    // BF2.exe 0x590FB4..0x590FFD: deliver the same data locally after the broadcast.
+    if (!isDedicated())
+    {
+        ui::ISwiffHost* const host = static_cast<ui::ISwiffHost*>(
+            classManager->getSingleton(std::string("SwiffHost")));
+        host->setEndOfRoundInfo(data, static_cast<float>(serverSettings->m_endOfRoundDelay));
+    }
+#endif
 
     Py_INCREF(Py_None);
     return Py_None;

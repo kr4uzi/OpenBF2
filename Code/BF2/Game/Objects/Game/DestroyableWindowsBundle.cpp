@@ -11,11 +11,19 @@
 #include "../../../Scene/Object/ObjectManager.h"
 #include "../../../Scene/Object/ObjectUtil.h"
 #include "../../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
+#if !DEDICATED
+#include "../../../Geom/GeometryTemplateManager.h"
+#include "../../../Geom/IGeometryTemplate.h"
+#endif
 
 #include <cmath>
 #include <sstream>
 
-namespace dice { namespace hfe { namespace world {
+namespace dice { namespace hfe {
+#if !DEDICATED
+extern IBase* g_geometryTemplateManager;
+#endif
+namespace world {
 namespace {
 // Narrow renderer seam, as in Base/Bundle.cpp: no complete IGeometry interface is recovered.
 // Both dedicated images retain these calls even though normal dedicated objects have no geometry.
@@ -55,7 +63,30 @@ void setPartTransformation(void* geometry, const Mat4& matrix, int part)
 }
 
 DestroyableWindowsBundle::DestroyableWindowsBundle(const DestroyableWindowsBundleTemplate* objectTemplate)
-    : Bundle(objectTemplate), m_refCount(1), m_states(~0u), m_previousStates(0) {}
+    : Bundle(objectTemplate), m_refCount(1), m_states(~0u), m_previousStates(0)
+{
+#if !DEDICATED
+    // BF2.exe 0x5F219A..0x5F2208: a second instance of the same mesh selects
+    // geometry 2, whose parts updateStates shows in place of broken windows.
+    if (m_geometry && !objectTemplate->m_geometry.empty() && g_geometryTemplateManager)
+    {
+        geom::IGeometryTemplate* geometryTemplate =
+            static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)->getTemplate(
+                objectTemplate->m_geometry);
+        if (geometryTemplate)
+        {
+            void* instance = geometryTemplate->createInstance();
+            if (instance)
+            {
+                geometry_part::getSubgeomCount(instance); // shipped discarded query
+                geometry_part::setNextGeometry(m_geometry, instance);
+                geometry_part::setOwnerObject(instance, this);
+                geometry_part::setSubgeom(instance, 2);
+            }
+        }
+    }
+#endif
+}
 DestroyableWindowsBundle::~DestroyableWindowsBundle()
 {
     if (m_geometry && secondaryGeometry(m_geometry))
@@ -170,6 +201,21 @@ bool DestroyableWindowsBundleTemplate::makeScript(io::IStream* stream)
 {
     if (!BundleTemplate::makeScript(stream)) return false;
     std::ostringstream out;
+#if !DEDICATED
+    // Client PE 0x5F2290..0x5F22CB: the empty-name condition is as shipped.
+    if (m_geometry.empty() && g_geometryTemplateManager)
+    {
+        geom::IGeometryTemplate* geometryTemplate =
+            static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)->getTemplate(m_geometry);
+        if (geometryTemplate)
+        {
+            void* geometry = geometryTemplate->createInstance();
+            if (geometry)
+                numWindows = geometry_part::count(geometry);
+            // Retail retains the instance reference.
+        }
+    }
+#endif
     out << "ObjectTemplate.respawnDelay " << respawnDelay << std::endl;
     out << "ObjectTemplate.clientHitDetection " << clientHitDetection << std::endl;
     out << "ObjectTemplate.setNumWindows " << numWindows << std::endl;

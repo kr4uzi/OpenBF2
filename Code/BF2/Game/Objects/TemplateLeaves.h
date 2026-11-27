@@ -1,5 +1,5 @@
 ﻿// Template subclasses that override inherited virtuals without adding slots. [INFERRED] Source placement.
-// GroundEffectBundle cannot instantiate an object. Emitter creation returns null in dedicated mode.
+// GroundEffectBundle and Emitter creation return null in dedicated mode.
 // EnvMap refuses binary serialization; specialized precache and physics overrides remain class-specific.
 
 #ifndef GAME_OBJECTS_TEMPLATELEAVES_H     // [INFERRED] guard style
@@ -121,13 +121,13 @@ class EnvMapTemplate : public SimpleObjectTemplate
           virtual bool makeScript(io::IStream*);
           void* m_envMap; };                                        // ELF+168 / clientPE+214, borrowed renderer template
 
-// createObject returns null; this template cannot instantiate an object.
+// createObject returns null on dedicated builds and a GroundEffectBundle on the client.
 class GroundEffectBundleTemplate : public SimpleObjectTemplate
 { public: BF2_TEMPLATE_LEAF(GroundEffectBundleTemplate);
           GroundEffectBundleTemplate();
           virtual void templateInitialize();                         // +0x1C  -  empty
           virtual bool makeScript(io::IStream*);                     // ELF8202E70 / dedicated PE5FE6E0
-          float m_maxTriggerDistance; };                            // ELF+164; ctor3.0, writer-named
+          float m_maxTriggerDistance; };                            // ELF+164 / clientPE+210; ctor 3.0, writer-named
 
 class HookLinkTemplate : public SimpleObjectTemplate
 { public: HookLinkTemplate();                                        // refcount + flag 0x40
@@ -164,7 +164,7 @@ class ZiplineRopeTemplate : public SimpleObjectTemplate
           // ELF +0x168/+0x16C; PE +0x214/+0x230.  The constructor and destructor identify the
           // first member as std::string on both ABIs; no recovered accessor names its contents.
           std::string m_ropeName;                                    // [UNRESOLVED name], ctor ""
-          float       m_lengthScale;                                 // [CHOSEN name], ctor 1.0f
+          float       m_lengthScale;                                 // ropeScaleFactor, ctor 1.0f; PE 0x52D959
 };
 
 // Zipline entryRadius is compared directly with squared distance; its default reach is sqrt(3) world units.
@@ -176,7 +176,7 @@ class ZiplineTemplate : public SimpleObjectTemplate
           void setZiplineSoldierHeight(float h);
 
           /* 0x168 */ std::string _string168;      // ctor = the empty rep [UNRESOLVED name]
-          /* 0x16C */ float m_searchRadius;        // [CHOSEN name] ctor 50.0f - the grid query
+          /* 0x16C */ float m_searchRadius;        // MaxZiplineLength, ctor 50.0f - the grid query
                                                    // radius checkForEntry sweeps
           /* 0x170 */ float m_entryRadius;         // ELF-named, ctor 3.0f - see the above
           /* 0x174 */ float m_collisionStartRadius;// ELF-named, ctor 2.0f
@@ -184,9 +184,9 @@ class ZiplineTemplate : public SimpleObjectTemplate
           /* 0x17C */ float _float17C;             // ctor 1000.0f; console ObjectTemplate.Timeout
                                                    // (PE +0x240, executor 0x4B9750); Zipline::
                                                    // updateTimeOut compares the live timer to it
-          /* 0x180 */ float m_creationHeightOffset;// [CHOSEN name] ctor 0.5f; both placement
+          /* 0x180 */ float m_creationHeightOffset;// heightOffset, ctor 0.5f; both placement
                                                    // helpers add it to their vertical origin
-          /* 0x184 */ float m_minZiplineLength;    // [CHOSEN name] ctor 3.0f - checkForEntry squares
+          /* 0x184 */ float m_minZiplineLength;    // distanceCannotEnter, ctor 3.0f - checkForEntry squares
                                                    // this before comparing, so it IS a length
           /* 0x188 */ IPlayer* m_player;           // ctor 0; createZiplineObject stores its player
 

@@ -269,6 +269,9 @@ Use the repository's evidence vocabulary consistently:
   stop keeps doing whatever it was doing. This exception covers sound seams ONLY - every other
   frontier keeps its stop.
 
+  Selected content checks log Error without terminating as documented in
+  [Content errors are logged without ending the game](docs/retail-fixes.md#content-errors-are-logged-without-ending-the-game).
+
 ## Working in the shared tree
 
 - Preserve all unrelated modified and untracked files. Never use `git reset --hard`, broad checkout,

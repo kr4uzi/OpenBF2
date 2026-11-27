@@ -8,6 +8,9 @@
 #include "IObjectTemplateComponent.h"
 #include "../../Scene/Object/ObjectTypes/Base/ObjectTemplateManager.h"
 #include "Weapons/GenericFireArm.h"                    // the real product class
+#include "../../IO/Stream/IStream.h"
+#include "../../IO/Console/IConsoleSaveable.h"
+#include <sstream>
 
 namespace dice {
 namespace hfe {
@@ -162,6 +165,50 @@ IObjectTemplate* GenericFireArmTemplate::getSecondaryProjectileTemplate()
         m_secondaryProjectileTemplate =
             objectTemplateManager->getTemplate(m_secondaryProjectileTemplateName);
     return m_secondaryProjectileTemplate;
+}
+
+// BF2.exe 0x005E20C0 / ELF 0x08255110. Preserve leading spaces on the two policy
+// lines and the nested primary-projectile save even after a short local write.
+bool GenericFireArmTemplate::makeScript(io::IStream* stream)
+{
+    if (!AnimatedBundleTemplate::makeScript(stream)) return false;
+    std::ostringstream out;
+    if (!m_projectileTemplateName.empty())
+        out << "ObjectTemplate.projectileTemplate " << m_projectileTemplateName << std::endl;
+    if (!m_secondaryProjectileTemplateName.empty())
+        out << "ObjectTemplate.secondaryProjectileTemplate " << m_secondaryProjectileTemplateName << std::endl;
+    if (m_keepProjectiles != 0.0f) out << "ObjectTemplate.keepProjectiles " << m_keepProjectiles << std::endl;
+    if (m_velocity != 600.0f) out << "ObjectTemplate.velocity " << m_velocity << std::endl;
+    if (m_itemIndex != -1) out << "ObjectTemplate.itemIndex " << m_itemIndex << std::endl;
+    if (m_itemType) out << "ObjectTemplate.itemType " << m_itemType << std::endl;
+    if (m_delayToUse != 0.0f) out << "ObjectTemplate.delayToUse " << m_delayToUse << std::endl;
+    if (!m_isSelectable) out << " ObjectTemplate.isSelectable " << false << std::endl;
+    if (m_canInternalHandleMessage)
+        out << " ObjectTemplate.forceSustainedFire " << m_canInternalHandleMessage << std::endl;
+    if (m_inheritHeatFromPrimary)
+        out << "ObjectTemplate.inheritHeatFromPrimary " << m_inheritHeatFromPrimary << std::endl;
+    if (m_heatAddWhenFire != 0.0f)
+    {
+        out << "ObjectTemplate.heatAddWhenFire " << m_heatAddWhenFire << std::endl;
+        if (m_coolDownPerSec != 0.0f) out << "ObjectTemplate.coolDownPerSec " << m_coolDownPerSec << std::endl;
+        if (m_overheatPenalty != 0.0f) out << "ObjectTemplate.overheatPenalty " << m_overheatPenalty << std::endl;
+    }
+    if (m_setHideFirstPerson) out << "ObjectTemplate.setHideFirstPerson " << m_setHideFirstPerson << std::endl;
+    if (!m_blockInputOnRotBundle.empty())
+        out << "ObjectTemplate.blockInputOnRotBundle " << m_blockInputOnRotBundle << std::endl;
+    const std::string text = out.str();
+    const bool result = stream->write(text.c_str(), static_cast<unsigned int>(text.size())) == text.size();
+    if (!m_projectileTemplateName.empty())
+    {
+        if (!m_projectileTemplate)
+            m_projectileTemplate = objectTemplateManager->getTemplate(m_projectileTemplateName);
+        if (m_projectileTemplate && !(getProjectileTemplate()->getFlags() & 1))
+        {
+            stream->write("\n", 1);
+            static_cast<io::IConsoleSaveable*>(m_projectileTemplate->queryInterface(io::IID_IConsoleSaveable))->makeScript(stream);
+        }
+    }
+    return result;
 }
 
 } // namespace world

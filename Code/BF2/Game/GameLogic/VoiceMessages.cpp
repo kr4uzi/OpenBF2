@@ -25,6 +25,12 @@ world::Soldier* iobjectToSoldier(world::IObject* object)
 }
 } // anonymous namespace
 
+// BF2.exe 0x004F7560; ELF 0x081231B0. Tests the existing sound without changing ownership.
+bool VoiceMessages::isHelpVOPlaying() const
+{
+    return m_helpSound && m_helpSound->isPlaying();
+}
+
 // Normalizes all supplied paths with trailing slashes, clears the speech table to
 // 1, and initializes sound state with a 15 m voice range.
 VoiceMessages::VoiceMessages(const std::string& team1RadioPath, const std::string& team2RadioPath,
@@ -371,6 +377,23 @@ int VoiceMessages::playRadioMessage(int team, const std::string& message,
     if (!namesToIds(&messageId, &voiceId, &filterId, message, voice, filter))
         return -1;
     return playRadioMessage(team, messageId, voiceId, filterId);
+}
+
+// BF2.exe 0x4F8110; dedicated PE 0x4701A0; ELF 0x81230B0. Shared help playback:
+// resolve the lower-case key, then stop/start only when the volume exceeds 0.05.
+int VoiceMessages::playHelpMessage(const std::string& key)
+{
+    const auto message = m_helpMessages.find(getLowerCase(key));
+    if (message == m_helpMessages.end())
+        return -1;
+    const int id = message->second;
+    ISoundTemplate* soundTemplate = m_helpSound->getTemplate();
+    if (g_bfSound->getVolumeForGroup(soundTemplate->getVolumeGroup()) > 0.05f)
+    {
+        m_helpSound->stop();
+        m_helpSound->playSample(id, 1);
+    }
+    return id;
 }
 
 // Returns speech text, or an empty string for an out-of-range ID.

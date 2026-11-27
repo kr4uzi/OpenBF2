@@ -30,8 +30,6 @@
 #include "../../Main/Game.h"
 #include "../../../Sound/BfSound.h"
 #include "../../../Sound/SoundObjectTemplate.h"
-#endif
-#if !DEDICATED && (defined(_MSC_VER) || defined(BF2_STATIC_PLUGINS))
 #include "../../../Geom/GeometryTemplateManager.h"
 #endif
 
@@ -67,11 +65,29 @@ bool differsFromAll(float x, float y, float z, float reference)
 
 } // unnamed namespace
 
-// Writes base and simple-object settings, returning false immediately if the base writer fails.
+// Writes optional geometry settings on clients, then base and simple-object settings.
+// Returns false immediately if the base writer fails.
 // Always emits hasMobilePhysics; dragOffset is emitted only with nonzero drag.
 // Float omission tests preserve their individual tolerances and NaN behavior.
 bool SimpleObjectTemplate::makeScript(io::IStream* stream)
 {
+#if !DEDICATED
+    // BF2.exe 0x0062522C..0x00625269: serialize the geometry first, through its
+    // borrowed save interface. Its result does not control the object writer.
+    if (!m_geometry.empty() && g_geometryTemplateManager)
+    {
+        geom::IGeometryTemplate* geometry =
+            static_cast<geom::IGeometryTemplateManager*>(g_geometryTemplateManager)
+                ->getTemplate(m_geometry);
+        if (geometry)
+        {
+            io::IConsoleSaveable* saveable = static_cast<io::IConsoleSaveable*>(
+                geometry->queryInterface(io::IID_IConsoleSaveable));
+            if (saveable)
+                saveable->makeScript(stream);
+        }
+    }
+#endif
     if (!ObjectTemplate::makeScript(stream))
         return false;
 
@@ -757,6 +773,12 @@ Vec3 SimpleObjectTemplate::getAnchorPos() const
 void SimpleObjectTemplate::setDestroyableWindowsTemplate(const std::string&)
 {
     // Intentional five-byte no-op in this base; a destroyable-window subclass overrides it.
+}
+
+// BF2.exe 0x5DF330 / ELF 0x81F2BB0: the base getter constructs an empty string by value.
+std::string SimpleObjectTemplate::getDestroyableWindowsTemplate() const
+{
+    return std::string();
 }
 
 // Updates the mobile-physics bit while preserving every other physics flag.

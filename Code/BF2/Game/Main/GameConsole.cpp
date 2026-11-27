@@ -10,6 +10,7 @@
 #include "../IGameClient.h"     // demo.* playback commands - the game's client interface
 #include "../IGame.h"           // IGame::queryInterface - demo.*'s IGameClient lookup
 #include "../Utility/Vars.h"    // vars.set's receiver - Vars::set(std::string, std::string)
+#include "../Python/PythonHost.h"
 #include "../../Scene/Object/PlayerManager.h"   // game.radioMessage's sender - the local human
 #if !DEDICATED
 #include "BF2ClientSeams.h"     // BF2Render::toggleFullscreen - game.toggleFullscreen's target
@@ -25,6 +26,7 @@ namespace {
 
 // Stands in for the original's file-scope list (ELF 0x8AD45A8). ModuleBF2::init registers it.
 const char* const kGameConsoleTag = "hfe.game";
+const char* const kModuleGameConsoleTag = "hfe.moduleGame";
 
 } // namespace
 
@@ -210,6 +212,91 @@ BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(toggleCameraDemo, demoToggleCamera, demoGameC
 BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(toggleDemoPauseOrPlay, demoTogglePauseOrPlay, demoGameClient() != 0,
                                    kGameConsoleTag)
 #endif
+
+// BF2.exe defaults 0x84376F; constructors 0x428884/0x428A0F/0x428B84,
+// parsers 0x428962/0x428AA8/0x428C0F, executors 0x428915/0x428B2F/0x428C5C.
+// Dedicated PE defaults 0x761000; constructors 0x4CCDE0/0x4CD040/0x4CD270,
+// parsers 0x4CCF80/0x4CD170/0x4CD360, executors 0x4CCF10/0x4CD210/0x4CD3C0.
+// Both images dispatch directly through game; their shared gate tests only that pointer.
+BF2_CONSOLE_OBJECT("squadManager", 2, 0)
+namespace {
+// The executor copies the name before passing it by reference to the game.
+void squadChangeSquadName(std::string name, bool flag)
+{
+    ::dice::hfe::game->changeSquadName(name, flag);
+}
+} // namespace
+BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(changeSquadName, squadChangeSquadName,
+                                   ::dice::hfe::game != 0, std::string, bool, kModuleGameConsoleTag)
+BF2_CONSOLE_METHOD_2_RET_ACTIVE(listSquadMembers, ::dice::hfe::game->listSquadMembers,
+                                std::string, ::dice::hfe::game != 0, int, int, kModuleGameConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(listSquads, ::dice::hfe::game->listSquads,
+                                std::string, ::dice::hfe::game != 0, int, kModuleGameConsoleTag)
+
+// BF2.exe defaults 0x84385D, constructor 0x428EA2, executor 0x429004 and
+// converter 0x429A14; dedicated PE 0x4CD740/0x4CD9E0/0x4CE520.
+// Every accepted arity passes nine strings by value, padding omitted arguments empty.
+BF2_CONSOLE_OBJECT("pythonHost", 2, 0)
+namespace {
+class PythonSendCommandConsole : public ConsoleObjectBaseImpl
+{
+public:
+    PythonSendCommandConsole()
+    {
+        m_objectName = consoleDefaultName();
+        m_functionName = "sendCommand";
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_type = 0;
+        m_minNoArgs = 1;
+        m_maxNoArgs = 9;
+        m_returnType = "bool";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        for (int i = 0; i < 9; ++i)
+        {
+            m_argTypes[i] = "std::string";
+            m_argNeedsConversion[i] = 0;
+        }
+        consoleBindingList(kModuleGameConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const { return python::pythonHost() != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount < 1 || m_argCount > 9)
+            return;
+        std::string args[9];
+        for (int i = 0; i < m_argCount; ++i)
+            args[i] = BF2_CC_ARG(std::string, i);
+        m_hasReturnValue = true;
+        m_returnValue = python::pythonHost()->consoleSendCommand(
+            args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(std::string, 1)
+        BF2_CC_CONVERT(std::string, 2)
+        BF2_CC_CONVERT(std::string, 3)
+        BF2_CC_CONVERT(std::string, 4)
+        BF2_CC_CONVERT(std::string, 5)
+        BF2_CC_CONVERT(std::string, 6)
+        BF2_CC_CONVERT(std::string, 7)
+        BF2_CC_CONVERT(std::string, 8)
+        BF2_CC_CONVERT(std::string, 9)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    bool m_returnValue;
+};
+PythonSendCommandConsole s_pythonSendCommandConsole;
+} // namespace
+
+// ModuleGame owns these bindings in both images (BF2.exe list 0x98913C).
+ConsoleObjectList& moduleGameConsoleObjects()
+{
+    return consoleBindingList(kModuleGameConsoleTag);
+}
 
 // Handed to the console registry by ModuleBF2::init, the way the original registers 0x8AD45A8.
 ConsoleObjectList& gameConsoleObjects()

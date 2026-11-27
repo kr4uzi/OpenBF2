@@ -244,13 +244,13 @@ void MainMenuLogic::endFrame()
 }
 
 // Forwards one queued character or navigation-key state to the menu, then releases inactive keys.
-// The GameInput argument is unused. [CHOSEN] Returns true; the caller ignores the result.
-bool MainMenuLogic::handleInput(io::GameInput&)
+// BF2.exe 0x4A3540: the GameInput argument is unused and no return value is produced.
+void MainMenuLogic::handleInput(io::GameInput&)
 {
     io::IKeyboardDevice* keyboard = static_cast<io::IKeyboardDevice*>(
         static_cast<io::IInputDeviceManager*>(io::inputDeviceManager)->getInputDevice(io::IDFKeyboard));
     if (!keyboard)
-        return false;
+        return;
     const char character = popMenuKey();
     bool releaseSweep = false;
     switch (static_cast<unsigned char>(character))
@@ -277,7 +277,7 @@ bool MainMenuLogic::handleInput(io::GameInput&)
         for (unsigned int key = 1; key < 0xFF; ++key)
             if (keyboard->keyReleased(static_cast<io::InputDeviceKeys>(key)))  // +0x38
                 m_player->notifyKeyState(static_cast<int>(key), 0);           // +0x44
-        return true;
+        return;
     }
     static const int navigationKeys[12] = { 199, 207, 42, 54, 56, 184, 208, 200, 203, 205, 29, 157 };
     for (unsigned int i = 0; i < 12; ++i)
@@ -288,7 +288,6 @@ bool MainMenuLogic::handleInput(io::GameInput&)
         else if (keyboard->keyReleased(static_cast<io::InputDeviceKeys>(key)))
             m_player->notifyKeyState(key, 0);
     }
-    return true;
 }
 
 // 0x4A2E10 (263 B): with Ctrl held (and not Alt), 'v' pastes CF_TEXT into the player's text

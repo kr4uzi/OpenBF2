@@ -94,7 +94,6 @@ bool Window::create(const std::string& title, int width, int height, bool fullsc
     desc.hideCursor = false;                        // the WM_SETCURSOR arm decides, as on Win32
 
     clientHost().addListener(&s_messageSource);
-    s_messageSource.resetFocus();
     const bool created = clientHost().createWindow(desc);
     m_hwnd = created ? reinterpret_cast<HWND>(clientHost().rendererWindowHandle()) : 0;
     if (!m_hwnd)
@@ -103,6 +102,10 @@ bool Window::create(const std::string& title, int width, int height, bool fullsc
         return false;
     }
 
+    // [CHOSEN, not recovered] The host reports focus during createWindow, before m_hwnd exists;
+    // wndProc drops those messages. Reset now so the adapter sends WM_ACTIVATE and WM_SETFOCUS
+    // for the focus the window has.
+    s_messageSource.resetFocus();
     // CreateWindowEx/ShowWindow deliver WM_SIZE with the client size.
     s_messageSource.onResize(clientHost().clientWidth(), clientHost().clientHeight(), false);
     s_messageSource.onFocusChanged(clientHost().hasFocus(), clientHost().isAppActive());

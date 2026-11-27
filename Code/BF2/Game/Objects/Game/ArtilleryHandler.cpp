@@ -7,6 +7,7 @@
 #include "RemoteControlledObject.h"
 #include "TargetObject.h"
 #include "../../../Core/Debug.h"
+#include "../../../Core/EventManager.h"
 #include "../../../Core/IBase.h"
 #include "../../../Core/Ids.h"
 #include "../../../Core/System.h"
@@ -21,6 +22,7 @@
 #include "../../GameLogic/SquadManager/ISquadManager.h"
 #include "../../IGame.h"
 #include "../../IGameLogic.h"
+#include "../../Main/Game.h"
 #include "../Base/SimpleObjectTemplate.h"
 #include "../GameLogicComp/IArmorGLComp.h"
 #include "../IObjectTemplate.h"
@@ -286,7 +288,10 @@ void ArtilleryHandler::findHelperObjects(ArtilleryObjectStruct& artillery)
 
 void ArtilleryHandler::update(float deltaTime)
 {
-    if (m_firePending && m_fireAtTick < WorldPref::getTickCount())
+    // BF2.exe 0x5C5332..0x5C5335 / ELF update export 0x0816CD20:
+    // the scheduled tick comparison is unsigned.
+    if (m_firePending && static_cast<unsigned int>(m_fireAtTick) <
+        static_cast<unsigned int>(WorldPref::getTickCount()))
     {
         m_firePending = false;
         doFire();
@@ -477,8 +482,12 @@ bool ArtilleryHandler::calcArtilleryAngles(Vec3& from, Vec3& to, float velocity,
 
 void ArtilleryHandler::requestFire()
 {
-    if (WorldPref::getTickCount() - m_fireAtTick <
-        m_minIntervalTicks - m_fireDelayTicks)
+    // BF2.exe 0x5C5479..0x5C5489 / ELF requestFire export 0x0816DC00:
+    // both tick differences use unsigned arithmetic, including a future fire tick.
+    if (static_cast<unsigned int>(WorldPref::getTickCount()) -
+            static_cast<unsigned int>(m_fireAtTick) <
+        static_cast<unsigned int>(m_minIntervalTicks) -
+            static_cast<unsigned int>(m_fireDelayTicks))
     {
         failedFire();
         return;
@@ -499,7 +508,7 @@ void ArtilleryHandler::failedFire()
 
 void ArtilleryHandler::reportFire(const Vec3& position, bool accepted)
 {
-    (void)playerManager->getLocalHumanPlayer();
+    IPlayer* const localHuman = playerManager->getLocalHumanPlayer();
     const std::list<IPlayer*>& players = playerManager->getPlayers(m_team);
 
     ArtilleryHudPayload payload;
@@ -507,6 +516,16 @@ void ArtilleryHandler::reportFire(const Vec3& position, bool accepted)
     payload.accepted = accepted;
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
+#if !DEDICATED
+        // BF2.exe 0x5C4C03..0x5C4C40: the host's HUD receives the report
+        // locally; other players retain the connected-client event path.
+        if (!isDedicated() && (!localHuman || (*it)->getId() == localHuman->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 42u, &payload, 0.0f);
+            continue;
+        }
+#endif
         PostRemoteEvent* event =
             new PostRemoteEvent(ECHud, 42u, 0, &payload, 16u, 0.0f);
         game->sendGameEventIfConnected((*it)->getId(), event);

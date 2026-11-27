@@ -207,12 +207,11 @@ public:
 
     static ReservedSlots* instance();
     bool load();                                       //   runs reservedSlots.con
-    // [FRONTIER] save and the nick-list operations below remain declared, not written. They are
-    // outside the current boot read path; console mutation and handleClientInfo eventually use them.
-    void save();
+    // Saves the console script; false for an empty filename, open failure or short write.
+    bool save();
     void save(std::ostream&);                          //   overload
     void clear();
-    void list();
+    std::string list();
     void addNick(const std::string&);
     void removeNick(const std::string&);
     bool isNickReserved(const std::string&) const;     //   (const per ELF)

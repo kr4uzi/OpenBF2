@@ -22,6 +22,7 @@ extern "C" void metalTestDestroy(void*);
 #include "closure.inc"
 #include "../caps_reference/caps_fields.h"
 #include "ffdevice.inc"
+#include "opaque.inc"
 
 int main(int argc, char** argv)
 {
@@ -101,6 +102,10 @@ int main(int argc, char** argv)
         CHECK(closureDeviceChecks(device)==0 && closureEffectChecks(device)==0 && closureLodBiasChecks(device)==0 && closureShaderArrayChecks(device)==0 && closureHigherProfileChecks(device)==0 && closureFlatShadeChecks(device)==0 && closureFixedFunctionVertexChecks(device)==0);
         CHECK(device->Release()==0 && d3d->Release()==0); metalTestDestroy(window); return 0;
     }
+    if(argc==2 && !std::strcmp(argv[1],"--opaque")) {
+        CHECK(x8AlphaChecks(device)==0);
+        CHECK(device->Release()==0 && d3d->Release()==0); metalTestDestroy(window); return 0;
+    }
     if(argc==2 && !std::strcmp(argv[1],"--ingame")) {
         CHECK(ingameChecks(device)==0);
         CHECK(device->Release()==0 && d3d->Release()==0); metalTestDestroy(window); return 0;
@@ -112,6 +117,7 @@ int main(int argc, char** argv)
     CHECK(stateChecks(device)==0 && declarationChecks(device)==0 && textureChecks(device)==0 && bufferChecks(device)==0 && copyChecks(device)==0 && targetQueryChecks(device)==0);
     CHECK(reviewLockChecks(device)==0 && reviewQueryChecks(device)==0 && reviewViewportChecks(device)==0 &&
         reviewStretchChecks(device)==0);
+    CHECK(x8AlphaChecks(device)==0);
     CHECK(ingameChecks(device)==0);
     // Real-content native effect replay is opt-in through --effect FxNative-directory.
     CHECK(d3dxTextureChecks(device)==0 && d3dxMeshChecks(device)==0);
@@ -206,6 +212,7 @@ int main(int argc, char** argv)
               device->EndScene() == D3D_OK && device->Present(nullptr,nullptr,nullptr,nullptr) == D3D_OK);
         if (msaaSurfaceChecks(device)) return 1;
         if (msaaOverlayDepthChecks(device,pp)) return 1;
+        if (msaaAliasedGlyphChecks(device)) return 1;
     }
     pp.MultiSampleType = D3DMULTISAMPLE_NONE;
     CHECK(device->Reset(&pp) == D3D_OK && pp.MultiSampleType == D3DMULTISAMPLE_NONE);

@@ -248,6 +248,8 @@ set(bf2_client_only_sources
     "${BF2_ROOT}/Game/Main/BF2RenderConsole.cpp"    # [CHOSEN] file: BF2.exe's two renderer.* console bindings (2026-09-27)
     "${BF2_ROOT}/Game/SettingsConsole.cpp"    # [CHOSEN] file: the five profile-file console objects (2026-09-27)
     "${BF2_ROOT}/Menu/BetweenRoundsLogic.cpp" # attested client-only loading-screen menu logic
+    "${BF2_ROOT}/Menu/EndOfRoundLogic.cpp"
+    "${BF2_ROOT}/Menu/LoadGameLogic.cpp"
     "${BF2_ROOT}/Menu/BF2HudManager.cpp"    # attested client-only HUD construction; publication still gated
     "${BF2_ROOT}/Menu/BF2HudManagerConfiguration.cpp" # inferred split, recovered pointer/menu configuration
     "${BF2_ROOT}/Menu/BF2HudManagerState.cpp" # inferred split, recovered typed widget/state accessors
@@ -283,6 +285,11 @@ set(bf2_client_only_sources
     "${BF2_ROOT}/Game/VoipClient/VoipFakeDevice.cpp"    # [CHOSEN] BF2_VOIP_CAPTURE=fake test device
     "${BF2_ROOT}/Game/LocalProfileManagerSuffix.cpp"
     "${BF2_ROOT}/Game/ProfileManager.cpp" # native online-profile lifetime/status owner
+    "${BF2_ROOT}/Game/Persistence/RankManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/ClanManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/NewsManager.cpp"
+    "${BF2_ROOT}/Game/AutoPatch/AutoPatch.cpp"
+    "${BF2_ROOT}/Game/Persistence/Persistence.cpp"
     "${BF2_ROOT}/Game/PasswordCodec.cpp" # inferred path; the profile password's CryptProtectData wrapper
     "${BF2_ROOT}/Game/AudioSettings.cpp"
     "${BF2_ROOT}/Menu/BF2HudManagerGameLogicEvents.cpp"
@@ -1826,8 +1833,7 @@ endif() # NOT BF2_BUILD_POSIX (client and editor)
 # plugin images are not shared libraries here: retail-DLL swapping is retired
 # (https://github.com/B2BF/OpenBF2/issues/7), so RendDX9, SwiffPlayer and BF2Audio are static
 # libraries, and Code/StaticPlugins/StaticPlugins.cpp answers the engine's LoadLibrary/GetProcAddress
-# lookups for the ones linked in (BF2_STATIC_PLUGINS). RendDX9 is not linked by default; see
-# BF2_MACOS_LINK_RENDDX9 below. Each library compiles its image's manifest
+# lookups for them (BF2_STATIC_PLUGINS). The client always links all three. Each library compiles its image's manifest
 # from Code/Build/<plugin>.cmd with that image's define; keep the lists in step with the scripts.
 # Left out of every library: the Windows loader entry (RendDX9Abi/DllMain.cpp) and the engine TUs the
 # host image already compiles (Math/*, Core/ConsoleObjectBase.cpp), because one image holds one copy.
@@ -2214,25 +2220,21 @@ if(BF2_BUILD_MACOS OR BF2_LINUX_CLIENT)
     if(TARGET dice_py)
         target_link_libraries(bf2_client PRIVATE dice_py)
     endif()
-    # [CHOSEN, not recovered] The renderer uses the G2 subset and G3 Metal device;
-    # unimplemented operations stop. OFF keeps the
-    # renderer-free client: StaticPlugins.cpp has no RendDX9 entry and BF2Render::init takes
-    # its shipped failure return. ON links the image for coordinator device-creation checks.
-    option(BF2_MACOS_LINK_RENDDX9 "Link the RendDX9 static library into the macOS client" OFF)
-    if(BF2_MACOS_LINK_RENDDX9 OR BF2_LINUX_CLIENT)
-        bf2_prelink_static_plugin(bf2_client bf2_renddx9_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
-        target_compile_definitions(bf2_client PRIVATE BF2_STATIC_RENDDX9=1)
-        # [CHOSEN, not recovered] The renderer's Bink port (BinkFFmpeg.cpp) and its audio output.
-        target_link_libraries(bf2_client PRIVATE bf2_ffmpeg_bink)
-        if(BF2_BUILD_MACOS)
+    # [CHOSEN, not recovered] The client always links the renderer image (Metal on macOS, DXVK on
+    # Linux). The former BF2_MACOS_LINK_RENDDX9 switch dated from the renderer-free stages of the
+    # macOS port and is gone: a client without RendDX9 cannot get past the first movie.
+    bf2_prelink_static_plugin(bf2_client bf2_renddx9_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
+    target_compile_definitions(bf2_client PRIVATE BF2_STATIC_RENDDX9=1)
+    # [CHOSEN, not recovered] The renderer's Bink port (BinkFFmpeg.cpp) and its audio output.
+    target_link_libraries(bf2_client PRIVATE bf2_ffmpeg_bink)
+    if(BF2_BUILD_MACOS)
         target_link_libraries(bf2_client PRIVATE "-framework AudioToolbox")
         # [CHOSEN, not recovered] The G4 effect facade (Metal/Effect.cpp) runs the s2 CPU runtime.
         target_link_libraries(bf2_client PRIVATE bf2_fx_runtime)
         # [CHOSEN, not recovered] System JPEG decoding in the prelinked renderer image.
         target_link_libraries(bf2_client PRIVATE "-framework ImageIO" "-framework CoreGraphics")
-        else()
-            target_link_libraries(bf2_client PRIVATE bf2_dxvk_forward bf2_dxvk_d3dx bf2_dxvk_effect bf2_fx_native_compiler)
-        endif()
+    else()
+        target_link_libraries(bf2_client PRIVATE bf2_dxvk_forward bf2_dxvk_d3dx bf2_dxvk_effect bf2_fx_native_compiler)
     endif()
     target_compile_definitions(bf2_client PRIVATE BF2_STATIC_SWIFFPLAYER=1 BF2_STATIC_BF2AUDIO=1)
     bf2_prelink_static_plugin(bf2_client bf2_swiffplayer_static "${BF2_STATIC_PLUGIN_PRIVATE_SYMBOLS}")
@@ -2454,6 +2456,20 @@ if(BF2_LINUX_CLIENT)
         USES_TERMINAL VERBATIM)
 endif()
 
+# [TEMP] [CHOSEN, not recovered] Content-free terrain shader source and native cache-key checks.
+add_executable(bf2_terrain_shader_source_check EXCLUDE_FROM_ALL
+    Code/Tests/terrain_shader_source.cpp)
+bf2_configure_cpp_target(bf2_terrain_shader_source_check)
+bf2_set_platform_compat(bf2_terrain_shader_source_check)
+bf2_set_image(bf2_terrain_shader_source_check 0)
+if(APPLE OR BF2_LINUX_CLIENT)
+    target_compile_definitions(bf2_terrain_shader_source_check PRIVATE BF2_SHADER_SOURCE_CACHE_CHECK=1)
+    target_link_libraries(bf2_terrain_shader_source_check PRIVATE bf2_fx_runtime)
+endif()
+if(BUILD_TESTING)
+    add_test(NAME bf2_terrain_shader_source_check COMMAND bf2_terrain_shader_source_check)
+endif()
+
 # [TEMP] Issue #33: content-free policy checks, with no renderer or gameplay claim.
 add_executable(bf2_hud_widescreen_check EXCLUDE_FROM_ALL
     Code/Tests/hud_widescreen_policy.cpp
@@ -2602,6 +2618,75 @@ if(APPLE)
     bf2_set_image(bf2_datablock_cap_check 0)
     if(BUILD_TESTING)
         add_test(NAME bf2_datablock_cap_check COMMAND bf2_datablock_cap_check)
+    endif()
+endif()
+
+# [TEMP] [CHOSEN, not recovered] Logo-cache URL check of ServerLogoManager
+# (Code/Tests/server_logo_url_runtime.cpp, docs/retail-fixes.md): the actual translation unit with
+# HTTPRequest and the file manager stood in.
+if(APPLE)
+    add_executable(bf2_server_logo_url_check EXCLUDE_FROM_ALL
+        Code/Tests/server_logo_url_runtime.cpp
+        "${BF2_ROOT}/Menu/ServerLogoManager.cpp")
+    bf2_configure_cpp_target(bf2_server_logo_url_check)
+    bf2_set_platform_compat(bf2_server_logo_url_check)
+    bf2_set_image(bf2_server_logo_url_check 0)
+    if(BUILD_TESTING)
+        add_test(NAME bf2_server_logo_url_check COMMAND bf2_server_logo_url_check)
+    endif()
+endif()
+
+# [TEMP] [CHOSEN, not recovered] Headless missing-ID regression check with exact production
+# BFGame lookup definitions and native typed collaborators. No sockets or game content.
+if(BF2_BUILD_POSIX)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+endif()
+if(BF2_BUILD_POSIX AND Python3_Interpreter_FOUND)
+    set(bf2_lookup_fixture "${CMAKE_CURRENT_BINARY_DIR}/control_point_lookup_check")
+    add_custom_command(
+        OUTPUT "${bf2_lookup_fixture}/lookup_actual.cpp" "${bf2_lookup_fixture}/lookup_collaborators.inl"
+            "${bf2_lookup_fixture}/areas_actual.cpp" "${bf2_lookup_fixture}/area_collaborators.inl"
+        BYPRODUCTS "${bf2_lookup_fixture}/lookup_source.json" "${bf2_lookup_fixture}/areas_source.json"
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/Code/Tests/aidll/control_point_lookup_runtime.py"
+            generate "${bf2_lookup_fixture}"
+        DEPENDS
+            Code/Tests/aidll/control_point_lookup_runtime.py
+            Code/Tests/aidll/bf_game_counts_runtime.py
+            "${BF2_ROOT}/AI/AIInterface/BFKnowledge/BFGame.cpp"
+            "${BF2_ROOT}/AI/AIInterface/BFKnowledge/BFGame.h"
+            "${BF2_ROOT}/Game/IGameLogic.h"
+            "${BF2_ROOT}/Game/Objects/IObject.h"
+            "${BF2_ROOT}/Game/Objects/Object.h"
+            "${BF2_ROOT}/Game/Objects/Base/SimpleObject.h"
+            "${BF2_ROOT}/Game/Objects/Base/Bundle.h"
+            "${BF2_ROOT}/Game/Objects/Game/ControlPoint.h"
+            "${BF2_ROOT}/Game/Objects/IObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/ObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/Base/SimpleObjectTemplate.h"
+            "${BF2_ROOT}/Game/Objects/Base/BundleTemplate.h"
+            "${BF2_ROOT}/Game/Objects/ControlPointTemplate.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicArea.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObject.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObjectManager.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategicEntity/AIStrategicObjectManager.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/Main/IAIPathfinding.h"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategic/SAI.cpp"
+            "${BF2_ROOT}/AI/AIDLL/AI/AIStrategic/SAI.h"
+        VERBATIM)
+    add_executable(bf2_control_point_lookup_check EXCLUDE_FROM_ALL
+        Code/Tests/aidll/control_point_lookup_runtime.cpp
+        Code/Tests/aidll/control_point_area_runtime.cpp
+        "${bf2_lookup_fixture}/lookup_actual.cpp"
+        "${bf2_lookup_fixture}/areas_actual.cpp"
+        "${bf2_lookup_fixture}/lookup_collaborators.inl")
+    bf2_configure_cpp_target(bf2_control_point_lookup_check)
+    bf2_set_platform_compat(bf2_control_point_lookup_check)
+    bf2_set_image(bf2_control_point_lookup_check 0)
+    target_include_directories(bf2_control_point_lookup_check PRIVATE "${bf2_lookup_fixture}")
+    if(BUILD_TESTING)
+        add_test(NAME bf2_control_point_lookup_check COMMAND bf2_control_point_lookup_check)
     endif()
 endif()
 
@@ -2939,6 +3024,34 @@ if(APPLE)
     endif()
 endif()
 
+# [TEMP] [CHOSEN, not recovered] Offline lifetime, patch forwarding and profile-presence checks; no SDK is linked.
+add_executable(bf2_online_services_check EXCLUDE_FROM_ALL
+    Code/Tests/online_services_runtime.cpp
+    "${BF2_ROOT}/Game/Persistence/RankManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/ClanManager.cpp"
+    "${BF2_ROOT}/Game/Persistence/NewsManager.cpp"
+    "${BF2_ROOT}/Game/AutoPatch/AutoPatch.cpp"
+    "${BF2_ROOT}/Game/Persistence/Persistence.cpp"
+    "${BF2_ROOT}/Core/ClassManager.cpp"
+    "${BF2_ROOT}/Core/Debug.cpp"
+    "${BF2_ROOT}/Core/StringUtil.cpp")
+bf2_configure_cpp_target(bf2_online_services_check)
+bf2_set_platform_compat(bf2_online_services_check)
+bf2_set_image(bf2_online_services_check 0)
+if(APPLE)
+    target_compile_definitions(bf2_online_services_check PRIVATE BF2_PLATFORM_POSIX _MACOSX)
+elseif(BF2_BUILD_LINUX)
+    target_compile_definitions(bf2_online_services_check PRIVATE BF2_PLATFORM_POSIX _LINUX)
+endif()
+if(BUILD_TESTING)
+    add_test(NAME bf2_online_services_check COMMAND bf2_online_services_check)
+    if(TARGET bf2 AND Python3_EXECUTABLE)
+        add_test(NAME bf2_online_services_registration_check
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Code/Tests/online_services_registration.py"
+                --build-dir "${CMAKE_BINARY_DIR}" --server "$<TARGET_FILE:bf2>")
+    endif()
+endif()
+
 # [TEMP] The redirects of the online service names (Code/Tests/online_provider_runtime.cpp): the
 # +onlineProviderConfig file and its rules, the names the linked GameSpy SDK and the persistence
 # classes then look up, and the retail URLs and Host headers. The fixture replaces the resolver, so
@@ -3097,7 +3210,7 @@ if(BF2_BUILD_MACOS)
     if(TARGET bf2_renddx9_static)
         target_compile_definitions(bf2_renddx9_static PRIVATE BF2_FX_NATIVE=1)
     endif()
-    if(BF2_MACOS_LINK_RENDDX9 AND TARGET bf2_client AND TARGET bf2_renddx9_static)
+    if(TARGET bf2_client AND TARGET bf2_renddx9_static AND TARGET bf2_fx_native_compiler)
         target_link_libraries(bf2_client PRIVATE bf2_fx_native_compiler)
         target_include_directories(bf2_renddx9_static PRIVATE "${BF2_ROOT}/Platform/Gfx/Effect")
     endif()
@@ -3243,6 +3356,8 @@ if(BUILD_TESTING AND MSVC)
             bf2_swiff_queued_mouse_check
             bf2_antialiasing_policy_check
             bf2_glyph_pixel_snap_check
+            bf2_terrain_shader_source_check
+            bf2_online_services_check
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         USES_TERMINAL
         VERBATIM

@@ -158,7 +158,6 @@ inline CullerWalkReal cullerWalkSqrt(CullerWalkReal value) { return std::sqrt(va
 
 } // anonymous namespace
 
-
 // QuadPatchDetailLayer
 
 // PE 0x101BB710
@@ -2746,8 +2745,8 @@ inline void drawPatchRange(Terrain* t, unsigned int primCount, unsigned int vert
                                           0, 0u, vertexCount, start);
 }
 
-// Morph constants in PE 0x1018991B..0x10189C39. The batched draw uses a distinct component
-// arrangement from drawTechniquePass; each adder row fetches the height scale again.
+// Morph constants in PE 0x1018991B..0x10189C39, the batched draw's inlined copy of
+// Terrain::setMorphConstants; each adder row fetches the height scale again.
 void setShadowBatchMorph(Terrain* t, int lod)
 {
     t->m_currentLod = lod;
@@ -2761,7 +2760,12 @@ void setShadowBatchMorph(Terrain* t, int lod)
     float adder[12] = {};
     if (t->m_rawHasVersion >= 1u && t->m_rawVersion >= 0x1Au)
     {
-        const int component[3][3] = { { 2, 2, 2 }, { 1, 0, 2 }, { 1, 2, 1 } };
+        // The component each adder row selects, per LOD; row 0 is .z for every LOD. LOD 1 builds
+        // (0,0,1,0), (1,0,0,0), (0,0,1,0) at 0x10189AB9/0x10189ADC/0x10189B2B; LOD 2 builds
+        // (0,0,1,0), (0,0,1,0), (0,1,0,0) at 0x10189B71/0x10189BA5/0x10189BDC. It is the table of
+        // Terrain::setMorphConstants and the pass-0 arm: drawFinal keeps these constants while
+        // m_currentLod matches, so they must give the positions pass 0 wrote to depth.
+        const int component[3][3] = { { 2, 2, 2 }, { 2, 0, 2 }, { 2, 2, 1 } };
         for (int row = 0; row != 3; ++row)
         {
             const float scale = t->m_primaryWorldScale.y;

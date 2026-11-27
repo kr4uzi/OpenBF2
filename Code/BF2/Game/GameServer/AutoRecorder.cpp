@@ -1,6 +1,5 @@
 // Starts/stops round demo capture and runs the configured completion hook in a worker thread.
 // The server update picks up hook completion before announcing the recording to clients.
-// [FRONTIER] The client-facing availability announcement stops in onAutoRecordingAvailable.
 
 #include "AutoRecorder.h"
 
@@ -17,8 +16,7 @@
 #include "../../Core/SystemInfo.h"            // getDateTimeString - the filename stamp
 #include "../../Core/SettingsRepostitory.h"   // GSModDirectory
 
-#include <cstdio>                             // fprintf / fflush - the one [FRONTIER] stop
-#include <cstdlib>                            // abort
+#include <cstdlib>                            // system
 
 #if defined(_WIN32)
 #include <windows.h>                          // ShellExecuteEx - the Win32 hook runner

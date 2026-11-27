@@ -500,9 +500,19 @@ void OpenALSample::setOcclusion(float occlusion)
         m_eax.lOcclusion = linearToMillibel(1.0f - clamp01(occlusion));
 }
 
-// unqueue every processed buffer; answers how many there were.
+// unqueue every processed buffer; answers how many there were. BF2Audio.dll 0x10012B50.
+// Every caller has just stopped the source.
 int OpenALSample::releaseBuffers()
 {
+    // [CHOSEN, not recovered] Retail runs on Creative's OpenAL (BF2OpenAL.dll), which reports the
+    // buffers of a stopped source as processed and unqueues them even while AL_LOOPING is set.
+    // OpenAL Soft, the provider the rebuilt Windows and Linux clients use (docs/ci-releases.md),
+    // reports none processed for a looping source and refuses the unqueue ("Unqueueing from
+    // looping source"). The loop block then stayed queued, and stopType 2 (stop) replayed it
+    // before the outro it queues: a short horn tap, a helicopter engine stop and the M134
+    // wind-down all ran a whole loop block late (B2BF #82, #84). The source is stopped here, so
+    // clearing AL_LOOPING first restores retail's result on every provider.
+    al_Sourcei(m_source, AL_LOOPING, 0);
     ALint processed = 0;
     al_GetSourcei(m_source, AL_BUFFERS_PROCESSED, &processed);
     for (ALint n = processed; n > 0; --n)
@@ -580,7 +590,16 @@ int OpenALSample::start(int startSample, int loops)
     if (!m_source)
         return 1;
     al_Sourcef(m_source, AL_PITCH, 1.0f);
+#if !defined(__APPLE__)
     al_Sourcef(m_source, AL_GAIN, 0.0f);
+#else
+    // [CHOSEN, not recovered] BF2Audio.dll 0x100142A1 zeroes the gain here; update(0) below
+    // writes the real gain before alSourcePlay (0x1001435B..0x1001436F). Apple's OpenAL appears
+    // to ramp a source's gain from the last value it held, so a 0 written right before play
+    // swallowed the 66 ms shot block of a single first-person fire sound (burst and automatic
+    // fire repeat the block and stayed loud). On macOS the first gain the source sees before
+    // play is the real one from update(0), also for a reused pooled source.
+#endif
     al_Sourcei(m_source, AL_LOOPING, 0);
     if (startBuffers(startSample, loops))
     {

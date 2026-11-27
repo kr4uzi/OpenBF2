@@ -336,6 +336,25 @@ private:                                                                        
 static BF2_CC_NAME BF2_CC_INSTANCE;                                                                \
 }
 
+// A file-static zero-argument command returning a value through an existing receiver.
+#define BF2_CONSOLE_METHOD_0_RET_STATIC_ACTIVE(fnName, target, RET, activeExpr, listTag) \
+namespace { \
+class BF2_CC_NAME : public ::dice::hfe::ConsoleObjectBaseImpl { \
+    BF2_CC_HEAD(fnName, 0, 0, 0, #RET, false) \
+    BF2_CC_TAIL(0, listTag) \
+    bool isObjectActive() const { return (activeExpr); } \
+    void executeObjectMethod() { \
+        if (m_argCount != 0) return; \
+        m_hasReturnValue = true; m_returnValue = target(); \
+    } \
+    void setArgFromString(int, const std::string&) {} \
+    BF2_CC_RETURN_AS_STRING \
+    BF2_CC_COMMON_HOOKS \
+private: RET m_returnValue; \
+}; \
+static BF2_CC_NAME BF2_CC_INSTANCE; \
+}
+
 // Binds a two-argument command with an availability check.
 #define BF2_CONSOLE_METHOD_2_ACTIVE(fnName, target, activeExpr, A0, A1, listTag)                    \
 namespace {                                                                                        \
@@ -1137,14 +1156,20 @@ static BF2_CC_NAME BF2_CC_INSTANCE;                                             
 }
 
 // Publishes bounds in the property's own type, preserving fractional limits.
-// Bounds clamp only when requested. Per-binding delta strings are not modeled here.
-#define BF2_CC_RANGED_HOOKS_T(T, minValue, maxValue)                                               \
+// Bounds clamp only when requested; delta is formatted in the property's own type.
+#define BF2_CC_RANGED_HOOKS_T(T, minValue, maxValue, deltaValue)                                   \
     virtual bool objectHasRange() const { return true; }                                           \
     virtual std::pair<const void*, const void*> getObjectRange() const                             \
     {                                                                                              \
         m_rangeMin = (minValue);                                                                   \
         m_rangeMax = (maxValue);                                                                   \
         return std::pair<const void*, const void*>(&m_rangeMin, &m_rangeMax);                      \
+    }                                                                                              \
+    virtual std::string getObjectDeltaAsString() const                                            \
+    {                                                                                              \
+        std::ostringstream text;                                                                  \
+        text << static_cast<T>(deltaValue);                                                       \
+        return text.str();                                                                        \
     }                                                                                              \
     virtual std::pair<std::string, std::string> getObjectRangeAsString() const                     \
     {                                                                                              \
@@ -1172,7 +1197,7 @@ static BF2_CC_NAME BF2_CC_INSTANCE;                                             
             value = m_rangeMin;                                                                    \
     }
 
-#define BF2_CONSOLE_PROPERTY_FN_RANGED_T(fnName, T, activeExpr, getExpr, setCall, minValue, maxValue, listTag) \
+#define BF2_CONSOLE_PROPERTY_FN_RANGED_T(fnName, T, activeExpr, getExpr, setCall, minValue, maxValue, deltaValue, listTag) \
 namespace {                                                                                        \
 class BF2_CC_NAME : public ::dice::hfe::ConsoleObjectBaseImpl                                      \
 {                                                                                                  \
@@ -1198,7 +1223,7 @@ class BF2_CC_NAME : public ::dice::hfe::ConsoleObjectBaseImpl                   
         BF2_CC_CONVERT(T, 1)                                                                       \
     }                                                                                              \
     BF2_CC_RETURN_AS_STRING                                                                        \
-    BF2_CC_RANGED_HOOKS_T(T, minValue, maxValue)                                                   \
+    BF2_CC_RANGED_HOOKS_T(T, minValue, maxValue, deltaValue)                                       \
 private:                                                                                           \
     T m_returnValue;                                                                               \
     mutable T m_rangeMin;                                                                          \

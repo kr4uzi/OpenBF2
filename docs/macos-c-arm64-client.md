@@ -19,7 +19,7 @@ documented S1a/S2.10 route:
 
 ```sh
 cmake --preset macos-x64 -B out/build/c-arm64-client-arm64 \
-  -DBF2_MACOS_LINK_RENDDX9=ON -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_TESTING=ON
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_TESTING=ON
 cmake --build out/build/c-arm64-client-arm64 --target bf2_client bf2 bf2_aidll \
   dice_py_check bf2_aidll_loader_check macos_gfx_forward \
   bf2_native_vtable_check -j7
@@ -106,7 +106,7 @@ no `macos-arm64` preset. The route is the `macos-x64` preset with an architectur
 ```sh
 sh tools/macos/nativefx/build.sh arm64                 # -> out/build/nativefx-arm64
 cmake --preset macos-x64 -B out/build/rend-arm64 -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DBF2_MACOS_LINK_RENDDX9=ON -DBF2_FX_NATIVE_DEPS=$PWD/out/build/nativefx-arm64 \
+  -DBF2_FX_NATIVE_DEPS=$PWD/out/build/nativefx-arm64 \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON
 cmake --build out/build/rend-arm64 --target bf2_client bf2 bf2_aidll bf2_vtable_audit \
   dice_py_check bf2_aidll_loader_check macos_gfx_forward \

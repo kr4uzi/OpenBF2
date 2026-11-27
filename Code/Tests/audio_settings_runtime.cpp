@@ -2,7 +2,12 @@
 // Actual owner/data/enum/apply methods. OS, allocation, typed sound, class-manager
 // singleton and SwiffHost-seam callbacks are observed; no AudioSettings
 // implementation is replaced by the fixture.
+#if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,7 +24,7 @@
 #include "../BF2/Sound/BfSound.h"
 using namespace dice::hfe;
 static unsigned checks, failures, memoryQueries, frees;
-static std::vector<DWORD> memorySamples;
+static std::vector<std::uint64_t> memorySamples;
 static void* watchedOwner;
 static bool captureOwner;
 static std::vector<void*> watchedPointers;
@@ -35,9 +40,13 @@ static IBase* seamHost;
 static void logCall(const std::string& entry){ soundLog.push_back(entry); }
 
 namespace dice { namespace hfe {
-// [TEMP] The two Core/Globals.cpp definitions this isolated executable does not link.
+// [TEMP] Core/Globals.cpp storage for this isolated executable. The real BfSound
+// console bindings are linked, but this fixture never selects an object template.
 IGame* game=nullptr;
 ClassManager* classManager=nullptr;
+#if defined(__APPLE__)
+namespace world { class ObjectTemplateManager; ObjectTemplateManager* objectTemplateManager=nullptr; }
+#endif
 } }
 
 // [TEMP] Typed observers over the real null-sound classes. Only the callbacks the
@@ -53,6 +62,7 @@ struct SoundEngineObserver : NullSoundEngine {
 };
 struct SoundFacadeObserver : BfSoundNull {
     ISoundEngine* observedEngine; int initializeResult=0;
+    std::vector<int> initializeResults;
     explicit SoundFacadeObserver(ISoundEngine* engine) : observedEngine(engine) {}
     ISoundEngine* engine() const override { ++engineQueries; logCall("engine"); return observedEngine; }
     void setVolumeForGroup(int group,float volume) override
@@ -60,7 +70,11 @@ struct SoundFacadeObserver : BfSoundNull {
     void setProperty(const std::string& name,float value) override
     { std::ostringstream o;o<<"property "<<name<<' '<<value;logCall(o.str()); }
     int initialize(int quality,const std::string& provider,int voices) override
-    { std::ostringstream o;o<<"initialize "<<quality<<' '<<provider<<' '<<voices;logCall(o.str()); return initializeResult; }
+    {
+        std::ostringstream o;o<<"initialize "<<quality<<' '<<provider<<' '<<voices;logCall(o.str());
+        if(initializeResults.empty())return initializeResult;
+        const int result=initializeResults.front();initializeResults.erase(initializeResults.begin());return result;
+    }
 };
 // [TEMP] A SwiffHost stand-in whose address alone is observed; nothing dereferences it.
 // [TEMP] The typed SwiffHost stand-in: postMessage records the {type, text, code} record
@@ -76,10 +90,13 @@ struct ClassManagerObserver : ClassManager {
 };
 static void check(bool value,const char* label)
 { ++checks; if(!value){++failures;std::printf("FAIL %s\n",label);} }
-static void WINAPI memoryObserver(LPMEMORYSTATUS status)
+#if defined(_WIN32)
+static BOOL WINAPI memoryObserver(LPMEMORYSTATUSEX status)
 {
+    check(status->dwLength==sizeof(*status),"extended memory status size initialized");
     unsigned index=memoryQueries++;
-    status->dwTotalPhys=memorySamples.empty()?512u*1024*1024:memorySamples[index%memorySamples.size()];
+    status->ullTotalPhys=memorySamples.empty()?512ull*1024*1024:memorySamples[index%memorySamples.size()];
+    return TRUE;
 }
 // Patch only this isolated executable's actual import slot; kernel32.lib otherwise
 // resolves the symbol before /alternatename and bypasses the observer.
@@ -96,7 +113,7 @@ static bool installMemoryObserver()
         for(;names->u1.AddressOfData;++names,++slots){
             if(IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))continue;
             auto* name=reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base+names->u1.AddressOfData);
-            if(std::strcmp(reinterpret_cast<char*>(name->Name),"GlobalMemoryStatus"))continue;
+            if(std::strcmp(reinterpret_cast<char*>(name->Name),"GlobalMemoryStatusEx"))continue;
             DWORD oldProtect=0,unused=0;
             if(!VirtualProtect(&slots->u1.Function,sizeof(slots->u1.Function),PAGE_READWRITE,&oldProtect))return false;
             slots->u1.Function=reinterpret_cast<ULONG_PTR>(&memoryObserver);
@@ -106,6 +123,17 @@ static bool installMemoryObserver()
     }
     return false;
 }
+#elif defined(__APPLE__)
+// [TEMP] Resolve this isolated executable's memory query locally; no device is opened.
+extern "C" int sysctlbyname(const char* name, void* value, size_t* length, void*, size_t)
+{
+    check(std::strcmp(name,"hw.memsize")==0 && *length==sizeof(std::uint64_t),"full-width physical memory query");
+    const unsigned index=memoryQueries++;
+    *static_cast<std::uint64_t*>(value)=memorySamples.empty()?512ull*1024*1024:memorySamples[index%memorySamples.size()];
+    return 0;
+}
+static bool installMemoryObserver() { return true; }
+#endif
 void* operator new(std::size_t size)
 {
     void* pointer=std::malloc(size?size:1); if(!pointer)throw std::bad_alloc();
@@ -147,7 +175,7 @@ struct AudioSettingsFixture {
 static bool defaults(const AudioSettingsData& d)
 {
     return d.voipEnabled && d.voipPlaybackVolume==1 && d.voipCaptureVolume==1 && d.voipCaptureThreshold==0.1f
-        && !d.voipBoostEnabled && d.voipUsePushToTalk && d.provider=="software"
+        && !d.voipBoostEnabled && d.voipUsePushToTalk && d.provider=="hardware"
         && d.effectsVolume==1 && d.musicVolume==0.33f && d.helpVoiceVolume==1
         && !d.englishOnlyVoices && d.enableEAX && !d.alwaysAllowSystemOpenAL && d.forceNumberOfVoices==-1;
 }
@@ -174,11 +202,14 @@ static void checkData()
     memorySamples={512u*1024*1024}; memoryQueries=0;
     AudioSettingsData data;
     check(defaults(data) && data.soundQuality=="Low" && memoryQueries==1,"actual data constructor/defaults query once");
-    struct Sample{DWORD bytes;const char* quality;};
-    for(const auto& sample:{Sample{0,"Low"},Sample{764u*1024*1024,"Low"},Sample{764u*1024*1024+0x80000,"Low"},
-        Sample{764u*1024*1024+0x80001,"Medium"},Sample{768u*1024*1024,"Medium"},
-        Sample{0xffffffffu-0x7ffffu,"Medium"},Sample{0xffffffffu,"Low"}}){
-        memorySamples={sample.bytes}; data.reset();check(data.soundQuality==sample.quality,"legacy rounding/threshold/32-bit overflow preserved");
+    struct Sample{std::uint64_t bytes;const char* quality;};
+    for(const auto& sample:{Sample{0,"Low"},Sample{512ull*1024*1024,"Low"},
+        Sample{1024ull*1024*1024,"High"},Sample{16ull*1024*1024*1024,"High"},
+        Sample{764u*1024*1024,"Low"},Sample{764u*1024*1024+0x80000,"Low"},
+        Sample{764u*1024*1024+0x80001,"High"},Sample{768u*1024*1024,"High"},
+        Sample{0xffffffffu-0x7ffffu,"High"},Sample{0xffffffffu,"High"},
+        Sample{4ull*1024*1024*1024,"High"},Sample{~0ull,"High"}}){
+        memorySamples={sample.bytes}; data.reset();check(defaults(data) && data.soundQuality==sample.quality,"hardware with full memory size, shipped rounding and low-memory guard");
     }
     memorySamples={512u*1024*1024};
     data.reset();
@@ -204,10 +235,11 @@ static void checkData()
     check(data.differsFrom(other),"comparison uses full strings beyond embedded NUL");other.copyFrom(data);
     check(!data.differsFrom(other),"native record copy includes full strings");
     data.copyFrom(data);check(data.provider==std::string("a\0b",3),"self copy preserves full native string");
+    memorySamples={16ull*1024*1024*1024};
     data.reset();FlushBuffer buffer;std::ostream out(&buffer);data.write(out);
     const std::string expected="AudioSettings.setVoipEnabled 1\nAudioSettings.setVoipPlaybackVolume 1\n"
         "AudioSettings.setVoipCaptureVolume 1\nAudioSettings.setVoipCaptureThreshold 0.1\nAudioSettings.setVoipBoostEnabled 0\n"
-        "AudioSettings.setVoipUsePushToTalk 1\nAudioSettings.setProvider \"software\"\nAudioSettings.setSoundQuality \"Low\"\n"
+        "AudioSettings.setVoipUsePushToTalk 1\nAudioSettings.setProvider \"hardware\"\nAudioSettings.setSoundQuality \"High\"\n"
         "AudioSettings.setEffectsVolume 1\nAudioSettings.setMusicVolume 0.33\nAudioSettings.setHelpVoiceVolume 1\n"
         "AudioSettings.setEnglishOnlyVoices 0\nAudioSettings.setEnableEAX 1\n";
     check(buffer.str()==expected && buffer.flushes==13,"exact default script and endl after every row");
@@ -221,8 +253,15 @@ static void checkData()
     data.reset();FlushBuffer reloading;reloading.mutate=&data;std::ostream reloadingOut(&reloading);data.write(reloadingOut);
     check(reloading.str().find("setVoipPlaybackVolume 0.25\n")!=std::string::npos,"later field reads occur after earlier stream flush callback");
     data.reset();LabelBuffer labels;labels.data=&data;std::ostream labelOut(&labels);data.write(labelOut);
+#if defined(_MSC_VER)
     check(labels.str().find("setVoipEnabled 1\n")!=std::string::npos && labels.str().find("setVoipPlaybackVolume 1\n")!=std::string::npos,
         "each scalar is captured before its own stream label callback");
+#else
+    // C++14 permits either operand evaluation order; MSVC's order above is retail-specific.
+    check((labels.str().find("setVoipEnabled 1\n")!=std::string::npos || labels.str().find("setVoipEnabled 0\n")!=std::string::npos)
+        && (labels.str().find("setVoipPlaybackVolume 1\n")!=std::string::npos || labels.str().find("setVoipPlaybackVolume 5\n")!=std::string::npos),
+        "stream label callbacks permit either C++14 operand evaluation order");
+#endif
 }
 static void checkApply()
 {
@@ -232,7 +271,7 @@ static void checkApply()
     auto& current=AudioSettingsFixture::current(owner);
     auto& pending=AudioSettingsFixture::pending(owner);
     g_bfSound=nullptr;
-    check(current.provider.empty() && pending.provider=="software" && api->hasChanges(),
+    check(current.provider.empty() && pending.provider=="hardware" && api->hasChanges(),
         "fresh owner requires apply because only current provider is cleared");
     pending.copyFrom(current);
     check(!api->hasChanges() && api->apply(false),"matching empty-provider records succeed without a sound facade");
@@ -278,9 +317,29 @@ static bool logStartsWith(const std::vector<std::string>& expected,std::size_t a
 static bool logEntry(std::size_t at,const std::string& expected)
 { return at<soundLog.size() && soundLog[at]==expected; }
 
+static void checkSavedProfiles()
+{
+    memorySamples={16ull*1024*1024*1024};
+    SoundEngineObserver engine;SoundFacadeObserver facade(&engine);g_bfSound=&facade;game=nullptr;
+    for(const char* quality:{"Low","Medium"}){
+        AudioSettings owner;IAudioSettings* api=&owner;
+        // [TEMP] The same setters used by Audio.con's console assignments on profile load.
+        api->setProvider("software");api->setSoundQuality(quality);
+        check(api->apply(false),"existing profile applies its saved settings");
+        const std::string script=api->getSettingsScript();
+        check(api->getProvider()=="software" && api->getSoundQuality()==quality
+            && script.find("AudioSettings.setProvider \"software\"\n")!=std::string::npos
+            && script.find(std::string("AudioSettings.setSoundQuality \"")+quality+"\"\n")!=std::string::npos,
+            "saved software and Low/Medium survive apply and serialization on a high-memory machine");
+        api->revertChanges();
+        check(!api->hasChanges() && api->getSoundQuality()==quality,"existing profile remains current after revert");
+    }
+    g_bfSound=nullptr;
+}
+
 static void checkApplyRecord()
 {
-    memorySamples={1024u*1024*1024};   // both records reset to Medium
+    memorySamples={1024u*1024*1024};   // both records reset to High
     SoundEngineObserver engine;SoundFacadeObserver facade(&engine);g_bfSound=&facade;game=nullptr;
     HostStandIn host;ClassManagerObserver manager;manager.host=&host;classManager=&manager;
     {
@@ -288,10 +347,10 @@ static void checkApplyRecord()
         soundLog.clear();engineQueries=masterVolumeCalls=playMusicCalls=0;
         check(api->apply(false),"changed apply succeeds on the null facade's zero initialize result");
         check(logStartsWith(volumePrefix) && soundLog.size()==9 && logEntry(6,"property enable-culling 1")
-            && logEntry(7,"property allow-any-system-openal 0") && logEntry(8,"initialize 1 0 32"),
+            && logEntry(7,"property allow-any-system-openal 0") && logEntry(8,"initialize 0 2 32"),
             "exact callback order: master, four groups, two properties, then initialize");
         check(engineQueries==1 && masterVolumeCalls==1,"one engine query and one master-volume call per record");
-        check(AudioSettingsFixture::current(owner).provider=="software" && !api->hasChanges() && AudioSettingsFixture::status(owner)==0,
+        check(AudioSettingsFixture::current(owner).provider=="hardware" && !api->hasChanges() && AudioSettingsFixture::status(owner)==0,
             "success copies pending into current and clears status");
         check(manager.queries==0 && seamCalls==0 && playMusicCalls==0,"success reports nothing and leaves the music alone");
     }
@@ -301,8 +360,19 @@ static void checkApplyRecord()
         AudioSettings owner;IAudioSettings* api=&owner;
         auto& pending=AudioSettingsFixture::pending(owner);pending.provider=sample.provider;pending.enableEAX=sample.eax;
         soundLog.clear();
-        check(api->apply(false) && soundLog.size()==9 && logEntry(8,std::string("initialize 1 ")+sample.digit+" 32"),
-            "provider row plus EAX flag selects the retail provider digit");
+        check(api->apply(false) && soundLog.size()==9 && logEntry(8,std::string("initialize 0 ")+sample.digit+" 32")
+            && pending.soundQuality=="High",
+            "every provider keeps High and selects the retail provider digit");
+    }
+    {
+        AudioSettings owner;IAudioSettings* api=&owner;
+        facade.initializeResults={4,0};soundLog.clear();playMusicCalls=0;
+        check(!api->apply(false) && logEntry(8,"initialize 0 2 32") && logEntry(17,"initialize 0 6 32")
+            && facade.initializeResults.empty() && playMusicCalls==1 && AudioSettingsFixture::status(owner)==0,
+            "initial hardware open failure retries software successfully at High and retains the original failure result");
+        check(AudioSettingsFixture::current(owner).provider.empty() && api->hasChanges()
+            && api->getProvider()=="hardware" && api->getSoundQuality()=="High",
+            "successful software retry preserves pending hardware/High and does not publish the failed request");
     }
     {
         AudioSettings owner;IAudioSettings* api=&owner;
@@ -311,7 +381,7 @@ static void checkApplyRecord()
         check(!api->apply(false),"unknown provider without EAX fails");
         // The wrapper queries the facade's engine again (PE 4B17A8) before the +C0 music restart.
         check(soundLog.size()==17 && logStartsWith(volumePrefix) && logStartsWith(volumePrefix,6)
-            && logEntry(12,"property enable-culling 1") && logEntry(14,"initialize 1 6 32") && logEntry(15,"engine") && logEntry(16,"playMusic"),
+            && logEntry(12,"property enable-culling 1") && logEntry(14,"initialize 0 6 32") && logEntry(15,"engine") && logEntry(16,"playMusic"),
             "failed provider lookup stops before the properties, retries current, then restarts the music");
         check(AudioSettingsFixture::current(owner).provider.empty() && AudioSettingsFixture::status(owner)==0 && api->hasChanges(),
             "no copy after failure; status reflects the successful retry of the current record");
@@ -323,7 +393,7 @@ static void checkApplyRecord()
         soundLog.clear();
         check(api->apply(false) && pending.soundQuality=="High" && AudioSettingsFixture::current(owner).soundQuality=="High",
             "UltraHigh is downgraded in the pending record for a non-creative provider before the copy");
-        check(logEntry(6,"property enable-culling 1") && logEntry(8,"initialize 0 0 32"),"downgraded quality drives culling, engine quality and voices");
+        check(logEntry(6,"property enable-culling 1") && logEntry(8,"initialize 0 2 32"),"downgraded quality drives culling, engine quality and voices");
     }
     {
         AudioSettings owner;IAudioSettings* api=&owner;
@@ -336,7 +406,7 @@ static void checkApplyRecord()
         AudioSettings owner;IAudioSettings* api=&owner;
         AudioSettingsFixture::pending(owner).forceNumberOfVoices=voices;
         soundLog.clear();
-        check(api->apply(false) && logEntry(8,voices>0?"initialize 1 0 48":"initialize 1 0 32"),"positive forced voice count overrides the quality table");
+        check(api->apply(false) && logEntry(8,voices>0?"initialize 0 2 48":"initialize 0 2 32"),"positive forced voice count overrides the quality table");
     }
     {
         AudioSettings owner;IAudioSettings* api=&owner;
@@ -349,7 +419,7 @@ static void checkApplyRecord()
         AudioSettings owner;IAudioSettings* api=&owner;
         soundLog.clear();
         check(api->apply(false) && soundLog==volumePrefix,"in-game apply stops after the volumes and succeeds");
-        check(AudioSettingsFixture::current(owner).provider=="software" && AudioSettingsFixture::status(owner)==0,"in-game success still copies the record");
+        check(AudioSettingsFixture::current(owner).provider=="hardware" && AudioSettingsFixture::status(owner)==0,"in-game success still copies the record");
         game=nullptr;
     }
     const char* messages[]={"","noprovider","noproviderdll","openaldenied","openalerror",""};
@@ -359,7 +429,7 @@ static void checkApplyRecord()
             AudioSettings owner;IAudioSettings* api=&owner;
             soundLog.clear();playMusicCalls=0;manager.queries=0;seamCalls=0;
             check(!api->apply(false) && AudioSettingsFixture::status(owner)==1 && api->hasChanges(),"failed initialize returns false with status1 and no copy");
-            check(soundLog.size()==20 && logEntry(8,"initialize 1 0 32") && logEntry(17,"initialize 1 6 32") && logEntry(18,"engine")
+            check(soundLog.size()==20 && logEntry(8,"initialize 0 2 32") && logEntry(17,"initialize 0 6 32") && logEntry(18,"engine")
                 && logEntry(19,"playMusic") && playMusicCalls==1,
                 "failure retries the current record, queries the engine again and restarts the music once");
             check(manager.queries==0 && seamCalls==0,"silent failure never looks up SwiffHost");
@@ -457,9 +527,11 @@ static void checkPhase2Slots()
 
 int main()
 {
+#if defined(_WIN32)
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
     check(sizeof(void*)==4,"x86 fixture");
+#endif
     check(installMemoryObserver(),"install actual import observer");
     checkData();
     memorySamples={512u*1024*1024,1024u*1024*1024};memoryQueries=0;
@@ -467,7 +539,7 @@ int main()
         auto* owner=static_cast<AudioSettings*>(AudioSettings::create(iid,nullptr));
         IAudioSettings* api=owner;watchedOwner=owner;frees=0;
         check(memoryQueries%2==0,"constructor makes two independent memory queries");
-        check(AudioSettingsFixture::current(*owner).soundQuality=="Low" && AudioSettingsFixture::pending(*owner).soundQuality=="Medium","two resets observe separate memory-query results");
+        check(AudioSettingsFixture::current(*owner).soundQuality=="Low" && AudioSettingsFixture::pending(*owner).soundQuality=="High","two resets observe separate memory-query results");
         check(AudioSettingsFixture::current(*owner).provider.empty() && defaults(AudioSettingsFixture::pending(*owner)),"only current provider cleared after resets");
         check(AudioSettingsFixture::enums(*owner) && AudioSettingsFixture::status(*owner)==0,"actual ordered enum metadata and status");
         check(api->getFileName()=="Audio.con","actual filename virtual");
@@ -483,6 +555,7 @@ int main()
     const unsigned before=memoryQueries;check(!AudioSettings::create(IID_IAudioSettings,reinterpret_cast<IBase*>(1)) && memoryQueries==before,"aggregation refusal before construction");
     captureOwner=true;frees=0;check(!AudioSettings::create(0xffffffff,nullptr) && frees==1 && !captureOwner,"unknown factory IID releases real native owner");watchedOwner=nullptr;
     checkApply();
+    checkSavedProfiles();
     checkApplyRecord();
     checkPhase2Slots();
     std::printf("AudioSettings:%u/%u passed; native owner=%zu data=%zu enum=%zu\n",checks-failures,checks,sizeof(AudioSettings),sizeof(AudioSettingsData),sizeof(AudioSettingsEnum));

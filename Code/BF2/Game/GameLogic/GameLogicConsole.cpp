@@ -7,6 +7,10 @@
 #include "GameLogic.h"            // the messages.* bindings reach the concrete class
 #include "ServerGameLogic.h"      // ServerGameLogic::createObject - the gameLogic.createObject receiver
 #include "VoiceMessages.h"
+#include "Player.h"
+#include "../GameServer/ServerSettings.h"
+#include "../Objects/Game/KitTemplate.h"
+#include "SquadManager/SquadManager.h"
 #include "../../Scene/Object/PlayerManager.h"   // world::playerManager - player.kit's receiver
 #include "../Objects/IPlayer.h"                 // world::IPlayer - player.kit's active player
 #include "../../Math/Vec3.h"      // Vec4 - the fogStartEndAndBase property's complete type
@@ -15,15 +19,14 @@
 namespace dice {
 namespace hfe {
 
+extern IBase* squadManager;
+
 namespace {
 
 // Stands in for the original's file-scope list. ModuleGame::init registers it - see
 // Core/ModuleRegistry.cpp.
 const char* const kGameLogicConsoleTag = "hfe.gameLogic";
 
-// KitType is an integer with a distinct console metadata spelling. The typedef
-// retains integer conversion while exposing that script argument type name.
-typedef int KitType;
 typedef unsigned int U32;
 
 // The receiver. ConsoleClass179::isObjectActive (0x853C760) is `gameLogic != 0` and nothing more -
@@ -32,7 +35,7 @@ void gameLogicSetKit(int team, KitType kit,
                      const std::string& kitTemplate,
                      const std::string& soldierTemplate)
 {
-    gameLogic->setKit(team, kit, kitTemplate, soldierTemplate);          // IGameLogic +0x140
+    gameLogic->setKit(team, static_cast<int>(kit), kitTemplate, soldierTemplate); // IGameLogic +0x140
 }
 
 // Stock server/Init.con files set all three flag templates through this command before control
@@ -47,6 +50,10 @@ void gameLogicSetTeamName(int team, const std::string& name)
 {
     gameLogic->setTeamName(team, name);
 }
+
+// BF2.exe executors 0x437DFB / 0x438086; both use the live gameLogic gate 0x4390AB.
+std::string gameLogicGetTeamLanguage(int team) { return gameLogic->getTeamLanguage(team); }
+std::string gameLogicGetTeamName(int team) { return gameLogic->getTeamName(team); }
 
 // PE ctor 0x414E20, executor 0x414F50, shared gate 0x416B40 (`dword_83BF50 != 0`, i.e. gameLogic).
 // argc exactly 2; dispatches IGameLogic +0x1F8 GameLogic::setTeamLanguage(int, const std::string&).
@@ -84,6 +91,29 @@ GameLogic* serverGameLogic()
     return static_cast<GameLogic*>(gameLogic);
 }
 
+void gameLogicTeleportTo(Vec3 position)
+{
+    static_cast<ServerGameLogic*>(serverGameLogic())->moveLocalHumanPlayerToPoint(position);
+}
+
+void gameLogicTeleportCameraTo(Vec3 position)
+{
+    static_cast<ServerGameLogic*>(serverGameLogic())->moveLocalHumanCameraToPoint(position);
+}
+
+U32 gameLogicGetNumberOfTickets(U32 team)
+{
+    return static_cast<ServerGameLogic*>(serverGameLogic())->getNumberOfTickets(team);
+}
+
+// BF2.exe 0x437460; dedicated PE 0x413A10. A missing setting defaults to false.
+SquadManager* serverSquadManager()
+{
+    if (!settings->boolGet(std::string("GSIsServer"), false))
+        return 0;
+    return static_cast<SquadManager*>(static_cast<ISquadManager*>(squadManager));
+}
+
 Vec3 gameLogicGetBeforeSpawnCameraPosition()
 {
     return serverGameLogic()->getBeforeSpawnCameraPosition();
@@ -118,6 +148,10 @@ void gameLogicSetTicketLossPerMin(U32 team, float rate)
 void gameLogicSetTicketLossAtEndPerMin(float rate)
 {
     gameLogic->setTicketLossAtEndPerMin(rate);
+}
+float gameLogicGetTicketLossAtEndPerMin()
+{
+    return gameLogic->getTicketLossAtEndPerMin();
 }
 
 // Commander-support console bindings require a live gameLogic instance.
@@ -158,9 +192,54 @@ void gameLogicNoVehiclesOmit(std::string name)
 
 BF2_CONSOLE_OBJECT("GameLogic", 2, 0)
 
-// ConsoleClass179 - executor 0x853D040, isObjectActive 0x853C760, argc exactly 4, returns void.
-BF2_CONSOLE_METHOD_4_STATIC_ACTIVE(setKit, gameLogicSetKit, gameLogic != 0,
-                                   int, KitType, std::string, std::string, kGameLogicConsoleTag)
+// BF2.exe converter 0x43A12D calls the KitType parser 0x43755C directly, including on
+// failed token extraction. ELF 0x853C870 calls the same world kit vocabulary (0x85264F0).
+namespace {
+class ConsoleClassSetKit : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassSetKit()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "setKit";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 4;
+        m_returnType = "void";
+        m_hasReturnValue = false;
+        m_isDynamic = false;
+        m_argTypes[0] = "int";
+        m_argTypes[1] = "KitType";
+        m_argTypes[2] = "std::string";
+        m_argTypes[3] = "std::string";
+    BF2_CC_TAIL(4, kGameLogicConsoleTag)
+    bool isObjectActive() const { return gameLogic != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount != 4) return;
+        m_hasReturnValue = false;
+        gameLogicSetKit(BF2_CC_ARG(int, 0), BF2_CC_ARG(KitType, 1),
+                        BF2_CC_ARG(std::string, 2), BF2_CC_ARG(std::string, 3));
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(int, 1)
+        if (index == 2)
+        {
+            static KitType kit;
+            std::istringstream in(value);
+            world::operator>>(in, kit);
+            m_args[1] = reinterpret_cast<std::string*>(&kit);
+        }
+        BF2_CC_CONVERT(std::string, 3)
+        BF2_CC_CONVERT(std::string, 4)
+    }
+    std::string getReturnValueAsString() const { return std::string(); }
+    BF2_CC_COMMON_HOOKS
+};
+static ConsoleClassSetKit s_consoleSetKit;
+}
 
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setTeamFlag, gameLogicSetTeamFlag, gameLogic != 0,
                                    int, std::string, kGameLogicConsoleTag)
@@ -168,8 +247,20 @@ BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setTeamName, gameLogicSetTeamName, gameLogic 
                                    int, std::string, kGameLogicConsoleTag)
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setTeamLanguage, gameLogicSetTeamLanguage, gameLogic != 0,
                                    int, std::string, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(getTeamLanguage, gameLogicGetTeamLanguage, std::string,
+                                gameLogic != 0, int, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(getTeamName, gameLogicGetTeamName, std::string,
+                                gameLogic != 0, int, kGameLogicConsoleTag)
 BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setBeforeSpawnCamera, gameLogicSetBeforeSpawnCamera,
                                    gameLogic != 0, Vec3, Vec3, kGameLogicConsoleTag)
+// BF2.exe 0x43A422 / 0x43A53C / 0x43B9BC; gate 0x43C019 resolves the
+// GSIsServer receiver (0x437813). Dedicated executors 0x418C30 / 0x418DF0 / 0x41ADA0.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(teleportTo, gameLogicTeleportTo,
+                                   serverGameLogic() != 0, Vec3, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(teleportCameraTo, gameLogicTeleportCameraTo,
+                                   serverGameLogic() != 0, Vec3, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(getNumberOfTickets, gameLogicGetNumberOfTickets, U32,
+                                serverGameLogic() != 0, U32, kGameLogicConsoleTag)
 // ConsoleClass195 - exec 0x419710, gate 0x418D60 (GSIsServer && gameLogic), argc exactly 1,
 // returns void. Only caller of ServerGameLogic::createObject.
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(createObject, gameLogicCreateObject,
@@ -196,6 +287,11 @@ BF2_CONSOLE_METHOD_2_STATIC_ACTIVE(setTicketLossPerMin, gameLogicSetTicketLossPe
 BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setTicketLossAtEndPerMin,
                                    gameLogicSetTicketLossAtEndPerMin, gameLogic != 0,
                                    float, kGameLogicConsoleTag)
+// Client PE ctor 0x0043BCF0, executor 0x0043BD43, gate 0x004390AB; dedicated executor
+// 0x0041B350: zero arguments, virtual float getter, active while gameLogic is live.
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(getTicketLossAtEndPerMin,
+                                gameLogicGetTicketLossAtEndPerMin, float,
+                                gameLogic != 0, kGameLogicConsoleTag)
 
 // Commander vehicle-drop commands. The mixed dynamic flags are shipped behavior: the getter
 // stores a return value and is dynamic, while the four mutation-only methods are not.
@@ -235,6 +331,9 @@ BF2_CONSOLE_PROPERTY(maximumLevelViewDistance, float, gameLogic,
 // GameLogic::setEnableVoHelp; the read arm dispatches IGameLogic +0x22C.
 BF2_CONSOLE_PROPERTY(enableVoHelp, bool, static_cast<GameLogic*>(gameLogic),
                      setEnableVoHelp, getEnableVoHelp, kGameLogicConsoleTag)
+// BF2.exe 0x43C382 / 0x43C3FF: dynamic string property, gated only by gameLogic.
+BF2_CONSOLE_PROPERTY(defaultLevel, std::string, gameLogic,
+                     setDefaultLevel, getDefaultLevel, kGameLogicConsoleTag)
 
 // Adds a vehicle template to the no-vehicles omission list. Matching spawners use
 // the dummy template when the server setting or game mode disables vehicles.
@@ -274,6 +373,16 @@ int messagesAddHelpMessage(const std::string& name, const std::string& sample)
     return getVoiceMessages()->addHelpMessage(name, sample);
 }
 
+int messagesPlayRadioMessage(int team, const std::string& message,
+                             const std::string& voice, const std::string& filter)
+{
+    return getVoiceMessages()->playRadioMessage(team, message, voice, filter);
+}
+int messagesPlayHelpMessage(const std::string& key)
+{
+    return getVoiceMessages()->playHelpMessage(key);
+}
+
 } // namespace
 
 // ConsoleClass171 - exec 0x8538DE0, isObjectActive 0x8538920, argc exactly 2, returns void.
@@ -296,6 +405,53 @@ BF2_CONSOLE_METHOD_2_RET_ACTIVE(messages.addRadioFilter, messagesAddRadioFilter,
 BF2_CONSOLE_METHOD_2_RET_ACTIVE(messages.addHelpMessage, messagesAddHelpMessage, int,
                                 getVoiceMessages() != 0, std::string, std::string,
                                 kGameLogicConsoleTag)
+
+// BF2.exe 0x439BF7 / 0x439CBF: dynamic int result, four arguments, voice-owner gate.
+namespace {
+class ConsoleClassPlayRadioMessage : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleClassPlayRadioMessage()
+    {
+        m_objectName = consoleDefaultName();
+        m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory();
+        m_functionName = "messages.playRadioMessage";
+        m_type = 0;
+        m_minNoArgs = m_maxNoArgs = 4;
+        m_returnType = "int";
+        m_hasReturnValue = false;
+        m_isDynamic = true;
+        m_argTypes[0] = "int";
+        m_argTypes[1] = "std::string";
+        m_argTypes[2] = "std::string";
+        m_argTypes[3] = "std::string";
+    BF2_CC_TAIL(4, kGameLogicConsoleTag)
+    bool isObjectActive() const { return getVoiceMessages() != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount != 4) return;
+        m_hasReturnValue = true;
+        m_returnValue = messagesPlayRadioMessage(BF2_CC_ARG(int, 0), BF2_CC_ARG(std::string, 1),
+            BF2_CC_ARG(std::string, 2), BF2_CC_ARG(std::string, 3));
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        BF2_CC_CONVERT(int, 1)
+        BF2_CC_CONVERT(std::string, 2)
+        BF2_CC_CONVERT(std::string, 3)
+        BF2_CC_CONVERT(std::string, 4)
+    }
+    BF2_CC_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+private:
+    int m_returnValue;
+};
+static ConsoleClassPlayRadioMessage s_consolePlayRadioMessage;
+}
+// BF2.exe 0x439EB2 / 0x439F31: same gate, one string argument and int result.
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(messages.playHelpMessage, messagesPlayHelpMessage, int,
+                                getVoiceMessages() != 0, std::string, kGameLogicConsoleTag)
 
 std::list<ConsoleObject*>& gameLogicConsoleObjects()
 {
@@ -323,9 +479,48 @@ void gameLogicSetActivePlayerKit(int kit)
 {
     activeGamePlayer()->setKit(kit);
 }
+void gameLogicPlayerPickup(std::string name)
+{
+    static_cast<Player*>(activeGamePlayer())->pickup(name);
+}
+std::string gameLogicPlayerMoveTo(const Vec3& position)
+{
+    return static_cast<Player*>(activeGamePlayer())->moveTo(position);
+}
 } // namespace
 BF2_CONSOLE_PROPERTY_FN(kit, int, activeGamePlayer() != 0, activeGamePlayer()->getKit(),
                         gameLogicSetActivePlayerKit, kGameLogicConsoleTag)
+// BF2.exe 0x43CA45 / 0x43CD6F, shared active-player predicate 0x43C555.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(pickup, gameLogicPlayerPickup,
+                                   activeGamePlayer() != 0, std::string, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_RET_ACTIVE(moveTo, gameLogicPlayerMoveTo, std::string,
+                                activeGamePlayer() != 0, Vec3, kGameLogicConsoleTag)
+
+// BF2.exe 0x43F237..0x43F7EE, active iff reservedSlots exists (0x43F28A).
+// These share the game-logic command list and are available at administrator access level 1.
+BF2_CONSOLE_OBJECT("reservedSlots", 1, 0)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(load, reservedSlots->load, bool,
+                                reservedSlots != 0, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(save, reservedSlots->save, bool,
+                                reservedSlots != 0, kGameLogicConsoleTag)
+BF2_CONSOLE_PROPERTY(configFile, std::string, reservedSlots,
+                     setConfigFile, getConfigFile, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(addNick, reservedSlots->addNick,
+                                   reservedSlots != 0, std::string, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(removeNick, reservedSlots->removeNick,
+                                   reservedSlots != 0, std::string, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(clear, reservedSlots->clear,
+                                   reservedSlots != 0, kGameLogicConsoleTag)
+BF2_CONSOLE_METHOD_0_RET_ACTIVE(list, reservedSlots->list, std::string,
+                                reservedSlots != 0, kGameLogicConsoleTag)
+
+// BF2.exe 0x43CEAC/0x43CFB5; dedicated PE 0x41CE40/0x41D000;
+// ELF accessors 0x811EF20..0x811EF5D. Both delays are raw, unranged floats.
+BF2_CONSOLE_OBJECT("LocalPlayer", 2, 0)
+BF2_CONSOLE_PROPERTY(firstCommanderSelectDelay, float, serverSquadManager(),
+                     setFirstCommanderSelectDelay, getFirstCommanderSelectDelay, kGameLogicConsoleTag)
+BF2_CONSOLE_PROPERTY(commanderSelectDelay, float, serverSquadManager(),
+                     setCommanderSelectDelay, getCommanderSelectDelay, kGameLogicConsoleTag)
 
 } // namespace hfe
 } // namespace dice

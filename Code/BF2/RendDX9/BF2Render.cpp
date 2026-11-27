@@ -51,6 +51,9 @@
 #include "../Geom/RoadEditableRenderer.h"   // IRoadEditableRenderer - the typed drawAll below
 #include "../RendMisc/IRenderer.h"
 #include "../RendMisc/DisplayModePolicy.h"   // [CHOSEN] native fullscreen start mode
+#if defined(__APPLE__)
+#include "../Platform/macOS/FullscreenMode.h"
+#endif
 #if defined(__APPLE__) || defined(BF2_LINUX_CLIENT)
 #include "../Platform/Host/ClientHost.h"     // [CHOSEN] fitFullscreenStartMode resizes the client
 #endif
@@ -5831,6 +5834,69 @@ void buildModeListImpl(RendDX9Base* b)
 #endif
 
 } // anonymous namespace
+
+#if defined(__APPLE__)
+// [CHOSEN, not recovered] Native full screen presents an internal render size; it must not
+// restore BF2Render's stale startup carrier over a mode already applied by VideoOptions.
+void prepareMacFullscreenMode(void* renderer, renddx9abi::HostDisplayMode& mode)
+{
+    const RendDX9Base* const b = static_cast<RendDX9Base*>(renderer);
+    mode.width = b->modeWidth;
+    mode.height = b->modeHeight;
+    mode.refreshHz = b->modeRefresh;
+    mode.bpp = b->modeBpp;
+    mode.depthFormats = b->depthFormats;
+    mode.multiSamples = b->multiSamples;
+    mode.vsync = b->vsync;
+    mode.windows = b->windows;
+
+    if (!mode.fullscreen)
+        return;
+
+    // Use adapter enumeration, not modeList: injectRequestedMode can add window-only sizes.
+    const std::vector<displaymode::Mode> modes = listedAdapterModes(static_cast<RendDX9Base*>(renderer));
+    bool listed = false;
+    for (const auto& m : modes)
+        if (m.width == mode.width && m.height == mode.height && m.refresh == mode.refreshHz)
+            listed = true;
+    if (!listed)
+    {
+        D3DDISPLAYMODE desktop = {};
+        int index = -1;
+        if (SUCCEEDED(b->d3d9->GetAdapterDisplayMode(b->adapter, &desktop)))
+        {
+            const displaymode::Mode desk = {desktop.Width, desktop.Height, desktop.RefreshRate};
+            index = displaymode::preferredMode(modes.data(), modes.size(), desk, 800);
+        }
+        if (index < 0)
+        {
+            std::fprintf(stderr, "[CHOSEN, not recovered] dice::hfe::dx9rend::prepareMacFullscreenMode: "
+                                 "no usable listed full-screen mode\n");
+            std::fflush(stderr);
+            std::abort();
+        }
+        const auto& chosen = modes[index];
+        ::renddx9abi::logf("fullscreen switch: unlisted %ux%u@%uHz replaced by %ux%u@%uHz "
+                           "[CHOSEN, not recovered]", mode.width, mode.height, mode.refreshHz,
+                           chosen.width, chosen.height, chosen.refresh);
+        mode.width = static_cast<unsigned short>(chosen.width);
+        mode.height = static_cast<unsigned short>(chosen.height);
+        mode.refreshHz = static_cast<unsigned short>(chosen.refresh);
+        mode.bpp = 32;
+    }
+    if (!mode.multiSamples.empty())
+    {
+        auto& samples = mode.multiSamples.front();
+        DWORD quality = 0;
+        if (FAILED(b->d3d9->CheckDeviceMultiSampleType(b->adapter,
+                static_cast<D3DDEVTYPE>(b->deviceType), D3DFMT_X8R8G8B8, FALSE,
+                static_cast<D3DMULTISAMPLE_TYPE>(samples.type), &quality)))
+            samples = {D3DMULTISAMPLE_NONE, 0};
+        else
+            samples.quality = (std::min)(samples.quality, quality ? quality - 1 : 0);
+    }
+}
+#endif
 
 #if defined(__APPLE__) || defined(BF2_LINUX_CLIENT)
 // [CHOSEN, not recovered] [RETIRE-WHEN: macos-display-mode-policy] A fullscreen start asks for the

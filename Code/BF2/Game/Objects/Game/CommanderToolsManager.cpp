@@ -14,6 +14,7 @@
 #include "../../Common/GameEvent.h"
 #include "../../IGame.h"
 #include "../../IGameLogic.h"
+#include "../../Main/Game.h"
 #include "../GameLogicComp/IArmorGLComp.h"
 #include "../IObject.h"
 #include "../IObjectTemplate.h"
@@ -427,6 +428,8 @@ void CommanderToolsManager::handleUAVEvent(const Vec3& position, int team)
     if (!m_teamStates[team - 1].launchUAV(position))
         return;
 
+    // BF2.exe 0x5C6CC9..0x5C6CDE copies the position before notifying players.
+    Vec3 payload = position;
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
@@ -435,10 +438,19 @@ void CommanderToolsManager::handleUAVEvent(const Vec3& position, int team)
         {
             PostRemoteEvent* const event =
                 new PostRemoteEvent(ECHud, 40u, false,
-                                    const_cast<Vec3*>(&position), 12u, 0.0f);
+                                    &payload, 12u, 0.0f);
             game->sendGameEventIfPlaying(player->getId(), event);
         }
     }
+
+#if !DEDICATED
+    // BF2.exe 0x5C6D50..0x5C6D94: the listen host has no playing connection.
+    if (!isDedicated() && playerManager->getLocalHumanPlayer()
+        && playerManager->getLocalHumanPlayer()->getTeam() == team)
+    {
+        eventManager->postEvent(ECHud, 40u, &payload, 0.0f);
+    }
+#endif
 }
 
 void CommanderToolsManager::handleSatelliteEvent(int playerId)
@@ -460,6 +472,11 @@ void CommanderToolsManager::handleSatelliteEvent(int playerId)
             new PostRemoteEvent(ECHud, 41u, false, 0, 0u, 0.0f);
         game->sendGameEventIfPlaying(playerId, event);
     }
+#if !DEDICATED
+    // BF2.exe 0x5C6E44..0x5C6E5D: -1 identifies the local scan request.
+    else if (!isDedicated())
+        eventManager->postEvent(ECHud, 41u, 0, 0.0f);
+#endif
 }
 
 void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int team)
@@ -473,7 +490,10 @@ void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int tea
     if (objectId == -1)
         return;
 
-    (void)playerManager->getLocalHumanPlayer();             // retained, unused retail call
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+#if DEDICATED
+    (void)local;
+#endif
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
 
     DropVehicleHudPayload payload;
@@ -483,9 +503,20 @@ void CommanderToolsManager::handleDropVehicleEvent(const Vec3& position, int tea
 
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
-        PostRemoteEvent* const event =
-            new PostRemoteEvent(ECHud, 74u, false, &payload, 20u, 0.0f);
-        game->sendGameEventIfConnected((*it)->getId(), event);
+#if !DEDICATED
+        // BF2.exe 0x5C71E0..0x5C7227: local delivery replaces this recipient's remote send.
+        if (!isDedicated() && (!local || local->getId() == (*it)->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 74u, &payload, 0.0f);
+        }
+        else
+#endif
+        {
+            PostRemoteEvent* const event =
+                new PostRemoteEvent(ECHud, 74u, false, &payload, 20u, 0.0f);
+            game->sendGameEventIfConnected((*it)->getId(), event);
+        }
     }
 }
 
@@ -520,15 +551,29 @@ float CommanderToolsManager::getPercentOfDropVehicles(int team)
 void CommanderToolsManager::addDropVehicleToTeam(int team)
 {
     --m_teamStates[team - 1].m_dropVehicleCount;
-    (void)playerManager->getLocalHumanPlayer();             // retained, unused retail call
+    IPlayer* const local = playerManager->getLocalHumanPlayer();
+#if DEDICATED
+    (void)local;
+#endif
     const std::list<IPlayer*>& players = playerManager->getPlayers(team);
     float remainingFraction = getPercentOfDropVehicles(team);
 
     for (std::list<IPlayer*>::const_iterator it = players.begin(); it != players.end(); ++it)
     {
-        PostRemoteEvent* const event =
-            new PostRemoteEvent(ECHud, 75u, false, &remainingFraction, 4u, 0.0f);
-        game->sendGameEventIfConnected((*it)->getId(), event);
+#if !DEDICATED
+        // BF2.exe 0x5C6F25..0x5C6F6B: the same local-recipient selection as HUD 74.
+        if (!isDedicated() && (!local || local->getId() == (*it)->getId()))
+        {
+            if (!isDedicated())
+                eventManager->postEvent(ECHud, 75u, &remainingFraction, 0.0f);
+        }
+        else
+#endif
+        {
+            PostRemoteEvent* const event =
+                new PostRemoteEvent(ECHud, 75u, false, &remainingFraction, 4u, 0.0f);
+            game->sendGameEventIfConnected((*it)->getId(), event);
+        }
     }
 }
 
@@ -541,9 +586,9 @@ void CommanderToolsManager::updateCommanderToys()
     m_teamStates[0].resetToysStats();
     m_teamStates[1].resetToysStats();
 
-    float currentArtillery[2] = {0.0f, 0.0f};
-    float currentSatellite[2] = {0.0f, 0.0f};
-    float currentUAV[2] = {0.0f, 0.0f};
+    float maximumArtillery[2] = {0.0f, 0.0f};
+    float maximumSatellite[2] = {0.0f, 0.0f};
+    float maximumUAV[2] = {0.0f, 0.0f};
 
     for (RemoteObjectMap::iterator it = objects->begin(); it != objects->end(); ++it)
     {
@@ -564,7 +609,7 @@ void CommanderToolsManager::updateCommanderToys()
         if (armor)
         {
             currentHitPoints = armor->getHitPoints();
-            if (currentHitPoints <= 0.0f)
+            if (!(currentHitPoints > 0.0f))
                 currentHitPoints = 0.0f;
             maximumHitPoints = armor->getMaxHitPoints();
         }
@@ -572,43 +617,44 @@ void CommanderToolsManager::updateCommanderToys()
         CommanderToolState& state = m_teamStates[team - 1];
         if (type == 1)
         {
-            state.m_artilleryArmor += maximumHitPoints;
+            state.m_artilleryArmor += currentHitPoints;
             ++state.m_artilleryCount;
-            currentArtillery[team - 1] += currentHitPoints;
+            maximumArtillery[team - 1] += maximumHitPoints;
         }
         else if (type == 2)
         {
-            state.m_satelliteArmor += maximumHitPoints;
+            state.m_satelliteArmor += currentHitPoints;
             ++state.m_satelliteCount;
-            currentSatellite[team - 1] += currentHitPoints;
+            maximumSatellite[team - 1] += maximumHitPoints;
         }
         else
         {
-            state.m_uavArmor += maximumHitPoints;
+            state.m_uavArmor += currentHitPoints;
             ++state.m_uavCount;
-            currentUAV[team - 1] += currentHitPoints;
+            maximumUAV[team - 1] += maximumHitPoints;
         }
     }
 
-    // This is intentionally maximum/current, not the conventional current/maximum. The `fdivr`
-    // sequence is the same in both shipped ports and Player replicates these exact float bits.
+    // BF2.exe 0x5C734B..0x5C73F0 / 0x5C7443..0x5C7500; ELF 0x080C76B6..0x080C76D4
+    // / 0x080C75CA..0x080C75EB: fields accumulate current HP, locals maximum HP.
+    // No maximum HP yields 1, but readiness still requires a nonzero asset count.
     for (int teamIndex = 0; teamIndex < 2; ++teamIndex)
     {
         CommanderToolState& state = m_teamStates[teamIndex];
-        if (currentArtillery[teamIndex] <= 0.0f)
+        if (!(maximumArtillery[teamIndex] > 0.0f))
             state.m_artilleryArmor = 1.0f;
         else
-            state.m_artilleryArmor /= currentArtillery[teamIndex];
+            state.m_artilleryArmor /= maximumArtillery[teamIndex];
 
-        if (currentSatellite[teamIndex] <= 0.0f)
+        if (!(maximumSatellite[teamIndex] > 0.0f))
             state.m_satelliteArmor = 1.0f;
         else
-            state.m_satelliteArmor /= currentSatellite[teamIndex];
+            state.m_satelliteArmor /= maximumSatellite[teamIndex];
 
-        if (currentUAV[teamIndex] <= 0.0f)
+        if (!(maximumUAV[teamIndex] > 0.0f))
             state.m_uavArmor = 1.0f;
         else
-            state.m_uavArmor /= currentUAV[teamIndex];
+            state.m_uavArmor /= maximumUAV[teamIndex];
     }
 }
 

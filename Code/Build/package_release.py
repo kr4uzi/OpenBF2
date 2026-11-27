@@ -46,7 +46,8 @@ PACKAGES = {
         )),
     },
     "linux-x64": {
-        "server": ("bin_linux", ("bf2", "libdice_py.so")),
+        # [CHOSEN, not recovered] Ship the native AI image used by +ai 1 and co-op.
+        "server": ("bin_linux", ("bf2", "libdice_py.so", "libaidll.so")),
     },
     # [CHOSEN, not recovered] The macOS port: one package set per architecture. The client hosts
     # local games, so it carries the AI library as the server does.
@@ -312,11 +313,18 @@ def windows_sign(paths, script):
     """Sign every program and DLL in `paths` that lacks a valid signature, then require a valid one on each.
     `script` is tools/windows/ci/sign.ps1 (its environment names signtool and the certificate); a .py
     stand-in runs under this Python, for the packaging fixtures."""
+    environment = None
     if script.suffix == ".py":
         command = [sys.executable, str(script)]
+    elif shutil.which("pwsh"):
+        command = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
     else:
+        # Windows PowerShell started from a PowerShell 7 session inherits its PSModulePath, finds PowerShell 7's
+        # Microsoft.PowerShell.Security first and cannot load it (Get-AuthenticodeSignature); without the
+        # variable it uses its own default module path.
+        environment = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
         command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-    result = subprocess.run(command + [str(path) for path in paths])
+    result = subprocess.run(command + [str(path) for path in paths], env=environment)
     if result.returncode != 0:
         raise ValueError("Signing failed with exit code {} ({})".format(result.returncode, script))
 
@@ -343,7 +351,7 @@ def role_readme(platform, role, name, executable, revision, source_url, macos_si
     else:
         requirements = (
             "Linux is built on Ubuntu 22.04 with dynamic glibc/ncurses dependencies.\n"
-            "Keep libdice_py.so beside bf2.\n"
+            "Keep libdice_py.so and libaidll.so beside bf2.\n"
         )
     readme = ("OpenBF2: {name}\n\n" + HEADER).format(name=name, revision=revision, source=source_url)
     readme += contents + requirements + "\n" + TEST_NOTE
@@ -750,8 +758,8 @@ def windows_readme(revision, source_url, included, omitted, licences, signing="n
 
 
 def linux_readme(revision, source_url, licences):
-    contents = ("Contents: the x64 dedicated server (bf2) with libdice_py.so; licenses/ and\n"
-                "LICENSE (OpenBF2's own); build-info.json with the source revision and the\n"
+    contents = ("Contents: the x64 dedicated server (bf2) with libdice_py.so and libaidll.so;\n"
+                "licenses/ and LICENSE (OpenBF2's own); build-info.json with the source revision and the\n"
                 "SHA-256 of every runtime file.\n\n")
     text = role_readme("linux-x64", "server", "openbf2-linux", "bf2", revision, source_url, contents=contents)
     return text.rstrip("\n") + "\n\nLicences and notices\n" + licence_list(licences, "/")

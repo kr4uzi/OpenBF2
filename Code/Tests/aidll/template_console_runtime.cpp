@@ -294,7 +294,7 @@ int main(int argc, char** argv)
     if (argc != 2) return 2;
     const std::string mode(argv[1]);
     mainConsoleObjects->registerConsoleObjects(kitTemplateConsoleObjects());
-    check(kitTemplateConsoleObjects().size() == rowCount + 3, "the TU list: aiTemplate 10 + aiTemplatePlugIn 65 + kitTemplate 3");
+    check(kitTemplateConsoleObjects().size() == rowCount + 4, "the TU list plus four kitTemplate commands");
 
     if (mode == "metadata")
     {

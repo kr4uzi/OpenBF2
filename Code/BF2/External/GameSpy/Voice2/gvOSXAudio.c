@@ -128,6 +128,12 @@ static void gviUnlockDevice(GVIHardwareData * data)
 	pthread_mutex_unlock(&data->m_mutex);
 }
 
+// [CHOSEN, not recovered] HAL IO-context callbacks must not block on the device lock held across AudioDeviceStart, which waits for that context.
+static GVBool gviTryLockDevice(GVIHardwareData * data)
+{
+	return (pthread_mutex_trylock(&data->m_mutex) == 0)?GVTrue:GVFalse;
+}
+
 static void gviCleanupPlayback(GVIHardwareData * data)
 {
 	if(data->m_playbackSources)
@@ -398,7 +404,8 @@ int gviHardwareListDevices(GVDeviceInfo devices[], int maxDevices, GVDeviceType 
 
 	// fill the array of devices with info
 	deviceCount = 0;
-	for(i = 0 ; (i < maxDevices) && (deviceCount < numDevices) ; i++)
+	// [CHOSEN, not recovered] Bound reads by the HAL array and writes by caller capacity.
+	for(i = 0 ; (i < numDevices) && (deviceCount < maxDevices) ; i++)
 	{
 		// try to add the device to the list
 		GVBool addedDevice = gviFillDeviceInfo(deviceIDs[i], &devices[deviceCount], types);
@@ -477,9 +484,9 @@ static OSStatus gviHardwareCaptureIOProc(AudioDeviceID inDevice,
 	AudioBufferList bufferList;
 	GVICapturedFrame * frame;
 
-	// get a lock on the device
-	if(!gviLockDevice(data))
-		return (OSStatus)1;
+	// Drop this input slice if the device is busy.
+	if(!gviTryLockDevice(data))
+		return noErr;
 
 	// make sure we are capturing
 	if(data->m_capturing)
@@ -627,10 +634,18 @@ static OSStatus gviHardwarePlaybackIOProc(AudioDeviceID inDevice,
 	AudioBufferList bufferList;
 	OSStatus result;
 	UInt32 size;
+	UInt32 i;
 
-	// get a lock on the device
-	if(!gviLockDevice(data))
-		return (OSStatus)1;
+	// Silence every output buffer without reading device state if it is busy.
+	if(!gviTryLockDevice(data))
+	{
+		for(i = 0 ; i < outOutputData->mNumberBuffers ; i++)
+		{
+			if(outOutputData->mBuffers[i].mData)
+				memset(outOutputData->mBuffers[i].mData, 0, outOutputData->mBuffers[i].mDataByteSize);
+		}
+		return noErr;
+	}
 
 	// calculate the number of samples the proc wants
 	size = (outOutputData->mBuffers[0].mDataByteSize / data->m_playbackStreamDescriptor.mBytesPerFrame);
@@ -641,11 +656,11 @@ static OSStatus gviHardwarePlaybackIOProc(AudioDeviceID inDevice,
 
 	// fill the buffer using the callback
 	result = AudioConverterFillComplexBuffer(data->m_playbackConverter, gviAudioConverterPlaybackProc, device, &size, &bufferList, NULL);
+
+	// [CHOSEN, not recovered] Release the device lock on converter failure too.
+	gviUnlockDevice(data);
 	if(result != noErr)
 		return (OSStatus)1;
-
-	// release the device lock
-	gviUnlockDevice(data);
 
 	return noErr;
 }
@@ -706,9 +721,10 @@ static GVBool gviHardwareStartDevice(GVDevice device, GVDeviceType type)
 		result = gviHardwareStartPlayback(device);
 		if(!result)
 		{
+			// [CHOSEN, not recovered] Unlock before capture rollback because stop takes the same non-recursive mutex.
+			gviUnlockDevice(data);
 			if(type & GV_CAPTURE)
 				device->m_methods.m_stopDevice(device, GV_CAPTURE);
-			gviUnlockDevice(data);
 			return GVFalse;
 		}
 	}

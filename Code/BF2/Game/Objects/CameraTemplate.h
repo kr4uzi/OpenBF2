@@ -23,6 +23,7 @@ public:
     virtual unsigned int getClassID() const;              // +0x10
     virtual IObject* createObject() const;                // +0x54
     virtual void* queryImplementation(unsigned int cid);  // +0x50
+    virtual bool makeScript(io::IStream* stream);
 
     // Typed access to fields consumed directly by Camera.
     int  getDefaultPcoId() const     { return m_pcoId; }        // +532

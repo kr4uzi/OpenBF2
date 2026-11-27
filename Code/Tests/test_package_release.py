@@ -725,19 +725,19 @@ class ReleasePackageTests(unittest.TestCase):
         contents, metadata, readme = self.read("openbf2-linux")
         licences = {"LICENSE", "licenses/Python-LICENSE.txt", "licenses/zlib.txt", "licenses/Minizip.txt",
                     "licenses/TinyXML.txt", "licenses/RSA-MD5.txt", "licenses/GameSpy.txt"}
-        self.assertEqual(set(contents), {"bf2", "libdice_py.so", "README.txt", "build-info.json"} | licences)
-        for entry in ("bf2", "libdice_py.so"):
+        self.assertEqual(set(contents), {"bf2", "libdice_py.so", "libaidll.so", "README.txt", "build-info.json"} | licences)
+        for entry in ("bf2", "libdice_py.so", "libaidll.so"):
             self.assertEqual(contents[entry][0].external_attr >> 16 & 0o777, 0o755)
         self.assertEqual(contents["LICENSE"][0].external_attr >> 16 & 0o777, 0o644)
         self.assertEqual(metadata["package"], "openbf2-linux")
-        self.assertEqual(set(metadata["runtime_files"]), {"bf2", "libdice_py.so"})
+        self.assertEqual(set(metadata["runtime_files"]), {"bf2", "libdice_py.so", "libaidll.so"})
         for entry, digest in metadata["runtime_files"].items():
             self.assertEqual(hashlib.sha256(contents[entry][1]).hexdigest(), digest)
         self.assertEqual(metadata["components"], [{"folder": ".", "package": "openbf2-linux-x64-server",
                                                    "platform": "linux-x64", "role": "server",
                                                    "link_contract": "strict"}])
         self.assertNotIn("windows_signing", metadata)
-        for text in ("OpenBF2: openbf2-linux", "x64 dedicated server", "Ubuntu 22.04", "Keep libdice_py.so beside bf2",
+        for text in ("OpenBF2: openbf2-linux", "x64 dedicated server", "Ubuntu 22.04", "Keep libdice_py.so and libaidll.so beside bf2",
                      'cd "$HOME/Games/openbf2-linux"', "chmod +x bf2", "./bf2 +modPath mods/bf2",
                      "stock mods/bf2/Settings/ServerSettings.con", "other than 16567",
                      "Linux server content with lowercase game paths", "licenses/Python-LICENSE.txt",

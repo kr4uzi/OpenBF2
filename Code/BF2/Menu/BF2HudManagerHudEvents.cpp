@@ -259,7 +259,8 @@ void BF2HudManager::handleHudEvent(unsigned int id, EventNode*, void* data)
     case 51:
         if (data) {
             const std::string message(static_cast<const char*>(data));
-            game->radioMessage(eventValue<TargetChannel>(data, 0x20), message, local, 0, true, false);
+            const TargetChannel channel = eventValue<TargetChannel>(data, 0x20);
+            game->radioMessage(channel, message, local, 0, true, false);
         }
         return;
     case 18: case 19: {
@@ -379,10 +380,13 @@ void BF2HudManager::handleHudEvent(unsigned int id, EventNode*, void* data)
         if (!player || !local) return;
         const int team = player->getTeam();
         if (team != local->getTeam()) return;
-        if (static_cast<unsigned>(local->getSquadId()) > 0 && player != local)
-            addServerChat(replaceWideTokenFromString(replaceWideInputKeys(getLocalizedString(
-                "HUD_HUD_SQUAD_HAS_LEFT")), "#PLAYERNAME#", player->getName().c_str()), 0);
-        else if (m_field138 && player == local) {
+        if (static_cast<unsigned>(local->getSquadId()) > 0 && player != local) {
+            // [CHOSEN, not recovered] Retail fix "Only the squad leader is told that a member left"
+            // (docs/retail-fixes.md). Retail (0x75B0FE..0x75B176) shows the text to every member.
+            if (local->getIsSquadLeader())
+                addServerChat(replaceWideTokenFromString(replaceWideInputKeys(getLocalizedString(
+                    "HUD_HUD_SQUAD_HAS_LEFT")), "#PLAYERNAME#", player->getName().c_str()), 0);
+        } else if (m_field138 && player == local) {
             m_field138->setSquadExpanded(local->getSquadId(), false);
             if (m_field100) {
                 m_field100->replyCategory(2, false, true, false);

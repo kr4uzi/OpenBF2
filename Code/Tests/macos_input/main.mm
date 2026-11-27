@@ -4,10 +4,10 @@
 // drives NativeInputDeviceManager with InputManager::update's protocol (update(-1) polls, then one
 // positive pass per input tick, 10.0 on the last) and checks what the engine-facing device
 // interfaces report against the DirectInput semantics of the recovered DX8 devices
-// (KeyboardDevice.cpp, MouseDevice.cpp). The host's focus repair and its launch activation run
-// against a simulated AppKit state (CocoaHostTestHooks::setSystemFocusForTest): the activation's
-// requests and Dock resets are counted, none is made. The restart marker is set and removed in
-// this process's own environment. [RETIRE-WHEN: macos-client-window]
+// (KeyboardDevice.cpp, MouseDevice.cpp). Focus follows a simulated AppKit state; dropped input
+// is counted and rate-limited. Cooperative startup requests are counted without activating a
+// real application, including delayed activation of a pending full-screen request. The full-screen
+// state machine is checked without a window. [RETIRE-WHEN: macos-client-window]
 
 #import <AppKit/AppKit.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -19,8 +19,7 @@
 #include "../../BF2/Platform/macOS/CursorScale.h"
 #include "../../BF2/Platform/macOS/MacKeyMap.h"
 #include "../../BF2/Platform/macOS/MacRawMouse.h"
-#include "../../BF2/Platform/macOS/ProcessAncestry.h"
-#include "../../BF2/Platform/macOS/RestartInFront.h"
+#include "../../BF2/Platform/macOS/NativeFullscreen.h"
 #include "../native_host/WindowMessageRecorder.h"
 #include "../../BF2/Core/Ids.h"
 
@@ -69,11 +68,16 @@ CGEventTimestamp nowNs(int offsetMs = 0)
 const SInt16 kKeyboardANSI = 40;    // KBGetLayoutType(40) == 'ANSI' (Apple Extended/MacBook ANSI)
 const SInt16 kKeyboardISO  = 41;    // KBGetLayoutType(41) == 'ISO '
 
+bool g_holdInjected = false;    // testBusyService: injected events are held as the busy service holds them
+
 void inject(CGEventRef cg)
 {
     NSEvent* e = [NSEvent eventWithCGEvent:cg];
     CFRelease(cg);
-    CocoaHostTestHooks::injectEventForTest(ClientHost::instance(), (__bridge void*)e);
+    if (g_holdInjected)
+        CocoaHostTestHooks::holdEventForTest(ClientHost::instance(), (__bridge void*)e);
+    else
+        CocoaHostTestHooks::injectEventForTest(ClientHost::instance(), (__bridge void*)e);
 }
 
 void key(unsigned short keyCode, bool down, bool repeat = false, SInt16 kbType = kKeyboardANSI,
@@ -196,7 +200,7 @@ struct MouseLog final : host::IHostEventListener
 
 // Records the focus notifications every host listener sees, and whether a button event arrived
 // after the notification that opened the focus gate.
-struct FocusLog final : host::IHostEventListener
+struct FocusLog : host::IHostEventListener
 {
     int activations = 0, deactivations = 0, focusChanges = 0, buttons = 0, buttonsWithFocus = 0;
     bool key = false, active = false;
@@ -661,1282 +665,540 @@ void testHostBoundary()
     settle();
 }
 
-// The focus gate reads a cache of AppKit's state. With the state AppKit and the system would
-// report simulated (CocoaHostTestHooks::setSystemFocusForTest), a stale cache is brought in line
-// by the next pump, an active application's window that is not key is made key, a press into the
-// window repairs before it is routed, and what the gate drops is counted and reported.
-void testFocusRepair()
+// ClientHost::serviceWhileBusy: what the busy service takes from the window server during a load
+// reaches nobody until the next pump, which delivers it first and in order; pointer moves in a row
+// are kept as the last one.
+void testBusyService()
 {
-    begin("focus follows AppKit; a press repairs a closed gate");
+    begin("busy service: held events reach the engine only at the next pump, in order");
+    ClientHost& host = ClientHost::instance();
+    WindowMessageRecorder messages;
+    MouseLog mice;
+    host.addListener(&messages);
+    host.addListener(&mice);
+    g_holdInjected = true;
+    key(kVK_ANSI_A, true);
+    move(3, 0);
+    move(4, 0);
+    move(5, 0);
+    button(0, true);
+    button(0, false);
+    move(1, 1);
+    key(kVK_ANSI_A, false);
+    g_holdInjected = false;
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 6, "moves in a row are held as one: 6 events held");
+    check(messages.values(hostmsg::WM_KEYDOWN).empty() && mice.moves == 0 && mice.buttons == 0,
+          "nothing reaches the listeners while held");
+    CocoaHostTestHooks::deliverHeldEventsForTest(host);
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 0, "the next pump empties the hold");
+    check(messages.values(hostmsg::WM_KEYDOWN).size() == 1 && messages.values(hostmsg::WM_KEYUP).size() == 1,
+          "the held key press and release are delivered");
+    check(mice.moves == 2 && mice.buttons == 2, "two moves (one per run) and both button events are delivered");
+    key(kVK_ANSI_B, true); key(kVK_ANSI_B, false);
+    check(messages.values(hostmsg::WM_KEYDOWN) == std::vector<unsigned int>({0x41, 0x42}) &&
+          messages.values(hostmsg::WM_KEYUP) == std::vector<unsigned int>({0x41, 0x42}),
+          "held input precedes newer input, with each press and release delivered once");
+    messages.messages.clear();
+    g_holdInjected = true;
+    key(kVK_ANSI_C, true); key(kVK_ANSI_C, false);
+    g_holdInjected = false;
+    CocoaHostTestHooks::serviceAppKitOnlyForTest(host);
+    check(CocoaHostTestHooks::heldEventsForTest(host) == 0,
+          "an AppKit-only wait drains held events before reading newer events");
+    check(messages.values(hostmsg::WM_KEYDOWN).empty() && messages.values(hostmsg::WM_KEYUP).empty(),
+          "held events drained by an AppKit-only wait never reach the engine");
+    CocoaHostTestHooks::deliverHeldEventsForTest(host);
+    check(messages.values(hostmsg::WM_KEYDOWN).empty(), "the next pump cannot replay AppKit-only input");
+    host.removeListener(&mice);
+    host.removeListener(&messages);
+    settle();
+}
+
+// A simulated system checks the cache and input gate without creating NSApplication or a window.
+void testFocusFollowsAppKit()
+{
+    begin("focus follows AppKit");
     ClientHost& host = ClientHost::instance();
     typedef CocoaHostTestHooks Hooks;
-    FocusLog focus;
+    struct InputLog : FocusLog
+    {
+        int keys = 0, moves = 0;
+        void onKey(const host::HostKeyEvent&) override { ++keys; }
+        void onMouseMove(const host::HostMouseMoveEvent&) override { ++moves; }
+    } focus;
     host.addListener(&focus);
-    const int self = static_cast<int>(getpid()), otherApp = 1;
     Hooks::SystemFocus sys = {};
-    sys.appActive = sys.windowKey = sys.windowOnScreen = sys.makeKeyWorks = true;
-    sys.frontPid = self;
+    sys.appActive = sys.windowKey = true;
     sys.now = 1000.0;
-    const auto stats = [&]() { return Hooks::focusRepairStatsForTest(host); };
-    // Hands the simulated state to the host `seconds` later; the window's key status is the host's.
+    const auto stats = [&]() { return Hooks::droppedInputStatsForTest(host); };
     const auto apply = [&](double seconds) { sys.now += seconds; Hooks::setSystemFocusForTest(host, &sys); };
-    const auto pump = [&]() { Hooks::pumpFocusForTest(host); sys.windowKey = stats().windowKey; };
-    const auto click = [&]() { button(0, true); button(0, false); sys.windowKey = stats().windowKey; };
+    const auto pump = [&]() { Hooks::pumpFocusForTest(host); };
+    const auto click = [&]() { button(0, true); button(0, false); };
 
-    // A callback that never came: the cache says inactive and not key, AppKit says active and key.
     Hooks::overrideFocusForTest(host, false, false);
     apply(0.0);
     focus.reset();
     check(!host.hasFocus(), "stale cache: the gate is closed");
+    Hooks::focusCallbackForTest(host, true);
+    check(!host.hasFocus() && !host.isAppActive() && focus.activations == 0 && focus.focusChanges == 0,
+          "a busy run-loop callback leaves focus and activation for the next pump");
     pump();
-    check(host.hasFocus() && host.isAppActive(), "a pump brings the cache in line with AppKit");
+    check(host.hasFocus() && host.isAppActive(), "one pump corrects a stale cache");
     check(focus.activations == 1 && focus.focusChanges == 1 && focus.key && focus.active,
-          "the listeners hear the activation and the focus once");
+          "listeners hear activation and focus once");
     pump(); pump();
     check(focus.activations == 1 && focus.focusChanges == 1 && focus.deactivations == 0,
           "unchanged state notifies nobody");
-    check(stats().makeKeyCalls == 0, "a window that is key is left alone");
 
-    // Application active, window on screen but never made key, cache still "key".
     sys.windowKey = false;
     apply(1.0);
     focus.reset();
     pump();
-    check(stats().makeKeyCalls == 1 && stats().windowKey, "a pump makes the game window key");
-    check(host.hasFocus() && focus.focusChanges == 0, "the gate stays open, nobody is notified twice");
+    check(!host.hasFocus() && host.isAppActive() && focus.focusChanges == 1 &&
+          !focus.key && focus.active && focus.deactivations == 0,
+          "unreported key loss closes the gate without deactivating");
+    pump(); click(); pump();
+    check(!host.hasFocus() && focus.focusChanges == 1 && focus.buttons == 0,
+          "pumps and presses never make the window key");
+    sys.windowKey = true;
+    apply(1.0);
     pump();
-    check(stats().makeKeyCalls == 1, "once it is key nothing more is done");
+    check(host.hasFocus() && focus.focusChanges == 2, "key again: the next pump opens the gate");
 
-    // Making it key fails: the cache follows AppKit, the attempt repeats every half second.
-    sys.windowKey = false;
-    sys.makeKeyWorks = false;
+    sys.appActive = sys.windowKey = false;
     apply(1.0);
     focus.reset();
-    pump();
-    check(stats().makeKeyCalls == 2, "another attempt for a window that lost the key status unnoticed");
-    check(!host.hasFocus() && host.isAppActive() && focus.focusChanges == 1 && !focus.key && focus.active
-              && focus.deactivations == 0,
-          "the cache follows AppKit: not key, application still active");
     pump(); pump();
-    check(stats().makeKeyCalls == 2, "not on every pump");
-    apply(0.6);
-    pump();
-    check(stats().makeKeyCalls == 3, "again after half a second");
-
-    // Another window of this process is due the key status: it keeps it.
-    sys.makeKeyWorks = true;
-    sys.otherKeyWindow = true;
-    apply(1.0);
-    pump();
-    check(stats().makeKeyCalls == 3 && !host.hasFocus(), "an alert of this process keeps the key status");
-    sys.otherKeyWindow = false;
+    check(!host.hasFocus() && !host.isAppActive() && focus.deactivations == 1 && focus.focusChanges == 1,
+          "unreported deactivation is noticed once");
+    sys.appActive = sys.windowKey = true;
     apply(1.0);
     focus.reset();
-    pump();
-    check(stats().makeKeyCalls == 4 && host.hasFocus() && focus.focusChanges == 1 && focus.key,
-          "without it the window is made key and the gate opens");
-    pump();
-
-    // The window gives the key status away while the application stays active (Spotlight): pumps
-    // leave it there, a press into the window takes it back and is delivered.
+    Hooks::focusCallbackForTest(host);
+    check(host.hasFocus() && host.isAppActive() && focus.activations == 1 && focus.focusChanges == 1,
+          "a callback brings the cache in line immediately");
     sys.windowKey = false;
     apply(1.0);
-    Hooks::focusCallbackForTest(host, Hooks::WindowResignedKey);
-    check(!host.hasFocus() && host.isAppActive(), "resigned key: the gate closes");
-    for (int i = 0; i < 3; ++i) { apply(1.0); pump(); }
-    check(stats().makeKeyCalls == 4 && !host.hasFocus(),
-          "a pump does not take the keyboard back from a panel of another process");
-    focus.reset();
-    button(0, true);
-    sys.windowKey = stats().windowKey;
-    check(stats().makeKeyCalls == 5 && host.hasFocus(), "a press into the game window makes it key");
-    check(focus.buttons == 1 && focus.buttonsWithFocus == 1 && focus.focusChanges == 1,
-          "and is delivered, after the focus change");
-    button(0, false);
-    check(focus.buttons == 2, "its release pairs up");
+    Hooks::focusCallbackForTest(host);
+    check(!host.hasFocus() && host.isAppActive(), "key-loss callback closes the gate immediately");
 
-    // A modal window of this process: the press is not the game's. It is dropped and reported,
-    // one report a second at most.
-    sys.windowKey = false;
-    sys.modalWindow = true;
-    apply(2.0);
-    Hooks::focusCallbackForTest(host, Hooks::WindowResignedKey);
-    const Hooks::FocusRepairStats before = stats();
+    const auto before = stats();
     focus.reset();
+    focus.keys = focus.moves = 0;
+    key(kVK_ANSI_W, true); key(kVK_ANSI_W, false);
     click();
-    check(focus.buttons == 0 && !host.hasFocus() && stats().makeKeyCalls == before.makeKeyCalls,
-          "a press behind a modal window is not delivered and takes nothing");
-    check(stats().droppedInputs == before.droppedInputs + 1 && stats().dropReports == before.dropReports + 1,
-          "the dropped press is counted and reported");
-    for (int i = 0; i < 4; ++i) click();
-    key(kVK_ANSI_W, true);
-    key(kVK_ANSI_W, false);
     move(1, 1);
-    check(stats().droppedInputs == before.droppedInputs + 7 && stats().dropReports == before.dropReports + 1,
-          "presses, key presses and moves are counted; one report a second at most");
-    apply(1.5);
+    check(focus.keys == 0 && focus.buttons == 0 && focus.moves == 0,
+          "key, press inside the view and pointer move are not delivered");
+    check(stats().droppedInputs == before.droppedInputs + 3 && stats().dropReports == before.dropReports + 1,
+          "three drops counted, one report in the second");
+    click(); move(1, 1);
+    check(stats().droppedInputs == before.droppedInputs + 5 && stats().dropReports == before.dropReports + 1,
+          "additional input is counted without another report");
+    apply(1.0);
     click();
     check(stats().dropReports == before.dropReports + 2, "the next second reports again");
-    sys.modalWindow = false;
 
-    // The application resigns active and no callback says so: the next pump notices.
-    sys.windowKey = true;
-    apply(2.0);
-    Hooks::focusCallbackForTest(host, Hooks::WindowBecameKey);
-    check(host.hasFocus(), "key again");
     sys.appActive = false;
-    sys.windowKey = false;
-    sys.frontPid = otherApp;
-    apply(1.0);
-    focus.reset();
-    pump();
-    check(!host.hasFocus() && !host.isAppActive() && focus.deactivations == 1 && focus.focusChanges == 1,
-          "a deactivation nobody reported is noticed by the next pump, once");
-    click();
-    check(focus.buttons == 0 && !stats().systemActive && stats().makeKeyCalls == before.makeKeyCalls,
-          "the click that brings the application forward from another one is not game input");
-
-    // The system calls this process frontmost, AppKit never activates it: a press uses the
-    // system's state once that has lasted a quarter of a second.
-    sys.frontPid = self;
     apply(1.0);
     pump();
+    const auto background = stats();
     focus.reset();
     click();
-    check(focus.buttons == 0 && !stats().systemActive, "not at once: the application may just be coming forward");
-    apply(0.3);
-    pump();
-    button(0, true);
-    check(stats().systemActive && host.hasFocus() && host.isAppActive(), "then the press uses the system's state");
-    check(focus.buttons == 1 && focus.buttonsWithFocus == 1 && focus.activations == 1 && focus.focusChanges == 1,
-          "and is delivered, after the activation and the focus change");
-    button(0, false);
-    sys.frontPid = 0;
+    check(focus.buttons == 0 && stats().droppedInputs == background.droppedInputs &&
+          stats().dropReports == background.dropReports,
+          "a background activation click is neither delivered nor counted");
+    sys.systemFrontmost = true;
     apply(1.0);
-    pump();
-    check(stats().systemActive && host.hasFocus(), "a moment without a frontmost application is not the user leaving");
-    sys.frontPid = otherApp;
-    apply(1.0);
-    focus.reset();
-    pump();
-    check(!stats().systemActive && !host.hasFocus() && focus.deactivations == 1,
-          "another application in front ends that at the next pump");
+    click();
+    check(focus.buttons == 0 && !host.hasFocus() && !host.isAppActive() &&
+          stats().droppedInputs == background.droppedInputs + 1 &&
+          stats().dropReports == background.dropReports + 1,
+          "system frontmost alone counts and reports the drop without inventing focus");
 
-    // Focus set by a test stands, as before: no simulated system, no repair.
-    Hooks::setSystemFocusForTest(host, 0);
+    Hooks::setSystemFocusForTest(host, nullptr);
     Hooks::overrideFocusForTest(host, false, false);
     focus.reset();
-    Hooks::pumpFocusForTest(host);
-    button(0, true);
-    button(0, false);
-    check(!host.hasFocus() && focus.focusChanges == 0 && focus.buttons == 0,
-          "overrideFocusForTest alone: pumps and presses leave the forced focus alone");
+    pump(); click(); pump();
+    check(!host.hasFocus() && !host.isAppActive() && focus.focusChanges == 0 && focus.buttons == 0,
+          "forced closed focus stands across pumps and presses");
+    Hooks::overrideFocusForTest(host, true, true);
+    focus.reset();
+    pump(); click(); pump();
+    check(host.hasFocus() && host.isAppActive() && focus.focusChanges == 0 && focus.buttons == 2,
+          "forced held focus stands across pumps and presses");
     host.removeListener(&focus);
     setFocus(true);
     settle();
 }
 
-// ProcessAncestry.h: the walk up the parent chain that decides whether the application in front
-// started this process, against a process table and against this process's real parent.
-void testProcessAncestry()
+// The same focus pass as service() counts activation requests against a simulated clock and
+// AppKit state. No NSApplication, window, actual activation or wall-clock wait is involved.
+void testCooperativeStartup()
 {
-    begin("process ancestry: the parent chain up to launchd");
-    using namespace macos;
-    // launchd (1) -> 10 -> 20 -> 30 -> 40 -> this process: 40 is the parent.
-    const auto table = [](pid_t pid) -> pid_t
-    { return pid == 40 ? 30 : pid == 30 ? 20 : pid == 20 ? 10 : pid == 10 ? 1 : -1; };
-    check(processAncestry(40, 40, table) == AncestryYes, "the parent is an ancestor");
-    check(processAncestry(10, 40, table) == AncestryYes, "so is the process four levels up");
-    check(processAncestry(50, 40, table) == AncestryNo, "a process outside the chain is not");
-    check(processAncestry(1, 40, table) == AncestryNo && processAncestry(0, 40, table) == AncestryNo,
-          "launchd and the kernel are nobody's launcher");
-    check(processAncestry(10, 1, table) == AncestryNo, "a process adopted by launchd has no launcher left");
-    // The lookup fails above the parent.
-    const auto denied = [](pid_t) -> pid_t { return -1; };
-    check(processAncestry(30, 40, denied) == AncestryUnknown, "a failed lookup leaves the answer unknown");
-    check(processAncestry(40, 40, denied) == AncestryYes, "the parent is recognised without any lookup");
-    const auto loop = [](pid_t pid) -> pid_t { return pid == 40 ? 30 : 40; };
-    check(processAncestry(10, 40, loop) == AncestryUnknown, "a chain that never reaches launchd is given up");
-    // The kernel's process table, as the client reads it. launchd (pid 1) adopts a process whose
-    // parent has exited, as when this test is started detached from a shell that is gone, and
-    // launchd is nobody's launcher. So the answer for the parent follows who the parent is.
-    const pid_t parent = getppid();
-    std::printf("  this process's parent is pid %d%s\n", static_cast<int>(parent),
-                parent > 1 ? "" : ": launchd, the test was started detached");
-    check(parentPidOf(getpid()) == parent, "sysctl answers this process's parent");
-    check(processAncestry(parent, parent, parentPidOf) == (parent > 1 ? AncestryYes : AncestryNo) &&
-          processAncestry(getpid(), parent, parentPidOf) == AncestryNo,
-          "the real chain: the parent is an ancestor unless it is launchd, this process is not its own");
-}
-
-// The launch activation with the system simulated (SystemFocus::activation). The application in
-// front at the first request decides what follows. A launcher (the parent or another ancestor of
-// this process), nobody, and this process itself lose the front to a request every half second
-// and, after a second, to a reset through the Dock. An unrelated application gets the one
-// cooperative request and keeps the front. Cooperative means that the request yields to an active
-// application on every macOS version: before macOS 14 the host makes it with
-// activateIgnoringOtherApps:NO, and every other request with YES, which activates whatever
-// application is active. A look is one run of the host's event pump. createWindow looks once,
-// right after the first request; the next look comes with the first frame, when the engine has
-// initialised. The requests run for ten seconds, counted from that look, the first after the one
-// inside createWindow, and once more from the first look that finds the front free after a wait
-// behind an unrelated application; and no period ends between its Dock reset and the request
-// after it. Requests and Dock resets are counted, none is made.
-void testLaunchActivation()
-{
-    begin("launch activation: only a launcher loses the front to repeated requests");
-    ClientHost& host = ClientHost::instance();
+    begin("bounded cooperative startup requests and delayed full screen");
     typedef CocoaHostTestHooks Hooks;
-    // A client started from Terminal through a script: Terminal -> login -> shell -> script ->
-    // this process. The editor and the browser are applications outside that chain.
-    const int self = static_cast<int>(getpid());
-    const int terminal = 484, login = 663, shell = 665, script = 59564;
-    const int editor = 439, browser = 600, dock = 511;
+    ClientHost& host = ClientHost::instance();
     Hooks::SystemFocus sys = {};
-    sys.windowOnScreen = sys.makeKeyWorks = true;
-    sys.activation = true;
-    sys.parentPid = script;
-    sys.ancestors[0] = shell;
-    sys.ancestors[1] = login;
-    sys.ancestors[2] = terminal;
-    sys.dockPid = dock;
-    sys.now = 5000.0;
-    const auto stats = [&]() { return Hooks::activationStatsForTest(host); };
-    const auto fallback = [&]() { return Hooks::focusRepairStatsForTest(host).systemActive; };
-    // Hands the simulated state to the host `seconds` later.
-    const auto apply = [&](double seconds) { sys.now += seconds; Hooks::setSystemFocusForTest(host, &sys); };
-    const auto pump = [&]() { Hooks::pumpFocusForTest(host); sys.windowKey = Hooks::focusRepairStatsForTest(host).windowKey; };
-    const auto after = [&](double seconds) { apply(seconds); pump(); };
-    const auto click = [&]() { button(0, true); button(0, false); };
-    const auto appKitActive = [&]() { sys.appActive = sys.windowKey = true; sys.frontPid = self; };
-    // What the scenario under way added to the counters.
-    Hooks::ActivationStats base = stats();
-    const auto requests = [&]() { return stats().requests - base.requests; };
-    // Those of the first requests that ignore other applications; the rest are cooperative.
-    const auto ignoringOthers = [&]() { return stats().ignoringOthers - base.ignoringOthers; };
-    const auto retries = [&]() { return stats().retries - base.retries; };
-    const auto dockResets = [&]() { return stats().dockResets - base.dockResets; };
-    // Ends whatever a scenario left: another application in front, twenty seconds later.
-    const auto finish = [&]()
-    {
-        sys.appActive = sys.windowKey = false;
-        sys.frontPid = browser;
-        after(20.0);
-    };
-    // The first request: the game window is shown inactive with `front` in front.
-    const auto request = [&](int front)
-    {
-        finish();
-        sys.frontPid = front;
-        after(1.0);
-        base = stats();
-        Hooks::beginActivationForTest(host);
-    };
-    // The look inside createWindow, which follows the first request at once. The host is told
-    // that createWindow runs by the object createWindow itself holds, not by this test.
-    const auto lookInsideCreateWindow = [&]()
-    {
-        Hooks::lookInsideCreateWindowForTest(host);
-        sys.windowKey = Hooks::focusRepairStatsForTest(host).windowKey;
-    };
-    // A start, as createWindow makes it: the first request and its own look. Every `after` that
-    // follows is a later look, and the first of them stands for the first frame's.
-    const auto start = [&](int front)
-    {
-        request(front);
-        lookInsideCreateWindow();
-    };
+    sys.now = 2000.0;
+    sys.systemFrontmost = true;                 // even this state must never force activation
+    FocusLog focus;
+    host.addListener(&focus);
     Hooks::overrideFocusForTest(host, false, false);
-
-    // An unrelated application in front: the user works there while the client starts.
-    start(editor);
-    check(stats().pending && requests() == 1 && retries() == 0 && dockResets() == 0,
-          "an unrelated application in front: the one cooperative request is made");
-    check(ignoringOthers() == 0,
-          "it does not ignore other applications: activateIgnoringOtherApps:NO before macOS 14");
-    for (double step : { 0.1, 0.5, 0.6, 1.0, 2.0, 3.0 })
-        after(step);                            // 7.2 s after the request
-    check(stats().pending && requests() == 1 && retries() == 0 && dockResets() == 0,
-          "while it stays in front nothing is repeated and the Dock is left alone");
-    check(!host.hasFocus() && !host.isAppActive() && !fallback(), "the game stays without focus");
-    after(3.0);                                 // 10.1 s after the first look
-    check(!stats().pending && requests() == 1 && retries() == 0 && dockResets() == 0,
-          "ten seconds after its first look the host stops waiting, with that one request made");
-    check(ignoringOthers() == 0, "and no request of the whole wait ignored other applications");
-
-    // The first request by who is in front. It ignores other applications when the launcher,
-    // nobody or this process is in front. For an application that did not start the client, and
-    // for one that a denied lookup cannot place, it is cooperative. Before macOS 14 that is the
-    // flag of activateIgnoringOtherApps:, and with YES this one request alone would take the
-    // front from the application the user works in.
-    {
-        struct First { int front; bool lookupDenied; int ignoring; const char* what; };
-        const First firsts[] = {
-            { editor,   false, 0, "an unrelated application in front: the first request is cooperative" },
-            { dock,     false, 0, "the Dock in front: cooperative, the Dock did not start the client" },
-            { terminal, false, 1, "an ancestor in front: the first request ignores other applications" },
-            { script,   false, 1, "the parent in front: the first request ignores other applications" },
-            { 0,        false, 1, "nobody in front: the first request ignores other applications" },
-            { self,     false, 1, "this process in front for the system: the first request ignores other applications" },
-            { terminal, true,  0, "lookup denied, an ancestor above the parent in front: cooperative, it may be a stranger" },
-            { editor,   true,  0, "lookup denied, an unrelated application in front: cooperative" },
-            { script,   true,  1, "lookup denied, the parent in front: the first request ignores other applications" },
-        };
-        for (const First& first : firsts)
-        {
-            sys.ancestryDenied = first.lookupDenied;
-            start(first.front);
-            check(stats().pending && requests() == 1 && retries() == 0 &&
-                  ignoringOthers() == first.ignoring, first.what);
-        }
-        sys.ancestryDenied = false;
-    }
-
-    // The same start, and the system grants the request.
-    start(editor);
-    appKitActive();
-    after(0.4);
-    check(!stats().pending && retries() == 0 && dockResets() == 0 && host.hasFocus(),
-          "the request granted: the game is active and nothing was repeated");
-
-    // The same start; then the system calls this process frontmost and AppKit never activates
-    // it. That state is repaired as after a launcher's start, a second after it began.
-    start(editor);
-    after(3.0);
-    sys.frontPid = self;
-    after(0.1);
-    check(retries() == 0 && dockResets() == 0 && !fallback(),
-          "this process frontmost for the system after the wait: no Dock reset at once");
-    after(0.5);
-    check(retries() == 1 && dockResets() == 0, "the request is repeated within half a second");
-    after(0.6);
-    check(dockResets() == 1 && fallback() && host.hasFocus(),
-          "a second later the system's state is used and the activation reset through the Dock");
-    sys.frontPid = dock;
-    after(0.1);
-    check(stats().pending && retries() == 1 && host.hasFocus(), "the Dock in front does not end the period");
-    after(0.25);
-    check(retries() == 2, "the request follows three tenths of a second after the reset");
-    appKitActive();
-    after(0.05);
-    check(!stats().pending && !fallback() && host.hasFocus() && dockResets() == 1,
-          "AppKit active: the period ends and the system-state fallback is left");
-
-    // The same again, but the requests are refused and the unrelated application is in front
-    // once more: it keeps the front, and the host stops trusting the system's state.
-    start(editor);
-    after(1.0);
-    sys.frontPid = self;
-    after(0.6);
-    after(0.6);
-    after(0.6);
-    check(fallback() && host.hasFocus() && retries() == 2 && dockResets() == 1,
-          "frontmost for the system again: two requests, then the fallback and the Dock reset");
-    sys.frontPid = editor;
-    after(0.2);
-    check(stats().pending && !fallback() && !host.hasFocus(),
-          "the unrelated application in front again: the fallback ends, the period waits");
-    after(0.6);
-    after(0.6);
-    check(retries() == 2 && dockResets() == 1, "and nothing more is requested while it stays there");
-    after(9.0);                                 // 11.6 s after the front first came free
-    check(!stats().pending && retries() == 2 && dockResets() == 1,
-          "not even the request owed after the Dock reset: the wait ends on its ten seconds");
-
-    // The unrelated application quits and nobody is in front: the front is free.
-    start(editor);
-    after(2.0);
-    sys.frontPid = 0;
-    after(0.6);
-    check(retries() == 1 && dockResets() == 0, "nobody in front after the wait: the request is repeated");
-
-    // The user goes from the unrelated application to the parent: the parent may lose the front
-    // whenever it holds it, as before.
-    start(editor);
-    after(2.0);
-    sys.frontPid = script;
-    after(0.6);
-    after(0.6);
-    after(0.6);
-    check(stats().pending && retries() == 2 && dockResets() == 1,
-          "the parent in front after the wait: repeated requests and the Dock reset");
-
-    // An ancestor in front that is not the parent: Terminal above the shells and the script.
-    start(terminal);
-    check(stats().pending && requests() == 1 && retries() == 0, "an ancestor in front: the first request");
-    after(0.2);
-    check(retries() == 0, "not repeated before half a second has passed");
-    after(0.4);
-    check(retries() == 1 && dockResets() == 0, "repeated after half a second");
-    after(0.5);
-    check(retries() == 1 && dockResets() == 1, "after a second the activation is reset through the Dock");
-    sys.frontPid = dock;
-    after(0.1);
-    after(0.25);
-    check(retries() == 2 && stats().pending, "and requested again with the Dock in front");
-    sys.frontPid = terminal;                    // refused: the launcher is in front again
-    after(0.3);
-    after(0.3);
-    after(0.6);
-    check(retries() == 4 && dockResets() == 1,
-          "refused: the requests go on every half second, the Dock reset is not repeated");
-    appKitActive();
-    after(0.1);
-    check(!stats().pending && host.hasFocus(), "until AppKit reports the application active");
-
-    // The parent in front: an application that started the client directly.
-    start(script);
-    after(0.6);
-    after(0.6);
-    check(requests() == 1 && retries() == 1 && dockResets() == 1,
-          "the parent in front: repeated requests and the Dock reset");
-
-    // Nobody in front.
-    start(0);
-    after(0.6);
-    after(0.6);
-    check(requests() == 1 && retries() == 1 && dockResets() == 1,
-          "nobody in front: repeated requests and the Dock reset");
-
-    // This process in front for the system while AppKit reports it inactive.
-    start(self);
-    after(0.6);
-    check(retries() == 1 && !fallback() && !host.hasFocus(),
-          "frontmost for the system, inactive for AppKit: the request is repeated");
-    after(0.6);
-    check(fallback() && host.hasFocus() && dockResets() == 1,
-          "after a second the system's state is used and the activation reset through the Dock");
-    sys.frontPid = dock;
-    after(0.35);
-    appKitActive();
-    after(0.1);
-    check(!stats().pending && !fallback() && host.hasFocus() && retries() == 2,
-          "the request after the reset is granted: active without a switch of applications");
-
-    // Without a Dock process the requests simply go on.
-    sys.dockPid = 0;
-    start(terminal);
-    after(0.6);
-    after(0.6);
-    check(retries() == 2 && dockResets() == 0 && stats().pending, "no Dock process: requests only");
-    sys.dockPid = dock;
-
-    // The user goes to another application after the first request: that ends the period, also
-    // when the launcher is in front again afterwards.
-    start(terminal);
-    after(0.6);
-    sys.frontPid = browser;
-    after(0.2);
-    check(!stats().pending && retries() == 1 && dockResets() == 0,
-          "the user switches to another application: the requests end");
-    sys.frontPid = terminal;
-    after(0.6);
-    after(0.6);
-    check(!stats().pending && retries() == 1 && dockResets() == 0, "and do not resume behind the user's back");
-    start(editor);
-    sys.frontPid = browser;
-    after(0.3);
-    check(!stats().pending, "a switch away from the unrelated application ends the wait too");
-    sys.frontPid = 0;
-    after(0.6);
-    check(retries() == 0 && dockResets() == 0, "nothing is requested after that");
-
-    // The process lookup is denied: an ancestor above the parent cannot be told from an
-    // unrelated application and is treated as one. The parent needs no lookup.
-    sys.ancestryDenied = true;
-    start(terminal);
-    after(0.6);
-    after(0.6);
-    after(1.0);
-    check(stats().pending && requests() == 1 && retries() == 0 && dockResets() == 0,
-          "lookup denied: an ancestor above the parent gets the one request, like a stranger");
-    start(script);
-    after(0.6);
-    after(0.6);
-    check(retries() == 1 && dockResets() == 1, "lookup denied: the parent is still the launcher");
-    sys.ancestryDenied = false;
-
-    // createWindow looks once, right after the first request, and the host does not take that
-    // look for the start of a period's ten seconds: it marks the time createWindow runs. No
-    // window is created here, so the look is made in createWindow's place
-    // (lookInsideCreateWindowForTest), marked by the object that createWindow holds for this.
-    // The checks therefore run the client's own lines for the mark. What they cannot see is
-    // that createWindow holds that object; macos_host_test, which opens a real window, checks it.
-    {
-        request(terminal);
-        const Hooks::ActivationStats atRequest = stats();
-        lookInsideCreateWindow();
-        check(stats().looks == atRequest.looks + 1 &&
-              stats().looksInsideCreateWindow == atRequest.looksInsideCreateWindow + 1,
-              "the look made in createWindow's place is one look, counted as made inside createWindow");
-        check(stats().pending && !stats().lookCounted,
-              "the look inside createWindow does not start the period's ten seconds");
-        after(6.5);
-        check(stats().looks == atRequest.looks + 2 &&
-              stats().looksInsideCreateWindow == atRequest.looksInsideCreateWindow + 1,
-              "the look after it is one more look, and not one made inside createWindow");
-        check(stats().pending && stats().lookCounted, "the first look after createWindow starts the ten seconds");
-    }
-
-    // The host is not pumped while the engine initialises: its first look at a start after the
-    // one inside createWindow comes six to seven seconds after the first request on the Intel
-    // test machine and later on a slower one. A period's ten seconds count from that look, so the
-    // repair is the same however long the initialisation took. Here a launcher's period is first
-    // looked at 10.5 s and 30 s after the request (a cold disk cache, a debug build): it still
-    // gets its Dock reset and its repeated requests, and ends ten seconds after that look.
-    for (double firstLook : { 10.5, 30.0 })
-    {
-        char what[240];
-        const auto say = [&](const char* text)
-        {
-            std::snprintf(what, sizeof what, "a launcher's period first looked at %.1f s after the request, %s",
-                          firstLook, text);
-            return what;
-        };
-        // The launcher is still in front: the system refused the first request.
-        start(terminal);
-        after(firstLook);
-        check(stats().pending && requests() == 1 && dockResets() == 1 && retries() == 0 && !fallback(),
-              say("the launcher in front: the period goes on and the activation is reset through the Dock at once"));
-        sys.frontPid = dock;
-        after(0.35);
-        check(stats().pending && retries() == 1, say("the launcher in front: the request after the reset is made"));
-        sys.frontPid = terminal;                // refused: the launcher is in front again
-        after(0.6);
-        after(0.6);
-        check(stats().pending && retries() == 3 && dockResets() == 1,
-              say("the launcher in front: the requests go on every half second, with the one Dock reset"));
-        after(8.3);                             // 9.85 s after the first look
-        check(stats().pending && retries() == 4,
-              say("the launcher in front: the period still runs 9.85 s after that look"));
-        after(0.2);                             // 10.05 s after the first look
-        check(!stats().pending && retries() == 4 && dockResets() == 1 && !host.hasFocus(),
-              say("the launcher in front: the period ends ten seconds after that look"));
-        // This process is in front for the system while AppKit reports it inactive, the state
-        // seen after a start from Terminal on Apple silicon.
-        start(terminal);
-        sys.frontPid = self;
-        after(firstLook);
-        check(stats().pending && fallback() && host.hasFocus() && dockResets() == 1 && retries() == 0,
-              say("this process in front for the system: its state is used and the activation reset through the Dock at once"));
-        sys.frontPid = dock;
-        after(0.35);
-        check(stats().pending && retries() == 1 && host.hasFocus(),
-              say("this process in front for the system: the request after the reset is made"));
-        sys.frontPid = self;                    // refused: in front for the system again, AppKit inactive
-        after(0.6);
-        after(0.6);
-        check(stats().pending && retries() == 3 && dockResets() == 1 && fallback(),
-              say("this process in front for the system: the requests go on every half second, with the one Dock reset"));
-        after(8.3);                             // 9.85 s after the first look
-        check(stats().pending && retries() == 4,
-              say("this process in front for the system: the period still runs 9.85 s after that look"));
-        after(0.2);                             // 10.05 s after the first look
-        check(!stats().pending && retries() == 4 && fallback() && host.hasFocus(),
-              say("this process in front for the system: the period ends ten seconds after that look, "
-                  "the system's state still holding the focus"));
-    }
-    // The request after that late Dock reset is granted: active without a click.
-    start(terminal);
-    sys.frontPid = self;
-    after(30.0);
-    sys.frontPid = dock;
-    after(0.35);
-    appKitActive();
-    after(0.05);
-    check(!stats().pending && !fallback() && host.hasFocus() && retries() == 1 && dockResets() == 1,
-          "a launcher's period first looked at 30.0 s after the request, the request after the reset granted: active");
-    // First looked at within ten seconds of the request (6.5 s, the Intel test machine), a period
-    // makes the requests it made when its ten seconds counted from the request, and goes on
-    // making them until ten seconds after that look.
-    start(terminal);
-    after(6.5);
-    check(stats().pending && dockResets() == 1 && retries() == 0,
-          "first look 6.5 s after the request: the activation is reset through the Dock at once");
-    sys.frontPid = dock;
-    after(0.35);
-    sys.frontPid = terminal;
-    after(0.6);
-    after(0.6);                                 // 8.05 s after the request
-    check(retries() == 3 && dockResets() == 1, "first look 6.5 s after the request: three requests in the next 1.55 s");
-    after(2.0);                                 // 10.05 s after the request, 3.55 s after the first look
-    check(stats().pending && retries() == 4,
-          "first look 6.5 s after the request: ten seconds after the request the period goes on");
-    after(6.3);                                 // 9.85 s after the first look
-    check(stats().pending && retries() == 5,
-          "first look 6.5 s after the request: the period still runs 9.85 s after that look");
-    after(0.2);                                 // 10.05 s after the first look
-    check(!stats().pending && retries() == 5 && dockResets() == 1,
-          "first look 6.5 s after the request: the period ends ten seconds after that look");
-    // The pump inside createWindow can itself deliver a click into the new window. A click that
-    // ends a wait behind an unrelated application counts the ten seconds from the click, and
-    // when it arrives in a frame's pump no look counts them again. This one arrives inside
-    // createWindow, with the engine's initialisation still ahead: the first look after
-    // createWindow counts them from itself, or a first frame 10.5 s later would end the period
-    // that the click began, before its Dock reset.
-    request(editor);
-    Hooks::lookInsideCreateWindowForTest(host, [&] { click(); });
-    sys.windowKey = Hooks::focusRepairStatsForTest(host).windowKey;
-    check(stats().pending && retries() == 1 && dockResets() == 0 && !stats().lookCounted,
-          "a click delivered by the look inside createWindow: it requests at once, and the ten seconds are "
-          "still to be counted from the first look after createWindow");
-    after(10.5);
-    check(stats().pending && stats().lookCounted && retries() == 1 && dockResets() == 1,
-          "the first look 10.5 s after that click: the period goes on and the activation is reset through the Dock");
-    sys.frontPid = dock;
-    after(0.35);
-    sys.frontPid = editor;                      // refused: the application clicked away from is in front again
-    after(9.5);                                 // 9.85 s after the first look
-    check(stats().pending && retries() == 3,
-          "the period that the click inside createWindow began still runs 9.85 s after the first look");
-    after(0.2);                                 // 10.05 s after the first look
-    check(!stats().pending && retries() == 3 && dockResets() == 1, "and ends ten seconds after that look");
-    // A click can also arrive in the first frame's pump, which routes it before it looks. In a
-    // launcher's period the requests were free to run from the start and the click starts no
-    // count of its own, so it does not stand in for the first look either: the look of that same
-    // pump starts the ten seconds. Were the click taken for it, a first frame 10.5 s after the
-    // request would end the period right after the user's click, before its Dock reset.
-    start(terminal);
-    apply(10.5);
-    click();
-    check(stats().pending && retries() == 1 && !stats().lookCounted,
-          "a click in the first frame's pump of a launcher's period: it requests at once, and the ten seconds "
-          "are still to be counted from that pump's look");
-    pump();
-    check(stats().pending && stats().lookCounted && retries() == 1 && dockResets() == 1,
-          "the look of that pump, 10.5 s after the request: the period goes on and the activation is reset "
-          "through the Dock");
-
-    // A start behind a bystander (here Terminal, the lookup denied) whose one request left this
-    // process frontmost for the system and inactive for AppKit is repaired in full however late
-    // the first look comes: the ten seconds count from that look, which is also the first to find
-    // the front free.
-    sys.ancestryDenied = true;
-    for (double firstLook : { 8.8, 9.5, 10.5 })
-    {
-        char what[160];
-        const auto say = [&](const char* text)
-        {
-            std::snprintf(what, sizeof what, "first look %.1f s after the request: %s", firstLook, text);
-            return what;
-        };
-        start(terminal);
-        sys.frontPid = self;
-        after(firstLook);
-        check(stats().pending && requests() == 1 && retries() == 1 && dockResets() == 0 && !fallback(),
-              say("the period goes on and the request is repeated"));
-        after(0.6);
-        after(0.6);
-        check(retries() == 2 && dockResets() == 1 && fallback() && host.hasFocus(),
-              say("a second later the system's state is used and the activation reset through the Dock"));
-        sys.frontPid = dock;
-        after(0.35);
-        check(stats().pending && retries() == 3, say("the request after the reset is made"));
-        appKitActive();
-        after(0.05);
-        check(!stats().pending && !fallback() && host.hasFocus(), say("and granted: active without a click"));
-    }
-    // The same late look with the bystander still in front: the ten seconds count from that look
-    // as for every period, so the host goes on waiting. Nothing is asked while the bystander stays.
-    start(terminal);
-    after(10.5);
-    check(stats().pending && retries() == 0 && dockResets() == 0 && !host.hasFocus(),
-          "first look 10.5 s after the request, the bystander still in front: the host goes on waiting and asks nothing");
-    after(9.9);
-    check(stats().pending && retries() == 0 && dockResets() == 0,
-          "the wait behind the bystander lasts ten seconds from that look");
-    after(0.2);                                 // 10.1 s after the first look
-    check(!stats().pending && requests() == 1 && retries() == 0 && dockResets() == 0 && !host.hasFocus(),
-          "then the host stops waiting, with the one request made");
-    // This process comes to the front during that wait: repaired as after an earlier look.
-    start(terminal);
-    after(10.5);
-    sys.frontPid = self;
-    after(4.0);                                 // 14.5 s after the request
-    check(stats().pending && retries() == 1 && dockResets() == 0 && !fallback(),
-          "this process in front 4 s after a first look at 10.5 s: the request is repeated");
-    after(0.6);
-    after(0.6);
-    check(retries() == 2 && dockResets() == 1 && fallback() && host.hasFocus(),
-          "and a second later the system's state is used and the activation reset through the Dock");
-    sys.ancestryDenied = false;
-    // The one cooperative request can be granted for the system at once. The look inside
-    // createWindow then already finds this process in front and counts the ten seconds for a
-    // front that came free. The next look counts them from itself all the same, so this start is
-    // repaired too when that look comes late.
-    request(editor);
-    sys.frontPid = self;
+    const auto apply = [&](double seconds) { sys.now += seconds; Hooks::setSystemFocusForTest(host, &sys); };
+    const auto pump = [&]() { Hooks::pumpFocusForTest(host); };
+    const auto state = [&]() { return Hooks::startupStateForTest(host); };
     apply(0.0);
-    lookInsideCreateWindow();
-    after(10.5);
-    check(stats().pending && fallback() && host.hasFocus() && dockResets() == 1 && retries() == 0,
-          "an unrelated application at the request, this process in front at the look inside createWindow, the next "
-          "look 10.5 s later: the system's state is used and the activation reset through the Dock");
-    // That look inside createWindow made the period's one count for a front that came free. When
-    // the unrelated application is in front again at the first look and the front comes free once
-    // more later, the request is repeated but the ten seconds are not counted a third time: the
-    // period ends ten seconds after the first look.
-    request(editor);
-    sys.frontPid = self;
+    Hooks::launchActivationForTest(host);
+    check(state().requests == 1 && !host.isAppActive(), "one launch request, without inventing activation");
+    apply(0.3); pump();
+    apply(1.0); pump();
+    check(state().requests == 1, "no force-activation fallback or retries before the window exists");
+
+    apply(6.7);                                // engine startup outlasted the launch activation wait
+    sys.windowVisible = true;
     apply(0.0);
-    lookInsideCreateWindow();
-    sys.frontPid = editor;
-    after(1.0);                                 // the first look: ten seconds from here
-    sys.frontPid = self;
-    after(9.5);                                 // 10.5 s after the request: the front is free again
-    check(stats().pending && retries() == 1 && dockResets() == 0,
-          "the front free at the look inside createWindow and again 9.5 s after the first look: the request is repeated");
-    after(0.6);                                 // 10.1 s after the first look
-    check(!stats().pending && retries() == 1 && dockResets() == 0,
-          "but the count for a front that came free was made inside createWindow: the period ends ten seconds "
-          "after the first look");
-
-    // A period that waited behind an unrelated application counts its ten seconds once more from
-    // the first look that finds the front free. In the starts above that look is the first look
-    // itself, or follows it so closely that the ten seconds of the first look cover everything
-    // checked; the second count decides nothing there. It decides when the front comes free late
-    // in those ten seconds: the requests, the system-state fallback and the Dock reset would
-    // otherwise get what is left of them, here 2 s. The first look comes 1.0 s after the request
-    // and finds the editor in front; this process is in front for the system, inactive for
-    // AppKit, from the look 9.0 s after the request.
-    start(editor);
-    after(1.0);                                 // the first look: ten seconds from here
-    sys.frontPid = self;
-    after(8.0);                                 // 9.0 s after the request: the front is free
-    check(stats().pending && retries() == 1 && dockResets() == 0 && !fallback(),
-          "this process in front 8.0 s after the first look: the request is repeated");
-    after(0.6);
-    after(0.6);                                 // 10.2 s after the request
-    check(retries() == 2 && dockResets() == 1 && fallback() && host.hasFocus(),
-          "front free 8.0 s after the first look: a second later the system's state is used and the "
-          "activation reset through the Dock");
-    sys.frontPid = dock;
-    after(0.35);
-    check(stats().pending && retries() == 3, "front free 8.0 s after the first look: the request after the reset is made");
-    sys.frontPid = self;                        // refused: in front for the system again, AppKit inactive
-    after(0.6);                                 // 11.15 s after the request, 10.15 s after the first look
-    check(stats().pending && retries() == 4,
-          "ten seconds after the first look the period goes on: they count once more from the look that "
-          "found the front free");
-    after(7.7);                                 // 18.85 s after the request, 9.85 s after the front came free
-    check(stats().pending && retries() == 5 && dockResets() == 1,
-          "the period still runs 9.85 s after the look that found the front free");
-    after(0.2);                                 // 10.05 s after the front came free
-    check(!stats().pending && retries() == 5 && fallback() && host.hasFocus(),
-          "and ends ten seconds after that look, the system's state still holding the focus");
-    // The front also comes free when the unrelated application quits, which leaves nobody in
-    // front, and when the user goes to the client's parent: both count alike. Each of these
-    // starts follows one that has used its second count, so they also show that this count is
-    // once per period and not once per process: a new first request brings it back.
+    Hooks::windowOrderedInForTest(host, true);
+    check(state().requests == 2 && state().fullscreenWaiting && !state().fullscreenEntering,
+          "window order-in requests again, inactive full-screen start waits");
+    apply(0.99); pump();
+    check(state().requests == 2, "visible-window requests are at least one second apart");
+    apply(0.01); pump(); pump();
+    check(state().requests == 3, "one request at the next second, repeated pumps do not duplicate it");
+    for (unsigned i = 2; i <= 5; ++i)
     {
-        struct Free { int front; const char* goesOn; const char* reset; };
-        const Free frees[] = {
-            { 0, "nobody in front 9.5 s after the first look: the requests go on past the ten seconds of the "
-                 "first look, in a start that follows one which used its second count",
-                 "nobody in front: the Dock reset follows a second after the front came free" },
-            { script, "the parent in front 9.5 s after the first look: the requests go on past the ten seconds "
-                      "of the first look, again after a start that used its second count",
-                      "the parent in front: the Dock reset follows a second after the front came free" },
-        };
-        for (const Free& free : frees)
-        {
-            start(editor);
-            after(1.0);                         // the first look: ten seconds from here
-            sys.frontPid = free.front;
-            after(9.5);                         // 10.5 s after the request: the front is free
-            after(0.6);                         // 10.1 s after the first look
-            check(stats().pending && retries() == 2 && dockResets() == 0, free.goesOn);
-            after(0.6);                         // 1.2 s after the front came free
-            check(stats().pending && retries() == 2 && dockResets() == 1, free.reset);
-        }
+        apply(1.0); pump();
+        check(state().requests == i + 2, "one cooperative request per second through the five-second limit");
     }
+    apply(0.01); pump();
+    apply(6.0); pump();
+    check(state().requests == 7 && state().fullscreenWaiting && !host.isAppActive(),
+          "bounded retries end without dropping the pending full-screen request");
 
-    // The count for a front that comes free is made once per period. A front that goes back to
-    // the unrelated application and returns to this process does not start the ten seconds a
-    // third time. While the unrelated application is in front again, the wait lasts until ten
-    // seconds after the front first came free, here 3 s longer than the ten seconds of the first
-    // look.
-    start(editor);
-    after(1.0);                                 // the first look: ten seconds from here
-    sys.frontPid = self;
-    after(3.0);                                 // free 4.0 s after the request: ten seconds once more from here
-    sys.frontPid = editor;
-    after(0.1);
-    after(7.4);                                 // 11.5 s after the request: 10.5 s after the first look,
-                                                // 7.5 s after the front came free
-    check(stats().pending && retries() == 1 && dockResets() == 0,
-          "the unrelated application in front again: the wait goes on past the ten seconds of the first look, "
-          "until ten seconds after the front first came free");
-    sys.frontPid = self;
-    after(2.1);                                 // 9.6 s after the front first came free
-    check(stats().pending && retries() == 2, "this process in front a second time: the request is repeated");
-    after(0.5);                                 // 10.1 s after the front first came free
-    check(!stats().pending && retries() == 2 && dockResets() == 0,
-          "but the ten seconds are not counted a third time: the period ends");
-
-    // The Dock reset puts the Dock in front until this process asks again, so no period ends
-    // between the two. Here a launcher's period is first looked at 0.2 s after the request and
-    // then not for 9.8 s (a pump that stalls): the reset comes 9.8 s into the ten seconds.
-    start(terminal);
-    sys.frontPid = self;
-    after(0.2);
-    after(9.8);
-    check(fallback() && dockResets() == 1 && retries() == 0,
-          "a look 9.8 s after the first one: the system's state is used and the activation reset at once");
-    sys.frontPid = dock;
-    after(0.25);                                // 10.05 s after the first look
-    check(stats().pending && retries() == 0 && host.hasFocus(),
-          "ten seconds over, the request after the reset still owed: the period goes on");
-    after(0.1);
-    check(stats().pending && retries() == 1, "the owed request is made");
-    sys.frontPid = self;                        // refused: this process in front again, AppKit inactive
-    after(0.3);
-    check(stats().pending && retries() == 1, "it has half a second for its answer, and no request follows it");
-    after(0.3);
-    check(!stats().pending && retries() == 1 && fallback() && host.hasFocus(),
-          "then the period ends, with the system's state still holding the focus");
-    // A pump that comes late after the reset still makes that request, and sees it granted.
-    start(terminal);
-    sys.frontPid = self;
-    after(0.2);
-    after(9.8);
-    sys.frontPid = dock;
-    after(2.5);                                 // 12.3 s after the first look
-    check(stats().pending && retries() == 1 && dockResets() == 1,
-          "no pump for 2.5 s after the Dock reset: the owed request is made by the next one");
-    appKitActive();
-    after(0.05);
-    check(!stats().pending && !fallback() && host.hasFocus(), "and granted: active without a click");
-    // The first request after the reset settles that debt, also when a click makes it.
-    start(terminal);
-    sys.frontPid = self;
-    after(0.2);
-    after(9.8);
-    sys.frontPid = dock;
-    apply(0.1);
-    click();
-    check(stats().pending && retries() == 1, "a click with the Dock in front after the reset: its request is the owed one");
-    after(0.55);                                // 10.45 s after the first look
-    check(!stats().pending && retries() == 1, "half a second later the period ends without another request");
-
-    // A click into the inactive game window is the user choosing the game: the requests start,
-    // also against the unrelated application, with one Dock reset for the period.
-    start(editor);
-    after(2.0);
-    click();
-    check(stats().pending && retries() == 1, "a click into the inactive game window requests at once");
-    after(0.6);
-    check(retries() == 2 && dockResets() == 0, "and the requests go on against the application clicked away from");
-    after(0.6);
-    check(dockResets() == 1, "with the Dock reset a second after the click");
-    sys.frontPid = dock;
-    apply(0.4);
-    click();                                    // while the reset has the Dock in front
-    sys.frontPid = editor;
-    after(0.6);
-    apply(1.5);
-    click();
+    sys.appActive = sys.windowKey = true;       // a permission prompt answered, or a later click
+    apply(0.0);
+    focus.reset();
     pump();
-    check(retries() == 5 && dockResets() == 1 && stats().pending,
-          "further clicks request again and do not repeat the Dock reset");
-    after(7.0);
-    check(!stats().pending, "ten seconds after the first click the period ends");
-    click();
-    after(1.2);
-    check(stats().pending && dockResets() == 2,
-          "a click that finds no period running starts one, with its own Dock reset");
-    sys.frontPid = dock;
-    after(10.0);
-    check(stats().pending && retries() == 7,
-          "no pump for ten seconds after that reset: the request it owes is still made");
-    // A period that a click starts counts its ten seconds from the click. Clicks arrive in a pump,
-    // after the engine's initialisation, so the look that follows does not count them again.
-    finish();
-    sys.frontPid = editor;
-    after(1.0);
-    base = stats();
-    click();
-    after(0.3);
-    after(0.9);                                 // 1.2 s after the click: the Dock reset
-    sys.frontPid = dock;
-    after(0.35);
-    sys.frontPid = editor;
-    after(8.35);                                // 9.9 s after the click
-    check(stats().pending && retries() == 3 && dockResets() == 1,
-          "a period that a click starts still runs 9.9 s after the click");
-    after(0.15);                                // 10.05 s after the click, 9.75 s after the look that followed it
-    check(!stats().pending && retries() == 3,
-          "and ends ten seconds after the click, not ten seconds after the look that followed it");
+    check(host.hasFocus() && !state().fullscreenWaiting && state().fullscreenEntering,
+          "activation after all startup waits expired immediately starts the pending Space entry");
+    pump(); Hooks::focusCallbackForTest(host);
+    check(focus.activations == 1 && focus.focusChanges == 1 && state().requests == 7,
+          "delayed activation is reported once and sends no further requests");
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 7, "leaving the game after activation never restarts startup requests");
 
-    // A click that ends a wait behind the bystander starts the ten seconds as well.
-    start(editor);
-    after(8.0);
-    click();
-    after(4.0);                                 // 12.0 s after the first request, 4.0 s after the click
-    check(stats().pending && retries() == 1 && dockResets() == 1,
-          "a click after eight seconds of waiting: the period runs for ten seconds from the click");
+    // A windowed start uses the same request path. A hidden/minimized window does not ask.
+    apply(10.0);
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, false);
+    sys.windowVisible = false;
+    apply(1.0); pump();
+    check(state().requests == 2 && !state().fullscreenWaiting && !state().fullscreenEntering,
+          "hidden windowed start makes no repeat request and has no pending Space entry");
+    sys.windowVisible = true;
+    apply(0.5); pump();
+    check(state().requests == 3, "a visible window can retry within the original deadline");
+    apply(0.5); pump();
+    check(state().requests == 3, "visibility changes do not shorten the one-second spacing");
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::focusCallbackForTest(host);
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 3, "activation by callback ends retries even if focus is lost again before a pump");
 
-    // The click arrives when the system already calls this process frontmost, and the unrelated
-    // application is in front again afterwards: the click chose the game over it all the same.
-    start(editor);
-    after(2.0);
-    sys.frontPid = self;
-    apply(0.1);
-    click();
-    sys.frontPid = editor;
-    after(0.6);
-    check(stats().pending && retries() == 2,
-          "a click with this process frontmost: the application left behind may lose the front too");
-    // The same when the click arrives while the period's own Dock reset has the Dock in front:
-    // the Dock is not what the user clicked away from, the unrelated application that the period
-    // waited behind is.
-    start(editor);
-    after(1.0);
-    sys.frontPid = self;
-    after(0.6);
-    after(0.6);
-    after(0.6);                                 // in front for 1.2 s: the fallback and the Dock reset
-    sys.frontPid = dock;
-    apply(0.1);
-    click();
-    sys.frontPid = editor;
-    after(0.6);
-    check(stats().pending && retries() == 4 && dockResets() == 1,
-          "a click while the reset has the Dock in front: the unrelated application of the first request is "
-          "the one clicked away from, and may lose the front");
+    // No burst of overdue requests after the engine stalls beyond the five-second window.
+    apply(10.0);
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, true);
+    apply(6.0); pump();
+    check(state().requests == 2 && state().fullscreenWaiting, "a long engine stall expires requests without a burst");
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::focusCallbackForTest(host);
+    check(state().fullscreenEntering && !state().fullscreenWaiting,
+          "delayed activation callback starts full screen without needing another pump");
 
-    // Every application the user leaves with a click into the inactive game window may lose the
-    // front until the period ends. A later click made with another application in front adds
-    // that one. It does not replace the application of the click that started the period or
-    // ended its wait, against which the requests would otherwise stop early.
-    start(editor);
-    after(2.0);
-    click();                                    // ends the wait: the editor may lose the front
-    sys.frontPid = browser;
-    apply(0.3);
-    click();                                    // the user went to the browser and clicks again
+    // Active at launch, the activation lost before the window exists (owner start on macOS 15.7):
+    // the window ordered in while inactive asks again, and the activation enters the Space.
+    sys.appActive = sys.windowKey = false;
+    sys.windowVisible = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    sys.appActive = true;
+    apply(0.03); pump();
+    check(state().requests == 1 && host.isAppActive(), "the launch request is answered before the window exists");
+    sys.appActive = false;
+    apply(1.5); pump();
+    check(state().requests == 1 && !host.isAppActive(), "an activation lost before the window exists sends no request");
+    sys.windowVisible = true;
+    apply(0.0);
+    Hooks::windowOrderedInForTest(host, true);
+    check(state().requests == 2 && state().fullscreenWaiting && !state().fullscreenEntering,
+          "the window ordered in after the lost activation requests again, its full-screen start waits");
+    apply(1.0); pump();
+    check(state().requests == 3, "and repeats once a second while the window waits");
+    sys.appActive = sys.windowKey = true;
+    apply(0.2);
+    Hooks::focusCallbackForTest(host);
+    check(state().fullscreenEntering && !state().fullscreenWaiting, "the activation that follows enters the Space");
+    sys.appActive = sys.windowKey = false;
+    apply(1.0); pump();
+    check(state().requests == 3, "leaving after that activation never restarts the requests");
+
+    // macOS 11-13: the launch request is answered and lost; nothing is requested again.
+    sys.cooperativeActivation = false;
+    sys.windowVisible = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    sys.appActive = true;
+    apply(0.03); pump();
+    sys.appActive = false;
+    apply(1.5); pump();
+    sys.windowVisible = true;
+    apply(0.0);
+    Hooks::windowOrderedInForTest(host, true);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 1 && state().fullscreenWaiting, "11-13 lost launch activation: no request at order-in");
+    sys.cooperativeActivation = true;
+
+    // macOS 11-13's single, non-cooperative request must not be repeated.
+    sys.appActive = sys.windowKey = false;
+    sys.cooperativeActivation = false;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host);
+    Hooks::windowOrderedInForTest(host, true);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 1 && state().fullscreenWaiting, "11-13 request only at launch, never on order-in or pumps");
+    sys.appActive = sys.windowKey = true;
+    apply(1.0); pump();
+    check(state().fullscreenEntering, "11-13 delayed activation still starts the pending Space entry");
+
+    sys.appActive = sys.windowKey = false;
+    sys.cooperativeActivation = true;
+    apply(10.0); pump();
+    Hooks::launchActivationForTest(host, true);
+    Hooks::windowOrderedInForTest(host, false);
+    for (int i = 0; i < 6; ++i) { apply(1.0); pump(); }
+    check(state().requests == 0, "scripted forced-focus runs never ask for activation");
+
+    sys.appActive = sys.windowKey = true;
+    apply(0.0);
+    Hooks::launchActivationForTest(host);        // finish the fixture with no pending startup state
     pump();
-    check(stats().pending && retries() == 2,
-          "a later click with another application in front: the period goes on against that one");
-    sys.frontPid = editor;
-    after(0.6);
-    check(stats().pending && retries() == 3,
-          "the application of the first click may still lose the front after a later click with another one in front");
-    sys.frontPid = browser;
-    after(0.6);                                 // 1.5 s after the first click: the Dock reset is due
-    check(stats().pending && retries() == 3 && dockResets() == 1,
-          "and so may the application of the later click: the Dock reset is made with it in front");
-    sys.frontPid = terminal;                    // no ancestor's turn: an unrelated application was in front at the start
-    after(0.2);
-    check(!stats().pending, "an application the user went to without a click still ends the period");
-    // The applications clicked away from belong to one period. A click that finds no period
-    // running starts a new one against the application in front at that click alone: the editor
-    // and the browser, clicked away from in the period before, are again applications the user
-    // can go to, and that ends the requests.
-    apply(1.0);
-    click();                                    // no period running; Terminal is in front
-    pump();
-    check(stats().pending && retries() == 4,
-          "a click that finds no period running starts one against the application in front at the click");
-    sys.frontPid = editor;
-    after(0.6);
-    check(!stats().pending && retries() == 4,
-          "an application clicked away from in the period before is not this period's: the user going to it "
-          "ends the requests");
-
-    // The same decision with the lookup the client makes: getppid() and the kernel's process
-    // table instead of the simulated chain that every scenario above uses. The application in
-    // front is this test's real parent, then that parent's parent, then a process outside the
-    // chain. launchd (pid 1) is no application and nobody's launcher: where the test's parent, or
-    // its parent's parent, is launchd (the test was started detached from a shell that has
-    // exited), a process outside the chain stands in, and the host must take it for a bystander.
-    {
-        sys.realProcessTable = true;
-        const int outside = 0x7FFFFFF0;         // no process has this pid
-        const int realParent = static_cast<int>(getppid());
-        const int realGrandparent = realParent > 1 ? static_cast<int>(macos::parentPidOf(realParent)) : -1;
-        const int launcher = realParent > 1 ? 1 : 0;      // expected first requests that ignore other applications
-        const int further = realGrandparent > 1 ? 1 : 0;
-        start(realParent > 1 ? realParent : outside);
-        check(stats().pending && requests() == 1 && ignoringOthers() == launcher,
-              "the real process table, this test's parent in front: the launcher (a bystander stands in when "
-              "launchd is the parent)");
-        after(0.6);
-        after(0.6);
-        check(retries() == launcher && dockResets() == launcher,
-              "the real process table: repeated requests and the Dock reset against the real parent, none against "
-              "a bystander");
-        start(realGrandparent > 1 ? realGrandparent : outside);
-        check(stats().pending && requests() == 1 && ignoringOthers() == further,
-              "the real process table, the parent's parent in front: an ancestor found through sysctl is the "
-              "launcher (a bystander stands in when the chain has ended at launchd)");
-        start(outside);
-        check(stats().pending && requests() == 1 && ignoringOthers() == 0,
-              "the real process table, an application outside the chain in front: a bystander");
-        sys.realProcessTable = false;
-    }
-
-    // A game that restarts itself (the player activates a mod): the first instance starts the new
-    // one and quits. When it was the active application at that moment it says so in the new
-    // instance's environment (RestartInFront.h), and the new instance is entitled to the front:
-    // the application that the system put in front in the first instance's place counts as the
-    // launcher. Here the first instance has exited: launchd (pid 1) is this process's parent.
-    const char* const marker = macos::kRestartedInFrontVariable;
-    const int startParent = sys.parentPid, startAncestor = sys.ancestors[0];
-    sys.parentPid = 1;
-    sys.ancestors[0] = 0;
-    // The host read the environment at this process's first activation request, at the top of
-    // this test: a marker that appears afterwards changes nothing.
-    setenv(marker, "1", 1);
-    start(editor);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 0,
-          "the restart marker set after this process's first request is not read: the unrelated application is a bystander");
-    // As a process that has just started: the marker is read at the first request.
-    Hooks::forgetRestartMarkerForTest(host);
-    start(editor);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 1 && retries() == 0,
-          "restarted in front, an unrelated application in front: the first request ignores other applications, "
-          "as for a launcher");
-    after(0.6);
-    after(0.6);
-    check(retries() == 1 && dockResets() == 1,
-          "restarted in front: the request is repeated and the activation reset through the Dock, as for a launcher");
-    sys.frontPid = dock;
-    after(0.35);
-    sys.frontPid = editor;                      // refused: the unrelated application is in front again
-    after(0.6);
-    check(stats().pending && retries() == 3, "restarted in front: the requests go on against that application");
-    sys.frontPid = browser;
-    after(0.2);
-    check(!stats().pending, "restarted in front: an application the user goes to still ends the requests");
-    // Read once: a game window that the same process shows again starts like any other.
-    start(editor);
-    after(0.6);
-    after(0.6);
-    after(1.0);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 0 && retries() == 0 && dockResets() == 0,
-          "the marker is read once: at the next first request of the same process the unrelated application is a bystander");
-    // Only the value 1 is the marker.
-    setenv(marker, "0", 1);
-    Hooks::forgetRestartMarkerForTest(host);
-    start(editor);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 0,
-          "the variable with the value 0: the unrelated application is a bystander");
-    // Without the marker: a game that restarted in the background, and every other start whose
-    // parent has exited.
-    unsetenv(marker);
-    Hooks::forgetRestartMarkerForTest(host);
-    start(editor);
-    after(0.6);
-    after(0.6);
-    after(1.0);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 0 && retries() == 0 && dockResets() == 0,
-          "restarted without the marker, an unrelated application in front: a bystander with its one cooperative request");
-    // The marker belongs to this process's first showing of its game window, also when that
-    // showing finds the application active already and has nothing to ask: a window shown again
-    // later starts like any other.
-    setenv(marker, "1", 1);
-    Hooks::forgetRestartMarkerForTest(host);
-    finish();
-    appKitActive();
-    after(1.0);
-    base = stats();
-    Hooks::beginActivationForTest(host);
-    check(!stats().pending && requests() == 0, "restarted in front and active at the first showing: nothing is asked");
-    start(editor);
-    check(stats().pending && requests() == 1 && ignoringOthers() == 0,
-          "that showing used the marker up: at the next one the unrelated application is a bystander");
-
-    // The new instance can make its first request while the first one is still running and in
-    // front. The first instance is then the parent, a launcher like any other. Once it has
-    // exited, the application found in front took its place, and for a game restarted in front
-    // that application counts as the launcher.
-    const int firstInstance = 4242;
-    const auto restartedBy = [&](bool inFront)
-    {
-        if (inFront)
-            setenv(marker, "1", 1);
-        else
-            unsetenv(marker);
-        Hooks::forgetRestartMarkerForTest(host);
-        sys.parentPid = firstInstance;
-        start(firstInstance);
-    };
-    restartedBy(true);
-    check(stats().pending && ignoringOthers() == 1,
-          "restarted in front, the first instance still in front: it is the parent, a launcher");
-    sys.parentPid = 1;                          // the first instance has exited
-    sys.frontPid = browser;                     // and the system put the browser in front
-    after(6.5);
-    check(stats().pending && dockResets() == 1,
-          "restarted in front: the application in front once the first instance has exited counts as the launcher");
-    sys.frontPid = dock;
-    after(0.35);
-    sys.frontPid = browser;
-    after(0.6);
-    check(stats().pending && retries() == 2, "and loses the front to the repeated requests");
-    sys.frontPid = editor;
-    after(0.2);
-    check(!stats().pending,
-          "one application follows the first instance: another one the user goes to ends the requests");
-    // Between the first instance's exit and the system naming its successor nobody may be in
-    // front for a moment, and the system may go on naming the first instance for a moment after
-    // it has exited. Neither look settles who follows: the application that comes to the front
-    // next does, and it counts as the launcher.
-    {
-        struct Between { int front; const char* what; };
-        const Between betweens[] = {
-            { 0, "restarted in front, nobody in front right after the first instance has exited: the application "
-                 "that follows counts as the launcher" },
-            { firstInstance, "restarted in front, the first instance still named in front after it has exited: the "
-                             "application that follows counts as the launcher" },
-        };
-        for (const Between& between : betweens)
-        {
-            restartedBy(true);
-            sys.parentPid = 1;                  // the first instance has exited
-            sys.frontPid = between.front;
-            after(0.2);
-            sys.frontPid = browser;
-            after(6.5);
-            check(stats().pending && retries() == 0 && dockResets() == 1, between.what);
-        }
-    }
-    // The same restart from the background: no marker, and the period ends.
-    restartedBy(false);
-    sys.parentPid = 1;
-    sys.frontPid = browser;
-    after(6.5);
-    check(!stats().pending && retries() == 0 && dockResets() == 0,
-          "restarted in the background: the application in front after the first instance ends the requests");
-    // The first instance still runs while another application is in front: the user went there.
-    restartedBy(true);
-    sys.frontPid = browser;
-    after(6.5);
-    check(!stats().pending && retries() == 0 && dockResets() == 0,
-          "restarted in front, the first instance still running: an application the user went to ends the requests");
-    // That period ended with the question of who follows the first instance still open, since
-    // the first instance never exited in it. The question belongs to that period. A later first
-    // request of the same process, and a click that starts a period, begin without it: an
-    // application that comes to the front then is one the user went to.
-    sys.parentPid = 1;
-    start(0);
-    sys.frontPid = browser;
-    after(0.6);
-    check(!stats().pending && retries() == 0 && dockResets() == 0,
-          "a later first request without the marker: the application that comes to the front is not taken for "
-          "the first instance's successor");
-    restartedBy(true);
-    sys.frontPid = browser;
-    after(6.5);                                 // ends again with that question open
-    sys.parentPid = 1;
-    sys.frontPid = editor;
-    apply(1.0);
-    click();                                    // no period running: a new one, against the editor
-    sys.frontPid = browser;
-    after(0.6);
-    check(!stats().pending && retries() == 1 && dockResets() == 0,
-          "a click that starts a period after it: the application the user then goes to is not taken for the "
-          "first instance's successor either");
-    // The system puts this process itself in front: no other application follows the first one.
-    restartedBy(true);
-    sys.parentPid = 1;
-    sys.frontPid = self;
-    after(6.5);
-    check(stats().pending && fallback() && dockResets() == 1,
-          "restarted in front, this process in front after the first instance: repaired like any start");
-    check(macos::clientHoldsFront(),
-          "while the host uses the system's state the application counts as active: a restart from here is in front");
-    sys.frontPid = browser;
-    after(0.2);
-    check(!stats().pending, "and an application the user goes to afterwards ends the requests");
-    // Nobody is in front at the first request: the system has not named the first instance's
-    // successor yet.
-    setenv(marker, "1", 1);
-    Hooks::forgetRestartMarkerForTest(host);
-    sys.parentPid = 1;
-    start(0);
-    sys.frontPid = browser;
-    after(6.5);
-    check(stats().pending && dockResets() == 1,
-          "restarted in front, nobody in front at the first request: the application in front at the next look "
-          "counts as the launcher");
-    sys.frontPid = editor;
-    after(0.2);
-    check(!stats().pending, "and another application after that one ends the requests");
-    // The Dock that the period's own reset put in front is not the first instance's successor
-    // either: the application in front after it is.
-    setenv(marker, "1", 1);
-    Hooks::forgetRestartMarkerForTest(host);
-    sys.parentPid = 1;
-    start(0);
-    after(0.6);
-    after(0.6);                                 // nobody in front for 1.2 s: the Dock reset
-    sys.frontPid = dock;
-    after(0.35);                                // the request that reset owes, with the Dock in front
-    sys.frontPid = browser;
-    after(0.6);
-    check(stats().pending && retries() == 3 && dockResets() == 1,
-          "restarted in front, the Dock in front by the period's own reset: it is not the first instance's "
-          "successor, the application in front after it is");
-    sys.frontPid = editor;
-    after(0.2);
-    check(!stats().pending, "and an application after that one ends the requests");
-    unsetenv(marker);
-    Hooks::forgetRestartMarkerForTest(host);
-    sys.parentPid = startParent;
-    sys.ancestors[0] = startAncestor;
-
-    // End the simulation with no period running, and focus as the other tests force it.
-    finish();
-    check(!stats().pending && !fallback() && !host.hasFocus(), "the last period is over");
-    Hooks::setSystemFocusForTest(host, 0);
+    check(state().requests == 0, "an already active application needs no launch or order-in request");
+    Hooks::windowOrderedInForTest(host, false);
+    check(state().requests == 0, "active window order-in sends no request");
+    Hooks::setSystemFocusForTest(host, nullptr);
+    host.removeListener(&focus);
     setFocus(true);
     settle();
 }
 
-// RestartInFront.h: what a game that restarts itself hands to the new instance. The first instance
-// builds the new one's environment (MacSystem.cpp, relaunchExecutable) and decides from the
-// host's focus state whether it holds the front. What the host makes of the marker is checked
-// with the launch activation above.
-void testRestartInFront()
+// NativeFullscreen.h: the game window's own full-screen Space. The engine's request is what the
+// host reports at once; the window follows with one AppKit transition at a time, waits for the
+// application's activation, and stays windowed after the user left the Space.
+void testNativeFullscreen()
 {
-    begin("restart in front: the marker in the new instance's environment");
-    using namespace macos;
-    typedef std::vector<std::string> Env;
-    check(std::string(kRestartedInFrontVariable) == "BF2_RESTARTED_IN_FRONT", "the variable is BF2_RESTARTED_IN_FRONT");
-    check(restartedInFront("1"), "the value 1 marks a restart in front");
-    check(!restartedInFront(nullptr) && !restartedInFront("") && !restartedInFront("0") &&
-          !restartedInFront("11") && !restartedInFront("true"),
-          "no variable and any other value do not");
-    // A first instance that a person started: no marker in its environment.
-    const char* const plain[] = { "HOME=/Users/player", "BF2_HOST_TRACE=1", nullptr };
-    check(restartEnvironment(plain, true) == Env({ "HOME=/Users/player", "BF2_HOST_TRACE=1", "BF2_RESTARTED_IN_FRONT=1" }),
-          "restarted in front: the environment is passed on with the marker added");
-    check(restartEnvironment(plain, false) == Env({ "HOME=/Users/player", "BF2_HOST_TRACE=1" }),
-          "restarted in the background: the environment is passed on as it is");
-    // A second generation: this instance was itself restarted in front and carries the marker.
-    const char* const marked[] = { "BF2_RESTARTED_IN_FRONT=1", "HOME=/Users/player", "BF2_RESTARTED_IN_FRONT_X=1",
-                                   nullptr };
-    check(restartEnvironment(marked, false) == Env({ "HOME=/Users/player", "BF2_RESTARTED_IN_FRONT_X=1" }),
-          "a marked instance that restarts in the background: its marker is not passed on, other variables are");
-    check(restartEnvironment(marked, true) ==
-              Env({ "HOME=/Users/player", "BF2_RESTARTED_IN_FRONT_X=1", "BF2_RESTARTED_IN_FRONT=1" }),
-          "a marked instance that restarts in front: the marker is passed on once");
-    check(restartEnvironment(nullptr, true) == Env({ "BF2_RESTARTED_IN_FRONT=1" }) &&
-          restartEnvironment(nullptr, false).empty(),
-          "no environment at all: the marker alone, or nothing");
-    // Whether this process holds the front follows the application's state as the host reports
-    // it to the engine.
-    ClientHost& host = ClientHost::instance();
-    CocoaHostTestHooks::overrideFocusForTest(host, true, true);
-    check(clientHoldsFront(), "the application active: this process holds the front");
-    CocoaHostTestHooks::overrideFocusForTest(host, false, true);
-    check(clientHoldsFront(), "the application active while another window has the keyboard: it still does");
-    CocoaHostTestHooks::overrideFocusForTest(host, false, false);
-    check(!clientHoldsFront(), "the application inactive: it does not");
-    setFocus(true);
-    settle();
+    begin("native full screen: one transition at a time, after the activation, the user's exit kept");
+    typedef macos::NativeFullscreen F;
+    {
+        // [TEMP] Engine-side fixture for the pump's reconciliation. Model only the toggle's
+        // flag/settings/host request; the production renderer reset and input event need a game.
+        F f;
+        bool engine = false, configured = false;
+        int toggles = 0;
+        const auto toggle = [&] {
+            if (!engine != f.wanted())
+                f.request(!engine, true);        // ClientHost ignores a mode it already reports
+            engine = !engine;
+            configured = engine;
+            ++toggles;
+        };
+        const auto pump = [&] {
+            macos::reconcileFullscreen(engine, configured, f.wanted(), toggle);
+        };
+        toggle();                               // Alt+Enter into full screen
+        f.willEnter();
+        f.didEnter();
+        pump();
+        check(engine && configured && f.inSpace() && toggles == 1, "Alt+Enter enters with flags in agreement");
+        f.willExit();                           // AppKit's native exit, without a host request
+        f.didExit();
+        pump();
+        check(!engine && !configured && f.windowed() && toggles == 2,
+              "AppKit exit runs the engine toggle once and agrees with the host");
+        toggle();                               // one Alt+Enter after AppKit exit
+        check(engine && configured && f.entering(), "one Alt+Enter after AppKit exit enters again");
+        f.didEnter();
+        toggle();                               // Alt+Enter back to windowed
+        f.didExit();
+        pump();
+        check(!engine && !configured && f.windowed() && toggles == 4, "Alt+Enter exits without a second engine toggle");
+        f.request(true, true);                  // green button / View command
+        pump();
+        check(engine && configured && f.entering() && toggles == 5,
+              "green-button entry switches the engine through its toggle");
+        f.didEnter();
+        pump();
+        check(toggles == 5 && f.inSpace(), "completion of native entry does not toggle back");
+        f.request(false, true);                 // green button / Ctrl+Cmd+F exit
+        pump();
+        f.didExit();
+        check(!engine && !configured && f.windowed(), "native command exits through the engine too");
+        f.willEnter();                          // entry AppKit initiated outside the host
+        check(f.didEnter() == F::None && f.wanted(), "AppKit entry is adopted without an immediate exit");
+        pump();
+        check(engine && configured && f.inSpace(), "AppKit entry synchronizes the engine flag");
+        configured = false;                    // SettingsManager.boolSet GSFullScreen 0
+        pump();
+        check(!engine && !f.wanted(), "a live GSFullScreen write runs the same toggle");
+        f.didExit();
+        configured = true;
+        pump();
+        check(engine && f.entering(), "a live GSFullScreen write enters again");
+    }
+    {
+        F f;
+        check(!f.wanted() && f.windowed() && !f.inSpace() && !f.transitioning(), "a new window is windowed");
+        check(f.request(true, true) == F::Enter, "active: a full-screen request enters the Space at once");
+        check(f.wanted() && !f.windowed() && f.transitioning() && f.ownTransition(),
+              "reported full screen at once, the window on its way");
+        f.willEnter();
+        check(f.ownTransition(), "AppKit's will-enter for the host's own toggle stays the host's");
+        check(f.didEnter() == F::None && f.inSpace() && !f.transitioning(), "in the Space, nothing more to do");
+        check(f.request(false, true) == F::Exit && !f.wanted(), "windowed request: leave the Space");
+        f.willExit();
+        check(f.didExit() == F::None && f.windowed() && !f.userLeft(), "windowed again, by the host's own exit");
+    }
+    {
+        F f;
+        check(f.request(true, false) == F::None && f.waiting() && f.wanted() && f.windowed(),
+              "inactive: the request waits, the window stays windowed, full screen is reported");
+        check(f.activated() == F::Enter && !f.waiting(), "the activation enters the Space");
+        check(f.activated() == F::None, "a second activation during the transition starts nothing");
+        check(f.didEnter() == F::None && f.inSpace(), "in the Space");
+        check(f.activated() == F::None, "activations in the Space start nothing");
+    }
+    {
+        F f;
+        f.request(true, false);
+        check(f.request(false, false) == F::None && !f.waiting() && f.windowed(),
+              "a windowed request cancels a waiting one without a transition");
+        check(f.activated() == F::None, "and the activation then starts nothing");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.request(false, true) == F::None && !f.wanted(), "windowed during the enter: nothing starts now");
+        check(f.didEnter() == F::Exit, "the enter's end leaves the Space again");
+        check(f.request(true, true) == F::None && f.wanted(), "full screen during that exit: nothing starts now");
+        check(f.didExit() == F::Enter && !f.userLeft(), "the exit's end enters again; the host's own exit, not the user's");
+        check(f.didEnter() == F::None && f.inSpace() && f.wanted(), "in the Space as last requested");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didEnter();
+        f.willExit();                           // the title bar's button or the system shortcut
+        check(!f.ownTransition() && f.transitioning(), "an exit the host did not start is the user's");
+        check(f.didExit() == F::None && f.userLeft() && !f.wanted() && f.windowed(),
+              "after the user's exit the host stays windowed and reports it");
+        check(f.activated() == F::None, "an activation does not take the user back into the Space");
+        check(f.request(true, true) == F::Enter && !f.userLeft(), "the engine's next request enters again");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didEnter();
+        f.willExit();
+        check(f.request(true, true) == F::None, "a full-screen request during the user's exit waits for its end");
+        check(f.didExit() == F::Enter && !f.userLeft() && f.wanted(), "and then overrides it: back into the Space");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.enterRefused(true, false) == F::Retry, "first refusal retries");
+        check(f.enterRefused(true, false) == F::Retry, "second refusal retries");
+        check(f.enterRefused(true, false) == F::GivenUp && f.windowed() && f.wanted(),
+              "third refusal gives up windowed, still wanted");
+        check(f.activated() == F::Enter, "activation resets attempts and tries again");
+        check(f.enterRefused(true, false) == F::Retry, "activation grants a fresh retry count");
+        check(f.request(true, true) == F::None, "a request during retry keeps the running transition");
+        check(f.enterRefused(true, false) == F::Retry && f.enterRefused(true, false) == F::Retry &&
+              f.enterRefused(true, false) == F::GivenUp,
+              "a new request resets the count to three attempts");
+        check(f.request(false, true) == F::None && f.request(true, true) == F::Enter,
+              "a new request after giving up starts entry again");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.enterRefused(true, true) == F::Retry, "an exit during entry reports a refusal");
+        check(f.enterRefused(true, false) == F::Duplicate && f.entering() && f.wanted() && !f.inSpace(),
+              "failure after exit is a duplicate, leaving retry unchanged");
+        f.toggled();
+        check(f.enterRefused(true, false) == F::Retry && f.enterRefused(true, false) == F::GivenUp,
+              "the duplicate consumed no attempt");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.enterRefused(true, true) == F::Retry, "exit-only refusal retries");
+        f.toggled();
+        check(f.enterRefused(true, false) == F::Retry, "failure after the next toggle is a new refusal");
+        check(f.enterRefused(true, false) == F::GivenUp, "exit-only refusal consumed one attempt");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(f.enterRefused(false, false) == F::Waits && f.waiting() && f.windowed() && f.wanted(),
+              "refused while inactive waits windowed for activation");
+        check(f.activated() == F::Enter && !f.waiting(), "activation resumes the waiting entry");
+        f.request(false, true);
+        check(f.enterRefused(true, false) == F::GivenUp && f.windowed() && !f.wanted(),
+              "entry refused after a windowed request is already where it belongs");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.postpone();                           // the application went inactive before the queued toggle
+        check(f.waiting() && f.windowed() && f.wanted() && !f.transitioning(),
+              "a queued entry of an application that became inactive waits, windowed and still wanted");
+        check(f.activated() == F::Enter && !f.waiting(), "the next activation makes it");
+        f.didEnter();
+        f.request(false, true);
+        f.postpone();
+        check(f.transitioning() && !f.waiting(), "a queued exit is not postponed");
+    }
+    {
+        F f;
+        f.request(true, true);
+        f.didEnter();
+        f.request(false, true);
+        f.exitRefused();
+        check(f.inSpace() && !f.transitioning() && !f.wanted(), "exit refusal keeps the window in its Space");
+        check(f.request(false, true) == F::Exit, "a new request can leave after a refused exit");
+    }
+    {
+        F f;
+        f.request(true, true);
+        check(!f.announced(), "queued entry is not announced");
+        f.willEnter();
+        check(f.announced(), "will-enter announces the running entry");
+        f.didEnter();
+        check(!f.announced(), "did-enter ends the announcement");
+        f.request(false, true);
+        f.willExit();
+        check(f.announced(), "will-exit announces the running exit");
+        f.didExit();
+        check(!f.announced(), "did-exit ends the announcement");
+        f.request(true, true);
+        f.abandon();
+        check(f.windowed() && f.wanted() && !f.announced(), "abandoned entry is windowed and still wanted");
+        check(f.activated() == F::Enter, "the next activation enters after abandonment");
+    }
 }
 
 // CursorScale.h: points on screen per cursor pixel. The host hands over the game view's height in
@@ -2043,11 +1305,11 @@ int main(int argc, char** argv)
         testAsyncEnter();
 
         testHostBoundary();
-        testFocusRepair();
-        testProcessAncestry();
-        testLaunchActivation();
-        testRestartInFront();
+        testBusyService();
         testCursorScale();
+        testFocusFollowsAppKit();
+        testCooperativeStartup();
+        testNativeFullscreen();
 
         host.removeListener(&log);
         g_manager->release();

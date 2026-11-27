@@ -55,6 +55,9 @@ inline IHeightmap* activeHeightmap()
     return cluster()->getActiveHeightmap();
 }
 
+// PE 0x006DF574; ELF 0x088494E0. Zero arguments, no returned console value.
+void consoleClusterIntersectCameraRay() { cluster()->intersectCameraRay(); }
+
 // Resolves the requested cluster class and re-registers its singleton before creation.
 // Game builds strip an Editable suffix; editor builds resolve the editable class. Unknown
 // names do nothing, including the stock "HeighmapCluster" spelling.
@@ -162,6 +165,10 @@ BF2_CONSOLE_METHOD_3(addHeightmap, consoleClusterAddHeightmap, heightmapCluster 
 BF2_CONSOLE_METHOD_1(setClusterSize, consoleClusterSetClusterSize, int, kHeightmapConsoleTag)
 BF2_CONSOLE_METHOD_1(setHeightmapSize, consoleClusterSetHeightmapSize, int, kHeightmapConsoleTag)
 BF2_CONSOLE_METHOD_1(setSeaWaterLevel, consoleClusterSetSeaWaterLevel, float, kHeightmapConsoleTag)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(intersectCameraRay, consoleClusterIntersectCameraRay,
+                                   heightmapCluster != 0, kHeightmapConsoleTag)
+// [FRONTIER] compileWaterMeshesIntoHeightmap (BF2.exe 0x6DF674/0x6DF6D2) stays
+// unpublished until HeightmapCluster's absorbed-water-object state update is recovered.
 namespace {
 ConsoleClassImportSurroundingRawHeightMap s_consoleClassImportSurroundingRawHeightMap;
 }

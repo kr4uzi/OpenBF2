@@ -31,6 +31,7 @@
 #include "ObjectSpawner.h"
 #include "SoldierTemplate.h"
 #include "Trigger.h"
+#include "AreaObject.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -44,6 +45,48 @@ void addConstantToAllConsoles(const std::string& name, const std::string& value)
 }
 
 namespace world {
+
+// BF2.exe 0x50871A: exact full or short names, no numeric arm; unknown tokens select 22.
+std::istream& operator>>(std::istream& stream, ToolTipType& type)
+{
+    static const char* const names[] = {"HeavyTank", "LightTank", "Artillery", "Apc", "ScoutCar",
+        "Fighter", "DiveBomber", "Bomber", "AAGun", "StationaryMG", "Destroyer", "Battleship",
+        "Carrier", "Submarine", "Lcvp", "DefGun", "BF110", "Mosquito", "ATGun", "ArmoredCar",
+        "SturmGeschutz", "M3GMC"};
+    std::string token;
+    stream >> token;
+    type = static_cast<ToolTipType>(22);
+    for (int i = 0; i < 22; ++i)
+        if (token == names[i] || token == std::string("TT") + names[i])
+        { type = static_cast<ToolTipType>(i); break; }
+    return stream;
+}
+
+// BF2.exe 0x5068F8/0x508E90: case-insensitive names and exact decimal -1..3.
+std::ostream& operator<<(std::ostream& stream, CameraShakeTriggers type)
+{
+    static const char* const names[] = {"CstNoShake", "CstExplosion", "CstMachinegun", "CstHitShake", "CstDieShake"};
+    const int value = static_cast<int>(type);
+    if (value >= -1 && value <= 3) stream << names[value + 1];
+    return stream;
+}
+
+std::istream& operator>>(std::istream& stream, CameraShakeTriggers& type)
+{
+    std::string token;
+    stream >> token;
+    if (token.size() == 1)
+    {
+        std::ostringstream text;
+        text << static_cast<CameraShakeTriggers>(std::atoi(token.c_str()));
+        token = text.str();
+    }
+    static const char* const names[] = {"CstNoShake", "CstExplosion", "CstMachinegun", "CstHitShake", "CstDieShake"};
+    for (int i = 0; i < 5; ++i)
+        if (equalsIgnoreCase(token, names[i]) || token == std::to_string(i - 1))
+        { type = static_cast<CameraShakeTriggers>(i - 1); break; }
+    return stream;
+}
 
 // Publishes an unsigned constant to all consoles using standard stream formatting.
 void addConstantHelper(const std::string& name, unsigned int value)
@@ -342,6 +385,10 @@ struct GameTemplateConsoleAccess
         return static_cast<GrapplingHookRopeTemplate*>(
             getActiveTemplate(CID_GrapplingHookRopeTemplate));
     }
+    static float getMaxRopeLength() { return grapplingHookRope()->_float174; }
+    static void setMaxRopeLength(float value) { grapplingHookRope()->_float174 = value; }
+    static int getNumberOfLinks() { return grapplingHookRope()->_dword178; }
+    static void setNumberOfLinks(int value) { grapplingHookRope()->_dword178 = value; }
     static float getThrowStrength() { return grapplingHookRope()->m_throwStrength; }
     static void setThrowStrength(float v) { grapplingHookRope()->m_throwStrength = v; }
     static float getUpThrowBoost() { return grapplingHookRope()->m_upThrowBoost; }
@@ -407,6 +454,31 @@ struct GameTemplateConsoleAccess
     {
         return static_cast<PlayerControlObjectTemplate*>(
             getActiveTemplate(CID_PlayerControlObjectTemplate));
+    }
+    static float getShakeFactor() { return playerControlObject()->m_shakeFactor; }
+    static void setShakeFactor(float value) { playerControlObject()->m_shakeFactor = value; }
+    // BF2.exe 0x52C60A/0x52C740 -> 0x402EE0; ELF 0x863BDA0/0x863C220.
+    // [PLATFORM] PE selects zero for NaN; ELF retains it. Both preserve signed zero.
+    static float clampSoundLevel(float value)
+    {
+#if defined(_WIN32)
+        const float capped = value >= 1.0f ? 1.0f : value;
+        return capped >= 0.0f ? capped : 0.0f;
+#else
+        return value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+#endif
+    }
+    static float getGroundContactVolume() { return playerControlObject()->m_groundContactVolume; }
+    static void setGroundContactVolume(float value)
+    {
+        PlayerControlObjectTemplate* const pco = playerControlObject();
+        pco->m_groundContactVolume = clampSoundLevel(value);
+    }
+    static float getDamagedAmbientSoundLimit() { return playerControlObject()->m_damagedAmbientSoundLimit; }
+    static void setDamagedAmbientSoundLimit(float value)
+    {
+        PlayerControlObjectTemplate* const pco = playerControlObject();
+        pco->m_damagedAmbientSoundLimit = clampSoundLevel(value);
     }
     static io::PlayerInputMap getSpecialToggleWeaponInput()
     {
@@ -973,6 +1045,12 @@ BF2_CONSOLE_PROPERTY(soldierExitRotation, Vec3,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setSoldierExitRotation, getSoldierExitRotation, kObjTemplGameConsoleTag)
 
+// BF2.exe 0x005361ED: only the player-control template is active for this property;
+// GET/SET dispatch through IPlayerControlObjectTemplate's typed offset accessors.
+BF2_CONSOLE_PROPERTY(nameTagOffset, Vec3,
+                     GameTemplateConsoleAccess::playerControlObject(),
+                     setNameTagOffset, getNameTagOffset, kObjTemplGameConsoleTag)
+
 // Occupant entry/exit policy, ducking and seat setup. Retail registers each as a plain ObjectTemplate
 // property (or, for addTargetObjectTypeToWatch, a one-int method) gated on CID_PlayerControlObjectTemplate.
 BF2_CONSOLE_PROPERTY_FN(allowDucking, bool,
@@ -1139,6 +1217,36 @@ BF2_CONSOLE_PROPERTY_FN(Timeout, float,
                         GameTemplateConsoleAccess::getZiplineTimeout(),
                         GameTemplateConsoleAccess::setZiplineTimeout, kObjTemplGameConsoleTag)
 
+// BF2.exe executors 0x52D170/0x52D28D/0x52D3AA/0x52D5E4/0x52D82A;
+// dedicated PE 0x4B9210/0x4B93D0/0x4B9590/0x4B9910/0x4B9CB0.
+// These are the placement and entry fields read by ZiplineTemplate, not per-rope state.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 15)
+BF2_CONSOLE_FIELD(MaxZiplineLength, float, GameTemplateConsoleAccess::zipline(),
+                  m_searchRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(EntryRadius, float, GameTemplateConsoleAccess::zipline(),
+                  m_entryRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(collisionStartRadius, float, GameTemplateConsoleAccess::zipline(),
+                  m_collisionStartRadius, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(heightOffset, float, GameTemplateConsoleAccess::zipline(),
+                  m_creationHeightOffset, kObjTemplGameConsoleTag)
+BF2_CONSOLE_FIELD(distanceCannotEnter, float, GameTemplateConsoleAccess::zipline(),
+                  m_minZiplineLength, kObjTemplGameConsoleTag)
+// BF2.exe 0x52D959; dedicated PE 0x4B9E90. Zipline::init scales link geometry with this value.
+BF2_CONSOLE_FIELD(ropeScaleFactor, float,
+                  static_cast<ZiplineRopeTemplate*>(getActiveTemplate(CID_ZiplineRopeTemplate)),
+                  m_lengthScale, kObjTemplGameConsoleTag)
+// BF2.exe 0x52DA76/0x52DB93; dedicated PE 0x4BA050/0x4BA210.
+// GrapplingHookRope::initialize reads these to size its particles and links.
+BF2_CONSOLE_PROPERTY_FN(MaxRopeLength, float,
+                        GameTemplateConsoleAccess::grapplingHookRope() != 0,
+                        GameTemplateConsoleAccess::getMaxRopeLength(),
+                        GameTemplateConsoleAccess::setMaxRopeLength, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(NumberOfLinks, int,
+                        GameTemplateConsoleAccess::grapplingHookRope() != 0,
+                        GameTemplateConsoleAccess::getNumberOfLinks(),
+                        GameTemplateConsoleAccess::setNumberOfLinks, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
+
 // DropVehicleTemplate: PE gate sub_4BE080 = getActiveTemplate(40020); the int executor stores the
 // recovered m_destroyVehicleTime at PE +0x210 (int -> int).
 BF2_CONSOLE_PROPERTY_FN(noPassengerTimeToLive, int,
@@ -1169,6 +1277,14 @@ BF2_CONSOLE_FIELD(maxTriggerDistance, float, activeGroundEffectBundle(),
                   m_maxTriggerDistance, kObjTemplGameConsoleTag)
 BF2_CONSOLE_FIELD(clientHitDetection, bool, activeDestroyableWindowsBundle(),
                   clientHitDetection, kObjTemplGameConsoleTag)
+// BF2.exe 0x523633: direct string get/set on the window bundle.
+BF2_CONSOLE_FIELD(effectTemplateBaseName, std::string, activeDestroyableWindowsBundle(),
+                  effectTemplateBaseName, kObjTemplGameConsoleTag)
+// BF2.exe 0x523395: separate from the destroyable-object and dynamic-bundle overloads.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
+BF2_CONSOLE_FIELD(respawnDelay, float, activeDestroyableWindowsBundle(),
+                  respawnDelay, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
 // objectTemplate.setNumWindows - dedicated PE gate 0x4AAAF0 =
 // `getActiveTemplate(0xC4DC = CID_DestroyableWindowsBundleTemplate) != 0`; ctor 0x4AAA00,
 // executor 0x4AAB70, one int argument, void, file-static. Set-only: the shipped executor's only
@@ -1179,6 +1295,38 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setNumWindows, objectTemplateSetNumWindows,
 
 // Stock parachutes preserve the soldier's camera pitch when entering and leaving the seat.
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 15)
+// BF2.exe 0x528C0C/0x528D90; dedicated PE 0x4B2A60/0x4B2C80.
+// Preserve the typed seat accessors, including getSeatRotation's first-call cache.
+BF2_CONSOLE_PROPERTY(seatPosition, Vec3, GameTemplateConsoleAccess::playerControlObject(),
+                     setSeatPosition, getSeatPosition, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY(seatRotation, Vec3, GameTemplateConsoleAccess::playerControlObject(),
+                     setSeatRotation, getSeatRotation, kObjTemplGameConsoleTag)
+// BF2.exe 0x52C471/0x52C5A2/0x52C6D8; dedicated PE 0x4B7E30/0x4B8000/0x4B81D0.
+BF2_CONSOLE_PROPERTY(listenerObstruction, float, GameTemplateConsoleAccess::playerControlObject(),
+                     setListenerObstruction, getListenerObstruction, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(groundContactVolume, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getGroundContactVolume(),
+                        GameTemplateConsoleAccess::setGroundContactVolume, kObjTemplGameConsoleTag)
+BF2_CONSOLE_PROPERTY_FN(damagedAmbientSoundLimit, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getDamagedAmbientSoundLimit(),
+                        GameTemplateConsoleAccess::setDamagedAmbientSoundLimit, kObjTemplGameConsoleTag)
+// BF2.exe 0x529E5A/0x529EFE: player-control secondary interface, ranged -1..3.
+namespace {
+CameraShakeTriggers getVehicleShake()
+{ return static_cast<CameraShakeTriggers>(GameTemplateConsoleAccess::playerControlObject()->getVehicleCameraShake()); }
+void setVehicleShake(CameraShakeTriggers value)
+{ GameTemplateConsoleAccess::playerControlObject()->setVehicleCameraShake(value); }
+}
+BF2_CONSOLE_PROPERTY_FN_RANGED(vehicleCameraShake, CameraShakeTriggers,
+                               GameTemplateConsoleAccess::playerControlObject() != 0,
+                               getVehicleShake(), setVehicleShake, -1, 3, kObjTemplGameConsoleTag)
+// BF2.exe 0x52BB49; dedicated PE 0x4B6FC0. PlayerControlObject::getShakeFactor reads this field.
+BF2_CONSOLE_PROPERTY_FN(shakeFactor, float,
+                        GameTemplateConsoleAccess::playerControlObject() != 0,
+                        GameTemplateConsoleAccess::getShakeFactor(),
+                        GameTemplateConsoleAccess::setShakeFactor, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(maintainCameraOnExit, bool,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setMaintainCameraOnExit, getMaintainCameraOnExit, kObjTemplGameConsoleTag)
@@ -1186,6 +1334,43 @@ BF2_CONSOLE_PROPERTY(maintainCameraOnEnter, bool,
                      GameTemplateConsoleAccess::playerControlObject(),
                      setMaintainCameraOnEnter, getMaintainCameraOnEnter, kObjTemplGameConsoleTag)
 BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
+
+// BF2.exe 0x535EE2/0x535F53: set-only method on the player-control secondary interface.
+namespace {
+class ConsoleSetToolTipType : public ConsoleObjectBaseImpl
+{
+public:
+    ConsoleSetToolTipType()
+    {
+        m_objectName = consoleDefaultName(); m_access = consoleDefaultAccess();
+        m_category = consoleDefaultCategory(); m_functionName = "setToolTipType";
+        m_type = 0; m_minNoArgs = m_maxNoArgs = 1; m_returnType = "void";
+        m_hasReturnValue = false; m_isDynamic = false;
+        m_argTypes[0] = "dice::hfe::world::ToolTipType"; m_argNeedsConversion[0] = -1;
+        consoleBindingList(kObjTemplGameConsoleTag).push_back(this);
+    }
+    bool isObjectActive() const { return GameTemplateConsoleAccess::playerControlObject() != 0; }
+    void executeObjectMethod()
+    {
+        if (m_argCount != 1) return;
+        const ToolTipType value = BF2_CC_ARG(ToolTipType, 0);
+        m_hasReturnValue = false;
+        GameTemplateConsoleAccess::playerControlObject()->setToolTipType(value);
+    }
+    void setArgFromString(int index, const std::string& value)
+    {
+        if (index != 1) return;
+        static ToolTipType argument;
+        std::istringstream stream(value);
+        // BF2.exe 0x535F81 keeps the reader's default even when token extraction fails.
+        stream >> argument;
+        m_args[0] = reinterpret_cast<std::string*>(&argument);
+    }
+    BF2_CC_NO_RETURN_AS_STRING
+    BF2_CC_COMMON_HOOKS
+};
+static ConsoleSetToolTipType s_consoleSetToolTipType;
+}
 
 // ConsoleClass1020/1021: ELF executors 0x862E9F0/0x862F1D0 and folded PE 0x4B3150
 // accept exactly (std::string, Vec3, Vec3), gate on CID_PlayerControlObjectTemplate, and
@@ -1539,6 +1724,7 @@ ObjectSpawner* activeSpawnerObject()
 void objSpawnerSetControlPointId(int id) { activeSpawnerObject()->setControlPointId(id); }
 void objSpawnerSetVisibleTeam(int team)  { activeSpawnerObject()->setVisibleTeam(team); }
 void objSpawnerSetActive(bool active)    { activeSpawnerObject()->setActive(active); }
+void objSpawnerSetTeam(int team)        { activeSpawnerObject()->setTeam(team); }
 int  objSpawnerGetVisibleTeam()          { return activeSpawnerObject()->getVisibleTeam(); }
 int  objSpawnerGetControlPointId()       { return activeSpawnerObject()->getControlPointId(); }
 } // namespace
@@ -1548,6 +1734,8 @@ BF2_CONSOLE_METHOD_0_RET_ACTIVE(getControlPointId, objSpawnerGetControlPointId, 
 BF2_CONSOLE_METHOD_1_ACTIVE(setVisibleTeam, objSpawnerSetVisibleTeam, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_METHOD_1_ACTIVE(setControlPointId, objSpawnerSetControlPointId, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_METHOD_1_ACTIVE(setActive, objSpawnerSetActive, activeSpawnerObject() != 0, bool, kObjTemplGameConsoleTag)
+// BF2.exe 0x50A47D; dedicated PE 0x483FA0: set the live spawner team through its typed interface.
+BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(setTeam, objSpawnerSetTeam, activeSpawnerObject() != 0, int, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(team, int, activeSpawnerObject(), setTeamOnStart, getTeamOnStart, kObjTemplGameConsoleTag)
 
 // Restore the console object before registering ObjectTemplate properties.
@@ -1704,6 +1892,11 @@ BF2_CONSOLE_PROPERTY_FN(abilityInVehicleMaterial, int, getActiveTemplate(CID_Kit
 // Destructible-object respawn, walkability and bounds properties.
 BF2_CONSOLE_FIELD(respawnDelay, float, static_cast<DestroyableObjectTemplate*>(getActiveTemplate(CID_DestroyableObjectTemplate)),
                   respawnDelay, kObjTemplGameConsoleTag)
+// BF2.exe 0x555786; dedicated PE 0x4E84C0. GameLogic copies this delay into the object's spawner.
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 14)
+BF2_CONSOLE_FIELD(respawnDelay, float, static_cast<DynamicBundleTemplate*>(getActiveTemplate(CID_DynamicBundleTemplate)),
+                  respawnDelay, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 9)
 BF2_CONSOLE_FIELD(nrOfRespawns, int, static_cast<DestroyableObjectTemplate*>(getActiveTemplate(CID_DestroyableObjectTemplate)),
                   nrOfRespawns, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY_FN(usedByAi, bool, getActiveTemplate(CID_DestroyableObjectTemplate) != 0,
@@ -1720,6 +1913,10 @@ BF2_CONSOLE_PROPERTY_FN(maxCorner, Vec3, getActiveTemplate(CID_DestroyableObject
                         GameTemplateConsoleAccess::setMaxCorner, kObjTemplGameConsoleTag)
 
 // Antenna sway properties. maxSwayAngle contains separate X and Z limits.
+// BF2.exe 0x50C9E7; dedicated PE 0x487B50: shared skeleton property.
+BF2_CONSOLE_PROPERTY_FN_NAMED("antenna.skeleton", std::string, getActiveTemplate(CID_AntennaObjectTemplate) != 0,
+    GameTemplateConsoleAccess::antenna()->getSkeleton(),
+    GameTemplateConsoleAccess::antenna()->setSkeleton, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY_FN_NAMED("antenna.maxSwayAngle", Vec2, getActiveTemplate(CID_AntennaObjectTemplate) != 0,
                               GameTemplateConsoleAccess::getAntennaMaxSwayAngle(),
                               GameTemplateConsoleAccess::setAntennaMaxSwayAngle, kObjTemplGameConsoleTag)
@@ -1750,6 +1947,24 @@ BF2_CONSOLE_METHOD_1_STATIC_ACTIVE(addLinePoint, addAreaLinePoint,
     activeAreaObjectTemplate() != 0, Vec2, kObjTemplGameConsoleTag)
 BF2_CONSOLE_PROPERTY(triggerRadius, float, activeAreaObjectTemplate(),
     setTriggerRadius, getTriggerRadius, kObjTemplGameConsoleTag)
+
+namespace {
+// BF2.exe 0x50AB62 selects by the active object's template class, not its runtime class.
+AreaObject* activeAreaObject()
+{
+    IObject* object = objectManager->getActiveObject();
+    if (!object) return 0;
+    const IObjectTemplate* objectTemplate = object->getTemplate();
+    return objectTemplate && objectTemplate->getClassID() == CID_AreaObjectTemplate
+        ? static_cast<AreaObject*>(object) : 0;
+}
+void addAreaAbsolutePoint() { activeAreaObject()->addAbsolutePoint(); }
+}
+// BF2.exe 0x50AB04/0x50AB93; dedicated PE 0x484BA0. Zero arguments, no result.
+BF2_CONSOLE_OBJECT("Object", 2, 0)
+BF2_CONSOLE_METHOD_0_STATIC_ACTIVE(addAbsolutePoint, addAreaAbsolutePoint,
+    activeAreaObject() != 0, kObjTemplGameConsoleTag)
+BF2_CONSOLE_OBJECT("ObjectTemplate", 2, 0)
 
 // Item-container unlock level and replacement-item bindings.
 BF2_CONSOLE_PROPERTY_FN(unlockLevel, int, getActiveTemplate(CID_ItemContainerTemplate) != 0,

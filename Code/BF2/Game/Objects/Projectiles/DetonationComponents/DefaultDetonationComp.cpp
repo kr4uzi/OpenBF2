@@ -20,6 +20,7 @@
 #include "../../../IGameLogic.h"
 #include "../../../../Core/System.h"
 #include "../../../../Math/Mat4.h"
+#include "../../../../Platform/X87Compat.h"
 #include "../../../../Physics/HeightmapCluster.h"
 #include "../../../../Physics/IPhysicsNode.h"
 #include "../../../../Physics/Material.h"
@@ -445,11 +446,10 @@ void DefaultDetonationComp::detonate(IObject* source, int collisionType, Vec3 po
     const Vec3& here = projectile->getAbsolutePosition();
     const float waterLevel = heightmap()->getWaterLevelInWorldCoords(here);
     IObjectTemplate* endEffect = m_template->getEndEffect();
-#if !DEDICATED
-    // Client PE 0x618239..0x618281; server retains the water query but drops its result.
-    if (here.y - waterLevel < 0.0f && m_template->getWaterEndEffect())
+    // Client PE 0x618264..0x61827E and ELF 0x828EEEE..0x828EFCE select water for
+    // negative or unordered depth. The dedicated PE drops this inert effect selection.
+    if (!bf2x87::greaterEqual(here.y - waterLevel, 0.0f) && m_template->getWaterEndEffect())
         endEffect = m_template->getWaterEndEffect();
-#endif
 
     Vec3 effectDirection;
     // The template's `useCollisionNormal` byte at +0x71 selects the effect's orientation.
