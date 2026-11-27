@@ -143,11 +143,15 @@ written. The `Windows package` job runs it on Ubuntu after both Windows jobs and
 `release-windows` artifact; on release runs it also waits for the `Windows installer` job and, when that job signed,
 takes the ZIPs it signed ([Windows signing](#windows-signing)).
 
+The setup app carries the OpenBF2 release as its version. On a tag or release run the three jobs that build it
+(the Windows installer, the macOS app and the Linux client) take the tag without its `v` (`v0.3.0-rc2` gives
+`0.3.0-rc2`) and hand it to the setup's release script: `SETUP_VERSION` in the environment, on Windows also
+`-Version`. Windows shows it for the installed app, macOS as the app's version, and the Linux package records it
+in `release.json`. Other runs hand over nothing, and the setup uses its fallback `0.0.0-dev`.
+
 The `Windows installer` job builds `openbf2-windows-setup.exe` from both legs' client packages with the setup
 app's own release script (`windows/build-release.ps1` in kr4uzi/openbf2-setup, at the pinned revision) and uploads
-the `release-windows-setup` artifact. On a tag or release run it passes the tag without its `v` as `-Version`
-(`v0.3.0-rc2` gives `0.3.0-rc2`), which Windows shows as the version of the installed app; other runs keep the
-setup's own version. Its toolchain comes from the setup's `ci/fetch-dependencies.sh` (pinned
+the `release-windows-setup` artifact. Its toolchain comes from the setup's `ci/fetch-dependencies.sh` (pinned
 versions and hashes, including DXSETUP's files from Microsoft's DirectX June 2010 redist and Inno Setup). Release
 runs need both clients; other runs without one skip the installer with a notice. Release runs sign the installer
 and everything in it when signing is configured ([Windows signing](#windows-signing)).

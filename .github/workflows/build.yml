@@ -17,7 +17,7 @@ permissions:
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
+  LINUX_SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
 
 jobs:
   windows:
@@ -291,7 +291,7 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
+      SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
       BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     defaults:
       run:
@@ -425,7 +425,7 @@ jobs:
 
       # The OpenBF2 release that Windows shows for the installed app (Settings > Apps, the installer, the product
       # version of OpenBF2.exe): the tag without its "v" on a tag or release run, so v0.3.0-rc2 gives 0.3.0-rc2.
-      # Other runs pass nothing, and the installer keeps the setup's own version.
+      # Other runs pass nothing, and the setup uses its fallback version.
       - name: Take the installer's version from the tag
         if: steps.clients.outputs.complete == 'true' && env.BF2_RELEASE_RUN == 'true'
         shell: pwsh
@@ -860,7 +860,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
+      SETUP_REVISION: 3045c93ddc2c90c8547490f7f0e1f1120c7720e8 # carries the OpenBF2 release as its version on every platform; existing installation in place
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app
