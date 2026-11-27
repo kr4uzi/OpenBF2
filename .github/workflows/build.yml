@@ -17,7 +17,7 @@ permissions:
 
 env:
   LINUX_SETUP_REPOSITORY: kr4uzi/openbf2-setup
-  LINUX_SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
+  LINUX_SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
 
 jobs:
   windows:
@@ -291,7 +291,7 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
+      SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
       BF2_RELEASE_RUN: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     defaults:
       run:
@@ -423,6 +423,17 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      # The OpenBF2 release that Windows shows for the installed app (Settings > Apps, the installer, the product
+      # version of OpenBF2.exe): the tag without its "v" on a tag or release run, so v0.3.0-rc2 gives 0.3.0-rc2.
+      # Other runs pass nothing, and the installer keeps the setup's own version.
+      - name: Take the installer's version from the tag
+        if: steps.clients.outputs.complete == 'true' && env.BF2_RELEASE_RUN == 'true'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "the tag '$tag' is not v<N.N.N> or v<N.N.N>-<suffix>" }
+          "SETUP_VERSION_OPTION=-Version $($Matches[1])" >> $env:GITHUB_ENV
+
       # with -Sign (signed release runs), the setup's sign.ps1 takes the signtool, the certificate and Certum's
       # timestamp server from the login's SETUP_* variables
       - name: Build, test and package the installer
@@ -430,7 +441,7 @@ jobs:
         run: |
           call out\openbf2\Code\Build\vsdevcmd.cmd x64
           if errorlevel 1 exit /b 1
-          powershell -NoProfile -ExecutionPolicy Bypass -File out\openbf2-setup\windows\build-release.ps1 out\clients\openbf2-windows-x64-client out\clients\openbf2-windows-x86-client "%GITHUB_WORKSPACE%\out\packages-app\openbf2-windows-setup.exe" "%GITHUB_WORKSPACE%\out\setup-build" %SETUP_SIGN_OPTION%
+          powershell -NoProfile -ExecutionPolicy Bypass -File out\openbf2-setup\windows\build-release.ps1 out\clients\openbf2-windows-x64-client out\clients\openbf2-windows-x86-client "%GITHUB_WORKSPACE%\out\packages-app\openbf2-windows-setup.exe" "%GITHUB_WORKSPACE%\out\setup-build" %SETUP_VERSION_OPTION% %SETUP_SIGN_OPTION%
 
       - name: Log out of SimplySign
         if: always() && env.BF2_WINDOWS_SIGN == 'true'
@@ -835,7 +846,7 @@ jobs:
     environment: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'release' || '' }}
     env:
       SETUP_REPOSITORY: kr4uzi/openbf2-setup
-      SETUP_REVISION: 84a8fc8f557377e3e0cbaf2dcfc3ff8314e642d5 # 0.5.0 candidate: existing installation in place; Windows installer without RedirectionGuard
+      SETUP_REVISION: d2ce07adc690688925102ae833e64f262ac249bb # 0.5.0 candidate: existing installation in place; the Windows app carries the release version
       BF2_RELEASE_SIGNING: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')) && 'true' || 'false' }}
     steps:
       # The client entitlements, the signing helper and the packager (for the build-info); the app

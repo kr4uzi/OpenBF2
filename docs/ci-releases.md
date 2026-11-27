@@ -145,7 +145,9 @@ takes the ZIPs it signed ([Windows signing](#windows-signing)).
 
 The `Windows installer` job builds `openbf2-windows-setup.exe` from both legs' client packages with the setup
 app's own release script (`windows/build-release.ps1` in kr4uzi/openbf2-setup, at the pinned revision) and uploads
-the `release-windows-setup` artifact. Its toolchain comes from the setup's `ci/fetch-dependencies.sh` (pinned
+the `release-windows-setup` artifact. On a tag or release run it passes the tag without its `v` as `-Version`
+(`v0.3.0-rc2` gives `0.3.0-rc2`), which Windows shows as the version of the installed app; other runs keep the
+setup's own version. Its toolchain comes from the setup's `ci/fetch-dependencies.sh` (pinned
 versions and hashes, including DXSETUP's files from Microsoft's DirectX June 2010 redist and Inno Setup). Release
 runs need both clients; other runs without one skip the installer with a notice. Release runs sign the installer
 and everything in it when signing is configured ([Windows signing](#windows-signing)).
