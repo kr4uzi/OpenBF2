@@ -21,8 +21,8 @@ abort,Code/BF2/Game/GameLogic/Player.cpp,1954,Player::handleFrameUpdate,// [FRON
 abort,Code/BF2/Game/GameLogic/SpawnSystem/SpawnManager.cpp,151,SpawnManager::getCreateSpawnGroup,
 abort,Code/BF2/Game/GameLogic/SquadManager/CommanderManager.cpp,338,commanderCameraInvariantFailure,
 abort,Code/BF2/Game/GameServer/GameServer.cpp,1913,GameServer::shutdown,
-abort,Code/BF2/Game/GameServer/GameServer.cpp,3687,GameServer::enterVehicle,
-abort,Code/BF2/Game/GameServer/GameServer.cpp,3927,GameServer::destroyPlayer,
+abort,Code/BF2/Game/GameServer/GameServer.cpp,3673,GameServer::enterVehicle,
+abort,Code/BF2/Game/GameServer/GameServer.cpp,3913,GameServer::destroyPlayer,
 abort,Code/BF2/Game/GameServer/VoipServerConnection.cpp,59,voipPacketInvariantFailure,
 abort,Code/BF2/Game/Objects/Game/EngineBase.cpp,163,EngineBase::disableCachedObject,
 abort,Code/BF2/Game/Objects/Game/Kit.cpp,37,findTemplateChildsOfType,
@@ -161,7 +161,7 @@ partial,Code/BF2/Game/GameEvents/StickyProjectileEvent.cpp,196,StickyProjectileE
 partial,Code/BF2/Game/GameLogic/GameLogic.cpp,318,loadCallback,// [FRONTIER] BF2.exe 0x4EBF0F calls 0x4013E0 -> 0x401350 unconditionally.
 partial,Code/BF2/Game/GameLogic/ServerGameLogic.cpp,878,ServerGameLogic::restartMap,gameServer->getAutoRecorder()->roundFinished(); // [FRONTIER] 0x80A05C0
 partial,Code/BF2/Game/GameLogic/ServerGameLogic.cpp,1667,ServerGameLogic::toggleEntryPoint,->checkForEntry(player); // [FRONTIER] - 0x81D2509
-partial,Code/BF2/Game/GameServer/GameServer.cpp,3288,GameServer::isRecordingDemo,return m_demoRecorder->isOpenForRecord(); // [FRONTIER] - DemoRecorder is declaration-only
+partial,Code/BF2/Game/GameServer/GameServer.cpp,3274,GameServer::isRecordingDemo,return m_demoRecorder->isOpenForRecord(); // [FRONTIER] - DemoRecorder is declaration-only
 partial,Code/BF2/Game/Main/BF2Engine.cpp,2111,BF2Engine::mainLoop,"bf2Render->render(frameTime, demo->recorder()); // vslot +0x18, 0x453270 [FRONTIER] body"
 partial,Code/BF2/Game/Objects/Game/FloatingBundle.cpp,47,FloatingBundle::handleUpdate,"calculateAndClipAngle(t, 1, dt); // [FRONTIER]"
 partial,Code/BF2/Game/Objects/Game/PlayerControlObjectHelpers.cpp,204,postInitCameras,"findCameras(pcoObject, pcoInterface->getPcoId(), *ownCameras); // [FRONTIER]"
